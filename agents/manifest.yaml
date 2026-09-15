@@ -1,0 +1,69 @@
+# The fleet. `description` is what the agent IS; `whenToUse` is what
+# should land there. The router reads whenToUse; the fleet view reads both.
+agents:
+  - id: triager
+    name: Triager
+    tier: readonly
+    description: Turns raw input into a structured task card.
+    whenToUse: Unstructured input with no labels yet — an issue, a note, a dump.
+    tags: [intake, unstructured]
+    executor: readonly
+    handoffs: [planner]
+
+  - id: planner
+    name: Planner
+    tier: readonly
+    description: Decomposes a vague card into subtasks with acceptance criteria.
+    whenToUse: Card describes an outcome but not the steps to get there.
+    tags: [planning, decomposition]
+    executor: readonly
+    handoffs: [implementer, reviewer]
+
+  - id: reviewer
+    name: Reviewer
+    tier: readonly
+    description: Reviews a diff against repo conventions and prior decisions.
+    whenToUse: A branch or PR exists and needs review before merge.
+    tags: [review, quality, security]
+    executor: readonly
+
+  - id: repo-briefer
+    name: Repo briefer
+    tier: readonly
+    description: Builds and maintains the repo context document.
+    whenToUse: A repo is new to the fleet, or its conventions have drifted.
+    tags: [context, docs]
+    executor: readonly
+
+  - id: memory-curator
+    name: Memory curator
+    tier: readonly
+    description: Dedups and promotes session lessons into durable memory.
+    whenToUse: Scheduled housekeeping, not task-triggered.
+    tags: [memory, housekeeping]
+    executor: readonly
+
+  - id: implementer
+    name: Implementer
+    tier: write
+    description: Writes code in an isolated worktree.
+    whenToUse: Card has clear acceptance criteria and needs code written.
+    tags: [code, typescript, python, node]
+    executor: worktree-claude
+    handoffs: [reviewer]
+
+  - id: fixer
+    name: Fixer
+    tier: write
+    description: Narrow loop — CI failed or a test broke, make it green.
+    whenToUse: A specific failure exists with a clear signal to fix.
+    tags: [ci, tests, bugfix]
+    executor: worktree-claude
+
+  - id: integrator
+    name: Integrator
+    tier: write
+    description: Rebases, resolves conflicts, merges.
+    whenToUse: Work is complete but does not land cleanly.
+    tags: [merge, rebase, conflict]
+    executor: worktree-claude

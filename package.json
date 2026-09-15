@@ -1,0 +1,21 @@
+{
+  "name": "wissel",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Routes tasks to a fleet of agents and skills.",
+  "scripts": {
+    "dev": "bun run --watch src/api/server.ts",
+    "route": "bun run src/cli.ts route",
+    "agents": "bun run src/cli.ts agents",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  }
+}
