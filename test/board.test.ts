@@ -6,9 +6,33 @@ test("create then get round-trips a task", async () => {
   const board = new SqliteBoard();
   const created = await board.create({ title: "t", body: "b", labels: ["x"], repo: "r" });
   expect(created.status).toBe("inbox");
+  expect(created.dependsOn).toEqual([]);
 
   const fetched = await board.get(created.id);
   expect(fetched).toEqual(created);
+});
+
+test("create preserves an explicit dependsOn", async () => {
+  const board = new SqliteBoard();
+  const a = await board.create({ title: "a", body: "", labels: [], repo: "r" });
+  const b = await board.create({ title: "b", body: "", labels: [], repo: "r", dependsOn: [a.id] });
+  expect(b.dependsOn).toEqual([a.id]);
+  expect((await board.get(b.id))!.dependsOn).toEqual([a.id]);
+});
+
+test("setDependencies updates dependsOn, rejects unknown ids, emits an event", async () => {
+  const board = new SqliteBoard();
+  const events: string[] = [];
+  const a = await board.create({ title: "a", body: "", labels: [], repo: "r" });
+  const b = await board.create({ title: "b", body: "", labels: [], repo: "r" });
+  board.events.on("event", (e: { type: string }) => events.push(e.type));
+
+  const updated = await board.setDependencies(b.id, [a.id]);
+  expect(updated.dependsOn).toEqual([a.id]);
+  expect((await board.get(b.id))!.dependsOn).toEqual([a.id]);
+  expect(events).toEqual(["task.dependencies"]);
+
+  await expect(board.setDependencies("nope", [])).rejects.toThrow("task not found");
 });
 
 test("list filters by status and repo", async () => {

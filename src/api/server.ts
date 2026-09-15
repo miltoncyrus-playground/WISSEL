@@ -2,7 +2,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Board, BoardEvent } from "../services/board.ts";
 import { SqliteBoard } from "../services/board.ts";
+import { Registry } from "../core/registry.ts";
 import type { RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
+
+const PUBLIC_DIR = new URL("./public/", import.meta.url);
 
 /**
  * Board API. One SSE stream per board carries card moves, routing
@@ -12,13 +15,21 @@ import type { RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
  * Exported as a plain fetch handler (not bound to a port) so tests can
  * exercise routing without opening a socket.
  */
-export function createApp(board: Board & { events?: import("node:events").EventEmitter }) {
+export function createApp(board: Board & { events?: import("node:events").EventEmitter }, registry: Registry) {
   return async function fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
 
     try {
       if (url.pathname === "/health") return new Response("ok");
+
+      if ((url.pathname === "/" || url.pathname === "/board") && req.method === "GET") {
+        return new Response(Bun.file(new URL("board.html", PUBLIC_DIR)));
+      }
+
+      if (url.pathname === "/agents" && req.method === "GET") {
+        return json(registry.all());
+      }
 
       if (url.pathname === "/events" && req.method === "GET") {
         return sseStream(board);
@@ -49,6 +60,12 @@ export function createApp(board: Board & { events?: import("node:events").EventE
         if (parts.length === 3 && parts[2] === "move" && req.method === "POST") {
           const { status } = (await req.json()) as { status: TaskCard["status"] };
           const task = await board.move(parts[1]!, status);
+          return json(task);
+        }
+
+        if (parts.length === 3 && parts[2] === "depends-on" && req.method === "POST") {
+          const { dependsOn } = (await req.json()) as { dependsOn: string[] };
+          const task = await board.setDependencies(parts[1]!, dependsOn);
           return json(task);
         }
 
@@ -121,6 +138,7 @@ if (import.meta.main) {
   const port = Number(process.env.WISSEL_PORT ?? 8787);
   const dbPath = process.env.WISSEL_DB_PATH ?? join(homedir(), ".wissel", "board.sqlite");
   const board = new SqliteBoard(dbPath);
-  Bun.serve({ port, fetch: createApp(board) });
+  const registry = await Registry.load();
+  Bun.serve({ port, fetch: createApp(board, registry) });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
 }

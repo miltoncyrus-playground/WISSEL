@@ -1,20 +1,43 @@
 import { expect, test } from "bun:test";
 import { createApp } from "../src/api/server.ts";
 import { SqliteBoard } from "../src/services/board.ts";
+import { Registry } from "../src/core/registry.ts";
 import type { TaskCard } from "../src/core/types.ts";
 
 function req(path: string, init?: RequestInit): Request {
   return new Request(`http://localhost${path}`, init);
 }
 
+async function makeApp(board = new SqliteBoard()) {
+  const registry = await Registry.load();
+  return createApp(board, registry);
+}
+
 test("GET /health", async () => {
-  const app = createApp(new SqliteBoard());
+  const app = await makeApp();
   const res = await app(req("/health"));
   expect(await res.text()).toBe("ok");
 });
 
-test("POST /tasks then GET /tasks round-trips", async () => {
-  const app = createApp(new SqliteBoard());
+test("GET / and GET /board serve the board UI", async () => {
+  const app = await makeApp();
+  for (const path of ["/", "/board"]) {
+    const res = await app(req(path));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(await res.text()).toContain("<title>wissel board</title>");
+  }
+});
+
+test("GET /agents returns the fleet from the manifest", async () => {
+  const app = await makeApp();
+  const res = await app(req("/agents"));
+  const agents = (await res.json()) as { id: string }[];
+  expect(agents.some((a) => a.id === "triager")).toBe(true);
+});
+
+test("POST /tasks then GET /tasks round-trips, defaulting dependsOn to []", async () => {
+  const app = await makeApp();
   const create = await app(
     req("/tasks", {
       method: "POST",
@@ -24,6 +47,7 @@ test("POST /tasks then GET /tasks round-trips", async () => {
   expect(create.status).toBe(201);
   const created = (await create.json()) as TaskCard;
   expect(created.status).toBe("inbox");
+  expect(created.dependsOn).toEqual([]);
 
   const list = await app(req("/tasks"));
   expect(await list.json()).toEqual([created]);
@@ -33,13 +57,13 @@ test("POST /tasks then GET /tasks round-trips", async () => {
 });
 
 test("GET /tasks/:id 404s for unknown id", async () => {
-  const app = createApp(new SqliteBoard());
+  const app = await makeApp();
   const res = await app(req("/tasks/nope"));
   expect(res.status).toBe(404);
 });
 
 test("POST /tasks/:id/move updates status, 404s on unknown id", async () => {
-  const app = createApp(new SqliteBoard());
+  const app = await makeApp();
   const create = await app(
     req("/tasks", { method: "POST", body: JSON.stringify({ title: "t", body: "", labels: [], repo: "r" }) }),
   );
@@ -52,9 +76,21 @@ test("POST /tasks/:id/move updates status, 404s on unknown id", async () => {
   expect(missing.status).toBe(404);
 });
 
+test("POST /tasks/:id/depends-on updates dependsOn, 404s on unknown id", async () => {
+  const app = await makeApp();
+  const a = (await (await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "a", body: "", labels: [], repo: "r" }) }))).json()) as TaskCard;
+  const b = (await (await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "b", body: "", labels: [], repo: "r" }) }))).json()) as TaskCard;
+
+  const dep = await app(req(`/tasks/${b.id}/depends-on`, { method: "POST", body: JSON.stringify({ dependsOn: [a.id] }) }));
+  expect(((await dep.json()) as TaskCard).dependsOn).toEqual([a.id]);
+
+  const missing = await app(req("/tasks/nope/depends-on", { method: "POST", body: JSON.stringify({ dependsOn: [] }) }));
+  expect(missing.status).toBe(404);
+});
+
 test("POST /tasks/:id/decision, /result, /override return 204 and fan out over SSE", async () => {
   const board = new SqliteBoard();
-  const app = createApp(board);
+  const app = await makeApp(board);
   const create = await app(
     req("/tasks", { method: "POST", body: JSON.stringify({ title: "t", body: "", labels: [], repo: "r" }) }),
   );

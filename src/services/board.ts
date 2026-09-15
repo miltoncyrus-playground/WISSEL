@@ -14,6 +14,7 @@ export interface Board {
   get(id: string): Promise<TaskCard | undefined>;
   create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard>;
   move(id: string, status: TaskCard["status"]): Promise<TaskCard>;
+  setDependencies(id: string, dependsOn: string[]): Promise<TaskCard>;
   recordDecision(decision: RoutingDecision): Promise<void>;
   recordResult(result: TaskResult): Promise<void>;
   /** Manual override. Every one of these is a labelled router eval case. */
@@ -23,6 +24,7 @@ export interface Board {
 export type BoardEvent =
   | { type: "task.created"; task: TaskCard }
   | { type: "task.moved"; task: TaskCard }
+  | { type: "task.dependencies"; task: TaskCard }
   | { type: "task.decided"; decision: RoutingDecision }
   | { type: "task.result"; result: TaskResult }
   | { type: "task.override"; taskId: string; routerPick: string; humanPick: string };
@@ -35,6 +37,7 @@ interface TaskRow {
   repo: string;
   status: TaskCard["status"];
   routedTo: string | null;
+  dependsOn: string;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -46,6 +49,7 @@ function rowToCard(row: TaskRow): TaskCard {
     repo: row.repo,
     status: row.status,
     routedTo: row.routedTo ?? undefined,
+    dependsOn: JSON.parse(row.dependsOn) as string[],
   };
 }
 
@@ -70,7 +74,8 @@ export class SqliteBoard implements Board {
         labels TEXT NOT NULL,
         repo TEXT NOT NULL,
         status TEXT NOT NULL,
-        routedTo TEXT
+        routedTo TEXT,
+        dependsOn TEXT NOT NULL DEFAULT '[]'
       );
     `);
     this.db.run(`
@@ -125,10 +130,19 @@ export class SqliteBoard implements Board {
   }
 
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
-    const full: TaskCard = { ...card, id: randomUUID(), status: "inbox" };
+    const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [full.id, full.title, full.body, JSON.stringify(full.labels), full.repo, full.status, full.routedTo ?? null],
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        full.id,
+        full.title,
+        full.body,
+        JSON.stringify(full.labels),
+        full.repo,
+        full.status,
+        full.routedTo ?? null,
+        JSON.stringify(full.dependsOn),
+      ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
     return full;
@@ -140,6 +154,15 @@ export class SqliteBoard implements Board {
     this.db.run("UPDATE tasks SET status = ? WHERE id = ?", [status, id]);
     const updated: TaskCard = { ...existing, status };
     this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async setDependencies(id: string, dependsOn: string[]): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET dependsOn = ? WHERE id = ?", [JSON.stringify(dependsOn), id]);
+    const updated: TaskCard = { ...existing, dependsOn };
+    this.events.emit("event", { type: "task.dependencies", task: updated } satisfies BoardEvent);
     return updated;
   }
 

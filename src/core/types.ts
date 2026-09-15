@@ -22,6 +22,8 @@ export interface TaskCard {
   repo: string;
   status: "inbox" | "ready" | "running" | "review" | "done" | "failed";
   routedTo?: string;
+  /** Task ids this one is blocked on. Absent/empty means unblocked. */
+  dependsOn?: string[];
 }
 
 export interface Candidate {
