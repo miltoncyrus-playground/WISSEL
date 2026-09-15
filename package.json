@@ -9,7 +9,8 @@
     "route": "bun run src/cli.ts route",
     "agents": "bun run src/cli.ts agents",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "eval:readonly": "bun run eval/readonly.eval.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
