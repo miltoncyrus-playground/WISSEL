@@ -1,4 +1,5 @@
 import type { AgentDef, Executor, TaskCard, TaskResult } from "../core/types.ts";
+import { buildAgentPrompt } from "../core/prompt.ts";
 
 export interface CommandResult {
   stdout: string;
@@ -62,7 +63,7 @@ export class ReadOnlyExecutor implements Executor {
   }
 
   async run(task: TaskCard, agent: AgentDef): Promise<TaskResult> {
-    const cmd = ["claude", "-p", buildPrompt(task, agent), "--output-format", "json", "--permission-mode", "plan"];
+    const cmd = ["claude", "-p", buildAgentPrompt(task, agent), "--output-format", "json", "--permission-mode", "plan"];
     if (this.model) cmd.push("--model", this.model);
 
     let cmdResult: CommandResult;
@@ -98,14 +99,4 @@ export class ReadOnlyExecutor implements Executor {
 
 function fail(task: TaskCard, agent: AgentDef, summary: string): TaskResult {
   return { taskId: task.id, agentId: agent.id, ok: false, summary };
-}
-
-function buildPrompt(task: TaskCard, agent: AgentDef): string {
-  return [
-    `You are acting as the "${agent.name}" agent: ${agent.description}`,
-    `When to use you: ${agent.whenToUse}`,
-    "",
-    `Task: ${task.title}`,
-    task.body,
-  ].join("\n");
 }

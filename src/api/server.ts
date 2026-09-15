@@ -2,7 +2,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Board, BoardEvent } from "../services/board.ts";
 import { SqliteBoard } from "../services/board.ts";
+import { WorktreeService } from "../services/worktree.ts";
+import { TmuxSupervisor } from "../services/session.ts";
+import { Provisioner } from "../services/provisioner.ts";
 import { Registry } from "../core/registry.ts";
+import { Router } from "../core/router.ts";
+import { Orchestrator } from "../core/orchestrator.ts";
+import { ReadOnlyExecutor } from "../executors/readonly.ts";
+import { WorktreeClaudeExecutor } from "../executors/worktree-claude.ts";
 import type { RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -134,11 +141,34 @@ function sseStream(board: { events?: import("node:events").EventEmitter }): Resp
   });
 }
 
+function expandHome(p: string): string {
+  return p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
+}
+
 if (import.meta.main) {
   const port = Number(process.env.WISSEL_PORT ?? 8787);
   const dbPath = process.env.WISSEL_DB_PATH ?? join(homedir(), ".wissel", "board.sqlite");
+  const worktreeRoot = expandHome(process.env.WISSEL_WORKTREE_ROOT ?? "~/.wissel/worktrees");
   const board = new SqliteBoard(dbPath);
   const registry = await Registry.load();
   Bun.serve({ port, fetch: createApp(board, registry) });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
+
+  // Off by default: this loop routes eligible tasks and runs write-tier
+  // ones with full permission bypass in a fresh worktree, unattended.
+  // That's real enough blast radius (autonomous, unreviewed code changes)
+  // that it needs an explicit opt-in rather than turning on the moment
+  // the dev server does.
+  const orchestratorEnabled = ["1", "true"].includes(process.env.WISSEL_ORCHESTRATOR ?? "");
+  if (orchestratorEnabled) {
+    const router = new Router(registry);
+    const executors = [
+      new ReadOnlyExecutor(),
+      new WorktreeClaudeExecutor(new WorktreeService(worktreeRoot), new TmuxSupervisor(), new Provisioner()),
+    ];
+    new Orchestrator(board, registry, router, executors).start();
+    console.log(`wissel orchestrator running (worktrees: ${worktreeRoot})`);
+  } else {
+    console.log("wissel orchestrator not started — set WISSEL_ORCHESTRATOR=1 to route and run tasks automatically");
+  }
 }

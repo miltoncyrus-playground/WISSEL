@@ -10,7 +10,8 @@
     "agents": "bun run src/cli.ts agents",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "eval:readonly": "bun run eval/readonly.eval.ts"
+    "eval:readonly": "bun run eval/readonly.eval.ts",
+    "eval:worktree-claude": "bun run eval/worktree-claude.eval.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

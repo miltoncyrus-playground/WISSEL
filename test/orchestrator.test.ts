@@ -1,0 +1,150 @@
+import { expect, test } from "bun:test";
+import { SqliteBoard } from "../src/services/board.ts";
+import { Registry } from "../src/core/registry.ts";
+import { Router } from "../src/core/router.ts";
+import { Orchestrator } from "../src/core/orchestrator.ts";
+import type { AgentDef, Executor, TaskCard } from "../src/core/types.ts";
+
+// agents/manifest.yaml's real tags: "intake" -> triager (readonly),
+// "code" -> implementer (write). Using the real registry/router (not
+// mocks) means these tests exercise real tag-overlap routing, not a
+// fabricated decision.
+async function setup(executors: Executor[]) {
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  const orchestrator = new Orchestrator(board, registry, new Router(registry), executors);
+  return { board, orchestrator };
+}
+
+function fakeExecutor(tier: "readonly" | "write", run: Executor["run"]): Executor {
+  return { id: `fake-${tier}`, canHandle: (agent: AgentDef) => agent.tier === tier, run };
+}
+
+test("sweep routes an unblocked task and runs it on the matching executor", async () => {
+  const seen: TaskCard[] = [];
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => {
+      seen.push(task);
+      return { taskId: task.id, agentId: agent.id, ok: true, summary: "triaged" };
+    }),
+  ]);
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+
+  const updated = await board.get(task.id);
+  expect(updated!.status).toBe("done");
+  expect(updated!.routedTo).toBe("triager");
+  expect(seen.map((t) => t.id)).toEqual([task.id]);
+});
+
+test("a successful write-tier task ends in review, not done", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("write", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "wrote it" })),
+  ]);
+
+  const task = await board.create({ title: "build the thing", body: "", labels: ["code"], repo: "r" });
+  await orchestrator.sweep();
+
+  expect((await board.get(task.id))!.status).toBe("review");
+});
+
+test("a failed run ends in failed", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: false, summary: "broke" })),
+  ]);
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+
+  expect((await board.get(task.id))!.status).toBe("failed");
+});
+
+test("an executor throwing becomes a failed result, not a crash", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async () => {
+      throw new Error("boom");
+    }),
+  ]);
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+
+  expect((await board.get(task.id))!.status).toBe("failed");
+});
+
+test("a task blocked on an unfinished dependency is left alone until it's done", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" })),
+    fakeExecutor("write", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" })),
+  ]);
+
+  const dep = await board.create({ title: "design", body: "", labels: ["intake"], repo: "r" });
+  const blocked = await board.create({ title: "build", body: "", labels: ["code"], repo: "r", dependsOn: [dep.id] });
+
+  await orchestrator.sweep();
+  expect((await board.get(dep.id))!.status).toBe("done"); // unblocked, processed
+  const stillBlocked = await board.get(blocked.id);
+  expect(stillBlocked!.status).toBe("inbox"); // dependency wasn't done yet at sweep time
+  expect(stillBlocked!.routedTo).toBeUndefined();
+
+  await orchestrator.sweep();
+  expect((await board.get(blocked.id))!.status).toBe("review"); // now unblocked
+});
+
+test("a dangling dependsOn id blocks forever rather than being treated as satisfied", async () => {
+  const { board, orchestrator } = await setup([fakeExecutor("readonly", async () => {
+    throw new Error("should never run");
+  })]);
+
+  const task = await board.create({ title: "x", body: "", labels: ["intake"], repo: "r", dependsOn: ["no-such-task"] });
+  await orchestrator.sweep();
+
+  expect((await board.get(task.id))!.status).toBe("inbox");
+});
+
+test("no matching executor leaves the task unrouted instead of stranding it", async () => {
+  const { board, orchestrator } = await setup([]); // no executors at all
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+
+  await orchestrator.sweep();
+
+  const after = await board.get(task.id);
+  expect(after!.status).toBe("inbox");
+  expect(after!.routedTo).toBeUndefined();
+});
+
+test("concurrent sweeps don't double-run the same task", async () => {
+  let runs = 0;
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => {
+      runs++;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { taskId: task.id, agentId: agent.id, ok: true, summary: "ok" };
+    }),
+  ]);
+
+  await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await Promise.all([orchestrator.sweep(), orchestrator.sweep(), orchestrator.sweep()]);
+
+  expect(runs).toBe(1);
+});
+
+test("start() reacts to a task created after it begins watching", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" })),
+  ]);
+  orchestrator.start();
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+
+  const deadline = Date.now() + 1000;
+  let status: TaskCard["status"] = "inbox";
+  while (Date.now() < deadline) {
+    status = (await board.get(task.id))!.status;
+    if (status !== "inbox") break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  expect(status).toBe("done");
+});
