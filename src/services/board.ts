@@ -41,6 +41,7 @@ interface TaskRow {
   status: TaskCard["status"];
   routedTo: string | null;
   dependsOn: string;
+  parentTaskId: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -53,6 +54,7 @@ function rowToCard(row: TaskRow): TaskCard {
     status: row.status,
     routedTo: row.routedTo ?? undefined,
     dependsOn: JSON.parse(row.dependsOn) as string[],
+    parentTaskId: row.parentTaskId ?? undefined,
   };
 }
 
@@ -78,7 +80,8 @@ export class SqliteBoard implements Board {
         repo TEXT NOT NULL,
         status TEXT NOT NULL,
         routedTo TEXT,
-        dependsOn TEXT NOT NULL DEFAULT '[]'
+        dependsOn TEXT NOT NULL DEFAULT '[]',
+        parentTaskId TEXT
       );
     `);
     this.db.run(`
@@ -136,7 +139,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -146,6 +149,7 @@ export class SqliteBoard implements Board {
         full.status,
         full.routedTo ?? null,
         JSON.stringify(full.dependsOn),
+        full.parentTaskId ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);

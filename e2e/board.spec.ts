@@ -30,6 +30,19 @@ test.describe("Board view", () => {
     // No cost figure anywhere in the fleet boxes — replaced by the active dot.
     await expect(page.locator(".fleet-cost")).toHaveCount(0);
     await expect(page.locator("body")).not.toContainText("$0.");
+
+    // Declared handoffs show as advisory text — triager only, from the
+    // real manifest; agents that never declared a handoff graph (e.g.
+    // reviewer) show no line at all rather than a blank one. Matched by
+    // exact fleet-id, not a loose row-text substring — "reviewer" is
+    // also a substring of planner's and implementer's own handoffs
+    // lines ("hands off to: ...reviewer"), which a plain hasText match
+    // on the whole row would collide with.
+    function fleetRowById(id: string) {
+      return page.locator("#agentsBox .fleet-row").filter({ has: page.locator(".fleet-id", { hasText: new RegExp("^" + id + "$") }) });
+    }
+    await expect(fleetRowById("triager").locator(".fleet-handoffs")).toContainText("hands off to: planner");
+    await expect(fleetRowById("reviewer").locator(".fleet-handoffs")).toHaveCount(0);
   });
 
   test("a fleet row shows the active dot only while it has running/dispatched work", async ({ page, request }) => {

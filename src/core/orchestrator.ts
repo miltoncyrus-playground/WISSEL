@@ -27,6 +27,28 @@ export async function finishResult(
 }
 
 /**
+ * Resolves the candidate allowlist a follow-up task is restricted to:
+ * its parent's routed agent's declared `handoffs`, if the parent exists
+ * and is itself routed. Undefined means unrestricted — no parent, an
+ * unrouted parent, or a parent whose agent never declared a handoff
+ * graph at all all mean "the whole registry is eligible." A parent
+ * agent that declared `handoffs: []` returns that empty array as-is —
+ * a deliberate "hands off to no one," not the same as no restriction.
+ */
+export async function resolveHandoffAllowlist(
+  board: Board,
+  registry: Registry,
+  parentTaskId: string | undefined,
+): Promise<string[] | undefined> {
+  if (!parentTaskId) return undefined;
+  const parent = await board.get(parentTaskId);
+  if (!parent?.routedTo) return undefined;
+  const parentAgent = registry.get(parent.routedTo);
+  if (!parentAgent || parentAgent.handoffs === undefined) return undefined;
+  return parentAgent.handoffs;
+}
+
+/**
  * The loop that makes the rest of the fleet mean anything: watches the
  * board for tasks that are unrouted, unblocked, and sitting in `inbox` or
  * `ready`, and routes each one.
@@ -88,7 +110,8 @@ export class Orchestrator {
     try {
       let decision: RoutingDecision;
       try {
-        decision = await this.router.route(task);
+        const allowIds = await resolveHandoffAllowlist(this.board, this.registry, task.parentTaskId);
+        decision = await this.router.route(task, allowIds);
       } catch (e) {
         console.error(`orchestrator: could not route task ${task.id}: ${(e as Error).message}`);
         return;

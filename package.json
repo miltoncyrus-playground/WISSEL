@@ -8,6 +8,7 @@
     "dev": "bun run --watch src/api/server.ts",
     "agents": "bun run src/cli.ts agents",
     "why": "bun run src/cli.ts why",
+    "team": "bun run src/cli.ts team",
     "typecheck": "tsc --noEmit",
     "test": "bun test test/",
     "test:e2e": "playwright test",

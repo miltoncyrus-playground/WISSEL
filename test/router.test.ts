@@ -71,3 +71,27 @@ test("no candidates at all is a refusal, not a throw", async () => {
   expect(decision.selected).toBeNull();
   expect(decision.candidates).toEqual([]);
 });
+
+test("allowIds restricts routing to the declared handoff set, and says so", async () => {
+  const three = [
+    agent({ id: "a", tier: "readonly", tags: ["security", "node"] }),
+    agent({ id: "b", tier: "write", tags: ["docs"] }),
+    agent({ id: "c", tier: "readonly", tags: ["security", "node"] }), // would tie with "a" unrestricted
+  ];
+  const router = new Router(Registry.from(three));
+
+  const decision = await router.route(task, ["a", "b"]);
+  expect(decision.candidates.map((c) => c.agentId).sort()).toEqual(["a", "b"]);
+  expect(decision.confident).toBe(true);
+  expect(decision.selected).toBe("a");
+  expect(decision.reason).toContain("restricted to declared handoffs: a, b");
+});
+
+test("an empty allowIds is a real, explained refusal — not the same as unrestricted", async () => {
+  const router = new Router(Registry.from(agents));
+  const decision = await router.route(task, []);
+  expect(decision.confident).toBe(false);
+  expect(decision.selected).toBeNull();
+  expect(decision.candidates).toEqual([]);
+  expect(decision.reason).toContain("no further handoffs");
+});

@@ -24,7 +24,12 @@ export interface AgentDef {
   whenToUse: string;
   tags: string[];
   executor: string;
-  /** Agents this one may hand off to. Empty means no handoffs. */
+  /** Agents this one may hand off to. Read by the router to restrict a
+   *  follow-up task's (`TaskCard.parentTaskId`) candidates to exactly
+   *  this list. Undefined means "never declared a handoff graph" — the
+   *  router falls back to the full registry, unrestricted. `[]` is a
+   *  different, deliberate thing: "declared, and hands off to no one" —
+   *  a follow-up task under this agent has zero eligible candidates. */
   handoffs?: string[];
   /** Capability contract, data-first: what this agent consumes, what it
    *  produces, what running it costs, how much it's trusted to act
@@ -51,6 +56,11 @@ export interface TaskCard {
   routedTo?: string;
   /** Task ids this one is blocked on. Absent/empty means unblocked. */
   dependsOn?: string[];
+  /** Set when this task is a follow-up spawned by another — distinct
+   *  from dependsOn, which only means "blocked until." When present,
+   *  routing restricts candidates to the parent's routed agent's
+   *  declared `handoffs`, if it has any (see AgentDef.handoffs). */
+  parentTaskId?: string;
 }
 
 export interface Candidate {

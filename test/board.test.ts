@@ -20,6 +20,15 @@ test("create preserves an explicit dependsOn", async () => {
   expect((await board.get(b.id))!.dependsOn).toEqual([a.id]);
 });
 
+test("create round-trips parentTaskId, and leaves it undefined when omitted", async () => {
+  const board = new SqliteBoard();
+  const parent = await board.create({ title: "p", body: "", labels: [], repo: "r" });
+  const child = await board.create({ title: "c", body: "", labels: [], repo: "r", parentTaskId: parent.id });
+  expect(child.parentTaskId).toBe(parent.id);
+  expect((await board.get(child.id))!.parentTaskId).toBe(parent.id);
+  expect((await board.get(parent.id))!.parentTaskId).toBeUndefined();
+});
+
 test("setDependencies updates dependsOn, rejects unknown ids, emits an event", async () => {
   const board = new SqliteBoard();
   const events: string[] = [];
