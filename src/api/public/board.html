@@ -36,8 +36,13 @@
     --sig-running: #2f7fe0;
     --sig-done: #1f8a55;
   }
+  /* Guarded with :not([data-theme="light"]) so an explicit "Light"
+     choice (see :root[data-theme="dark"] below) can override the OS
+     preference instead of always losing to it. Keep this block and
+     :root[data-theme="dark"] in sync — same token values, duplicated
+     because custom properties can't alias one block to another. */
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
       color-scheme: dark;
       --surface: #1a1a19;
       --page: #0d0d0d;
@@ -56,6 +61,27 @@
       --sig-running: #5b9bf0;
       --sig-done: #3fbf7f;
     }
+  }
+  /* Explicit "Dark" choice — wins regardless of OS preference. Keep in
+     sync with the @media (prefers-color-scheme: dark) block above. */
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19;
+    --page: #0d0d0d;
+    --ink-1: #ffffff;
+    --ink-2: #c3c2b7;
+    --ink-muted: #898781;
+    --line: #2c2c2a;
+    --border: rgba(255, 255, 255, 0.10);
+    --no-match: #d4a24e;
+    --accent: #9085e9;
+    --accent-wash: rgba(144, 133, 233, 0.14);
+    --skill: #3fbfa8;
+    --skill-wash: rgba(63, 191, 168, 0.16);
+    --sig-inbox: #97989e;
+    --sig-ready: #6fb3f2;
+    --sig-running: #5b9bf0;
+    --sig-done: #3fbf7f;
   }
   * { box-sizing: border-box; }
   body {
@@ -266,6 +292,20 @@
 
   [hidden] { display: none !important; }
 </style>
+<script>
+  // Runs before first paint so a persisted "dark" or "light" choice never
+  // flashes the other theme on load. Defensive: localStorage can throw
+  // (private browsing, blocked storage) and must silently fall back to
+  // Auto (OS preference) rather than break the page.
+  (function () {
+    try {
+      var theme = localStorage.getItem("wissel-theme");
+      if (theme === "light" || theme === "dark") {
+        document.documentElement.dataset.theme = theme;
+      }
+    } catch (e) {}
+  })();
+</script>
 </head>
 <body>
 <div class="wrap">
@@ -276,11 +316,18 @@
   </header>
 
   <div class="toolbar">
-    <div class="segmented" role="group" aria-label="View">
+    <div class="segmented" id="viewToggle" role="group" aria-label="View">
       <button type="button" data-view="board" aria-pressed="true">Board</button>
       <button type="button" data-view="newtask" aria-pressed="false">New task</button>
     </div>
-    <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
+    <div style="display: flex; align-items: center; gap: 16px;">
+      <div class="segmented" id="themeToggle" role="group" aria-label="Theme">
+        <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+        <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+        <button type="button" data-theme-choice="" aria-pressed="true">Auto</button>
+      </div>
+      <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
+    </div>
   </div>
 
   <section id="boardPanel">
@@ -1285,15 +1332,49 @@
 
   var boardPanel = document.getElementById("boardPanel");
   var newTaskPanel = document.getElementById("newTaskPanel");
-  document.querySelectorAll(".segmented button").forEach(function (btn) {
+  document.querySelectorAll("#viewToggle button").forEach(function (btn) {
     btn.addEventListener("click", function () {
-      document.querySelectorAll(".segmented button").forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
+      document.querySelectorAll("#viewToggle button").forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
       btn.setAttribute("aria-pressed", "true");
       var view = btn.getAttribute("data-view");
       boardPanel.hidden = view !== "board";
       newTaskPanel.hidden = view !== "newtask";
     });
   });
+
+  // Theme toggle: mirrors the view segmented-control's click/aria-pressed
+  // pattern. "" (Auto) means no override — remove the attribute so the
+  // guarded @media query decides. Storage access is defensive since
+  // localStorage can throw (private browsing, blocked storage).
+  function applyTheme(theme) {
+    if (theme === "light" || theme === "dark") {
+      document.documentElement.dataset.theme = theme;
+    } else {
+      delete document.documentElement.dataset.theme;
+    }
+    try {
+      if (theme === "light" || theme === "dark") {
+        localStorage.setItem("wissel-theme", theme);
+      } else {
+        localStorage.removeItem("wissel-theme");
+      }
+    } catch (e) {}
+    document.querySelectorAll("#themeToggle button").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-theme-choice") === theme ? "true" : "false");
+    });
+  }
+
+  (function () {
+    var stored = "";
+    try {
+      var raw = localStorage.getItem("wissel-theme");
+      if (raw === "light" || raw === "dark") stored = raw;
+    } catch (e) {}
+    document.querySelectorAll("#themeToggle button").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-theme-choice") === stored ? "true" : "false");
+      b.addEventListener("click", function () { applyTheme(b.getAttribute("data-theme-choice")); });
+    });
+  })();
 })();
 </script>
 </body>
