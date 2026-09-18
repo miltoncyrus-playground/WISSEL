@@ -66,7 +66,7 @@ test.describe("New Task tab", () => {
     await expect(page.locator("#ntRepo")).toHaveValue("/tmp/wissel-e2e-repo");
     await expect(page.locator("#ntChips")).toBeEmpty();
 
-    await page.getByRole("button", { name: "Kanban" }).click();
+    await page.getByRole("button", { name: "Board" }).click();
     await expect(page.locator("#kanbanBody")).toContainText(title);
   });
 

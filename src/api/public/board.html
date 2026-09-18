@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wissel board</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600;700&display=swap">
 <style>
   :root {
     color-scheme: light;
@@ -13,16 +14,27 @@
     --ink-2: #52514e;
     --ink-muted: #898781;
     --line: #e1e0d9;
-    --baseline: #c3c2b7;
     --border: rgba(11, 11, 11, 0.10);
-    --stage-1: #86b6ef;
-    --stage-2: #5598e7;
     --stage-3: #2a78d6;
     --stage-4: #184f95;
     --critical: #d03b3b;
     --no-match: #b8862f;
     --accent: #4a3aa7;
     --accent-wash: rgba(74, 58, 167, 0.10);
+    /* Skill fleet accent — distinct hue from --accent (agents), same
+       weight, so kind reads as a deliberate second category, not a
+       lighter/weaker version of the first. */
+    --skill: #1c7a6e;
+    --skill-wash: rgba(28, 122, 110, 0.10);
+    /* Status signal colors, rail-lamp inspired: a real green for "done"
+       (distinct from the running/ready blues, which the old all-blue
+       stage scale made hard to tell apart at a glance) and a shared
+       amber for "review" and "no-match" — both mean "a human needs to
+       look," which is exactly what a caution aspect signals. */
+    --sig-inbox: #8b8d94;
+    --sig-ready: #86b6ef;
+    --sig-running: #2f7fe0;
+    --sig-done: #1f8a55;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -33,11 +45,16 @@
       --ink-2: #c3c2b7;
       --ink-muted: #898781;
       --line: #2c2c2a;
-      --baseline: #383835;
       --border: rgba(255, 255, 255, 0.10);
       --no-match: #d4a24e;
       --accent: #9085e9;
       --accent-wash: rgba(144, 133, 233, 0.14);
+      --skill: #3fbfa8;
+      --skill-wash: rgba(63, 191, 168, 0.16);
+      --sig-inbox: #97989e;
+      --sig-ready: #6fb3f2;
+      --sig-running: #5b9bf0;
+      --sig-done: #3fbf7f;
     }
   }
   * { box-sizing: border-box; }
@@ -65,44 +82,47 @@
 
   .panel { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 20px; position: relative; }
   .scroller { overflow-x: auto; padding-bottom: 4px; }
-
-  svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--ink-2); }
-  .node-title { font-size: 11px; }
-  .node-agent { font-size: 9.5px; fill: var(--ink-muted); }
-  .arc { fill: none; stroke: var(--line); stroke-width: 2px; transition: stroke .15s, opacity .15s, stroke-width .15s; }
-  .arc.lit { stroke: var(--accent); stroke-width: 3px; opacity: 1; }
-  .arc.dim { opacity: 0.18; }
-  .node-hit { fill: transparent; cursor: pointer; }
-  .node-dot { transition: stroke .15s, opacity .15s; }
-  .node-dot.dim { opacity: 0.3; }
-  .node-dot.lit-ring { stroke: var(--accent); stroke-width: 3px; }
-  .node-group.dim .node-title, .node-group.dim .node-agent { opacity: 0.3; }
-  .pulse { animation: pulse 1.8s ease-in-out infinite; transform-origin: center; }
-  @media (prefers-reduced-motion: reduce) { .pulse { animation: none; } }
-  @keyframes pulse { 0%, 100% { opacity: 0.55; r: 11; } 50% { opacity: 0; r: 15; } }
-
-  .legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--ink-2); }
-  .legend-item { display: inline-flex; align-items: center; gap: 7px; }
-  .swatch { width: 11px; height: 11px; border-radius: 50%; flex: none; display: inline-block; }
-  .ring { width: 11px; height: 11px; border-radius: 50%; flex: none; display: inline-block; border: 2px solid var(--ink-muted); background: transparent; }
-  .ring.dashed { border-style: dashed; }
-
-  .tooltip {
-    position: fixed; pointer-events: none; z-index: 20; background: var(--ink-1); color: var(--surface);
-    font-size: 12px; line-height: 1.45; padding: 8px 10px; border-radius: 8px; max-width: 240px;
-    box-shadow: 0 6px 20px rgba(0,0,0,0.18); opacity: 0; transform: translateY(2px);
-    transition: opacity .1s, transform .1s;
-  }
-  .tooltip.show { opacity: 1; transform: translateY(0); }
-  .tooltip b { font-weight: 700; }
   .muted { color: var(--ink-muted); }
+  .mono { font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+  .section-gap { margin-top: 18px; }
+
+  .swatch { width: 11px; height: 11px; border-radius: 50%; flex: none; display: inline-block; }
 
   .kanban { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
   .kcol { flex: 1 0 168px; min-width: 168px; }
   .kcol h3 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
-  .kcard { border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; margin-bottom: 8px; background: var(--page); font-size: 12.5px; line-height: 1.4; }
+  .kcard { border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; margin-bottom: 8px; background: var(--page); font-size: 12.5px; line-height: 1.4; cursor: pointer; }
+  .kcard:hover { border-color: var(--accent); }
+  .kcard:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .kcard .kt { font-weight: 600; margin-bottom: 3px; }
   .kcard .ka { color: var(--ink-muted); font-size: 11px; }
+
+  /* ---- status stat strip ---- */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .stat { background: var(--surface); padding: 12px 14px; border-top: 3px solid var(--stat-color, var(--line)); }
+  .stat .n { font-size: 20px; font-weight: 700; line-height: 1; }
+  .stat .l { font-size: 10.5px; color: var(--ink-muted); margin-top: 5px; display: flex; align-items: center; gap: 5px; }
+  .stat .l .swatch { width: 7px; height: 7px; }
+
+  /* ---- fleet boxes (agents / skills) ---- */
+  .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 720px) { .row-2 { grid-template-columns: 1fr; } }
+  .panel-flush { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--line); }
+  .panel-head h2 { font-size: 13px; font-weight: 700; margin: 0; display: flex; align-items: center; gap: 8px; }
+  .panel-head .count { font-size: 11.5px; color: var(--ink-muted); font-weight: 600; }
+  .kind-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+  .fleet-list { max-height: 320px; overflow-y: auto; }
+  .fleet-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  .fleet-row:last-child { border-bottom: none; }
+  .fleet-id { font-size: 12.5px; font-weight: 700; }
+  .fleet-desc { font-size: 11.5px; color: var(--ink-muted); margin-top: 2px; line-height: 1.4; }
+  .fleet-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .tag { font-size: 10px; font-weight: 600; color: var(--ink-2); background: var(--page); border-radius: 5px; padding: 2px 6px; }
+  .tier-chip { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; border-radius: 5px; padding: 2px 6px; flex: none; white-space: nowrap; }
+  .tier-chip.readonly { background: var(--page); color: var(--ink-muted); }
+  .tier-chip.write { background: rgba(208, 59, 59, 0.12); color: var(--critical); }
+  .fleet-cost { font-size: 11px; color: var(--ink-muted); margin-top: 6px; text-align: right; }
 
   .decision-head { font-size: 13px; color: var(--ink-2); margin: 0 0 12px; }
   .decision-head b { color: var(--ink-1); }
@@ -164,43 +184,40 @@
   <header>
     <p class="eyebrow">wissel</p>
     <h1>Board</h1>
-    <p class="lede">Live task state. Arcs show what each task is blocked on; kanban shows what column it's in. Hover a node to trace its dependency chain.</p>
+    <p class="lede">Every task's status, and the fleet that can pick one up. Click a task for the routing decision behind it.</p>
   </header>
 
   <div class="toolbar">
     <div class="segmented" role="group" aria-label="View">
-      <button type="button" data-view="arcs" aria-pressed="true">Dependency arcs</button>
-      <button type="button" data-view="kanban" aria-pressed="false">Kanban</button>
+      <button type="button" data-view="board" aria-pressed="true">Board</button>
       <button type="button" data-view="newtask" aria-pressed="false">New task</button>
     </div>
     <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
   </div>
 
-  <section class="panel" id="arcsPanel">
-    <div class="scroller"><svg id="arcSvg" role="img" aria-label="Task dependency arc diagram"></svg></div>
-    <div id="arcEmpty" class="empty" hidden>
-      No tasks yet. Create one: <code>curl -X POST localhost:8787/tasks -d '{"title":"...","body":"...","labels":[],"repo":"..."}'</code>
-    </div>
-    <div class="legend" id="arcLegend">
-      <span class="legend-item"><span class="swatch" style="background:var(--stage-1)"></span>inbox</span>
-      <span class="legend-item"><span class="swatch" style="background:var(--stage-2)"></span>ready / running</span>
-      <span class="legend-item"><span class="swatch" style="background:var(--stage-3)"></span>dispatched</span>
-      <span class="legend-item"><span class="swatch" style="background:var(--stage-4)"></span>review / done</span>
-      <span class="legend-item"><span class="swatch" style="background:var(--critical)"></span>failed</span>
-      <span class="legend-item"><span class="swatch" style="background:var(--no-match)"></span>no match</span>
-      <span class="legend-item"><span class="ring"></span>write-tier agent</span>
-      <span class="legend-item"><span class="ring dashed"></span>read-only agent</span>
-      <span class="legend-item" style="color:var(--accent)">● click a node for its routing decision, hover to trace its chain</span>
-    </div>
-  </section>
+  <section id="boardPanel">
+    <div class="stats" id="stats"></div>
 
-  <section class="panel" id="decisionPanel" hidden>
-    <p class="eyebrow">Routing decision</p>
-    <div id="decisionBody"></div>
-  </section>
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Tasks, by status</h2></div>
+      <div style="padding: 16px;"><div class="kanban" id="kanbanBody"></div></div>
+    </section>
 
-  <section class="panel" id="kanbanPanel" hidden>
-    <div class="kanban" id="kanbanBody"></div>
+    <section class="panel-flush section-gap" id="decisionPanel" hidden>
+      <div class="panel-head"><h2>Routing decision</h2></div>
+      <div id="decisionBody" style="padding: 16px;"></div>
+    </section>
+
+    <div class="row-2 section-gap">
+      <section class="panel-flush">
+        <div class="panel-head"><h2><span class="kind-dot" style="background:var(--accent)"></span>Agents</h2><span class="count" id="agentsCount"></span></div>
+        <div class="fleet-list" id="agentsBox"></div>
+      </section>
+      <section class="panel-flush">
+        <div class="panel-head"><h2><span class="kind-dot" style="background:var(--skill)"></span>Skills</h2><span class="count" id="skillsCount"></span></div>
+        <div class="fleet-list" id="skillsBox"></div>
+      </section>
+    </div>
   </section>
 
   <section class="panel" id="newTaskPanel" hidden>
@@ -257,15 +274,16 @@
   </section>
 </div>
 
-<div class="tooltip" id="tooltip" role="status" aria-live="polite"></div>
-
 <script>
 (function () {
   "use strict";
 
-  var STAGE_VAR = {
-    inbox: "--stage-1", ready: "--stage-2", running: "--stage-2",
-    dispatched: "--stage-3", review: "--stage-4", done: "--stage-4",
+  // Status signal colors: a real green for "done", distinct blues for
+  // ready/running, and a shared amber for "review"/"no-match" — both
+  // mean "a human needs to look," same as a caution aspect on a signal.
+  var STATUS_COLOR = {
+    inbox: "--sig-inbox", ready: "--sig-ready", running: "--sig-running",
+    dispatched: "--accent", review: "--no-match", done: "--sig-done",
     failed: "--critical", "no-match": "--no-match",
   };
   var STATUS_LABEL = {
@@ -273,180 +291,8 @@
     review: "Review", done: "Done", failed: "Failed", "no-match": "No match",
   };
   var COLUMNS = ["inbox", "ready", "running", "dispatched", "review", "done", "failed", "no-match"];
-  var NS = "http://www.w3.org/2000/svg";
-
   var tasks = [];
   var agentsById = {};
-
-  function el(tag, attrs) {
-    var e = document.createElementNS(NS, tag);
-    for (var k in attrs) e.setAttribute(k, attrs[k]);
-    return e;
-  }
-
-  function byId(id) {
-    for (var i = 0; i < tasks.length; i++) if (tasks[i].id === id) return tasks[i];
-    return undefined;
-  }
-
-  // Kahn's algorithm, stable on the incoming task order.
-  function topoOrder(list) {
-    var order = list.map(function (t) { return t.id; });
-    var indexOf = {};
-    order.forEach(function (id, i) { indexOf[id] = i; });
-    var idSet = {};
-    order.forEach(function (id) { idSet[id] = true; });
-    var indeg = {}, dependents = {};
-    list.forEach(function (t) { dependents[t.id] = []; });
-    list.forEach(function (t) {
-      var deps = (t.dependsOn || []).filter(function (d) { return idSet[d]; });
-      indeg[t.id] = deps.length;
-      deps.forEach(function (dep) { dependents[dep].push(t.id); });
-    });
-    var queue = list.filter(function (t) { return indeg[t.id] === 0; }).map(function (t) { return t.id; });
-    var result = [];
-    while (queue.length) {
-      queue.sort(function (a, b) { return indexOf[a] - indexOf[b]; });
-      var id = queue.shift();
-      result.push(id);
-      dependents[id].forEach(function (dep) {
-        indeg[dep] -= 1;
-        if (indeg[dep] === 0) queue.push(dep);
-      });
-    }
-    // A cycle would leave nodes stranded (shouldn't happen for real
-    // dependsOn data); append them in original order rather than drop them.
-    if (result.length < list.length) {
-      var seen = {};
-      result.forEach(function (id) { seen[id] = true; });
-      list.forEach(function (t) { if (!seen[t.id]) result.push(t.id); });
-    }
-    return result;
-  }
-
-  function renderArcs() {
-    var svg = document.getElementById("arcSvg");
-    var emptyEl = document.getElementById("arcEmpty");
-    var legendEl = document.getElementById("arcLegend");
-    svg.textContent = "";
-
-    if (tasks.length === 0) {
-      svg.setAttribute("width", 0);
-      svg.setAttribute("height", 0);
-      emptyEl.hidden = false;
-      legendEl.hidden = true;
-      return;
-    }
-    emptyEl.hidden = true;
-    legendEl.hidden = false;
-
-    var order = topoOrder(tasks);
-    var position = {};
-    order.forEach(function (id, i) { position[id] = i; });
-
-    var edges = [];
-    tasks.forEach(function (t) {
-      (t.dependsOn || []).forEach(function (dep) {
-        if (position[dep] !== undefined) edges.push({ from: dep, to: t.id });
-      });
-    });
-
-    var SPACING = 92, MARGIN_X = 50, NODE_R = 8, HIT_R = 15, LABEL_ROWS = 62;
-    var maxSpan = edges.reduce(function (m, e) { return Math.max(m, Math.abs(position[e.to] - position[e.from])); }, 1);
-    var maxArcHeight = (maxSpan * SPACING) / 2;
-    var topPad = 24, bottomPad = 20;
-    var baselineY = topPad + maxArcHeight;
-    var svgWidth = MARGIN_X * 2 + Math.max(order.length - 1, 0) * SPACING;
-    var svgHeight = baselineY + NODE_R + LABEL_ROWS + bottomPad;
-
-    svg.setAttribute("viewBox", "0 0 " + svgWidth + " " + svgHeight);
-    svg.setAttribute("width", svgWidth);
-    svg.setAttribute("height", svgHeight);
-
-    function x(i) { return MARGIN_X + i * SPACING; }
-
-    svg.appendChild(el("line", { x1: x(0), y1: baselineY, x2: x(order.length - 1), y2: baselineY, stroke: "var(--baseline)", "stroke-width": 1 }));
-
-    var arcsLayer = el("g", {});
-    var nodesLayer = el("g", {});
-    svg.appendChild(arcsLayer);
-    svg.appendChild(nodesLayer);
-
-    edges.forEach(function (e) {
-      var i1 = position[e.from], i2 = position[e.to];
-      var xa = x(Math.min(i1, i2)), xb = x(Math.max(i1, i2));
-      var r = (xb - xa) / 2;
-      var d = "M " + xa + " " + baselineY + " A " + r + " " + r + " 0 0 1 " + xb + " " + baselineY;
-      arcsLayer.appendChild(el("path", { class: "arc", d: d, "data-from": e.from, "data-to": e.to }));
-    });
-
-    var nodeGroups = {};
-    order.forEach(function (id, i) {
-      var task = byId(id);
-      if (!task) return;
-      var cx = x(i), cy = baselineY;
-      var agent = task.routedTo ? agentsById[task.routedTo] : undefined;
-      var agentLabelText = task.routedTo || "(unrouted)";
-      var tier = agent ? agent.tier : undefined;
-
-      var g = el("g", { class: "node-group", tabindex: "0", role: "button",
-        "aria-label": task.title + ", " + (STATUS_LABEL[task.status] || task.status) + ", agent " + agentLabelText });
-
-      var ring = el("circle", { class: "node-dot", cx: cx, cy: cy, r: NODE_R,
-        fill: "var(" + (STAGE_VAR[task.status] || "--stage-1") + ")",
-        stroke: "var(--ink-1)", "stroke-width": tier === "write" ? 2 : 1.4,
-        "stroke-dasharray": tier === "readonly" ? "2,2" : "none" });
-      g.appendChild(ring);
-
-      if (task.status === "running") {
-        g.appendChild(el("circle", { class: "pulse", cx: cx, cy: cy, r: 11, fill: "none", stroke: "var(" + STAGE_VAR.running + ")", "stroke-width": 2 }));
-      }
-
-      var title = el("text", { class: "node-title", x: cx, y: cy + NODE_R + 16, "text-anchor": "middle" });
-      title.textContent = task.title.length > 20 ? task.title.slice(0, 19) + "…" : task.title;
-      g.appendChild(title);
-
-      var agentLabel = el("text", { class: "node-agent", x: cx, y: cy + NODE_R + 30, "text-anchor": "middle" });
-      agentLabel.textContent = agentLabelText;
-      g.appendChild(agentLabel);
-
-      g.appendChild(el("circle", { class: "node-hit", cx: cx, cy: cy, r: HIT_R }));
-
-      nodesLayer.appendChild(g);
-      nodeGroups[id] = g;
-
-      function activate() { highlight(id, nodeGroups, edges, arcsLayer); showTooltip(task, agentLabelText, edges, svg, svgWidth, cx, cy); }
-      function deactivate() { clearHighlight(nodeGroups, arcsLayer); hideTooltip(); }
-      g.addEventListener("pointerenter", activate);
-      g.addEventListener("pointerleave", deactivate);
-      g.addEventListener("focus", activate);
-      g.addEventListener("blur", deactivate);
-      g.addEventListener("click", function () { showDecision(id); });
-      g.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showDecision(id); } });
-    });
-  }
-
-  function highlight(id, nodeGroups, edges, arcsLayer) {
-    var connected = {}; connected[id] = true;
-    edges.forEach(function (e) {
-      if (e.from === id) connected[e.to] = true;
-      if (e.to === id) connected[e.from] = true;
-    });
-    Object.keys(nodeGroups).forEach(function (nid) { nodeGroups[nid].classList.toggle("dim", !connected[nid]); });
-    arcsLayer.querySelectorAll(".arc").forEach(function (p) {
-      var touches = p.getAttribute("data-from") === id || p.getAttribute("data-to") === id;
-      p.classList.toggle("lit", touches);
-      p.classList.toggle("dim", !touches);
-    });
-    nodeGroups[id].querySelector(".node-dot").classList.add("lit-ring");
-  }
-  function clearHighlight(nodeGroups, arcsLayer) {
-    Object.keys(nodeGroups).forEach(function (nid) {
-      nodeGroups[nid].classList.remove("dim");
-      nodeGroups[nid].querySelector(".node-dot").classList.remove("lit-ring");
-    });
-    arcsLayer.querySelectorAll(".arc").forEach(function (p) { p.classList.remove("lit", "dim"); });
-  }
 
   // Shared by the click-to-inspect decision panel and the New Task tab's
   // live routing preview — one render path, so the two can never drift
@@ -505,30 +351,6 @@
     });
   }
 
-  var tooltip = document.getElementById("tooltip");
-  function showTooltip(task, agentLabelText, edges, svg, svgWidth, svgX, svgY) {
-    var rect = svg.getBoundingClientRect();
-    var scale = rect.width / svgWidth;
-    var px = rect.left + svgX * scale;
-    var py = rect.top + svgY * scale;
-
-    tooltip.textContent = "";
-    var b = document.createElement("b"); b.textContent = task.title;
-    var line1 = document.createElement("div"); line1.appendChild(b);
-    var line2 = document.createElement("div"); line2.className = "muted";
-    line2.textContent = (STATUS_LABEL[task.status] || task.status) + " · " + agentLabelText;
-    var line3 = document.createElement("div"); line3.className = "muted";
-    var depCount = (task.dependsOn || []).length;
-    var blockCount = edges.filter(function (e) { return e.from === task.id; }).length;
-    line3.textContent = "depends on " + depCount + " · blocks " + blockCount;
-
-    tooltip.appendChild(line1); tooltip.appendChild(line2); tooltip.appendChild(line3);
-    tooltip.style.left = Math.min(px + 14, window.innerWidth - 260) + "px";
-    tooltip.style.top = Math.max(py - 60, 8) + "px";
-    tooltip.classList.add("show");
-  }
-  function hideTooltip() { tooltip.classList.remove("show"); }
-
   function renderKanban() {
     var body = document.getElementById("kanbanBody");
     body.textContent = "";
@@ -539,24 +361,96 @@
       var h3 = document.createElement("h3");
       var dot = document.createElement("span");
       dot.className = "swatch";
-      dot.style.background = "var(" + STAGE_VAR[status] + ")";
+      dot.style.background = "var(" + STATUS_COLOR[status] + ")";
       h3.appendChild(dot);
       h3.appendChild(document.createTextNode(STATUS_LABEL[status] + " (" + inCol.length + ")"));
       col.appendChild(h3);
       inCol.forEach(function (t) {
         var card = document.createElement("div");
         card.className = "kcard";
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[status] + ", show routing decision");
         var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
         var ka = document.createElement("div"); ka.className = "ka"; ka.textContent = (t.routedTo || "unrouted") + " · " + t.repo;
         card.appendChild(kt); card.appendChild(ka);
+        card.addEventListener("click", function () { showDecision(t.id); });
+        card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showDecision(t.id); } });
         col.appendChild(card);
       });
       body.appendChild(col);
     });
   }
 
+  function renderStats() {
+    var wrap = document.getElementById("stats");
+    var counts = {};
+    COLUMNS.forEach(function (s) { counts[s] = 0; });
+    tasks.forEach(function (t) { counts[t.status] = (counts[t.status] || 0) + 1; });
+    wrap.textContent = "";
+    COLUMNS.forEach(function (status) {
+      var tile = document.createElement("div");
+      tile.className = "stat";
+      tile.style.setProperty("--stat-color", "var(" + STATUS_COLOR[status] + ")");
+      var n = document.createElement("div"); n.className = "n mono"; n.textContent = counts[status];
+      var l = document.createElement("div"); l.className = "l";
+      var dot = document.createElement("span"); dot.className = "swatch"; dot.style.background = "var(" + STATUS_COLOR[status] + ")";
+      l.appendChild(dot);
+      l.appendChild(document.createTextNode(STATUS_LABEL[status]));
+      tile.appendChild(n); tile.appendChild(l);
+      wrap.appendChild(tile);
+    });
+  }
+
+  // Fleet doesn't change with task activity — rendered once after the
+  // agents fetch resolves, not on every task refetch.
+  function fleetRow(a) {
+    var row = document.createElement("div");
+    row.className = "fleet-row";
+
+    var main = document.createElement("div");
+    main.style.flex = "1"; main.style.minWidth = "0";
+    var idEl = document.createElement("span"); idEl.className = "fleet-id mono"; idEl.textContent = a.id;
+    var descEl = document.createElement("div"); descEl.className = "fleet-desc"; descEl.textContent = a.description || "";
+    var tagsEl = document.createElement("div"); tagsEl.className = "fleet-tags";
+    (a.tags || []).forEach(function (t) {
+      var tag = document.createElement("span"); tag.className = "tag"; tag.textContent = t;
+      tagsEl.appendChild(tag);
+    });
+    main.appendChild(idEl); main.appendChild(descEl); main.appendChild(tagsEl);
+
+    var side = document.createElement("div");
+    side.style.flex = "none";
+    var tier = document.createElement("div");
+    tier.className = "tier-chip " + (a.tier === "write" ? "write" : "readonly");
+    tier.textContent = a.tier === "write" ? "write · handed off" : "readonly";
+    var cost = document.createElement("div");
+    cost.className = "fleet-cost mono";
+    var estCost = a.costProfile && typeof a.costProfile.estUsdPerTask === "number" ? a.costProfile.estUsdPerTask : 0;
+    cost.textContent = "$" + estCost.toFixed(2);
+    side.appendChild(tier); side.appendChild(cost);
+
+    row.appendChild(main); row.appendChild(side);
+    return row;
+  }
+
+  function renderFleetBoxes() {
+    var agents = allAgents.filter(function (a) { return a.kind === "agent"; });
+    var skills = allAgents.filter(function (a) { return a.kind === "skill"; });
+
+    var agentsBox = document.getElementById("agentsBox");
+    agentsBox.textContent = "";
+    agents.forEach(function (a) { agentsBox.appendChild(fleetRow(a)); });
+    document.getElementById("agentsCount").textContent = agents.length + (agents.length === 1 ? " agent" : " agents");
+
+    var skillsBox = document.getElementById("skillsBox");
+    skillsBox.textContent = "";
+    skills.forEach(function (a) { skillsBox.appendChild(fleetRow(a)); });
+    document.getElementById("skillsCount").textContent = skills.length + (skills.length === 1 ? " skill" : " skills");
+  }
+
   function render() {
-    renderArcs();
+    renderStats();
     renderKanban();
     renderRepoOptions();
     renderDependsOnOptions();
@@ -789,6 +683,7 @@
     tasks = results[1] || [];
     render();
     renderOverrideGrid();
+    renderFleetBoxes();
 
     var source = new EventSource("/events");
     source.onmessage = function () { refetchTasks(); };
@@ -892,18 +787,15 @@
       });
   });
 
-  var arcsPanel = document.getElementById("arcsPanel");
-  var kanbanPanel = document.getElementById("kanbanPanel");
+  var boardPanel = document.getElementById("boardPanel");
   var newTaskPanel = document.getElementById("newTaskPanel");
   document.querySelectorAll(".segmented button").forEach(function (btn) {
     btn.addEventListener("click", function () {
       document.querySelectorAll(".segmented button").forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
       btn.setAttribute("aria-pressed", "true");
       var view = btn.getAttribute("data-view");
-      arcsPanel.hidden = view !== "arcs";
-      kanbanPanel.hidden = view !== "kanban";
+      boardPanel.hidden = view !== "board";
       newTaskPanel.hidden = view !== "newtask";
-      hideTooltip();
     });
   });
 })();
