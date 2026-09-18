@@ -1,18 +1,43 @@
 import type { EventEmitter } from "node:events";
 import type { Board } from "../services/board.ts";
+import type { TelemetryLog } from "../services/telemetry.ts";
 import type { Registry } from "./registry.ts";
 import type { Router } from "./router.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "./types.ts";
 
 /**
+ * Records a result wherever it came from — an executor wissel ran itself,
+ * or an external report for a write-tier task wissel only decided and
+ * handed off — and applies the one piece of policy that decides where a
+ * finished task lands: a write-tier success needs a human look at the
+ * diff before it's "done", read-only work doesn't.
+ */
+export async function finishResult(
+  board: Board,
+  registry: Registry,
+  result: TaskResult,
+  telemetry?: TelemetryLog,
+): Promise<void> {
+  await board.recordResult(result);
+  await telemetry?.record({ type: "result", taskId: result.taskId, agentId: result.agentId, actualCost: result.actualCost });
+
+  const agent = registry.get(result.agentId);
+  const finalStatus = result.ok ? (agent?.tier === "write" ? "review" : "done") : "failed";
+  await board.move(result.taskId, finalStatus);
+}
+
+/**
  * The loop that makes the rest of the fleet mean anything: watches the
  * board for tasks that are unrouted, unblocked, and sitting in `inbox` or
- * `ready`, routes each one, runs it on whichever executor's `canHandle`
- * matches the winning agent, and writes the outcome back.
+ * `ready`, and routes each one.
  *
- * Not named as its own step in the handover, but required for step 6
- * ("planner/triager generate card volume") to mean anything — without it,
- * agents in the manifest are entries nothing ever invokes.
+ * wissel decides and dispatches; it does not spawn or supervise execution
+ * itself. Read-only agents are cheap enough that wissel runs them
+ * in-process via an `Executor`. Write-tier agents are handed off — the
+ * task moves to `dispatched` and wissel's job for it is done until
+ * whatever actually runs the work (agetor) reports back through
+ * `POST /tasks/:id/result`, at which point `finishResult` applies the
+ * same review-vs-done policy either way.
  */
 export class Orchestrator {
   private inFlight = new Set<string>();
@@ -22,6 +47,7 @@ export class Orchestrator {
     private registry: Registry,
     private router: Router,
     private executors: Executor[],
+    private telemetry?: TelemetryLog,
   ) {}
 
   /** Runs an initial sweep, then re-sweeps on every board event that could
@@ -68,37 +94,55 @@ export class Orchestrator {
         return;
       }
 
-      // Resolved but not yet recorded: recordDecision() sets routedTo, and
-      // the sweep skips anything already routed — recording before we know
-      // an executor can actually run this would strand the task forever on
-      // an unrecoverable dead end the moment the agent or executor lookup
-      // below fails.
+      // Never auto-dispatch a low-confidence match: record the decision
+      // (candidates and all, so it's debuggable) and stop before spend
+      // rather than guess.
+      if (!decision.confident || !decision.selected) {
+        await this.board.recordDecision(decision);
+        await this.board.move(task.id, "no-match");
+        return;
+      }
+
       const agent = this.registry.get(decision.selected);
       if (!agent) {
         console.error(`orchestrator: routed task ${task.id} to unknown agent "${decision.selected}"`);
         return;
       }
-      const executor = this.executors.find((e) => e.canHandle(agent));
-      if (!executor) {
+
+      // Resolved but not yet recorded: recordDecision() sets routedTo, and
+      // the sweep skips anything already routed — recording before we know
+      // an executor can actually run this would strand a readonly task
+      // forever on an unrecoverable dead end the moment the executor
+      // lookup below fails. Write-tier has no such lookup to fail.
+      const executor = agent.tier === "write" ? undefined : this.executors.find((e) => e.canHandle(agent));
+      if (agent.tier !== "write" && !executor) {
         console.error(`orchestrator: no executor handles agent "${agent.id}" (tier ${agent.tier})`);
         return;
       }
 
       await this.board.recordDecision(decision);
+      await this.telemetry?.record({
+        type: "dispatch",
+        taskId: task.id,
+        agentId: agent.id,
+        model: agent.costProfile.model,
+        estimatedCost: agent.costProfile.estUsdPerTask,
+      });
+
+      if (agent.tier === "write") {
+        await this.board.move(task.id, "dispatched");
+        return;
+      }
+
       await this.board.move(task.id, "running");
 
       let result: TaskResult;
       try {
-        result = await executor.run(task, agent);
+        result = await executor!.run(task, agent);
       } catch (e) {
         result = { taskId: task.id, agentId: agent.id, ok: false, summary: `executor threw: ${(e as Error).message}` };
       }
-      await this.board.recordResult(result);
-
-      // Write-tier work produced a diff a human should look at before it's
-      // "done"; read-only work has nothing to review.
-      const finalStatus = result.ok ? (agent.tier === "write" ? "review" : "done") : "failed";
-      await this.board.move(task.id, finalStatus);
+      await finishResult(this.board, this.registry, result, this.telemetry);
     } catch (e) {
       console.error(`orchestrator: unexpected error processing task ${task.id}: ${(e as Error).message}`);
     }

@@ -64,12 +64,35 @@ test("recordDecision stamps routedTo on the task", async () => {
     matchedTags: ["x"],
     candidates: [{ agentId: "a", score: 1, reason: "tag match" }],
     selected: "a",
+    confident: true,
     reason: "best score",
     strategy: "rule",
     decidedAt: new Date().toISOString(),
   };
   await board.recordDecision(decision);
   expect((await board.get(task.id))!.routedTo).toBe("a");
+});
+
+test("getDecision returns the most recent decision, and undefined for a task with none", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+
+  expect(await board.getDecision(task.id)).toBeUndefined();
+
+  const first: RoutingDecision = {
+    taskId: task.id, matchedTags: ["x"], candidates: [{ agentId: "a", score: 0.5, reason: "first pass" }],
+    selected: null, confident: false, reason: "no confident match", strategy: "rule", decidedAt: new Date().toISOString(),
+  };
+  await board.recordDecision(first);
+
+  const second: RoutingDecision = {
+    taskId: task.id, matchedTags: ["x", "y"], candidates: [{ agentId: "a", score: 1, reason: "second pass" }],
+    selected: "a", confident: true, reason: "best score", strategy: "rule", decidedAt: new Date().toISOString(),
+  };
+  await board.recordDecision(second);
+
+  const latest = await board.getDecision(task.id);
+  expect(latest).toEqual(second);
 });
 
 test("recordResult and recordOverride do not throw and emit events", async () => {

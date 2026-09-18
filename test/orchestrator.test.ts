@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
-import { Orchestrator } from "../src/core/orchestrator.ts";
+import { Orchestrator, finishResult } from "../src/core/orchestrator.ts";
 import type { AgentDef, Executor, TaskCard } from "../src/core/types.ts";
 
 // agents/manifest.yaml's real tags: "intake" -> triager (readonly),
@@ -13,7 +13,7 @@ async function setup(executors: Executor[]) {
   const board = new SqliteBoard();
   const registry = await Registry.load();
   const orchestrator = new Orchestrator(board, registry, new Router(registry), executors);
-  return { board, orchestrator };
+  return { board, registry, orchestrator };
 }
 
 function fakeExecutor(tier: "readonly" | "write", run: Executor["run"]): Executor {
@@ -38,15 +38,48 @@ test("sweep routes an unblocked task and runs it on the matching executor", asyn
   expect(seen.map((t) => t.id)).toEqual([task.id]);
 });
 
-test("a successful write-tier task ends in review, not done", async () => {
+test("a write-tier task is handed off, not run — wissel never spawns execution itself", async () => {
   const { board, orchestrator } = await setup([
-    fakeExecutor("write", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "wrote it" })),
+    // A write-tier executor here would prove the bug: the orchestrator
+    // must never reach for it.
+    fakeExecutor("write", async () => {
+      throw new Error("orchestrator must not execute write-tier work itself");
+    }),
   ]);
 
   const task = await board.create({ title: "build the thing", body: "", labels: ["code"], repo: "r" });
   await orchestrator.sweep();
 
+  const updated = await board.get(task.id);
+  expect(updated!.status).toBe("dispatched");
+  expect(updated!.routedTo).toBe("implementer");
+});
+
+test("finishResult moves a successful write-tier report to review, not done", async () => {
+  const { board, registry } = await setup([]);
+  const task = await board.create({ title: "build the thing", body: "", labels: ["code"], repo: "r" });
+
+  await finishResult(board, registry, { taskId: task.id, agentId: "implementer", ok: true, summary: "opened a PR" });
+
   expect((await board.get(task.id))!.status).toBe("review");
+});
+
+test("finishResult moves a successful readonly report straight to done", async () => {
+  const { board, registry } = await setup([]);
+  const task = await board.create({ title: "triage", body: "", labels: ["intake"], repo: "r" });
+
+  await finishResult(board, registry, { taskId: task.id, agentId: "triager", ok: true, summary: "triaged" });
+
+  expect((await board.get(task.id))!.status).toBe("done");
+});
+
+test("finishResult moves any failed report to failed", async () => {
+  const { board, registry } = await setup([]);
+  const task = await board.create({ title: "build the thing", body: "", labels: ["code"], repo: "r" });
+
+  await finishResult(board, registry, { taskId: task.id, agentId: "implementer", ok: false, summary: "broke" });
+
+  expect((await board.get(task.id))!.status).toBe("failed");
 });
 
 test("a failed run ends in failed", async () => {
@@ -73,10 +106,24 @@ test("an executor throwing becomes a failed result, not a crash", async () => {
   expect((await board.get(task.id))!.status).toBe("failed");
 });
 
+test("zero tag overlap stops the task before dispatch — never a silent guess", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async () => {
+      throw new Error("should never run — nothing matched confidently");
+    }),
+  ]);
+
+  const task = await board.create({ title: "??", body: "", labels: ["no-such-label"], repo: "r" });
+  await orchestrator.sweep();
+
+  const after = await board.get(task.id);
+  expect(after!.status).toBe("no-match");
+  expect(after!.routedTo).toBeUndefined();
+});
+
 test("a task blocked on an unfinished dependency is left alone until it's done", async () => {
   const { board, orchestrator } = await setup([
     fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" })),
-    fakeExecutor("write", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" })),
   ]);
 
   const dep = await board.create({ title: "design", body: "", labels: ["intake"], repo: "r" });
@@ -89,7 +136,7 @@ test("a task blocked on an unfinished dependency is left alone until it's done",
   expect(stillBlocked!.routedTo).toBeUndefined();
 
   await orchestrator.sweep();
-  expect((await board.get(blocked.id))!.status).toBe("review"); // now unblocked
+  expect((await board.get(blocked.id))!.status).toBe("dispatched"); // now unblocked, write-tier handed off
 });
 
 test("a dangling dependsOn id blocks forever rather than being treated as satisfied", async () => {

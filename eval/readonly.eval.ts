@@ -23,6 +23,11 @@ const agent: AgentDef = {
   whenToUse: "Unstructured input with no labels yet.",
   tags: ["intake"],
   executor: "readonly",
+  inputs: ["raw-text"],
+  outputs: ["task-card"],
+  trustLevel: "low",
+  toolAccess: ["read"],
+  costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.03 },
 };
 
 interface EvalCase {

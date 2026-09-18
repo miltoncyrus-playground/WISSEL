@@ -1,6 +1,9 @@
 # wissel
 
-Routes tasks to a fleet of agents and skills.
+Routes tasks to a fleet of agents and skills. It decides; it doesn't
+execute. Read-only agents run in-process; write-tier agents are decided
+and handed off to whatever actually runs them (agetor) — wissel never
+spawns a worktree or a session itself.
 
 Named after the railway switch point — the thing that decides which
 track the work goes down, and makes sure two trains never take the same
@@ -8,10 +11,20 @@ one.
 
 ```bash
 bun install
-bun run agents              # list the fleet
-bun run route --explain ID  # dry-run a routing decision
-bun run dev                 # board API
+bun run dev            # board API + web fleet view, at :8787
+bun run agents         # list the fleet
+bun run why <task-id>  # what matched, and why — the router is never a black box
 ```
 
-Design decisions and build order: `docs/HANDOVER.md`.
-# WISSEL
+Set `WISSEL_ORCHESTRATOR=1` to have wissel route eligible tasks
+automatically as they appear (off by default). A routing decision only
+ever dispatches when the router is confident — zero match, a weak match,
+or an unresolved tie all stop before spend, visible on the board as
+`no-match`.
+
+Known gap: no sandboxing beyond whatever the underlying agent CLI already
+does — not solved here, noted so it isn't assumed.
+
+Design decisions and build order: `docs/HANDOVER.md` — but read
+`docs/HANDOVER-2026-09-17.md` first, it's the current spec and supersedes
+the older doc on the router/execution boundary.

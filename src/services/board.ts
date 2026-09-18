@@ -16,6 +16,9 @@ export interface Board {
   move(id: string, status: TaskCard["status"]): Promise<TaskCard>;
   setDependencies(id: string, dependsOn: string[]): Promise<TaskCard>;
   recordDecision(decision: RoutingDecision): Promise<void>;
+  /** Most recent routing decision for a task, if any — what `wissel why`
+   *  reads. */
+  getDecision(taskId: string): Promise<RoutingDecision | undefined>;
   recordResult(result: TaskResult): Promise<void>;
   /** Manual override. Every one of these is a labelled router eval case. */
   recordOverride(taskId: string, routerPick: string, humanPick: string): Promise<void>;
@@ -83,7 +86,8 @@ export class SqliteBoard implements Board {
         taskId TEXT NOT NULL,
         matchedTags TEXT NOT NULL,
         candidates TEXT NOT NULL,
-        selected TEXT NOT NULL,
+        selected TEXT,
+        confident INTEGER NOT NULL DEFAULT 1,
         reason TEXT NOT NULL,
         strategy TEXT NOT NULL,
         decidedAt TEXT NOT NULL
@@ -168,12 +172,13 @@ export class SqliteBoard implements Board {
 
   async recordDecision(decision: RoutingDecision): Promise<void> {
     this.db.run(
-      "INSERT INTO routing_decisions (taskId, matchedTags, candidates, selected, reason, strategy, decidedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO routing_decisions (taskId, matchedTags, candidates, selected, confident, reason, strategy, decidedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [
         decision.taskId,
         JSON.stringify(decision.matchedTags),
         JSON.stringify(decision.candidates),
         decision.selected,
+        decision.confident ? 1 : 0,
         decision.reason,
         decision.strategy,
         decision.decidedAt,
@@ -181,6 +186,25 @@ export class SqliteBoard implements Board {
     );
     this.db.run("UPDATE tasks SET routedTo = ? WHERE id = ?", [decision.selected, decision.taskId]);
     this.events.emit("event", { type: "task.decided", decision } satisfies BoardEvent);
+  }
+
+  async getDecision(taskId: string): Promise<RoutingDecision | undefined> {
+    const row = this.db
+      .query("SELECT * FROM routing_decisions WHERE taskId = ? ORDER BY rowid DESC LIMIT 1")
+      .get(taskId) as
+      | { taskId: string; matchedTags: string; candidates: string; selected: string | null; confident: number; reason: string; strategy: RoutingDecision["strategy"]; decidedAt: string }
+      | null;
+    if (!row) return undefined;
+    return {
+      taskId: row.taskId,
+      matchedTags: JSON.parse(row.matchedTags) as string[],
+      candidates: JSON.parse(row.candidates) as RoutingDecision["candidates"],
+      selected: row.selected,
+      confident: row.confident === 1,
+      reason: row.reason,
+      strategy: row.strategy,
+      decidedAt: row.decidedAt,
+    };
   }
 
   async recordResult(result: TaskResult): Promise<void> {
