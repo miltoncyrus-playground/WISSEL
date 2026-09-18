@@ -26,6 +26,37 @@ test.describe("Board view", () => {
     await expect(page.locator("#skillsBox")).toContainText("lint-fixer");
     await expect(page.locator("#agentsCount")).toContainText("8 agents");
     await expect(page.locator("#skillsCount")).toContainText("4 skills");
+
+    // No cost figure anywhere in the fleet boxes — replaced by the active dot.
+    await expect(page.locator(".fleet-cost")).toHaveCount(0);
+    await expect(page.locator("body")).not.toContainText("$0.");
+  });
+
+  test("a fleet row shows the active dot only while it has running/dispatched work", async ({ page, request }) => {
+    const idleRow = () => page.locator("#agentsBox .fleet-row", { hasText: "memory-curator" });
+    const busyRow = () => page.locator("#agentsBox .fleet-row", { hasText: "triager" });
+
+    const created = await request.post("/tasks", {
+      data: { title: `Active dot test ${Date.now()}`, body: "x", labels: ["intake"], repo: "/tmp/wissel-e2e-repo" },
+    });
+    const task = await created.json();
+    await request.post(`/tasks/${task.id}/decision`, {
+      data: {
+        matchedTags: ["intake"],
+        candidates: [{ agentId: "triager", score: 1, reason: "tag overlap 1/1" }],
+        selected: "triager", confident: true, strategy: "rule", reason: "tag overlap 1/1",
+        decidedAt: new Date().toISOString(),
+      },
+    });
+    await request.post(`/tasks/${task.id}/move`, { data: { status: "running" } });
+
+    await page.goto("/board");
+    await expect(busyRow().locator(".active-dot")).toBeVisible();
+    await expect(idleRow().locator(".active-dot")).toHaveCount(0);
+
+    await request.post(`/tasks/${task.id}/move`, { data: { status: "done" } });
+    await page.reload();
+    await expect(busyRow().locator(".active-dot")).toHaveCount(0);
   });
 
   test("clicking a task card shows its routing decision", async ({ page, request }) => {

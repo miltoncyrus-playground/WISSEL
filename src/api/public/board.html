@@ -91,11 +91,35 @@
   .kanban { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
   .kcol { flex: 1 0 168px; min-width: 168px; }
   .kcol h3 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
-  .kcard { border: 1px solid var(--border); border-radius: 8px; padding: 9px 10px; margin-bottom: 8px; background: var(--page); font-size: 12.5px; line-height: 1.4; cursor: pointer; }
-  .kcard:hover { border-color: var(--accent); }
+  /* Compact task box, styled after agetor's TaskCard: tight padding, a
+     left-border accent (here: the routed fleet member's kind, agent vs
+     skill — the axis wissel has that agetor's task-type border doesn't),
+     a two-line-clamped title, and a second row of agent + status glyph
+     + repo instead of a full sentence. */
+  .kcard {
+    position: relative; border: 1px solid var(--border); border-left: 3px solid var(--card-accent, var(--line));
+    border-radius: 7px; padding: 7px 10px; margin-bottom: 7px; background: var(--surface);
+    font-size: 12.5px; line-height: 1.35; cursor: pointer; transition: border-color .15s;
+  }
+  .kcard:hover { border-color: var(--accent); border-left-color: var(--card-accent, var(--accent)); }
   .kcard:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .kcard .kt { font-weight: 600; margin-bottom: 3px; }
-  .kcard .ka { color: var(--ink-muted); font-size: 11px; }
+  .kcard .kt {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    font-weight: 600; margin-bottom: 5px;
+  }
+  .kcard .ka { display: flex; align-items: center; gap: 5px; color: var(--ink-muted); font-size: 10.5px; }
+  .kcard .ka .kind-dot { width: 6px; height: 6px; }
+  .kcard .ka .sep { opacity: 0.45; }
+  .kcard .ka .repo { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* "Actively working" glyph — a pulsing green dot, reused identically
+     on a running task's box and on a fleet row currently doing work, so
+     the one signal reads the same everywhere it appears. */
+  .active-dot { position: relative; display: inline-flex; width: 8px; height: 8px; flex: none; }
+  .active-dot .ping { position: absolute; inset: 0; border-radius: 50%; background: var(--sig-done); opacity: 0.65; animation: active-ping 1.6s cubic-bezier(0,0,.2,1) infinite; }
+  .active-dot .core { position: relative; display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--sig-done); }
+  @keyframes active-ping { 0% { transform: scale(1); opacity: 0.65; } 75%, 100% { transform: scale(2.4); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .active-dot .ping { animation: none; } }
 
   /* ---- status stat strip ---- */
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
@@ -122,7 +146,7 @@
   .tier-chip { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; border-radius: 5px; padding: 2px 6px; flex: none; white-space: nowrap; }
   .tier-chip.readonly { background: var(--page); color: var(--ink-muted); }
   .tier-chip.write { background: rgba(208, 59, 59, 0.12); color: var(--critical); }
-  .fleet-cost { font-size: 11px; color: var(--ink-muted); margin-top: 6px; text-align: right; }
+  .fleet-active { display: flex; justify-content: flex-end; margin-top: 8px; }
 
   .decision-head { font-size: 13px; color: var(--ink-2); margin: 0 0 12px; }
   .decision-head b { color: var(--ink-1); }
@@ -351,6 +375,18 @@
     });
   }
 
+  // Pulsing green dot — "actively working," reused verbatim on a running
+  // task's box and on a fleet row currently doing work.
+  function activeDot(title) {
+    var wrap = document.createElement("span");
+    wrap.className = "active-dot";
+    if (title) wrap.title = title;
+    var ping = document.createElement("span"); ping.className = "ping";
+    var core = document.createElement("span"); core.className = "core";
+    wrap.appendChild(ping); wrap.appendChild(core);
+    return wrap;
+  }
+
   function renderKanban() {
     var body = document.getElementById("kanbanBody");
     body.textContent = "";
@@ -366,13 +402,32 @@
       h3.appendChild(document.createTextNode(STATUS_LABEL[status] + " (" + inCol.length + ")"));
       col.appendChild(h3);
       inCol.forEach(function (t) {
+        var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
+
         var card = document.createElement("div");
         card.className = "kcard";
+        card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
         card.tabIndex = 0;
         card.setAttribute("role", "button");
         card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[status] + ", show routing decision");
+
         var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
-        var ka = document.createElement("div"); ka.className = "ka"; ka.textContent = (t.routedTo || "unrouted") + " · " + t.repo;
+
+        var ka = document.createElement("div"); ka.className = "ka";
+        var kindDot = document.createElement("span"); kindDot.className = "kind-dot";
+        kindDot.style.background = agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--ink-muted)";
+        ka.appendChild(kindDot);
+        var nameSpan = document.createElement("span"); nameSpan.textContent = t.routedTo || "unrouted";
+        ka.appendChild(nameSpan);
+        // Same criterion as the fleet box's active dot: running (wissel's
+        // own in-process work) or dispatched (handed off, presumably
+        // still in flight) both read as "actively working" here.
+        if (status === "running" || status === "dispatched") ka.appendChild(activeDot("actively working"));
+        var sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
+        ka.appendChild(sep);
+        var repoSpan = document.createElement("span"); repoSpan.className = "repo"; repoSpan.textContent = t.repo;
+        ka.appendChild(repoSpan);
+
         card.appendChild(kt); card.appendChild(ka);
         card.addEventListener("click", function () { showDecision(t.id); });
         card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showDecision(t.id); } });
@@ -402,8 +457,18 @@
     });
   }
 
-  // Fleet doesn't change with task activity — rendered once after the
-  // agents fetch resolves, not on every task refetch.
+  // "Active" means routed to a task that's currently running (readonly,
+  // in-process) or dispatched (write-tier, handed off but presumably
+  // being worked right now) — the two states where the agent is doing
+  // something, as opposed to just having been picked in the past.
+  function isActive(agentId) {
+    return tasks.some(function (t) {
+      return t.routedTo === agentId && (t.status === "running" || t.status === "dispatched");
+    });
+  }
+
+  // Re-rendered on every task refetch, not just once after the agents
+  // fetch resolves — the active dot depends on live task state.
   function fleetRow(a) {
     var row = document.createElement("div");
     row.className = "fleet-row";
@@ -424,11 +489,13 @@
     var tier = document.createElement("div");
     tier.className = "tier-chip " + (a.tier === "write" ? "write" : "readonly");
     tier.textContent = a.tier === "write" ? "write · handed off" : "readonly";
-    var cost = document.createElement("div");
-    cost.className = "fleet-cost mono";
-    var estCost = a.costProfile && typeof a.costProfile.estUsdPerTask === "number" ? a.costProfile.estUsdPerTask : 0;
-    cost.textContent = "$" + estCost.toFixed(2);
-    side.appendChild(tier); side.appendChild(cost);
+    side.appendChild(tier);
+    if (isActive(a.id)) {
+      var active = document.createElement("div");
+      active.className = "fleet-active";
+      active.appendChild(activeDot(a.id + " is actively working"));
+      side.appendChild(active);
+    }
 
     row.appendChild(main); row.appendChild(side);
     return row;
@@ -452,6 +519,7 @@
   function render() {
     renderStats();
     renderKanban();
+    renderFleetBoxes();
     renderRepoOptions();
     renderDependsOnOptions();
     document.getElementById("taskCount").innerHTML = '<span class="live-dot"></span>' + tasks.length + " tasks";
@@ -683,7 +751,6 @@
     tasks = results[1] || [];
     render();
     renderOverrideGrid();
-    renderFleetBoxes();
 
     var source = new EventSource("/events");
     source.onmessage = function () { refetchTasks(); };
