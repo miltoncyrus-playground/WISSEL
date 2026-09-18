@@ -116,6 +116,46 @@
   .empty { text-align: center; padding: 48px 16px; color: var(--ink-muted); font-size: 13px; }
   .empty code { background: var(--page); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, monospace; }
 
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 12px; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
+  .field input[type="text"], .field textarea {
+    width: 100%; font: inherit; font-size: 13.5px; color: var(--ink-1);
+    background: var(--page); border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 11px; resize: vertical;
+  }
+  .field input[type="text"]:focus, .field textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .field-hint { font-size: 11.5px; color: var(--ink-muted); margin-top: 4px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--accent-wash); color: var(--accent); border-radius: 999px; padding: 4px 6px 4px 10px; font-size: 12px; font-weight: 600; }
+  .chip button { appearance: none; border: none; background: transparent; color: inherit; cursor: pointer; font: inherit; line-height: 1; padding: 2px; border-radius: 50%; }
+  .chip button:hover { background: rgba(0,0,0,0.08); }
+
+  .suggestions { position: relative; margin-top: 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: 0 6px 20px rgba(0,0,0,0.10); max-height: 160px; overflow-y: auto; }
+  .suggestion-item { padding: 7px 11px; font-size: 12.5px; cursor: pointer; }
+  .suggestion-item:hover, .suggestion-item.active { background: var(--accent-wash); }
+
+  .depends-list { display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+  .depends-item { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .depends-empty { color: var(--ink-muted); font-size: 12.5px; padding: 4px; }
+
+  .panel-inset { border: 1px dashed var(--border); border-radius: 10px; padding: 14px; margin: 16px 0; background: var(--page); }
+
+  .override-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .override-grid button { appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-2); font: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+  .override-grid button[aria-pressed="true"] { background: var(--ink-1); color: var(--surface); border-color: var(--ink-1); }
+
+  details > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 4px 0 12px; }
+
+  .form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 18px; }
+  .field-error { color: var(--critical); font-size: 12.5px; }
+  .form-status { font-size: 12.5px; color: var(--stage-4); }
+  .form-actions button[type="submit"] {
+    appearance: none; border: none; background: var(--accent); color: #fff; font: inherit; font-weight: 700;
+    font-size: 13px; padding: 10px 20px; border-radius: 8px; cursor: pointer;
+  }
+  .form-actions button[type="submit"]:disabled { opacity: 0.5; cursor: not-allowed; }
+
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -131,6 +171,7 @@
     <div class="segmented" role="group" aria-label="View">
       <button type="button" data-view="arcs" aria-pressed="true">Dependency arcs</button>
       <button type="button" data-view="kanban" aria-pressed="false">Kanban</button>
+      <button type="button" data-view="newtask" aria-pressed="false">New task</button>
     </div>
     <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
   </div>
@@ -160,6 +201,59 @@
 
   <section class="panel" id="kanbanPanel" hidden>
     <div class="kanban" id="kanbanBody"></div>
+  </section>
+
+  <section class="panel" id="newTaskPanel" hidden>
+    <p class="eyebrow">New task</p>
+    <form id="newTaskForm">
+      <div class="field">
+        <label for="ntTitle">Title</label>
+        <input id="ntTitle" type="text" required autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label for="ntBody">Description</label>
+        <textarea id="ntBody" rows="4" required></textarea>
+      </div>
+
+      <div class="field">
+        <label for="ntRepo">Repo</label>
+        <input id="ntRepo" type="text" required list="ntRepoList" autocomplete="off">
+        <datalist id="ntRepoList"></datalist>
+      </div>
+
+      <div class="field" style="position: relative;">
+        <label for="ntLabelInput">Labels</label>
+        <div class="chips" id="ntChips"></div>
+        <input id="ntLabelInput" type="text" placeholder="type a label, Enter to add…" autocomplete="off">
+        <div class="suggestions" id="ntSuggestions" hidden></div>
+        <p class="field-hint">Drives routing — the preview below updates as you add labels.</p>
+      </div>
+
+      <div class="panel-inset">
+        <p class="eyebrow">Routing preview</p>
+        <div id="ntPreviewBody" class="muted">Add labels to see what the router would pick.</div>
+      </div>
+
+      <div class="field">
+        <label>Depends on</label>
+        <div class="depends-list" id="ntDependsOn"><p class="depends-empty">No open tasks to depend on yet.</p></div>
+      </div>
+
+      <details id="ntAdvanced">
+        <summary>Advanced: override the router</summary>
+        <p class="field-hint" style="margin: 0 0 8px;">Skip routing and assign an agent or skill directly. Recorded as a manual decision, and as an override against the preview above if they differ.</p>
+        <div class="override-grid" id="ntOverrideGrid">
+          <button type="button" data-override="" aria-pressed="true">Auto-route</button>
+        </div>
+      </details>
+
+      <div class="form-actions">
+        <span id="ntStatus" class="form-status" hidden></span>
+        <span id="ntError" class="field-error" hidden></span>
+        <button type="submit" id="ntSubmit" disabled>Create task</button>
+      </div>
+    </form>
   </section>
 </div>
 
@@ -354,6 +448,46 @@
     arcsLayer.querySelectorAll(".arc").forEach(function (p) { p.classList.remove("lit", "dim"); });
   }
 
+  // Shared by the click-to-inspect decision panel and the New Task tab's
+  // live routing preview — one render path, so the two can never drift
+  // on what a decision means. `preview` swaps "Routed to"/"Not routed"
+  // for "Would route to"/"Would not route", since a preview decision
+  // hasn't actually been recorded against any task yet.
+  function renderDecision(decision, container, preview) {
+    container.textContent = "";
+
+    var head = document.createElement("p");
+    head.className = "decision-head" + (decision.confident ? "" : " no-match");
+    if (decision.confident) {
+      var b = document.createElement("b"); b.textContent = decision.selected;
+      head.appendChild(document.createTextNode((preview ? "Would route to " : "Routed to ")));
+      head.appendChild(b);
+      head.appendChild(document.createTextNode(" — " + decision.reason));
+    } else {
+      head.textContent = (preview ? "Would not route — " : "Not routed — ") + decision.reason;
+    }
+    container.appendChild(head);
+
+    var table = document.createElement("table");
+    table.className = "candidates";
+    var thead = document.createElement("tr");
+    ["Agent", "Score", "Reason"].forEach(function (h) {
+      var th = document.createElement("th"); th.textContent = h; thead.appendChild(th);
+    });
+    table.appendChild(thead);
+
+    (decision.candidates || []).forEach(function (c) {
+      var tr = document.createElement("tr");
+      if (decision.confident && c.agentId === decision.selected) tr.className = "selected";
+      var tdAgent = document.createElement("td"); tdAgent.textContent = c.agentId;
+      var tdScore = document.createElement("td"); tdScore.textContent = Number(c.score).toFixed(2);
+      var tdReason = document.createElement("td"); tdReason.className = "reason"; tdReason.textContent = c.reason;
+      tr.appendChild(tdAgent); tr.appendChild(tdScore); tr.appendChild(tdReason);
+      table.appendChild(tr);
+    });
+    container.appendChild(table);
+  }
+
   function showDecision(taskId) {
     var panel = document.getElementById("decisionPanel");
     var body = document.getElementById("decisionBody");
@@ -365,38 +499,7 @@
       return r.json();
     }).then(function (decision) {
       if (!decision) return;
-      body.textContent = "";
-
-      var head = document.createElement("p");
-      head.className = "decision-head" + (decision.confident ? "" : " no-match");
-      if (decision.confident) {
-        var b = document.createElement("b"); b.textContent = decision.selected;
-        head.appendChild(document.createTextNode("Routed to "));
-        head.appendChild(b);
-        head.appendChild(document.createTextNode(" — " + decision.reason));
-      } else {
-        head.textContent = "Not routed — " + decision.reason;
-      }
-      body.appendChild(head);
-
-      var table = document.createElement("table");
-      table.className = "candidates";
-      var thead = document.createElement("tr");
-      ["Agent", "Score", "Reason"].forEach(function (h) {
-        var th = document.createElement("th"); th.textContent = h; thead.appendChild(th);
-      });
-      table.appendChild(thead);
-
-      (decision.candidates || []).forEach(function (c) {
-        var tr = document.createElement("tr");
-        if (decision.confident && c.agentId === decision.selected) tr.className = "selected";
-        var tdAgent = document.createElement("td"); tdAgent.textContent = c.agentId;
-        var tdScore = document.createElement("td"); tdScore.textContent = Number(c.score).toFixed(2);
-        var tdReason = document.createElement("td"); tdReason.className = "reason"; tdReason.textContent = c.reason;
-        tr.appendChild(tdAgent); tr.appendChild(tdScore); tr.appendChild(tdReason);
-        table.appendChild(tr);
-      });
-      body.appendChild(table);
+      renderDecision(decision, body, false);
     }).catch(function (err) {
       body.textContent = "failed to load decision: " + err.message;
     });
@@ -455,6 +558,8 @@
   function render() {
     renderArcs();
     renderKanban();
+    renderRepoOptions();
+    renderDependsOnOptions();
     document.getElementById("taskCount").innerHTML = '<span class="live-dot"></span>' + tasks.length + " tasks";
   }
 
@@ -465,13 +570,225 @@
     });
   }
 
+  // --- New Task tab ------------------------------------------------
+
+  var allAgents = [];
+  var knownTags = [];
+  var ntLabels = [];
+  var ntOverride = "";
+  var ntLastPreview = null;
+  var ntPreviewTimer = null;
+
+  function uniqueSorted(arr) {
+    var seen = {}; var out = [];
+    arr.forEach(function (v) { if (v && !seen[v]) { seen[v] = true; out.push(v); } });
+    out.sort();
+    return out;
+  }
+
+  function renderChips() {
+    var wrap = document.getElementById("ntChips");
+    wrap.textContent = "";
+    ntLabels.forEach(function (label) {
+      var chip = document.createElement("span");
+      chip.className = "chip";
+      chip.appendChild(document.createTextNode(label));
+      var rm = document.createElement("button");
+      rm.type = "button";
+      rm.setAttribute("aria-label", "remove " + label);
+      rm.textContent = "×";
+      rm.addEventListener("click", function () { removeLabel(label); });
+      chip.appendChild(rm);
+      wrap.appendChild(chip);
+    });
+  }
+
+  function addLabel(raw) {
+    var label = (raw || "").trim();
+    if (!label || ntLabels.indexOf(label) !== -1) return;
+    ntLabels.push(label);
+    renderChips();
+    scheduleNtPreview();
+  }
+
+  function removeLabel(label) {
+    ntLabels = ntLabels.filter(function (l) { return l !== label; });
+    renderChips();
+    scheduleNtPreview();
+  }
+
+  function renderLabelSuggestions(query) {
+    var box = document.getElementById("ntSuggestions");
+    var q = query.trim().toLowerCase();
+    var matches = q
+      ? knownTags.filter(function (t) { return t.toLowerCase().indexOf(q) !== -1 && ntLabels.indexOf(t) === -1; })
+      : [];
+    box.textContent = "";
+    if (!matches.length) { box.hidden = true; return; }
+    matches.slice(0, 8).forEach(function (t) {
+      var item = document.createElement("div");
+      item.className = "suggestion-item";
+      item.textContent = t;
+      item.addEventListener("mousedown", function (ev) {
+        ev.preventDefault();
+        addLabel(t);
+        var input = document.getElementById("ntLabelInput");
+        input.value = "";
+        box.hidden = true;
+      });
+      box.appendChild(item);
+    });
+    box.hidden = false;
+  }
+
+  // Debounced call to the real Router (POST /route/preview) — never a
+  // client-side reimplementation of tag-overlap scoring, so the preview
+  // can never drift from what actually happens at dispatch time.
+  function scheduleNtPreview() {
+    if (ntPreviewTimer) clearTimeout(ntPreviewTimer);
+    var previewBody = document.getElementById("ntPreviewBody");
+    if (ntLabels.length === 0) {
+      ntLastPreview = null;
+      previewBody.className = "muted";
+      previewBody.textContent = "Add labels to see what the router would pick.";
+      return;
+    }
+    previewBody.className = "muted";
+    previewBody.textContent = "checking…";
+    ntPreviewTimer = setTimeout(function () {
+      fetch("/route/preview", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ labels: ntLabels }),
+      }).then(function (r) { return r.json(); }).then(function (decision) {
+        ntLastPreview = decision;
+        previewBody.className = "";
+        renderDecision(decision, previewBody, true);
+      }).catch(function (err) {
+        previewBody.className = "muted";
+        previewBody.textContent = "preview failed: " + err.message;
+      });
+    }, 250);
+  }
+
+  function setOverride(agentId) {
+    ntOverride = agentId;
+    document.querySelectorAll("#ntOverrideGrid button").forEach(function (btn) {
+      btn.setAttribute("aria-pressed", btn.getAttribute("data-override") === agentId ? "true" : "false");
+    });
+  }
+
+  function renderOverrideGrid() {
+    var grid = document.getElementById("ntOverrideGrid");
+    grid.textContent = "";
+
+    var autoBtn = document.createElement("button");
+    autoBtn.type = "button";
+    autoBtn.textContent = "Auto-route";
+    autoBtn.setAttribute("data-override", "");
+    autoBtn.setAttribute("aria-pressed", ntOverride === "" ? "true" : "false");
+    autoBtn.addEventListener("click", function () { setOverride(""); });
+    grid.appendChild(autoBtn);
+
+    allAgents.forEach(function (a) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = a.id + " (" + a.kind + ")";
+      btn.setAttribute("data-override", a.id);
+      btn.setAttribute("aria-pressed", ntOverride === a.id ? "true" : "false");
+      btn.addEventListener("click", function () { setOverride(a.id); });
+      grid.appendChild(btn);
+    });
+  }
+
+  // Preserves checked state across a rerender (new tasks arriving via
+  // SSE shouldn't uncheck what the user already picked).
+  function renderDependsOnOptions() {
+    var wrap = document.getElementById("ntDependsOn");
+    if (!wrap) return;
+    var open = tasks.filter(function (t) { return t.status !== "done" && t.status !== "failed"; });
+    var checked = {};
+    wrap.querySelectorAll("input[type=checkbox]:checked").forEach(function (cb) { checked[cb.value] = true; });
+    wrap.textContent = "";
+
+    if (!open.length) {
+      var empty = document.createElement("p");
+      empty.className = "depends-empty";
+      empty.textContent = "No open tasks to depend on yet.";
+      wrap.appendChild(empty);
+      return;
+    }
+    open.forEach(function (t) {
+      var row = document.createElement("label");
+      row.className = "depends-item";
+      var cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = t.id;
+      cb.checked = !!checked[t.id];
+      row.appendChild(cb);
+      row.appendChild(document.createTextNode(t.title + " (" + t.status + ")"));
+      wrap.appendChild(row);
+    });
+  }
+
+  function selectedDependsOn() {
+    var ids = [];
+    var wrap = document.getElementById("ntDependsOn");
+    if (!wrap) return ids;
+    wrap.querySelectorAll("input[type=checkbox]:checked").forEach(function (cb) { ids.push(cb.value); });
+    return ids;
+  }
+
+  function renderRepoOptions() {
+    var list = document.getElementById("ntRepoList");
+    if (!list) return;
+    list.textContent = "";
+    uniqueSorted(tasks.map(function (t) { return t.repo; })).forEach(function (repo) {
+      var opt = document.createElement("option");
+      opt.value = repo;
+      list.appendChild(opt);
+    });
+  }
+
+  // Mirrors agetor's sticky-field pattern on its New Task form: clear
+  // what you're unlikely to reuse (title, description, labels,
+  // dependencies, override pick), keep what you are (repo).
+  function resetNewTaskForm(keepRepo) {
+    document.getElementById("ntTitle").value = "";
+    document.getElementById("ntBody").value = "";
+    if (!keepRepo) document.getElementById("ntRepo").value = "";
+    ntLabels = [];
+    renderChips();
+    document.getElementById("ntLabelInput").value = "";
+    document.getElementById("ntSuggestions").hidden = true;
+    ntOverride = "";
+    renderOverrideGrid();
+    scheduleNtPreview();
+    renderDependsOnOptions();
+    updateSubmitEnabled();
+  }
+
+  // Mirrors agetor's `canSubmit`: the button is proactively disabled
+  // rather than clickable-then-rejected. Native `required` can't be the
+  // whole story here — a required field blocks the browser's own submit
+  // event before any of our JS runs, so an error message tied to that
+  // event would be dead code.
+  function updateSubmitEnabled() {
+    var title = document.getElementById("ntTitle").value.trim();
+    var body = document.getElementById("ntBody").value.trim();
+    var repo = document.getElementById("ntRepo").value.trim();
+    document.getElementById("ntSubmit").disabled = !(title && body && repo);
+  }
+
   Promise.all([
     fetch("/agents").then(function (r) { return r.json(); }),
     fetch("/tasks").then(function (r) { return r.json(); }),
   ]).then(function (results) {
-    (results[0] || []).forEach(function (a) { agentsById[a.id] = a; });
+    allAgents = results[0] || [];
+    allAgents.forEach(function (a) { agentsById[a.id] = a; });
+    knownTags = uniqueSorted(allAgents.reduce(function (acc, a) { return acc.concat(a.tags || []); }, []));
     tasks = results[1] || [];
     render();
+    renderOverrideGrid();
 
     var source = new EventSource("/events");
     source.onmessage = function () { refetchTasks(); };
@@ -479,8 +796,105 @@
     document.getElementById("taskCount").textContent = "failed to load: " + err.message;
   });
 
+  ["ntTitle", "ntBody", "ntRepo"].forEach(function (id) {
+    document.getElementById(id).addEventListener("input", updateSubmitEnabled);
+  });
+
+  var ntLabelInput = document.getElementById("ntLabelInput");
+  ntLabelInput.addEventListener("input", function () { renderLabelSuggestions(ntLabelInput.value); });
+  ntLabelInput.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter" || ev.key === ",") {
+      ev.preventDefault();
+      addLabel(ntLabelInput.value.replace(/,$/, ""));
+      ntLabelInput.value = "";
+      document.getElementById("ntSuggestions").hidden = true;
+    } else if (ev.key === "Backspace" && !ntLabelInput.value && ntLabels.length) {
+      removeLabel(ntLabels[ntLabels.length - 1]);
+    } else if (ev.key === "Escape") {
+      document.getElementById("ntSuggestions").hidden = true;
+    }
+  });
+  ntLabelInput.addEventListener("blur", function () {
+    setTimeout(function () { document.getElementById("ntSuggestions").hidden = true; }, 100);
+  });
+
+  document.getElementById("newTaskForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var titleEl = document.getElementById("ntTitle");
+    var bodyEl = document.getElementById("ntBody");
+    var repoEl = document.getElementById("ntRepo");
+    var errorEl = document.getElementById("ntError");
+    var statusEl = document.getElementById("ntStatus");
+    var submitBtn = document.getElementById("ntSubmit");
+
+    var title = titleEl.value.trim();
+    var taskBody = bodyEl.value.trim();
+    var repo = repoEl.value.trim();
+
+    errorEl.hidden = true;
+    statusEl.hidden = true;
+
+    if (!title || !taskBody || !repo) {
+      errorEl.textContent = "Title, description, and repo are required.";
+      errorEl.hidden = false;
+      return;
+    }
+
+    submitBtn.disabled = true;
+    statusEl.hidden = false;
+    statusEl.textContent = "creating…";
+
+    var payload = { title: title, body: taskBody, labels: ntLabels.slice(), repo: repo, dependsOn: selectedDependsOn() };
+
+    fetch("/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) })
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+        return r.json();
+      })
+      .then(function (task) {
+        // Manual override: record it as a "manual" decision, and — only
+        // when it actually disagrees with what the router would have
+        // picked — as an override, feeding the existing
+        // overrides-are-training-data mechanism.
+        var followUps = [];
+        if (ntOverride) {
+          followUps.push(fetch("/tasks/" + task.id + "/decision", {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              matchedTags: ntLabels.slice(),
+              candidates: (ntLastPreview && ntLastPreview.candidates) || [],
+              selected: ntOverride, confident: true, strategy: "manual", reason: "manual override",
+              decidedAt: new Date().toISOString(),
+            }),
+          }));
+          var previewPick = ntLastPreview && ntLastPreview.confident ? ntLastPreview.selected : null;
+          if (previewPick && previewPick !== ntOverride) {
+            followUps.push(fetch("/tasks/" + task.id + "/override", {
+              method: "POST", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ routerPick: previewPick, humanPick: ntOverride }),
+            }));
+          }
+        }
+        return Promise.all(followUps).then(function () { return task; });
+      })
+      .then(function (task) {
+        statusEl.textContent = "Created “" + task.title + "”.";
+        resetNewTaskForm(true);
+        return refetchTasks();
+      })
+      .catch(function (err) {
+        errorEl.textContent = err.message;
+        errorEl.hidden = false;
+        statusEl.hidden = true;
+      })
+      .finally(function () {
+        submitBtn.disabled = false;
+      });
+  });
+
   var arcsPanel = document.getElementById("arcsPanel");
   var kanbanPanel = document.getElementById("kanbanPanel");
+  var newTaskPanel = document.getElementById("newTaskPanel");
   document.querySelectorAll(".segmented button").forEach(function (btn) {
     btn.addEventListener("click", function () {
       document.querySelectorAll(".segmented button").forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
@@ -488,6 +902,7 @@
       var view = btn.getAttribute("data-view");
       arcsPanel.hidden = view !== "arcs";
       kanbanPanel.hidden = view !== "kanban";
+      newTaskPanel.hidden = view !== "newtask";
       hideTooltip();
     });
   });

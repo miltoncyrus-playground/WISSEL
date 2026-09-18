@@ -9,7 +9,7 @@ switch (command) {
   case "agents": {
     const registry = await Registry.load();
     for (const agent of registry.all()) {
-      console.log(`${agent.id.padEnd(20)} ${agent.tier.padEnd(9)} ${agent.tags.join(", ")}`);
+      console.log(`${agent.kind.padEnd(6)} ${agent.id.padEnd(24)} ${agent.tier.padEnd(9)} ${agent.tags.join(", ")}`);
     }
     break;
   }

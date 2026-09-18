@@ -27,6 +27,11 @@ export function createApp(
   registry: Registry,
   telemetry?: TelemetryLog,
 ) {
+  // Stateless wrapper over the registry — safe to build once per app
+  // regardless of whether the orchestrator loop is running, so the New
+  // Task tab's live preview works even with WISSEL_ORCHESTRATOR unset.
+  const router = new Router(registry);
+
   return async function fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
@@ -44,6 +49,13 @@ export function createApp(
 
       if (url.pathname === "/events" && req.method === "GET") {
         return sseStream(board);
+      }
+
+      if (url.pathname === "/route/preview" && req.method === "POST") {
+        const body = (await req.json()) as { labels?: string[] };
+        const labels = Array.isArray(body.labels) ? body.labels : [];
+        const decision = await router.route({ id: "preview", title: "", body: "", labels, repo: "", status: "inbox" });
+        return json(decision);
       }
 
       if (parts[0] === "tasks") {

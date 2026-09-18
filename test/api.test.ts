@@ -170,6 +170,33 @@ test("GET /tasks/:id/decision returns the recorded decision, 404s with none", as
   expect(decision.confident).toBe(true);
 });
 
+test("POST /route/preview confidently matches real manifest tags without creating a task", async () => {
+  const app = await makeApp();
+  const res = await app(req("/route/preview", { method: "POST", body: JSON.stringify({ labels: ["intake"] }) }));
+  expect(res.status).toBe(200);
+  const decision = (await res.json()) as { selected: string; confident: boolean; candidates: unknown[] };
+  expect(decision.confident).toBe(true);
+  expect(decision.selected).toBe("triager");
+  expect(decision.candidates.length).toBeGreaterThan(1);
+});
+
+test("POST /route/preview reports no-match without confident selection, and empty labels the same way", async () => {
+  const app = await makeApp();
+
+  const noMatch = await app(req("/route/preview", { method: "POST", body: JSON.stringify({ labels: ["totally-unknown"] }) }));
+  const noMatchDecision = (await noMatch.json()) as { selected: string | null; confident: boolean };
+  expect(noMatchDecision.confident).toBe(false);
+  expect(noMatchDecision.selected).toBeNull();
+
+  const empty = await app(req("/route/preview", { method: "POST", body: JSON.stringify({ labels: [] }) }));
+  const emptyDecision = (await empty.json()) as { selected: string | null; confident: boolean };
+  expect(emptyDecision.confident).toBe(false);
+  expect(emptyDecision.selected).toBeNull();
+
+  const missing = await app(req("/route/preview", { method: "POST", body: JSON.stringify({}) }));
+  expect(missing.status).toBe(200);
+});
+
 test("POST /tasks/:id/result routes a write-tier report to review, a readonly one to done", async () => {
   const app = await makeApp();
 

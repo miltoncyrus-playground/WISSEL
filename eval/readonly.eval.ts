@@ -18,6 +18,7 @@ import type { AgentDef, TaskCard } from "../src/core/types.ts";
 const agent: AgentDef = {
   id: "triager",
   name: "Triager",
+  kind: "agent",
   tier: "readonly",
   description: "Turns raw input into a structured task card.",
   whenToUse: "Unstructured input with no labels yet.",

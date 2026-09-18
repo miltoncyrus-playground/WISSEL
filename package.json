@@ -9,10 +9,12 @@
     "agents": "bun run src/cli.ts agents",
     "why": "bun run src/cli.ts why",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test test/",
+    "test:e2e": "playwright test",
     "eval:readonly": "bun run eval/readonly.eval.ts"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/bun": "latest",
     "typescript": "^5.6.0"
   },

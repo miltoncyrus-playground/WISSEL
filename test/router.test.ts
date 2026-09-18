@@ -6,6 +6,7 @@ import type { AgentDef, TaskCard } from "../src/core/types.ts";
 function agent(overrides: Partial<AgentDef> & Pick<AgentDef, "id" | "tier" | "tags">): AgentDef {
   return {
     name: overrides.id,
+    kind: "agent",
     description: "",
     whenToUse: "",
     executor: "readonly",
