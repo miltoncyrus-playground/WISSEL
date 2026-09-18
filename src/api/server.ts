@@ -7,17 +7,33 @@ import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist } from "../core/orchestrator.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
-import type { RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
+import { WriteExecutor } from "../executors/write.ts";
+import { getRepoDiff } from "../services/repo-diff.ts";
+import type { Executor, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
+
+export interface CreateAppOptions {
+  /** Starts the automatic sweep-on-every-event loop. Off by default —
+   *  matches the pre-existing WISSEL_ORCHESTRATOR gate. */
+  orchestratorEnabled?: boolean;
+  /** Lets the automatic loop itself run write-tier work (see
+   *  Orchestrator's option of the same name) instead of only
+   *  dispatching it. Off by default. Doesn't affect the manual
+   *  `/tasks/:id/run` endpoint below, which always can. */
+  executeWriteTier?: boolean;
+  /** Executor pool the manual `/tasks/:id/run` endpoint uses — defaults
+   *  to a real ReadOnlyExecutor + WriteExecutor pair. Overridable so
+   *  tests can inject fakes instead of spawning a real `claude`
+   *  process. */
+  manualExecutors?: Executor[];
+}
 
 /**
  * Board API. One SSE stream per board carries card moves and routing
  * decisions, so the fleet view, the routing decision panel, and whatever
- * actually runs write-tier work (agetor) all watch the same feed. wissel
- * decides and dispatches here; it never spawns or supervises execution
- * itself — write-tier results arrive as a plain POST from whoever ran
- * the work.
+ * actually runs write-tier work (agetor, or wissel itself when opted in)
+ * all watch the same feed.
  *
  * Exported as a plain fetch handler (not bound to a port) so tests can
  * exercise routing without opening a socket.
@@ -26,11 +42,32 @@ export function createApp(
   board: Board & { events?: import("node:events").EventEmitter },
   registry: Registry,
   telemetry?: TelemetryLog,
+  opts: CreateAppOptions = {},
 ) {
   // Stateless wrapper over the registry — safe to build once per app
   // regardless of whether the orchestrator loop is running, so the New
   // Task tab's live preview works even with WISSEL_ORCHESTRATOR unset.
   const router = new Router(registry);
+
+  const executeWriteTier = opts.executeWriteTier ?? false;
+  const autoExecutors: Executor[] = [new ReadOnlyExecutor()];
+  if (executeWriteTier) autoExecutors.push(new WriteExecutor());
+  const manualExecutors: Executor[] = opts.manualExecutors ?? [new ReadOnlyExecutor(), new WriteExecutor()];
+
+  // One Orchestrator instance regardless of whether the automatic loop is
+  // started, so its `inFlight` guard covers both paths — a human clicking
+  // "Run" on a card the automatic sweep is mid-processing (or vice versa)
+  // gets a clean "already running" error instead of a double-run, not two
+  // independent trackers that can't see each other.
+  const orchestrator = new Orchestrator(
+    board as Board & { events: import("node:events").EventEmitter },
+    registry,
+    router,
+    autoExecutors,
+    telemetry,
+    { executeWriteTier },
+  );
+  if (opts.orchestratorEnabled) orchestrator.start();
 
   return async function fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -110,6 +147,33 @@ export function createApp(
           return new Response(null, { status: 204 });
         }
 
+        if (parts.length === 3 && parts[2] === "result" && req.method === "GET") {
+          const result = await board.getResult(parts[1]!);
+          return result ? json(result) : notFound();
+        }
+
+        if (parts.length === 3 && parts[2] === "diff" && req.method === "GET") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          return json(await getRepoDiff(task.repo));
+        }
+
+        // The board UI's "Run" button — an explicit, per-task human
+        // decision to execute right now, distinct from the automatic
+        // loop's blanket executeWriteTier gate (see Orchestrator.runNow).
+        // Fires the run and returns immediately; the actual routing/
+        // execution surfaces through the normal SSE task events, not
+        // this response.
+        if (parts.length === 3 && parts[2] === "run" && req.method === "POST") {
+          try {
+            await orchestrator.runNow(parts[1]!, manualExecutors);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            return json({ error: message }, message.startsWith("task not found") ? 404 : 409);
+          }
+          return new Response(null, { status: 202 });
+        }
+
         if (parts.length === 3 && parts[2] === "override" && req.method === "POST") {
           const { routerPick, humanPick } = (await req.json()) as { routerPick: string; humanPick: string };
           await board.recordOverride(parts[1]!, routerPick, humanPick);
@@ -170,21 +234,22 @@ if (import.meta.main) {
   const board = new SqliteBoard(dbPath);
   const registry = await Registry.load();
   const telemetry = new TelemetryLog(telemetryPath);
-  Bun.serve({ port, fetch: createApp(board, registry, telemetry) });
-  console.log(`wissel board api on :${port} (db: ${dbPath})`);
 
   // Off by default: this loop routes eligible tasks automatically the
   // moment they appear. Read-only agents run in-process; write-tier
-  // agents are only decided and handed off — nothing here spawns or
-  // supervises execution, so the blast radius is "an agent gets picked
-  // without a human clicking route," not "unattended code changes."
+  // agents are only decided and handed off (unless executeWriteTier is
+  // also on) — nothing here spawns or supervises execution beyond that,
+  // so the blast radius is "an agent gets picked without a human
+  // clicking route," not "unattended code changes." The board's manual
+  // "Run" button works either way — see createApp's manualExecutors.
   const orchestratorEnabled = ["1", "true"].includes(process.env.WISSEL_ORCHESTRATOR ?? "");
-  if (orchestratorEnabled) {
-    const router = new Router(registry);
-    const executors = [new ReadOnlyExecutor()];
-    new Orchestrator(board, registry, router, executors, telemetry).start();
-    console.log("wissel orchestrator running");
-  } else {
-    console.log("wissel orchestrator not started — set WISSEL_ORCHESTRATOR=1 to route tasks automatically");
-  }
+  const executeWriteTier = ["1", "true"].includes(process.env.WISSEL_EXECUTE_WRITE_TIER ?? "");
+
+  Bun.serve({ port, fetch: createApp(board, registry, telemetry, { orchestratorEnabled, executeWriteTier }) });
+  console.log(`wissel board api on :${port} (db: ${dbPath})`);
+  console.log(
+    orchestratorEnabled
+      ? `wissel orchestrator running${executeWriteTier ? " — executing write-tier work locally, no agetor handoff" : ""}`
+      : "wissel orchestrator not started — set WISSEL_ORCHESTRATOR=1 to route tasks automatically",
+  );
 }

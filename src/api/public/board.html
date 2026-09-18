@@ -192,6 +192,63 @@
 
   details > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 4px 0 12px; }
 
+  /* ---- task detail drawer, styled after agetor's click-to-open task
+     panel: full task info, live status, and the actions that move it
+     forward, in one place instead of a bare decision table. ---- */
+  .drawer-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.28); z-index: 40;
+    opacity: 0; transition: opacity .15s; pointer-events: none;
+  }
+  .drawer-overlay.open { opacity: 1; pointer-events: auto; }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; width: min(440px, 100vw);
+    background: var(--surface); border-left: 1px solid var(--border); z-index: 41;
+    display: flex; flex-direction: column; transform: translateX(100%); transition: transform .18s ease-out;
+    box-shadow: -12px 0 32px rgba(0,0,0,0.14);
+  }
+  .drawer.open { transform: translateX(0); }
+  .drawer-head { display: flex; align-items: flex-start; gap: 10px; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+  .drawer-head h2 { font-size: 15px; margin: 0; line-height: 1.35; flex: 1; min-width: 0; }
+  .drawer-head .kind-dot { margin-top: 5px; }
+  .drawer-close {
+    appearance: none; border: none; background: transparent; color: var(--ink-muted); cursor: pointer;
+    font-size: 18px; line-height: 1; padding: 4px; border-radius: 6px; flex: none;
+  }
+  .drawer-close:hover { background: var(--page); color: var(--ink-1); }
+  .drawer-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 16px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--ink-muted); }
+  .status-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; padding: 3px 9px 3px 7px; border-radius: 999px; background: var(--page); color: var(--ink-1); }
+  .drawer-body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 18px; }
+  .drawer-section .eyebrow { margin-bottom: 8px; }
+  .drawer-desc { font-size: 13px; line-height: 1.5; color: var(--ink-2); white-space: pre-wrap; margin: 0; }
+  .drawer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .drawer-actions button {
+    appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-1);
+    font: inherit; font-size: 12.5px; font-weight: 600; padding: 7px 13px; border-radius: 7px; cursor: pointer;
+  }
+  .drawer-actions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .drawer-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .drawer-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .drawer-actions button.primary:hover:not(:disabled) { color: #fff; opacity: 0.92; }
+  .drawer-actions button.danger:hover:not(:disabled) { border-color: var(--critical); color: var(--critical); }
+  .result-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }
+  .result-card.ok { border-left: 3px solid var(--sig-done); }
+  .result-card.fail { border-left: 3px solid var(--critical); }
+  .result-card .rc-head { font-weight: 700; margin-bottom: 4px; }
+  .result-card .rc-summary { color: var(--ink-2); white-space: pre-wrap; line-height: 1.45; }
+  .result-card .rc-artifacts { margin-top: 6px; font-size: 11px; color: var(--ink-muted); }
+  .diff-empty { font-size: 12.5px; color: var(--ink-muted); }
+  .diff-view {
+    font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.55;
+    background: var(--page); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    overflow-x: auto; white-space: pre;
+  }
+  .diff-view .diff-add { color: var(--sig-done); }
+  .diff-view .diff-del { color: var(--critical); }
+  .diff-view .diff-hunk { color: var(--accent); }
+  .diff-view .diff-file { color: var(--ink-1); font-weight: 700; }
+  .diff-untracked { margin-top: 8px; font-size: 11.5px; color: var(--ink-muted); }
+  .diff-untracked code { background: var(--page); border-radius: 4px; padding: 1px 5px; }
+
   .form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 18px; }
   .field-error { color: var(--critical); font-size: 12.5px; }
   .form-status { font-size: 12.5px; color: var(--stage-4); }
@@ -209,7 +266,7 @@
   <header>
     <p class="eyebrow">wissel</p>
     <h1>Board</h1>
-    <p class="lede">Every task's status, and the fleet that can pick one up. Click a task for the routing decision behind it.</p>
+    <p class="lede">Every task's status, and the fleet that can pick one up. Click a task for its full detail — routing decision, result, diff, and the actions to move it forward.</p>
   </header>
 
   <div class="toolbar">
@@ -226,11 +283,6 @@
     <section class="panel-flush section-gap">
       <div class="panel-head"><h2>Tasks, by status</h2></div>
       <div style="padding: 16px;"><div class="kanban" id="kanbanBody"></div></div>
-    </section>
-
-    <section class="panel-flush section-gap" id="decisionPanel" hidden>
-      <div class="panel-head"><h2>Routing decision</h2></div>
-      <div id="decisionBody" style="padding: 16px;"></div>
     </section>
 
     <div class="row-2 section-gap">
@@ -307,6 +359,42 @@
   </section>
 </div>
 
+<div class="drawer-overlay" id="drawerOverlay" hidden></div>
+<aside class="drawer" id="taskDrawer" role="dialog" aria-modal="true" aria-labelledby="tdTitle" hidden>
+  <div class="drawer-head">
+    <span class="kind-dot" id="tdKindDot"></span>
+    <h2 id="tdTitle"></h2>
+    <button type="button" class="drawer-close" id="tdClose" aria-label="Close">×</button>
+  </div>
+  <div class="drawer-meta" id="tdMeta"></div>
+  <div class="drawer-body">
+    <section class="drawer-section">
+      <p class="eyebrow">Description</p>
+      <p class="drawer-desc" id="tdDescription"></p>
+    </section>
+
+    <section class="drawer-section">
+      <div class="drawer-actions" id="tdActions"></div>
+      <p class="field-error" id="tdActionError" hidden></p>
+    </section>
+
+    <section class="drawer-section">
+      <p class="eyebrow">Routing decision</p>
+      <div id="tdDecision" class="muted">loading…</div>
+    </section>
+
+    <section class="drawer-section" id="tdResultSection" hidden>
+      <p class="eyebrow">Result</p>
+      <div id="tdResult"></div>
+    </section>
+
+    <section class="drawer-section" id="tdDiffSection" hidden>
+      <p class="eyebrow">Diff</p>
+      <div id="tdDiff"></div>
+    </section>
+  </div>
+</aside>
+
 <script>
 (function () {
   "use strict";
@@ -367,22 +455,271 @@
     container.appendChild(table);
   }
 
-  function showDecision(taskId) {
-    var panel = document.getElementById("decisionPanel");
-    var body = document.getElementById("decisionBody");
-    panel.hidden = false;
-    body.textContent = "loading…";
+  // --- Task detail drawer -------------------------------------------
+  //
+  // Mimics agetor's click-a-card behavior: full task info (not just the
+  // routing decision), current status, and the actions that actually
+  // move it forward — Run now, Mark done/failed once it's in review,
+  // View diff — all in one place. Stays open across the SSE-driven
+  // refetches every other view already does, refreshing in place rather
+  // than closing under the user while a run is in flight.
 
+  var drawerTaskId = null;
+
+  function statusPill(status) {
+    var pill = document.createElement("span");
+    pill.className = "status-pill";
+    var dot = document.createElement("span");
+    dot.className = "swatch";
+    dot.style.width = "7px"; dot.style.height = "7px";
+    dot.style.background = "var(" + STATUS_COLOR[status] + ")";
+    pill.appendChild(dot);
+    pill.appendChild(document.createTextNode(STATUS_LABEL[status]));
+    return pill;
+  }
+
+  function findTask(taskId) {
+    for (var i = 0; i < tasks.length; i++) if (tasks[i].id === taskId) return tasks[i];
+    return null;
+  }
+
+  function renderDrawerHeader(task) {
+    var agent = task.routedTo ? agentsById[task.routedTo] : undefined;
+    document.getElementById("tdKindDot").style.background =
+      agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--ink-muted)";
+    document.getElementById("tdTitle").textContent = task.title;
+    document.getElementById("tdDescription").textContent = task.body || "(no description)";
+
+    var meta = document.getElementById("tdMeta");
+    meta.textContent = "";
+    meta.appendChild(statusPill(task.status));
+    if (task.status === "running" || task.status === "dispatched") meta.appendChild(activeDot("actively working"));
+    var agentSpan = document.createElement("span");
+    agentSpan.textContent = task.routedTo || "unrouted";
+    meta.appendChild(agentSpan);
+    var sep = document.createElement("span"); sep.textContent = "·"; sep.style.opacity = "0.45";
+    meta.appendChild(sep);
+    var repoSpan = document.createElement("span"); repoSpan.className = "mono"; repoSpan.textContent = task.repo;
+    meta.appendChild(repoSpan);
+  }
+
+  function drawerAction(label, opts) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    if (opts.className) btn.className = opts.className;
+    if (opts.disabled) btn.disabled = true;
+    btn.addEventListener("click", opts.onClick);
+    return btn;
+  }
+
+  function setDrawerActionError(message) {
+    var el = document.getElementById("tdActionError");
+    if (message) { el.textContent = message; el.hidden = false; }
+    else { el.hidden = true; }
+  }
+
+  function renderDrawerActions(task) {
+    var wrap = document.getElementById("tdActions");
+    wrap.textContent = "";
+    setDrawerActionError(null);
+
+    var running = task.status === "running";
+    wrap.appendChild(drawerAction(running ? "Running…" : "Run now", {
+      className: "primary", disabled: running,
+      onClick: function () {
+        setDrawerActionError(null);
+        fetch("/tasks/" + task.id + "/run", { method: "POST" }).then(function (r) {
+          if (r.status === 202) return refetchTasks();
+          return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+        }).catch(function (err) { setDrawerActionError(err.message); });
+      },
+    }));
+
+    // The review gate is wissel's one non-negotiable policy for write-tier
+    // success — a human confirms before "done" regardless of who ran it.
+    // Marking a task done/failed from any other status would bypass that
+    // review look, so the buttons only appear once it's actually earned.
+    if (task.status === "review") {
+      wrap.appendChild(drawerAction("Mark done", {
+        onClick: function () { moveTask(task.id, "done"); },
+      }));
+      wrap.appendChild(drawerAction("Mark failed", {
+        className: "danger",
+        onClick: function () { moveTask(task.id, "failed"); },
+      }));
+    }
+
+    wrap.appendChild(drawerAction("View diff", {
+      onClick: function () { toggleDiff(task.id); },
+    }));
+  }
+
+  function moveTask(taskId, status) {
+    setDrawerActionError(null);
+    fetch("/tasks/" + taskId + "/move", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: status }),
+    }).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).catch(function (err) { setDrawerActionError(err.message); });
+  }
+
+  function loadDrawerDecision(taskId) {
+    var body = document.getElementById("tdDecision");
+    body.className = "muted";
+    body.textContent = "loading…";
     fetch("/tasks/" + taskId + "/decision").then(function (r) {
       if (r.status === 404) { body.textContent = "No routing decision recorded for this task yet."; return null; }
       return r.json();
     }).then(function (decision) {
       if (!decision) return;
+      body.className = "";
       renderDecision(decision, body, false);
     }).catch(function (err) {
       body.textContent = "failed to load decision: " + err.message;
     });
   }
+
+  function loadDrawerResult(taskId) {
+    var section = document.getElementById("tdResultSection");
+    var body = document.getElementById("tdResult");
+    fetch("/tasks/" + taskId + "/result").then(function (r) {
+      if (r.status === 404) { section.hidden = true; return null; }
+      return r.json();
+    }).then(function (result) {
+      if (!result) return;
+      section.hidden = false;
+      body.textContent = "";
+      var card = document.createElement("div");
+      card.className = "result-card " + (result.ok ? "ok" : "fail");
+      var head = document.createElement("div");
+      head.className = "rc-head";
+      head.textContent = (result.ok ? "✓ " : "✗ ") + result.agentId;
+      var summary = document.createElement("div");
+      summary.className = "rc-summary";
+      summary.textContent = result.summary;
+      card.appendChild(head); card.appendChild(summary);
+      if (result.artifacts && result.artifacts.length) {
+        var artifacts = document.createElement("div");
+        artifacts.className = "rc-artifacts";
+        artifacts.textContent = "Artifacts: " + result.artifacts.join(", ");
+        card.appendChild(artifacts);
+      }
+      body.appendChild(card);
+    }).catch(function () { section.hidden = true; });
+  }
+
+  // Renders a unified diff with minimal +/- coloring — not a full
+  // syntax-highlighted diff viewer, just enough to scan what changed
+  // without leaving the drawer.
+  function renderDiffText(diffText) {
+    var pre = document.createElement("div");
+    pre.className = "diff-view";
+    diffText.split("\n").forEach(function (line, i) {
+      var span = document.createElement("span");
+      if (line.indexOf("diff --git") === 0 || line.indexOf("+++ ") === 0 || line.indexOf("--- ") === 0) span.className = "diff-file";
+      else if (line.indexOf("@@") === 0) span.className = "diff-hunk";
+      else if (line.indexOf("+") === 0) span.className = "diff-add";
+      else if (line.indexOf("-") === 0) span.className = "diff-del";
+      span.textContent = line;
+      pre.appendChild(span);
+      if (i < diffText.split("\n").length - 1) pre.appendChild(document.createTextNode("\n"));
+    });
+    return pre;
+  }
+
+  function toggleDiff(taskId) {
+    var section = document.getElementById("tdDiffSection");
+    if (!section.hidden) { section.hidden = true; return; }
+    section.hidden = false;
+    fetchAndRenderDiff(taskId);
+  }
+
+  function fetchAndRenderDiff(taskId) {
+    var body = document.getElementById("tdDiff");
+    body.textContent = "loading…";
+    fetch("/tasks/" + taskId + "/diff").then(function (r) { return r.json(); }).then(function (diff) {
+      body.textContent = "";
+      if (!diff.isGitRepo) {
+        var notGit = document.createElement("p");
+        notGit.className = "diff-empty";
+        notGit.textContent = "This task's repo isn't a git working tree.";
+        body.appendChild(notGit);
+        return;
+      }
+      if (!diff.diff && !diff.untracked.length) {
+        var empty = document.createElement("p");
+        empty.className = "diff-empty";
+        empty.textContent = "No changes yet.";
+        body.appendChild(empty);
+        return;
+      }
+      if (diff.diff) body.appendChild(renderDiffText(diff.diff));
+      if (diff.untracked.length) {
+        var untracked = document.createElement("div");
+        untracked.className = "diff-untracked";
+        untracked.textContent = "New files: ";
+        diff.untracked.forEach(function (path, i) {
+          var code = document.createElement("code");
+          code.textContent = path;
+          untracked.appendChild(code);
+          if (i < diff.untracked.length - 1) untracked.appendChild(document.createTextNode(" "));
+        });
+        body.appendChild(untracked);
+      }
+    }).catch(function (err) {
+      body.textContent = "failed to load diff: " + err.message;
+    });
+  }
+
+  function openTaskDrawer(taskId) {
+    var task = findTask(taskId);
+    if (!task) return;
+    drawerTaskId = taskId;
+    renderDrawerHeader(task);
+    renderDrawerActions(task);
+    loadDrawerDecision(taskId);
+    loadDrawerResult(taskId);
+    document.getElementById("tdDiffSection").hidden = true;
+    document.getElementById("drawerOverlay").hidden = false;
+    document.getElementById("taskDrawer").hidden = false;
+    // rAF so the hidden->visible flip lands before the transform
+    // transition starts, or the slide-in never animates.
+    requestAnimationFrame(function () {
+      document.getElementById("drawerOverlay").classList.add("open");
+      document.getElementById("taskDrawer").classList.add("open");
+    });
+  }
+
+  function closeTaskDrawer() {
+    drawerTaskId = null;
+    document.getElementById("drawerOverlay").classList.remove("open");
+    document.getElementById("taskDrawer").classList.remove("open");
+    setTimeout(function () {
+      document.getElementById("drawerOverlay").hidden = true;
+      document.getElementById("taskDrawer").hidden = true;
+    }, 180);
+  }
+
+  // Keeps the open drawer live across every SSE-driven refetch (a run
+  // finishing, a status change from elsewhere) instead of only reflecting
+  // whatever was true the moment it was opened.
+  function refreshOpenDrawer() {
+    if (!drawerTaskId) return;
+    var task = findTask(drawerTaskId);
+    if (!task) { closeTaskDrawer(); return; }
+    renderDrawerHeader(task);
+    renderDrawerActions(task);
+    loadDrawerResult(drawerTaskId);
+    if (!document.getElementById("tdDiffSection").hidden) fetchAndRenderDiff(drawerTaskId);
+  }
+
+  document.getElementById("tdClose").addEventListener("click", closeTaskDrawer);
+  document.getElementById("drawerOverlay").addEventListener("click", closeTaskDrawer);
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && drawerTaskId) closeTaskDrawer();
+  });
 
   // Pulsing green dot — "actively working," reused verbatim on a running
   // task's box and on a fleet row currently doing work.
@@ -418,7 +755,7 @@
         card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
         card.tabIndex = 0;
         card.setAttribute("role", "button");
-        card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[status] + ", show routing decision");
+        card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[status] + ", show task details");
 
         var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
 
@@ -438,8 +775,8 @@
         ka.appendChild(repoSpan);
 
         card.appendChild(kt); card.appendChild(ka);
-        card.addEventListener("click", function () { showDecision(t.id); });
-        card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showDecision(t.id); } });
+        card.addEventListener("click", function () { openTaskDrawer(t.id); });
+        card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openTaskDrawer(t.id); } });
         col.appendChild(card);
       });
       body.appendChild(col);
@@ -541,6 +878,7 @@
     renderRepoOptions();
     renderDependsOnOptions();
     renderParentTaskOptions();
+    refreshOpenDrawer();
     document.getElementById("taskCount").innerHTML = '<span class="live-dot"></span>' + tasks.length + " tasks";
   }
 

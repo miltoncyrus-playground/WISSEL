@@ -48,18 +48,31 @@ export async function resolveHandoffAllowlist(
   return parentAgent.handoffs;
 }
 
+export interface OrchestratorOptions {
+  /** Off by default — the documented design is "wissel decides, agetor
+   *  executes," and every existing deployment keeps that unless it
+   *  opts in. When true, a registered write-tier Executor (see
+   *  WriteExecutor) runs write-tier work here instead of always handing
+   *  it off as `dispatched`. Doesn't change the review gate: a
+   *  write-tier success still lands in `review`, never `done` — see
+   *  finishResult — regardless of who ran it. */
+  executeWriteTier?: boolean;
+}
+
 /**
  * The loop that makes the rest of the fleet mean anything: watches the
  * board for tasks that are unrouted, unblocked, and sitting in `inbox` or
  * `ready`, and routes each one.
  *
- * wissel decides and dispatches; it does not spawn or supervise execution
- * itself. Read-only agents are cheap enough that wissel runs them
- * in-process via an `Executor`. Write-tier agents are handed off — the
- * task moves to `dispatched` and wissel's job for it is done until
- * whatever actually runs the work (agetor) reports back through
- * `POST /tasks/:id/result`, at which point `finishResult` applies the
- * same review-vs-done policy either way.
+ * wissel decides and dispatches; by default it does not spawn or
+ * supervise execution itself. Read-only agents are cheap enough that
+ * wissel runs them in-process via an `Executor`. Write-tier agents are
+ * handed off — the task moves to `dispatched` and wissel's job for it is
+ * done until whatever actually runs the work (agetor) reports back
+ * through `POST /tasks/:id/result` — unless `executeWriteTier` is on and
+ * a write-tier Executor is registered, in which case wissel runs it the
+ * same way it runs read-only work. Either path ends in `finishResult`
+ * applying the same review-vs-done policy.
  */
 export class Orchestrator {
   private inFlight = new Set<string>();
@@ -70,6 +83,7 @@ export class Orchestrator {
     private router: Router,
     private executors: Executor[],
     private telemetry?: TelemetryLog,
+    private opts: OrchestratorOptions = {},
   ) {}
 
   /** Runs an initial sweep, then re-sweeps on every board event that could
@@ -106,7 +120,35 @@ export class Orchestrator {
     await Promise.all(pending);
   }
 
-  private async process(task: TaskCard): Promise<void> {
+  /**
+   * A human clicking "Run" on a specific card in the board UI — bypasses
+   * every gate `sweep()` applies (routedTo already set, status, blocked
+   * dependencies) and the `executeWriteTier` flag: an explicit per-task
+   * click is a different, narrower trust decision than "auto-execute
+   * every write-tier task that shows up," so it's always allowed to
+   * force through with whatever executor pool the caller hands in (see
+   * server.ts's manual executor pool, which includes a WriteExecutor
+   * even when the automatic loop's doesn't).
+   *
+   * Returns once the task is confirmed eligible and marked in-flight —
+   * NOT once it's finished. The routing/run itself continues in the
+   * background and surfaces through the normal task.moved/task.decided/
+   * task.result board events, same as the automatic loop; a caller that
+   * needs the outcome watches those (or polls the task), it doesn't await
+   * this call. Throws synchronously, before anything starts, if the task
+   * doesn't exist or a run is already in flight for it — an immediate,
+   * honest error instead of a silently dropped click or a double-run.
+   */
+  async runNow(taskId: string, executors: Executor[]): Promise<void> {
+    if (this.inFlight.has(taskId)) throw new Error(`task ${taskId} is already running`);
+    const task = await this.board.get(taskId);
+    if (!task) throw new Error(`task not found: ${taskId}`);
+
+    this.inFlight.add(taskId);
+    void this.process(task, { executors, forceExecute: true }).finally(() => this.inFlight.delete(taskId));
+  }
+
+  private async process(task: TaskCard, override?: { executors: Executor[]; forceExecute: boolean }): Promise<void> {
     try {
       let decision: RoutingDecision;
       try {
@@ -132,13 +174,21 @@ export class Orchestrator {
         return;
       }
 
+      // Write-tier normally has no executor lookup to fail — it's always
+      // handed off. `executeWriteTier` (or an explicit runNow override)
+      // flips that: a write-tier task then needs a real Executor exactly
+      // like read-only does, so a missing one is an error here too rather
+      // than silently falling back to handoff (that would be a
+      // confusing, decision-dependent surprise).
+      const runsHere = agent.tier !== "write" || this.opts.executeWriteTier === true || override?.forceExecute === true;
+      const executorPool = override?.executors ?? this.executors;
       // Resolved but not yet recorded: recordDecision() sets routedTo, and
       // the sweep skips anything already routed — recording before we know
-      // an executor can actually run this would strand a readonly task
-      // forever on an unrecoverable dead end the moment the executor
-      // lookup below fails. Write-tier has no such lookup to fail.
-      const executor = agent.tier === "write" ? undefined : this.executors.find((e) => e.canHandle(agent));
-      if (agent.tier !== "write" && !executor) {
+      // an executor can actually run this would strand the task forever on
+      // an unrecoverable dead end the moment the executor lookup below
+      // fails.
+      const executor = runsHere ? executorPool.find((e) => e.canHandle(agent)) : undefined;
+      if (runsHere && !executor) {
         console.error(`orchestrator: no executor handles agent "${agent.id}" (tier ${agent.tier})`);
         return;
       }
@@ -152,7 +202,7 @@ export class Orchestrator {
         estimatedCost: agent.costProfile.estUsdPerTask,
       });
 
-      if (agent.tier === "write") {
+      if (!runsHere) {
         await this.board.move(task.id, "dispatched");
         return;
       }

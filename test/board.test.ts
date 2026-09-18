@@ -117,6 +117,20 @@ test("recordResult and recordOverride do not throw and emit events", async () =>
   expect(events).toEqual(["task.result", "task.override"]);
 });
 
+test("getResult returns the most recent result, and undefined for a task with none", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+
+  expect(await board.getResult(task.id)).toBeUndefined();
+
+  await board.recordResult({ taskId: task.id, agentId: "a", ok: false, summary: "first attempt failed" });
+  await board.recordResult({ taskId: task.id, agentId: "a", ok: true, summary: "retry worked", artifacts: ["board.html"] });
+
+  expect(await board.getResult(task.id)).toEqual({
+    taskId: task.id, agentId: "a", ok: true, summary: "retry worked", artifacts: ["board.html"],
+  });
+});
+
 test("create and move emit events", async () => {
   const board = new SqliteBoard();
   const events: string[] = [];

@@ -25,6 +25,13 @@ ever dispatches when the router is confident — zero match, a weak match,
 or an unresolved tie all stop before spend, visible on the board as
 `no-match`.
 
+Set `WISSEL_EXECUTE_WRITE_TIER=1` (in addition to the orchestrator flag
+above) to have wissel run write-tier work itself — headless `claude -p`
+with `--permission-mode acceptEdits` against the task's repo — instead of
+only dispatching it for agetor or another external runner to pick up.
+Off by default; a write-tier success still lands in `review`, never
+`done`, regardless of who ran it.
+
 Known gap: no sandboxing beyond whatever the underlying agent CLI already
 does — not solved here, noted so it isn't assumed.
 
