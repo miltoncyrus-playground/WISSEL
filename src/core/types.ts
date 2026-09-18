@@ -61,6 +61,31 @@ export interface TaskCard {
    *  routing restricts candidates to the parent's routed agent's
    *  declared `handoffs`, if it has any (see AgentDef.handoffs). */
   parentTaskId?: string;
+  /** Which Harness actually ran this — set once wissel starts executing
+   *  it locally (readonly, or write-tier with executeWriteTier on),
+   *  before the run finishes, so the board can show it as active live.
+   *  Never set for a `dispatched` task: wissel hands those to agetor and
+   *  has no visibility into which harness agetor runs them under. */
+  harness?: string;
+}
+
+/** A named execution backend wissel can run work under — a tool (which
+ *  CLI) plus an account (which authenticated identity). Distinct from
+ *  AgentDef: an agent is a routing-target descriptor ("what kind of work
+ *  is this"); a Harness is "which credentialed process actually runs
+ *  it." See docs/SDD-execution-harnesses.md. */
+export type HarnessTool = "claude-cli";
+
+export interface Harness {
+  id: string;
+  tool: HarnessTool;
+  label: string;
+  enabled: boolean;
+  /** Env overrides applied to the spawned process — how a harness picks
+   *  an already-authenticated account without wissel holding a secret
+   *  itself. A pointer (e.g. CLAUDE_CONFIG_DIR) to credentials that
+   *  already live somewhere else, never a raw API key/token value. */
+  env?: Record<string, string>;
 }
 
 export interface Candidate {
@@ -95,10 +120,18 @@ export interface TaskResult {
   /** Actual spend, when known. Estimated cost is logged at dispatch time
    *  regardless; this fills in the real number once the run is over. */
   actualCost?: number;
+  /** Which Harness actually ran this, when one was picked. */
+  harnessId?: string;
 }
 
 export interface Executor {
   readonly id: string;
   canHandle(agent: AgentDef): boolean;
-  run(task: TaskCard, agent: AgentDef): Promise<TaskResult>;
+  /** `harness`, when given, is the Harness the caller (normally the
+   *  Orchestrator) already picked for this run — the executor's job is
+   *  to run under it (pass its `env` through) and report back which one
+   *  it used, not to pick one itself. Omitted entirely when no
+   *  HarnessPool is configured; behavior is then identical to before
+   *  harnesses existed. */
+  run(task: TaskCard, agent: AgentDef, harness?: Harness): Promise<TaskResult>;
 }

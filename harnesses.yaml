@@ -1,0 +1,24 @@
+# Execution harnesses wissel can run work under — a tool (which CLI)
+# plus an account (which authenticated identity), distinct from
+# agents/manifest.yaml's fleet (what kind of work gets done). `env` is a
+# pointer to an already-authenticated local profile, never a secret
+# value itself — see docs/SDD-execution-harnesses.md §2.
+#
+# You don't need to list every account here: wissel auto-detects every
+# already-authenticated `.claude*` profile under $HOME at startup (see
+# src/core/harness-discovery.ts) and layers this file on top. An entry
+# here with an id matching a detected account overrides it (rename its
+# label, disable it, repoint its env); an entry with no matching
+# detected account is kept as a manual-only harness. Delete this file
+# entirely and detected accounts still show up with an auto-generated
+# label (their account email).
+#
+# claude-personal below is kept as a demonstration of that override: it
+# pins a friendlier label than auto-detection would generate on its own.
+harnesses:
+  - id: claude-personal
+    tool: claude-cli
+    label: "Claude — personal"
+    enabled: true
+    env:
+      CLAUDE_CONFIG_DIR: "/Users/milton.cyrus/.claude-personal"

@@ -1,6 +1,7 @@
 import type { EventEmitter } from "node:events";
 import type { Board } from "../services/board.ts";
 import type { TelemetryLog } from "../services/telemetry.ts";
+import type { HarnessPool } from "./harness-pool.ts";
 import type { Registry } from "./registry.ts";
 import type { Router } from "./router.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "./types.ts";
@@ -19,7 +20,7 @@ export async function finishResult(
   telemetry?: TelemetryLog,
 ): Promise<void> {
   await board.recordResult(result);
-  await telemetry?.record({ type: "result", taskId: result.taskId, agentId: result.agentId, actualCost: result.actualCost });
+  await telemetry?.record({ type: "result", taskId: result.taskId, agentId: result.agentId, actualCost: result.actualCost, harnessId: result.harnessId });
 
   const agent = registry.get(result.agentId);
   const finalStatus = result.ok ? (agent?.tier === "write" ? "review" : "done") : "failed";
@@ -57,6 +58,13 @@ export interface OrchestratorOptions {
    *  write-tier success still lands in `review`, never `done` — see
    *  finishResult — regardless of who ran it. */
   executeWriteTier?: boolean;
+  /** When set, every task wissel runs locally (readonly, or write-tier
+   *  with executeWriteTier on) is run under a Harness picked from this
+   *  pool instead of the ambient environment. Undefined means "no
+   *  harness concept" — identical to wissel's behavior before harnesses
+   *  existed. A `dispatched` (handed-off) task never gets a harness:
+   *  wissel doesn't execute it, so there's nothing to pick one for. */
+  harnesses?: HarnessPool;
 }
 
 /**
@@ -207,13 +215,23 @@ export class Orchestrator {
         return;
       }
 
+      // Picked before the move to "running" (not inside the executor)
+      // so the board already reflects which harness owns this task the
+      // moment a poller/SSE listener sees it running — the same
+      // liveness guarantee `routedTo` already gets from recordDecision
+      // happening before dispatch.
+      const harness = this.opts.harnesses?.acquire("claude-cli");
+      if (harness) await this.board.setHarness(task.id, harness.id);
+
       await this.board.move(task.id, "running");
 
       let result: TaskResult;
       try {
-        result = await executor!.run(task, agent);
+        result = await executor!.run(task, agent, harness);
       } catch (e) {
         result = { taskId: task.id, agentId: agent.id, ok: false, summary: `executor threw: ${(e as Error).message}` };
+      } finally {
+        if (harness) this.opts.harnesses!.release(harness.id);
       }
       await finishResult(this.board, this.registry, result, this.telemetry);
     } catch (e) {

@@ -181,6 +181,18 @@
   .tier-chip.write { background: rgba(208, 59, 59, 0.12); color: var(--critical); }
   .fleet-active { display: flex; justify-content: flex-end; margin-top: 8px; }
 
+  /* ---- harness strip — execution backends (tool + account), not the
+     routing fleet. Sits above the toolbar so it's visible regardless of
+     which view (Board / New task) is open, since it's fleet-adjacent
+     state, not board state. ---- */
+  .harness-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .harness-pill { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; background: var(--surface); font-size: 12px; }
+  .harness-pill.disabled { opacity: 0.5; }
+  .harness-pill .h-label { font-weight: 600; }
+  .harness-pill .h-tool { color: var(--ink-muted); font-size: 10.5px; }
+  .harness-load { font-size: 10.5px; font-weight: 700; color: var(--ink-1); background: var(--accent-wash); border-radius: 999px; padding: 1px 7px; }
+  .harness-strip-empty { font-size: 12.5px; color: var(--ink-muted); }
+
   .decision-head { font-size: 13px; color: var(--ink-2); margin: 0 0 12px; }
   .decision-head b { color: var(--ink-1); }
   .decision-head.no-match { color: var(--no-match); }
@@ -314,6 +326,8 @@
     <h1>Board</h1>
     <p class="lede">Every task's status, and the fleet that can pick one up. Click a task for its full detail — routing decision, result, diff, and the actions to move it forward.</p>
   </header>
+
+  <div class="harness-strip" id="harnessStrip"></div>
 
   <div class="toolbar">
     <div class="segmented" id="viewToggle" role="group" aria-label="View">
@@ -960,6 +974,7 @@
     renderStats();
     renderKanban();
     renderFleetBoxes();
+    renderHarnessStrip();
     renderRepoOptions();
     renderDependsOnOptions();
     renderParentTaskOptions();
@@ -967,10 +982,63 @@
     document.getElementById("taskCount").innerHTML = '<span class="live-dot"></span>' + tasks.length + " tasks";
   }
 
+  var harnesses = [];
+
   function refetchTasks() {
-    return fetch("/tasks").then(function (r) { return r.json(); }).then(function (data) {
-      tasks = data;
+    // /harnesses is refetched alongside /tasks (not just once at
+    // startup) because its activeCount is live server-side state — a
+    // harness going idle/busy is exactly the kind of change task events
+    // already trigger a refetch for.
+    return Promise.all([
+      fetch("/tasks").then(function (r) { return r.json(); }),
+      fetch("/harnesses").then(function (r) { return r.json(); }),
+    ]).then(function (results) {
+      tasks = results[0];
+      harnesses = results[1];
       render();
+    });
+  }
+
+  // One pill per harness: tool it runs on, active dot when it has
+  // in-flight work, a load badge when that count is more than one at
+  // once. A disabled harness (present in harnesses.yaml but turned off)
+  // still shows, dimmed, rather than disappearing — "configured but not
+  // in use" is a different, useful signal from "doesn't exist."
+  function renderHarnessStrip() {
+    var wrap = document.getElementById("harnessStrip");
+    wrap.textContent = "";
+    if (harnesses.length === 0) {
+      var empty = document.createElement("span");
+      empty.className = "harness-strip-empty";
+      empty.textContent = "No execution harnesses configured — add harnesses.yaml to name one.";
+      wrap.appendChild(empty);
+      return;
+    }
+    harnesses.forEach(function (h) {
+      var pill = document.createElement("span");
+      pill.className = "harness-pill" + (h.enabled ? "" : " disabled");
+
+      var label = document.createElement("span");
+      label.className = "h-label";
+      label.textContent = h.label || h.id;
+      pill.appendChild(label);
+
+      var tool = document.createElement("span");
+      tool.className = "h-tool mono";
+      tool.textContent = h.tool;
+      pill.appendChild(tool);
+
+      if (h.activeCount > 0) {
+        pill.appendChild(activeDot(h.id + " is actively working"));
+        var load = document.createElement("span");
+        load.className = "harness-load mono";
+        load.textContent = "×" + h.activeCount;
+        pill.appendChild(load);
+      } else if (!h.enabled) {
+        pill.title = "disabled in harnesses.yaml";
+      }
+
+      wrap.appendChild(pill);
     });
   }
 
@@ -1214,11 +1282,13 @@
   Promise.all([
     fetch("/agents").then(function (r) { return r.json(); }),
     fetch("/tasks").then(function (r) { return r.json(); }),
+    fetch("/harnesses").then(function (r) { return r.json(); }),
   ]).then(function (results) {
     allAgents = results[0] || [];
     allAgents.forEach(function (a) { agentsById[a.id] = a; });
     knownTags = uniqueSorted(allAgents.reduce(function (acc, a) { return acc.concat(a.tags || []); }, []));
     tasks = results[1] || [];
+    harnesses = results[2] || [];
     render();
     renderOverrideGrid();
 

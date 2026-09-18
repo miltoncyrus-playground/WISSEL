@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createApp, type CreateAppOptions } from "../src/api/server.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
+import { HarnessPool } from "../src/core/harness-pool.ts";
 import type { AgentDef, Executor, TaskCard, TaskResult } from "../src/core/types.ts";
 
 function req(path: string, init?: RequestInit): Request {
@@ -40,6 +41,17 @@ test("GET /agents returns the fleet from the manifest", async () => {
   const res = await app(req("/agents"));
   const agents = (await res.json()) as { id: string }[];
   expect(agents.some((a) => a.id === "triager")).toBe(true);
+});
+
+test("GET /harnesses defaults to empty, and returns configured harnesses with a live activeCount", async () => {
+  const empty = await makeApp();
+  expect(await (await empty(req("/harnesses"))).json()).toEqual([]);
+
+  const harnesses = HarnessPool.from([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true }]);
+  const withHarness = await makeApp(new SqliteBoard(), { harnesses });
+  const res = await withHarness(req("/harnesses"));
+  const body = (await res.json()) as { id: string; tool: string; label: string; enabled: boolean; activeCount: number }[];
+  expect(body).toEqual([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true, activeCount: 0 }]);
 });
 
 test("POST /tasks then GET /tasks round-trips, defaulting dependsOn to []", async () => {

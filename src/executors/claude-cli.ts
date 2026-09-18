@@ -7,11 +7,19 @@ export interface CommandResult {
   exitCode: number;
 }
 
-/** Injectable so tests never spawn a real process or spend a real token. */
-export type CommandRunner = (cmd: string[], opts: { cwd: string }) => Promise<CommandResult>;
+/** Injectable so tests never spawn a real process or spend a real token.
+ *  `env`, when given, is a harness's account/config overrides — merged
+ *  over the ambient environment by the runner, never a full replacement
+ *  (dropping PATH etc. would break the spawn entirely). */
+export type CommandRunner = (cmd: string[], opts: { cwd: string; env?: Record<string, string> }) => Promise<CommandResult>;
 
-export async function runViaBun(cmd: string[], opts: { cwd: string }): Promise<CommandResult> {
-  const proc = Bun.spawn(cmd, { cwd: opts.cwd, stdout: "pipe", stderr: "pipe" });
+export async function runViaBun(cmd: string[], opts: { cwd: string; env?: Record<string, string> }): Promise<CommandResult> {
+  const proc = Bun.spawn(cmd, {
+    cwd: opts.cwd,
+    env: opts.env ? { ...process.env, ...opts.env } : undefined,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -45,6 +53,10 @@ export interface RunClaudeOptions {
    *  available model", which is already the local default — never
    *  silently downgrade here). */
   model?: string;
+  /** The picked harness's env overrides, passed straight through to the
+   *  runner. Undefined when no harness was picked — identical to
+   *  wissel's behavior before harnesses existed. */
+  env?: Record<string, string>;
 }
 
 /**
@@ -54,13 +66,13 @@ export interface RunClaudeOptions {
  * tiers is `--permission-mode`, which the caller picks.
  */
 export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
-  const { runner, task, agent, permissionMode, model } = opts;
+  const { runner, task, agent, permissionMode, model, env } = opts;
   const cmd = ["claude", "-p", buildAgentPrompt(task, agent), "--output-format", "json", "--permission-mode", permissionMode];
   if (model) cmd.push("--model", model);
 
   let cmdResult: CommandResult;
   try {
-    cmdResult = await runner(cmd, { cwd: task.repo });
+    cmdResult = await runner(cmd, { cwd: task.repo, env });
   } catch (e) {
     return fail(task, agent, `failed to spawn claude: ${(e as Error).message}`);
   }

@@ -15,6 +15,10 @@ export interface Board {
   create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard>;
   move(id: string, status: TaskCard["status"]): Promise<TaskCard>;
   setDependencies(id: string, dependsOn: string[]): Promise<TaskCard>;
+  /** Records which Harness actually ran a task — called once wissel
+   *  starts executing it locally, before the run finishes, so the board
+   *  can show a harness as active live. See TaskCard.harness. */
+  setHarness(id: string, harnessId: string): Promise<TaskCard>;
   recordDecision(decision: RoutingDecision): Promise<void>;
   /** Most recent routing decision for a task, if any — what `wissel why`
    *  reads. */
@@ -33,6 +37,7 @@ export type BoardEvent =
   | { type: "task.created"; task: TaskCard }
   | { type: "task.moved"; task: TaskCard }
   | { type: "task.dependencies"; task: TaskCard }
+  | { type: "task.harness"; task: TaskCard }
   | { type: "task.decided"; decision: RoutingDecision }
   | { type: "task.result"; result: TaskResult }
   | { type: "task.override"; taskId: string; routerPick: string; humanPick: string }
@@ -48,6 +53,7 @@ interface TaskRow {
   routedTo: string | null;
   dependsOn: string;
   parentTaskId: string | null;
+  harness: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -61,6 +67,7 @@ function rowToCard(row: TaskRow): TaskCard {
     routedTo: row.routedTo ?? undefined,
     dependsOn: JSON.parse(row.dependsOn) as string[],
     parentTaskId: row.parentTaskId ?? undefined,
+    harness: row.harness ?? undefined,
   };
 }
 
@@ -87,9 +94,20 @@ export class SqliteBoard implements Board {
         status TEXT NOT NULL,
         routedTo TEXT,
         dependsOn TEXT NOT NULL DEFAULT '[]',
-        parentTaskId TEXT
+        parentTaskId TEXT,
+        harness TEXT
       );
     `);
+    // Heals a pre-existing on-disk DB from before `harness` existed —
+    // CREATE TABLE IF NOT EXISTS above only covers a fresh DB. Ignoring
+    // the error is the SQLite-idiomatic "add column if missing," since
+    // there's no ADD COLUMN IF NOT EXISTS guard old enough SQLite builds
+    // can rely on.
+    try {
+      this.db.run("ALTER TABLE tasks ADD COLUMN harness TEXT;");
+    } catch {
+      // already has the column
+    }
     this.db.run(`
       CREATE TABLE IF NOT EXISTS routing_decisions (
         taskId TEXT NOT NULL,
@@ -145,7 +163,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -156,6 +174,7 @@ export class SqliteBoard implements Board {
         full.routedTo ?? null,
         JSON.stringify(full.dependsOn),
         full.parentTaskId ?? null,
+        full.harness ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
@@ -177,6 +196,15 @@ export class SqliteBoard implements Board {
     this.db.run("UPDATE tasks SET dependsOn = ? WHERE id = ?", [JSON.stringify(dependsOn), id]);
     const updated: TaskCard = { ...existing, dependsOn };
     this.events.emit("event", { type: "task.dependencies", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async setHarness(id: string, harnessId: string): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET harness = ? WHERE id = ?", [harnessId, id]);
+    const updated: TaskCard = { ...existing, harness: harnessId };
+    this.events.emit("event", { type: "task.harness", task: updated } satisfies BoardEvent);
     return updated;
   }
 

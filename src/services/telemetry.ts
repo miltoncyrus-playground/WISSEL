@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 
 export type TelemetryEvent =
   | { type: "dispatch"; taskId: string; agentId: string; model?: string; estimatedCost?: number }
-  | { type: "result"; taskId: string; agentId: string; actualCost?: number };
+  | { type: "result"; taskId: string; agentId: string; actualCost?: number; harnessId?: string };
 
 /**
  * Append-only cost/dispatch log: {agent, model, task_id, estimated_cost,

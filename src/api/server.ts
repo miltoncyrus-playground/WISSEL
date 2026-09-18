@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Board, BoardEvent } from "../services/board.ts";
 import { SqliteBoard } from "../services/board.ts";
 import { TelemetryLog } from "../services/telemetry.ts";
+import { HarnessPool } from "../core/harness-pool.ts";
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist } from "../core/orchestrator.ts";
@@ -27,6 +28,11 @@ export interface CreateAppOptions {
    *  tests can inject fakes instead of spawning a real `claude`
    *  process. */
   manualExecutors?: Executor[];
+  /** Harnesses wissel can run local work under — see
+   *  docs/SDD-execution-harnesses.md. Defaults to an empty pool (no
+   *  harness concept in play), matching wissel's behavior before
+   *  harnesses existed. */
+  harnesses?: HarnessPool;
 }
 
 /**
@@ -48,6 +54,7 @@ export function createApp(
   // regardless of whether the orchestrator loop is running, so the New
   // Task tab's live preview works even with WISSEL_ORCHESTRATOR unset.
   const router = new Router(registry);
+  const harnesses = opts.harnesses ?? HarnessPool.from([]);
 
   const executeWriteTier = opts.executeWriteTier ?? false;
   const autoExecutors: Executor[] = [new ReadOnlyExecutor()];
@@ -65,7 +72,7 @@ export function createApp(
     router,
     autoExecutors,
     telemetry,
-    { executeWriteTier },
+    { executeWriteTier, harnesses },
   );
   if (opts.orchestratorEnabled) orchestrator.start();
 
@@ -82,6 +89,10 @@ export function createApp(
 
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
+      }
+
+      if (url.pathname === "/harnesses" && req.method === "GET") {
+        return json(harnesses.all().map((h) => ({ ...h, activeCount: harnesses.activeCount(h.id) })));
       }
 
       if (url.pathname === "/events" && req.method === "GET") {
@@ -239,6 +250,11 @@ if (import.meta.main) {
   const board = new SqliteBoard(dbPath);
   const registry = await Registry.load();
   const telemetry = new TelemetryLog(telemetryPath);
+  // Auto-detects every already-authenticated account on this machine
+  // (see harness-discovery.ts) and layers harnesses.yaml on top as
+  // overrides — the file is optional either way; zero configured or
+  // detected harnesses is a valid, common state, not a startup error.
+  const harnesses = await HarnessPool.autoload();
 
   // Off by default: this loop routes eligible tasks automatically the
   // moment they appear. Read-only agents run in-process; write-tier
@@ -250,11 +266,16 @@ if (import.meta.main) {
   const orchestratorEnabled = ["1", "true"].includes(process.env.WISSEL_ORCHESTRATOR ?? "");
   const executeWriteTier = ["1", "true"].includes(process.env.WISSEL_EXECUTE_WRITE_TIER ?? "");
 
-  Bun.serve({ port, fetch: createApp(board, registry, telemetry, { orchestratorEnabled, executeWriteTier }) });
+  Bun.serve({ port, fetch: createApp(board, registry, telemetry, { orchestratorEnabled, executeWriteTier, harnesses }) });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
   console.log(
     orchestratorEnabled
       ? `wissel orchestrator running${executeWriteTier ? " — executing write-tier work locally, no agetor handoff" : ""}`
       : "wissel orchestrator not started — set WISSEL_ORCHESTRATOR=1 to route tasks automatically",
+  );
+  console.log(
+    harnesses.all().length
+      ? `harnesses: ${harnesses.all().map((h) => h.id).join(", ")}`
+      : "no harnesses.yaml found — running with no named harness (ambient environment only)",
   );
 }

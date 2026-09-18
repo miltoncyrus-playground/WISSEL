@@ -44,6 +44,21 @@ test("setDependencies updates dependsOn, rejects unknown ids, emits an event", a
   await expect(board.setDependencies("nope", [])).rejects.toThrow("task not found");
 });
 
+test("setHarness stamps harness on the task, rejects unknown ids, emits an event", async () => {
+  const board = new SqliteBoard();
+  const events: string[] = [];
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  expect(task.harness).toBeUndefined();
+  board.events.on("event", (e: { type: string }) => events.push(e.type));
+
+  const updated = await board.setHarness(task.id, "claude-personal");
+  expect(updated.harness).toBe("claude-personal");
+  expect((await board.get(task.id))!.harness).toBe("claude-personal");
+  expect(events).toEqual(["task.harness"]);
+
+  await expect(board.setHarness("nope", "claude-personal")).rejects.toThrow("task not found");
+});
+
 test("list filters by status and repo", async () => {
   const board = new SqliteBoard();
   const a = await board.create({ title: "a", body: "", labels: [], repo: "repo-a" });

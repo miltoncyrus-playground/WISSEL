@@ -3,7 +3,8 @@ import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, type OrchestratorOptions } from "../src/core/orchestrator.ts";
-import type { AgentDef, Executor, TaskCard } from "../src/core/types.ts";
+import { HarnessPool } from "../src/core/harness-pool.ts";
+import type { AgentDef, Executor, Harness, TaskCard } from "../src/core/types.ts";
 
 // agents/manifest.yaml's real tags: "intake" -> triager (readonly),
 // "code" -> implementer (write). Using the real registry/router (not
@@ -36,6 +37,47 @@ test("sweep routes an unblocked task and runs it on the matching executor", asyn
   expect(updated!.status).toBe("done");
   expect(updated!.routedTo).toBe("triager");
   expect(seen.map((t) => t.id)).toEqual([task.id]);
+});
+
+test("with a HarnessPool configured, a locally-run task is stamped with the picked harness before it finishes, and released after", async () => {
+  const seenHarness: (Harness | undefined)[] = [];
+  const harnesses = HarnessPool.from([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true }]);
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor("readonly", async (task, agent, harness) => {
+        seenHarness.push(harness);
+        // The task must already show the harness live, mid-run — not
+        // only after the result comes back.
+        expect((await board.get(task.id))!.harness).toBe("claude-personal");
+        expect(harnesses.activeCount("claude-personal")).toBe(1);
+        return { taskId: task.id, agentId: agent.id, ok: true, summary: "triaged" };
+      }),
+    ],
+    { harnesses },
+  );
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+
+  expect(seenHarness.map((h) => h?.id)).toEqual(["claude-personal"]);
+  expect(harnesses.activeCount("claude-personal")).toBe(0);
+  expect((await board.get(task.id))!.harness).toBe("claude-personal");
+});
+
+test("with no HarnessPool configured, a locally-run task gets no harness — identical to wissel's behavior before harnesses existed", async () => {
+  const seenHarness: (Harness | undefined)[] = [];
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent, harness) => {
+      seenHarness.push(harness);
+      return { taskId: task.id, agentId: agent.id, ok: true, summary: "triaged" };
+    }),
+  ]);
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+
+  expect(seenHarness).toEqual([undefined]);
+  expect((await board.get(task.id))!.harness).toBeUndefined();
 });
 
 test("a write-tier task is handed off, not run — wissel never spawns execution itself", async () => {

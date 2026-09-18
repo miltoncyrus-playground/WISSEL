@@ -1,4 +1,4 @@
-import type { AgentDef, Executor, TaskCard, TaskResult } from "../core/types.ts";
+import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../core/types.ts";
 import { runClaude, runViaBun, type CommandRunner } from "./claude-cli.ts";
 
 export type { CommandResult, CommandRunner } from "./claude-cli.ts";
@@ -34,7 +34,8 @@ export class ReadOnlyExecutor implements Executor {
     return agent.tier === "readonly";
   }
 
-  run(task: TaskCard, agent: AgentDef): Promise<TaskResult> {
-    return runClaude({ runner: this.runner, task, agent, permissionMode: "plan", model: this.model });
+  async run(task: TaskCard, agent: AgentDef, harness?: Harness): Promise<TaskResult> {
+    const result = await runClaude({ runner: this.runner, task, agent, permissionMode: "plan", model: this.model, env: harness?.env });
+    return harness ? { ...result, harnessId: harness.id } : result;
   }
 }
