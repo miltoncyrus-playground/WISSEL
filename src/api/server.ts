@@ -179,6 +179,11 @@ export function createApp(
           await board.recordOverride(parts[1]!, routerPick, humanPick);
           return new Response(null, { status: 204 });
         }
+
+        if (parts.length === 2 && req.method === "DELETE") {
+          await board.delete(parts[1]!);
+          return new Response(null, { status: 204 });
+        }
       }
 
       return notFound();

@@ -82,6 +82,18 @@ test("POST /tasks/:id/move updates status, 404s on unknown id", async () => {
   expect(missing.status).toBe(404);
 });
 
+test("DELETE /tasks/:id removes the task, 404s on unknown id", async () => {
+  const app = await makeApp();
+  const created = (await (await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "t", body: "", labels: [], repo: "r" }) }))).json()) as TaskCard;
+
+  const del = await app(req(`/tasks/${created.id}`, { method: "DELETE" }));
+  expect(del.status).toBe(204);
+  expect((await app(req(`/tasks/${created.id}`))).status).toBe(404);
+
+  const missing = await app(req("/tasks/nope", { method: "DELETE" }));
+  expect(missing.status).toBe(404);
+});
+
 test("POST /tasks/:id/depends-on updates dependsOn, 404s on unknown id", async () => {
   const app = await makeApp();
   const a = (await (await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "a", body: "", labels: [], repo: "r" }) }))).json()) as TaskCard;

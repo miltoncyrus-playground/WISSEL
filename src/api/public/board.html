@@ -91,6 +91,12 @@
   .kanban { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
   .kcol { flex: 1 0 168px; min-width: 168px; }
   .kcol h3 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
+  .kcol h3 .col-clear {
+    appearance: none; border: none; background: transparent; color: var(--ink-muted); font: inherit;
+    font-size: 10px; font-weight: 700; text-transform: none; letter-spacing: normal; cursor: pointer;
+    margin-left: auto; padding: 2px 4px; border-radius: 4px;
+  }
+  .kcol h3 .col-clear:hover { color: var(--critical); background: rgba(0,0,0,0.06); }
   /* Compact task box, styled after agetor's TaskCard: tight padding, a
      left-border accent (here: the routed fleet member's kind, agent vs
      skill — the axis wissel has that agetor's task-type border doesn't),
@@ -553,6 +559,14 @@
     wrap.appendChild(drawerAction("View diff", {
       onClick: function () { toggleDiff(task.id); },
     }));
+
+    wrap.appendChild(drawerAction("Delete", {
+      className: "danger",
+      onClick: function () {
+        if (!window.confirm("Delete \"" + task.title + "\"? This can't be undone.")) return;
+        deleteTask(task.id).then(function () { closeTaskDrawer(); });
+      },
+    }));
   }
 
   function moveTask(taskId, status) {
@@ -563,6 +577,14 @@
       if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
       return refetchTasks();
     }).catch(function (err) { setDrawerActionError(err.message); });
+  }
+
+  function deleteTask(taskId) {
+    setDrawerActionError(null);
+    return fetch("/tasks/" + taskId, { method: "DELETE" }).then(function (r) {
+      if (!r.ok && r.status !== 204) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).catch(function (err) { setDrawerActionError(err.message); throw err; });
   }
 
   function loadDrawerDecision(taskId) {
@@ -745,7 +767,23 @@
       dot.className = "swatch";
       dot.style.background = "var(" + STATUS_COLOR[status] + ")";
       h3.appendChild(dot);
-      h3.appendChild(document.createTextNode(STATUS_LABEL[status] + " (" + inCol.length + ")"));
+      var label = document.createElement("span");
+      label.textContent = STATUS_LABEL[status] + " (" + inCol.length + ")";
+      h3.appendChild(label);
+      // Only terminal columns get a bulk clear — inbox/ready/running/etc.
+      // still have work to do, so wiping them is never what's meant.
+      if ((status === "done" || status === "failed" || status === "no-match") && inCol.length) {
+        var clearBtn = document.createElement("button");
+        clearBtn.type = "button";
+        clearBtn.className = "col-clear";
+        clearBtn.textContent = "Clear";
+        clearBtn.title = "Delete all " + inCol.length + " card(s) in " + STATUS_LABEL[status];
+        clearBtn.addEventListener("click", function () {
+          if (!window.confirm("Delete all " + inCol.length + " card(s) in " + STATUS_LABEL[status] + "? This can't be undone.")) return;
+          Promise.all(inCol.map(function (t) { return fetch("/tasks/" + t.id, { method: "DELETE" }); })).then(refetchTasks);
+        });
+        h3.appendChild(clearBtn);
+      }
       col.appendChild(h3);
       inCol.forEach(function (t) {
         var agent = t.routedTo ? agentsById[t.routedTo] : undefined;

@@ -25,6 +25,8 @@ export interface Board {
   getResult(taskId: string): Promise<TaskResult | undefined>;
   /** Manual override. Every one of these is a labelled router eval case. */
   recordOverride(taskId: string, routerPick: string, humanPick: string): Promise<void>;
+  /** Removes a task and its recorded decisions/results/overrides. */
+  delete(id: string): Promise<void>;
 }
 
 export type BoardEvent =
@@ -33,7 +35,8 @@ export type BoardEvent =
   | { type: "task.dependencies"; task: TaskCard }
   | { type: "task.decided"; decision: RoutingDecision }
   | { type: "task.result"; result: TaskResult }
-  | { type: "task.override"; taskId: string; routerPick: string; humanPick: string };
+  | { type: "task.override"; taskId: string; routerPick: string; humanPick: string }
+  | { type: "task.deleted"; taskId: string };
 
 interface TaskRow {
   id: string;
@@ -242,5 +245,15 @@ export class SqliteBoard implements Board {
       [taskId, routerPick, humanPick, new Date().toISOString()],
     );
     this.events.emit("event", { type: "task.override", taskId, routerPick, humanPick } satisfies BoardEvent);
+  }
+
+  async delete(id: string): Promise<void> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("DELETE FROM tasks WHERE id = ?", [id]);
+    this.db.run("DELETE FROM routing_decisions WHERE taskId = ?", [id]);
+    this.db.run("DELETE FROM task_results WHERE taskId = ?", [id]);
+    this.db.run("DELETE FROM overrides WHERE taskId = ?", [id]);
+    this.events.emit("event", { type: "task.deleted", taskId: id } satisfies BoardEvent);
   }
 }

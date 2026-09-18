@@ -131,6 +131,24 @@ test("getResult returns the most recent result, and undefined for a task with no
   });
 });
 
+test("delete removes a task and its decision/result/override, rejects unknown ids, emits an event", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  await board.recordResult({ taskId: task.id, agentId: "a", ok: true, summary: "done" });
+  await board.recordOverride(task.id, "a", "b");
+
+  const events: string[] = [];
+  board.events.on("event", (e: { type: string }) => events.push(e.type));
+
+  await board.delete(task.id);
+
+  expect(await board.get(task.id)).toBeUndefined();
+  expect(await board.getResult(task.id)).toBeUndefined();
+  expect(events).toEqual(["task.deleted"]);
+
+  await expect(board.delete("nope")).rejects.toThrow("task not found");
+});
+
 test("create and move emit events", async () => {
   const board = new SqliteBoard();
   const events: string[] = [];
