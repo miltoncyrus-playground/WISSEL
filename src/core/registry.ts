@@ -37,10 +37,14 @@ export class Registry {
     return this.agents.get(id);
   }
 
-  /** Candidates reachable for a task, before scoring. */
-  candidatesFor(labels: string[]): AgentDef[] {
+  /** Candidates reachable for a task, before scoring. `allowIds`, when
+   *  given, prunes to exactly that set — the declared-handoffs
+   *  restriction for a follow-up task (Router resolves it; this just
+   *  applies it). `[]` correctly yields zero candidates: a deliberate
+   *  "hands off to no one" is not the same as "no restriction." */
+  candidatesFor(labels: string[], allowIds?: string[]): AgentDef[] {
     void labels;
-    // TODO: prune by declared handoff edges once graph routing lands.
-    return this.all().filter((a) => a.tier !== "service");
+    const base = this.all().filter((a) => a.tier !== "service");
+    return allowIds ? base.filter((a) => allowIds.includes(a.id)) : base;
   }
 }

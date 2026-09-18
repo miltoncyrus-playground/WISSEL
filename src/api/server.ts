@@ -5,7 +5,7 @@ import { SqliteBoard } from "../services/board.ts";
 import { TelemetryLog } from "../services/telemetry.ts";
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
-import { Orchestrator, finishResult } from "../core/orchestrator.ts";
+import { Orchestrator, finishResult, resolveHandoffAllowlist } from "../core/orchestrator.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import type { RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -52,9 +52,10 @@ export function createApp(
       }
 
       if (url.pathname === "/route/preview" && req.method === "POST") {
-        const body = (await req.json()) as { labels?: string[] };
+        const body = (await req.json()) as { labels?: string[]; parentTaskId?: string };
         const labels = Array.isArray(body.labels) ? body.labels : [];
-        const decision = await router.route({ id: "preview", title: "", body: "", labels, repo: "", status: "inbox" });
+        const allowIds = await resolveHandoffAllowlist(board as Board, registry, body.parentTaskId);
+        const decision = await router.route({ id: "preview", title: "", body: "", labels, repo: "", status: "inbox" }, allowIds);
         return json(decision);
       }
 

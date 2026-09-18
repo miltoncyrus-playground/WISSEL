@@ -197,6 +197,50 @@ test("POST /route/preview reports no-match without confident selection, and empt
   expect(missing.status).toBe(200);
 });
 
+test("POST /route/preview restricts to a routed parent's declared handoffs", async () => {
+  const app = await makeApp();
+
+  const parent = await app(
+    req("/tasks", { method: "POST", body: JSON.stringify({ title: "p", body: "", labels: [], repo: "r" }) }),
+  );
+  const parentTask = (await parent.json()) as TaskCard;
+  await app(
+    req(`/tasks/${parentTask.id}/decision`, {
+      method: "POST",
+      body: JSON.stringify({
+        matchedTags: ["intake"], candidates: [], selected: "triager", confident: true,
+        reason: "r", strategy: "rule", decidedAt: new Date().toISOString(),
+      }),
+    }),
+  );
+
+  // "ci" matches fixer perfectly, but triager's only declared handoff is planner.
+  const res = await app(
+    req("/route/preview", { method: "POST", body: JSON.stringify({ labels: ["ci"], parentTaskId: parentTask.id }) }),
+  );
+  const decision = (await res.json()) as { selected: string | null; confident: boolean; candidates: { agentId: string }[]; reason: string };
+  expect(decision.candidates.map((c) => c.agentId)).toEqual(["planner"]);
+  expect(decision.confident).toBe(false);
+  expect(decision.reason).toContain("restricted to declared handoffs: planner");
+});
+
+test("POST /tasks round-trips parentTaskId", async () => {
+  const app = await makeApp();
+  const parent = await app(
+    req("/tasks", { method: "POST", body: JSON.stringify({ title: "p", body: "", labels: [], repo: "r" }) }),
+  );
+  const parentTask = (await parent.json()) as TaskCard;
+
+  const child = await app(
+    req("/tasks", { method: "POST", body: JSON.stringify({ title: "c", body: "", labels: [], repo: "r", parentTaskId: parentTask.id }) }),
+  );
+  const childTask = (await child.json()) as TaskCard;
+  expect(childTask.parentTaskId).toBe(parentTask.id);
+
+  const fetched = await app(req(`/tasks/${childTask.id}`));
+  expect(((await fetched.json()) as TaskCard).parentTaskId).toBe(parentTask.id);
+});
+
 test("POST /tasks/:id/result routes a write-tier report to review, a readonly one to done", async () => {
   const app = await makeApp();
 

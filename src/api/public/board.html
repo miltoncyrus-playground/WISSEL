@@ -142,6 +142,7 @@
   .fleet-id { font-size: 12.5px; font-weight: 700; }
   .fleet-desc { font-size: 11.5px; color: var(--ink-muted); margin-top: 2px; line-height: 1.4; }
   .fleet-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .fleet-handoffs { font-size: 10.5px; color: var(--ink-muted); margin-top: 6px; }
   .tag { font-size: 10px; font-weight: 600; color: var(--ink-2); background: var(--page); border-radius: 5px; padding: 2px 6px; }
   .tier-chip { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; border-radius: 5px; padding: 2px 6px; flex: none; white-space: nowrap; }
   .tier-chip.readonly { background: var(--page); color: var(--ink-muted); }
@@ -269,6 +270,14 @@
         <input id="ntLabelInput" type="text" placeholder="type a label, Enter to add…" autocomplete="off">
         <div class="suggestions" id="ntSuggestions" hidden></div>
         <p class="field-hint">Drives routing — the preview below updates as you add labels.</p>
+      </div>
+
+      <div class="field">
+        <label for="ntParentTask">Follow-up of</label>
+        <select id="ntParentTask">
+          <option value="">None — route normally</option>
+        </select>
+        <p class="field-hint">Restricts routing to the parent's declared handoffs, if it has any.</p>
       </div>
 
       <div class="panel-inset">
@@ -483,6 +492,15 @@
       tagsEl.appendChild(tag);
     });
     main.appendChild(idEl); main.appendChild(descEl); main.appendChild(tagsEl);
+    // Advisory only — the router enforces this restriction for a
+    // follow-up task, but nothing here changes based on it; undeclared
+    // (undefined) shows nothing, since most of the fleet hasn't opted
+    // into the handoff graph and a blank line for each would be noise.
+    if (a.handoffs !== undefined) {
+      var handoffsEl = document.createElement("div"); handoffsEl.className = "fleet-handoffs";
+      handoffsEl.textContent = a.handoffs.length ? "→ hands off to: " + a.handoffs.join(", ") : "→ hands off to no one";
+      main.appendChild(handoffsEl);
+    }
 
     var side = document.createElement("div");
     side.style.flex = "none";
@@ -522,6 +540,7 @@
     renderFleetBoxes();
     renderRepoOptions();
     renderDependsOnOptions();
+    renderParentTaskOptions();
     document.getElementById("taskCount").innerHTML = '<span class="live-dot"></span>' + tasks.length + " tasks";
   }
 
@@ -605,11 +624,15 @@
 
   // Debounced call to the real Router (POST /route/preview) — never a
   // client-side reimplementation of tag-overlap scoring, so the preview
-  // can never drift from what actually happens at dispatch time.
+  // can never drift from what actually happens at dispatch time. Also
+  // the only place that resolves the "Follow-up of" restriction before
+  // create, so a handoff-restricted refusal is visible before spend,
+  // not discovered after.
   function scheduleNtPreview() {
     if (ntPreviewTimer) clearTimeout(ntPreviewTimer);
     var previewBody = document.getElementById("ntPreviewBody");
-    if (ntLabels.length === 0) {
+    var parentTaskId = document.getElementById("ntParentTask").value;
+    if (ntLabels.length === 0 && !parentTaskId) {
       ntLastPreview = null;
       previewBody.className = "muted";
       previewBody.textContent = "Add labels to see what the router would pick.";
@@ -620,7 +643,7 @@
     ntPreviewTimer = setTimeout(function () {
       fetch("/route/preview", {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ labels: ntLabels }),
+        body: JSON.stringify({ labels: ntLabels, parentTaskId: parentTaskId || undefined }),
       }).then(function (r) { return r.json(); }).then(function (decision) {
         ntLastPreview = decision;
         previewBody.className = "";
@@ -700,6 +723,29 @@
     return ids;
   }
 
+  // Only tasks with a routed agent are offered — an unrouted parent has
+  // no declared handoffs to restrict anything to, so listing it would
+  // just be a dead end. Preserves the current selection across
+  // rerenders the same way renderDependsOnOptions preserves checkboxes.
+  function renderParentTaskOptions() {
+    var select = document.getElementById("ntParentTask");
+    if (!select) return;
+    var current = select.value;
+    var routed = tasks.filter(function (t) { return t.routedTo; });
+
+    select.textContent = "";
+    var none = document.createElement("option");
+    none.value = ""; none.textContent = "None — route normally";
+    select.appendChild(none);
+    routed.forEach(function (t) {
+      var opt = document.createElement("option");
+      opt.value = t.id;
+      opt.textContent = t.title + " (" + t.routedTo + ")";
+      select.appendChild(opt);
+    });
+    select.value = routed.some(function (t) { return t.id === current; }) ? current : "";
+  }
+
   function renderRepoOptions() {
     var list = document.getElementById("ntRepoList");
     if (!list) return;
@@ -722,6 +768,7 @@
     renderChips();
     document.getElementById("ntLabelInput").value = "";
     document.getElementById("ntSuggestions").hidden = true;
+    document.getElementById("ntParentTask").value = "";
     ntOverride = "";
     renderOverrideGrid();
     scheduleNtPreview();
@@ -780,6 +827,8 @@
     setTimeout(function () { document.getElementById("ntSuggestions").hidden = true; }, 100);
   });
 
+  document.getElementById("ntParentTask").addEventListener("change", scheduleNtPreview);
+
   document.getElementById("newTaskForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
     var titleEl = document.getElementById("ntTitle");
@@ -806,7 +855,11 @@
     statusEl.hidden = false;
     statusEl.textContent = "creating…";
 
-    var payload = { title: title, body: taskBody, labels: ntLabels.slice(), repo: repo, dependsOn: selectedDependsOn() };
+    var parentTaskId = document.getElementById("ntParentTask").value;
+    var payload = {
+      title: title, body: taskBody, labels: ntLabels.slice(), repo: repo, dependsOn: selectedDependsOn(),
+      parentTaskId: parentTaskId || undefined,
+    };
 
     fetch("/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) })
       .then(function (r) {

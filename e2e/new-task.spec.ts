@@ -70,6 +70,73 @@ test.describe("New Task tab", () => {
     await expect(page.locator("#kanbanBody")).toContainText(title);
   });
 
+  test("Follow-up of restricts the live preview to the parent's declared handoffs", async ({ page, request }) => {
+    const parentTitle = unique("Parent routed to triager");
+    const created = await request.post("/tasks", {
+      data: { title: parentTitle, body: "x", labels: ["intake"], repo: "/tmp/wissel-e2e-repo" },
+    });
+    const parent = await created.json();
+    await request.post(`/tasks/${parent.id}/decision`, {
+      data: {
+        matchedTags: ["intake"], candidates: [{ agentId: "triager", score: 1, reason: "tag overlap 1/1" }],
+        selected: "triager", confident: true, strategy: "rule", reason: "tag overlap 1/1",
+        decidedAt: new Date().toISOString(),
+      },
+    });
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "New task" }).click();
+
+    // "ci" matches fixer perfectly and would win with no restriction.
+    await page.locator("#ntLabelInput").fill("ci");
+    await page.locator("#ntLabelInput").press("Enter");
+    await expect(page.locator("#ntPreviewBody")).toContainText("fixer");
+
+    await page.locator("#ntParentTask").selectOption(parent.id);
+
+    // triager's only declared handoff is planner — fixer must drop out.
+    const preview = page.locator("#ntPreviewBody");
+    await expect(preview).toContainText("Would not route");
+    await expect(preview).toContainText("restricted to declared handoffs: planner");
+    await expect(preview.locator("table.candidates tr")).toHaveCount(2); // header + planner only
+  });
+
+  test("creating a follow-up task round-trips parentTaskId", async ({ page, request }) => {
+    const parentTitle = unique("Parent for create test");
+    const created = await request.post("/tasks", {
+      data: { title: parentTitle, body: "x", labels: ["intake"], repo: "/tmp/wissel-e2e-repo" },
+    });
+    const parent = await created.json();
+    await request.post(`/tasks/${parent.id}/decision`, {
+      data: {
+        matchedTags: ["intake"], candidates: [{ agentId: "triager", score: 1, reason: "tag overlap 1/1" }],
+        selected: "triager", confident: true, strategy: "rule", reason: "tag overlap 1/1",
+        decidedAt: new Date().toISOString(),
+      },
+    });
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "New task" }).click();
+
+    const childTitle = unique("Follow-up task");
+    await page.locator("#ntTitle").fill(childTitle);
+    await page.locator("#ntBody").fill("created as a follow-up");
+    await page.locator("#ntRepo").fill("/tmp/wissel-e2e-repo");
+    await page.locator("#ntLabelInput").fill("planning");
+    await page.locator("#ntLabelInput").press("Enter");
+    await page.locator("#ntParentTask").selectOption(parent.id);
+
+    const [createResponse] = await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith("/tasks") && r.request().method() === "POST"),
+      page.locator("#newTaskForm button[type=submit]").click(),
+    ]);
+    const child = (await createResponse.json()) as { id: string; parentTaskId?: string };
+    expect(child.parentTaskId).toBe(parent.id);
+
+    // Sticky-field reset clears the parent selection back to "None".
+    await expect(page.locator("#ntParentTask")).toHaveValue("");
+  });
+
   test("manual override records a manual decision that beats the router's pick", async ({ page, request }) => {
     const title = unique("Override smoke task");
 

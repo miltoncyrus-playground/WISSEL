@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
-import { Orchestrator, finishResult } from "../src/core/orchestrator.ts";
+import { Orchestrator, finishResult, resolveHandoffAllowlist } from "../src/core/orchestrator.ts";
 import type { AgentDef, Executor, TaskCard } from "../src/core/types.ts";
 
 // agents/manifest.yaml's real tags: "intake" -> triager (readonly),
@@ -175,6 +175,86 @@ test("concurrent sweeps don't double-run the same task", async () => {
   await Promise.all([orchestrator.sweep(), orchestrator.sweep(), orchestrator.sweep()]);
 
   expect(runs).toBe(1);
+});
+
+test("a follow-up task is restricted to its parent agent's declared handoffs, excluding a would-otherwise-win candidate", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" })),
+  ]);
+
+  // Parent routes to triager (handoffs: [planner] in the real manifest).
+  const parent = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+  expect((await board.get(parent.id))!.routedTo).toBe("triager");
+
+  // "ci" is a perfect tag match for fixer, which would win unrestricted —
+  // but fixer isn't in triager's handoffs, only planner is.
+  const child = await board.create({
+    title: "follow-up", body: "", labels: ["ci"], repo: "r", parentTaskId: parent.id,
+  });
+  await orchestrator.sweep();
+
+  const after = await board.get(child.id);
+  expect(after!.status).toBe("no-match");
+  expect(after!.routedTo).toBeUndefined();
+  const decision = await board.getDecision(child.id);
+  expect(decision!.reason).toContain("restricted to declared handoffs: planner");
+  expect(decision!.candidates.map((c) => c.agentId)).toEqual(["planner"]);
+});
+
+test("a follow-up under a parent whose agent never declared handoffs routes unrestricted", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" })),
+  ]);
+
+  // reviewer never declares `handoffs` in the real manifest.
+  const parent = await board.create({ title: "review this", body: "", labels: ["review"], repo: "r" });
+  await orchestrator.sweep();
+  expect((await board.get(parent.id))!.routedTo).toBe("reviewer");
+
+  const child = await board.create({
+    title: "follow-up", body: "", labels: ["ci"], repo: "r", parentTaskId: parent.id,
+  });
+  await orchestrator.sweep();
+
+  expect((await board.get(child.id))!.routedTo).toBe("fixer");
+});
+
+test("resolveHandoffAllowlist", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([
+    { id: "a", name: "A", kind: "agent", tier: "readonly", description: "", whenToUse: "", tags: [], executor: "readonly", handoffs: ["b"], inputs: [], outputs: [], trustLevel: "low", toolAccess: [], costProfile: { model: "m", estUsdPerTask: 0.01 } },
+    { id: "no-graph", name: "No graph", kind: "agent", tier: "readonly", description: "", whenToUse: "", tags: [], executor: "readonly", inputs: [], outputs: [], trustLevel: "low", toolAccess: [], costProfile: { model: "m", estUsdPerTask: 0.01 } },
+    { id: "dead-end", name: "Dead end", kind: "agent", tier: "readonly", description: "", whenToUse: "", tags: [], executor: "readonly", handoffs: [], inputs: [], outputs: [], trustLevel: "low", toolAccess: [], costProfile: { model: "m", estUsdPerTask: 0.01 } },
+  ]);
+
+  expect(await resolveHandoffAllowlist(board, registry, undefined)).toBeUndefined();
+
+  const unrouted = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  expect(await resolveHandoffAllowlist(board, registry, unrouted.id)).toBeUndefined();
+  expect(await resolveHandoffAllowlist(board, registry, "no-such-task")).toBeUndefined();
+
+  const routedToA = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  await board.recordDecision({
+    taskId: routedToA.id, matchedTags: [], candidates: [], selected: "a", confident: true,
+    reason: "r", strategy: "manual", decidedAt: new Date().toISOString(),
+  });
+  expect(await resolveHandoffAllowlist(board, registry, routedToA.id)).toEqual(["b"]);
+
+  const routedToNoGraph = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  await board.recordDecision({
+    taskId: routedToNoGraph.id, matchedTags: [], candidates: [], selected: "no-graph", confident: true,
+    reason: "r", strategy: "manual", decidedAt: new Date().toISOString(),
+  });
+  expect(await resolveHandoffAllowlist(board, registry, routedToNoGraph.id)).toBeUndefined();
+
+  const routedToDeadEnd = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  await board.recordDecision({
+    taskId: routedToDeadEnd.id, matchedTags: [], candidates: [], selected: "dead-end", confident: true,
+    reason: "r", strategy: "manual", decidedAt: new Date().toISOString(),
+  });
+  // [] is a real, deliberate restriction — must come back as [], not undefined.
+  expect(await resolveHandoffAllowlist(board, registry, routedToDeadEnd.id)).toEqual([]);
 });
 
 test("start() reacts to a task created after it begins watching", async () => {
