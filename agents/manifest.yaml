@@ -1,11 +1,15 @@
-# The fleet. `description` is what the agent IS; `whenToUse` is what
-# should land there. The router reads whenToUse and tags; the fleet view
-# reads all of it. inputs/outputs/costProfile/trustLevel/toolAccess are
-# the capability contract — data the router and the cost view both read,
-# defined before any routing logic touches it.
+# The fleet — agents and skills both. `kind` distinguishes a full task
+# handler (agent) from a narrower, more mechanical capability (skill);
+# both route and dispatch identically, kind is a label, not a separate
+# code path. `description` is what it IS; `whenToUse` is what should land
+# there. The router reads whenToUse and tags; the fleet view reads all of
+# it. inputs/outputs/costProfile/trustLevel/toolAccess are the capability
+# contract — data the router and the cost view both read, defined before
+# any routing logic touches it.
 agents:
   - id: triager
     name: Triager
+    kind: agent
     tier: readonly
     description: Turns raw input into a structured task card.
     whenToUse: Unstructured input with no labels yet — an issue, a note, a dump.
@@ -20,6 +24,7 @@ agents:
 
   - id: planner
     name: Planner
+    kind: agent
     tier: readonly
     description: Decomposes a vague card into subtasks with acceptance criteria.
     whenToUse: Card describes an outcome but not the steps to get there.
@@ -34,6 +39,7 @@ agents:
 
   - id: reviewer
     name: Reviewer
+    kind: agent
     tier: readonly
     description: Reviews a diff against repo conventions and prior decisions.
     whenToUse: A branch or PR exists and needs review before merge.
@@ -47,6 +53,7 @@ agents:
 
   - id: repo-briefer
     name: Repo briefer
+    kind: agent
     tier: readonly
     description: Builds and maintains the repo context document.
     whenToUse: A repo is new to the fleet, or its conventions have drifted.
@@ -60,6 +67,7 @@ agents:
 
   - id: memory-curator
     name: Memory curator
+    kind: agent
     tier: readonly
     description: Dedups and promotes session lessons into durable memory.
     whenToUse: Scheduled housekeeping, not task-triggered.
@@ -73,6 +81,7 @@ agents:
 
   - id: implementer
     name: Implementer
+    kind: agent
     tier: write
     description: Writes code for a card with clear acceptance criteria.
     whenToUse: Card has clear acceptance criteria and needs code written.
@@ -87,6 +96,7 @@ agents:
 
   - id: fixer
     name: Fixer
+    kind: agent
     tier: write
     description: Narrow loop — CI failed or a test broke, make it green.
     whenToUse: A specific failure exists with a clear signal to fix.
@@ -100,6 +110,7 @@ agents:
 
   - id: integrator
     name: Integrator
+    kind: agent
     tier: write
     description: Rebases, resolves conflicts, merges.
     whenToUse: Work is complete but does not land cleanly.
@@ -110,3 +121,61 @@ agents:
     trustLevel: high
     toolAccess: [read, write, bash]
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.25 }
+
+  # --- skills: narrower, more mechanical, cheaper than a full agent ---
+
+  - id: commit-message-drafter
+    name: Commit message drafter
+    kind: skill
+    tier: readonly
+    description: Writes a conventional commit message from a staged diff.
+    whenToUse: A diff exists and needs a commit message, nothing more.
+    tags: [git, commit]
+    executor: readonly
+    inputs: [diff]
+    outputs: [commit-message]
+    trustLevel: low
+    toolAccess: [read]
+    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.01 }
+
+  - id: pr-description-writer
+    name: PR description writer
+    kind: skill
+    tier: readonly
+    description: Drafts a pull request description from a diff and its task card.
+    whenToUse: A branch is ready to open as a PR and needs a description.
+    tags: [docs, pr]
+    executor: readonly
+    inputs: [diff, task-card]
+    outputs: [pr-description]
+    trustLevel: low
+    toolAccess: [read]
+    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.02 }
+
+  - id: changelog-writer
+    name: Changelog writer
+    kind: skill
+    tier: readonly
+    description: Turns a batch of merged commits into a changelog entry.
+    whenToUse: A release is being cut and needs its changelog written.
+    tags: [docs, changelog, release]
+    executor: readonly
+    inputs: [commits]
+    outputs: [changelog-entry]
+    trustLevel: low
+    toolAccess: [read]
+    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.03 }
+
+  - id: lint-fixer
+    name: Lint fixer
+    kind: skill
+    tier: write
+    description: Runs the repo's linter and applies only its auto-fixes.
+    whenToUse: Lint is failing and the fix is mechanical, not a design call.
+    tags: [lint, style]
+    executor: handoff
+    inputs: [repo]
+    outputs: [diff]
+    trustLevel: medium
+    toolAccess: [read, write, bash]
+    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.05 }

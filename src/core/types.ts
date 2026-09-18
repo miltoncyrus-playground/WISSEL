@@ -1,5 +1,10 @@
 export type AgentTier = "service" | "readonly" | "write";
 export type TrustLevel = "low" | "medium" | "high";
+/** "agent" is a full task handler (triage, plan, implement); "skill" is a
+ *  narrower, more mechanical capability (draft a commit message, fix
+ *  lint). Both route and dispatch identically — kind is a fleet-view/CLI
+ *  label, not a separate code path. */
+export type FleetKind = "agent" | "skill";
 
 /** What running this agent is expected to cost. Estimates are fine —
  *  the spec only requires that a dispatch always carries a number. */
@@ -11,6 +16,7 @@ export interface CostProfile {
 export interface AgentDef {
   id: string;
   name: string;
+  kind: FleetKind;
   tier: AgentTier;
   /** What this agent is. */
   description: string;
