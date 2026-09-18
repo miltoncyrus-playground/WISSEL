@@ -6,12 +6,11 @@
   "description": "Routes tasks to a fleet of agents and skills.",
   "scripts": {
     "dev": "bun run --watch src/api/server.ts",
-    "route": "bun run src/cli.ts route",
     "agents": "bun run src/cli.ts agents",
+    "why": "bun run src/cli.ts why",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "eval:readonly": "bun run eval/readonly.eval.ts",
-    "eval:worktree-claude": "bun run eval/worktree-claude.eval.ts"
+    "eval:readonly": "bun run eval/readonly.eval.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",

@@ -26,6 +26,7 @@ interface ClaudeResultJson {
   is_error: boolean;
   result?: string;
   permission_denials?: unknown[];
+  total_cost_usd?: number;
 }
 
 export interface ReadOnlyExecutorOptions {
@@ -93,6 +94,7 @@ export class ReadOnlyExecutor implements Executor {
       agentId: agent.id,
       ok: !parsed.is_error,
       summary,
+      actualCost: parsed.total_cost_usd,
     };
   }
 }

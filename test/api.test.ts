@@ -107,6 +107,7 @@ test("POST /tasks/:id/decision, /result, /override return 204 and fan out over S
         matchedTags: [],
         candidates: [],
         selected: "a",
+        confident: true,
         reason: "r",
         strategy: "rule",
         decidedAt: new Date().toISOString(),
@@ -135,4 +136,62 @@ test("POST /tasks/:id/decision, /result, /override return 204 and fan out over S
   const chunk = decoder.decode((await reader.read()).value);
   expect(chunk).toContain("task.decided");
   await reader.cancel();
+});
+
+test("GET /tasks/:id/decision returns the recorded decision, 404s with none", async () => {
+  const app = await makeApp();
+  const create = await app(
+    req("/tasks", { method: "POST", body: JSON.stringify({ title: "t", body: "", labels: [], repo: "r" }) }),
+  );
+  const created = (await create.json()) as TaskCard;
+
+  const before = await app(req(`/tasks/${created.id}/decision`));
+  expect(before.status).toBe(404);
+
+  await app(
+    req(`/tasks/${created.id}/decision`, {
+      method: "POST",
+      body: JSON.stringify({
+        matchedTags: ["x"],
+        candidates: [{ agentId: "triager", score: 1, reason: "tag match" }],
+        selected: "triager",
+        confident: true,
+        reason: "tag match",
+        strategy: "rule",
+        decidedAt: new Date().toISOString(),
+      }),
+    }),
+  );
+
+  const after = await app(req(`/tasks/${created.id}/decision`));
+  expect(after.status).toBe(200);
+  const decision = (await after.json()) as { selected: string; confident: boolean };
+  expect(decision.selected).toBe("triager");
+  expect(decision.confident).toBe(true);
+});
+
+test("POST /tasks/:id/result routes a write-tier report to review, a readonly one to done", async () => {
+  const app = await makeApp();
+
+  const writeTask = (await (
+    await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "w", body: "", labels: [], repo: "r" }) }))
+  ).json()) as TaskCard;
+  await app(
+    req(`/tasks/${writeTask.id}/result`, {
+      method: "POST",
+      body: JSON.stringify({ agentId: "implementer", ok: true, summary: "opened a PR" }),
+    }),
+  );
+  expect((await (await app(req(`/tasks/${writeTask.id}`))).json() as TaskCard).status).toBe("review");
+
+  const readonlyTask = (await (
+    await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "r", body: "", labels: [], repo: "r" }) }))
+  ).json()) as TaskCard;
+  await app(
+    req(`/tasks/${readonlyTask.id}/result`, {
+      method: "POST",
+      body: JSON.stringify({ agentId: "triager", ok: true, summary: "triaged" }),
+    }),
+  );
+  expect((await (await app(req(`/tasks/${readonlyTask.id}`))).json() as TaskCard).status).toBe("done");
 });

@@ -1,5 +1,17 @@
 # wissel — handover brief
 
+> **Superseded on one point.** `docs/HANDOVER-2026-09-17.md` is the
+> authoritative spec now, and it disagrees with this doc's build order:
+> wissel routes and dispatches, it does not spawn worktrees or manage
+> kanban columns itself — that's agetor's job. `WorktreeClaudeExecutor`,
+> `WorktreeService`, `TmuxSupervisor`, and `Provisioner` (this doc's steps
+> 2–3, 5) were removed for exactly this reason; write-tier agents are now
+> handed off (`Orchestrator` moves the task to `dispatched` and stops —
+> see `src/core/orchestrator.ts`) rather than executed in-process.
+> Everything else below — the executor abstraction shape, the YAML
+> registry, the full-ranking router, pluggable strategies, overrides as
+> training data — still holds and is unaffected.
+
 Paste this into a Claude Code session after `cd` into this repo.
 
 ## What this is

@@ -20,6 +20,7 @@
     --stage-3: #2a78d6;
     --stage-4: #184f95;
     --critical: #d03b3b;
+    --no-match: #b8862f;
     --accent: #4a3aa7;
     --accent-wash: rgba(74, 58, 167, 0.10);
   }
@@ -34,6 +35,7 @@
       --line: #2c2c2a;
       --baseline: #383835;
       --border: rgba(255, 255, 255, 0.10);
+      --no-match: #d4a24e;
       --accent: #9085e9;
       --accent-wash: rgba(144, 133, 233, 0.14);
     }
@@ -102,6 +104,15 @@
   .kcard .kt { font-weight: 600; margin-bottom: 3px; }
   .kcard .ka { color: var(--ink-muted); font-size: 11px; }
 
+  .decision-head { font-size: 13px; color: var(--ink-2); margin: 0 0 12px; }
+  .decision-head b { color: var(--ink-1); }
+  .decision-head.no-match { color: var(--no-match); }
+  .candidates { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  .candidates th { text-align: left; font-weight: 600; color: var(--ink-muted); text-transform: uppercase; font-size: 10.5px; letter-spacing: 0.04em; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  .candidates td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .candidates tr.selected td { font-weight: 600; color: var(--accent); }
+  .candidates .reason { color: var(--ink-muted); }
+
   .empty { text-align: center; padding: 48px 16px; color: var(--ink-muted); font-size: 13px; }
   .empty code { background: var(--page); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, monospace; }
 
@@ -132,13 +143,19 @@
     <div class="legend" id="arcLegend">
       <span class="legend-item"><span class="swatch" style="background:var(--stage-1)"></span>inbox</span>
       <span class="legend-item"><span class="swatch" style="background:var(--stage-2)"></span>ready / running</span>
-      <span class="legend-item"><span class="swatch" style="background:var(--stage-3)"></span>review</span>
-      <span class="legend-item"><span class="swatch" style="background:var(--stage-4)"></span>done</span>
+      <span class="legend-item"><span class="swatch" style="background:var(--stage-3)"></span>dispatched</span>
+      <span class="legend-item"><span class="swatch" style="background:var(--stage-4)"></span>review / done</span>
       <span class="legend-item"><span class="swatch" style="background:var(--critical)"></span>failed</span>
+      <span class="legend-item"><span class="swatch" style="background:var(--no-match)"></span>no match</span>
       <span class="legend-item"><span class="ring"></span>write-tier agent</span>
       <span class="legend-item"><span class="ring dashed"></span>read-only agent</span>
-      <span class="legend-item" style="color:var(--accent)">● hover a node to trace its chain</span>
+      <span class="legend-item" style="color:var(--accent)">● click a node for its routing decision, hover to trace its chain</span>
     </div>
+  </section>
+
+  <section class="panel" id="decisionPanel" hidden>
+    <p class="eyebrow">Routing decision</p>
+    <div id="decisionBody"></div>
   </section>
 
   <section class="panel" id="kanbanPanel" hidden>
@@ -152,9 +169,16 @@
 (function () {
   "use strict";
 
-  var STAGE_VAR = { inbox: "--stage-1", ready: "--stage-2", running: "--stage-2", review: "--stage-3", done: "--stage-4", failed: "--critical" };
-  var STATUS_LABEL = { inbox: "Inbox", ready: "Ready", running: "Running", review: "Review", done: "Done", failed: "Failed" };
-  var COLUMNS = ["inbox", "ready", "running", "review", "done", "failed"];
+  var STAGE_VAR = {
+    inbox: "--stage-1", ready: "--stage-2", running: "--stage-2",
+    dispatched: "--stage-3", review: "--stage-4", done: "--stage-4",
+    failed: "--critical", "no-match": "--no-match",
+  };
+  var STATUS_LABEL = {
+    inbox: "Inbox", ready: "Ready", running: "Running", dispatched: "Dispatched",
+    review: "Review", done: "Done", failed: "Failed", "no-match": "No match",
+  };
+  var COLUMNS = ["inbox", "ready", "running", "dispatched", "review", "done", "failed", "no-match"];
   var NS = "http://www.w3.org/2000/svg";
 
   var tasks = [];
@@ -303,6 +327,8 @@
       g.addEventListener("pointerleave", deactivate);
       g.addEventListener("focus", activate);
       g.addEventListener("blur", deactivate);
+      g.addEventListener("click", function () { showDecision(id); });
+      g.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); showDecision(id); } });
     });
   }
 
@@ -326,6 +352,54 @@
       nodeGroups[nid].querySelector(".node-dot").classList.remove("lit-ring");
     });
     arcsLayer.querySelectorAll(".arc").forEach(function (p) { p.classList.remove("lit", "dim"); });
+  }
+
+  function showDecision(taskId) {
+    var panel = document.getElementById("decisionPanel");
+    var body = document.getElementById("decisionBody");
+    panel.hidden = false;
+    body.textContent = "loading…";
+
+    fetch("/tasks/" + taskId + "/decision").then(function (r) {
+      if (r.status === 404) { body.textContent = "No routing decision recorded for this task yet."; return null; }
+      return r.json();
+    }).then(function (decision) {
+      if (!decision) return;
+      body.textContent = "";
+
+      var head = document.createElement("p");
+      head.className = "decision-head" + (decision.confident ? "" : " no-match");
+      if (decision.confident) {
+        var b = document.createElement("b"); b.textContent = decision.selected;
+        head.appendChild(document.createTextNode("Routed to "));
+        head.appendChild(b);
+        head.appendChild(document.createTextNode(" — " + decision.reason));
+      } else {
+        head.textContent = "Not routed — " + decision.reason;
+      }
+      body.appendChild(head);
+
+      var table = document.createElement("table");
+      table.className = "candidates";
+      var thead = document.createElement("tr");
+      ["Agent", "Score", "Reason"].forEach(function (h) {
+        var th = document.createElement("th"); th.textContent = h; thead.appendChild(th);
+      });
+      table.appendChild(thead);
+
+      (decision.candidates || []).forEach(function (c) {
+        var tr = document.createElement("tr");
+        if (decision.confident && c.agentId === decision.selected) tr.className = "selected";
+        var tdAgent = document.createElement("td"); tdAgent.textContent = c.agentId;
+        var tdScore = document.createElement("td"); tdScore.textContent = Number(c.score).toFixed(2);
+        var tdReason = document.createElement("td"); tdReason.className = "reason"; tdReason.textContent = c.reason;
+        tr.appendChild(tdAgent); tr.appendChild(tdScore); tr.appendChild(tdReason);
+        table.appendChild(tr);
+      });
+      body.appendChild(table);
+    }).catch(function (err) {
+      body.textContent = "failed to load decision: " + err.message;
+    });
   }
 
   var tooltip = document.getElementById("tooltip");
