@@ -5,3 +5,5 @@ dist/
 *.log
 .wissel/
 bun.lockb
+test-results/
+playwright-report/

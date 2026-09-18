@@ -11,9 +11,11 @@ one.
 
 ```bash
 bun install
-bun run dev            # board API + web fleet view, at :8787
+bun run dev            # board API + web fleet view, at :8787 — includes a New Task tab
 bun run agents         # list the fleet
 bun run why <task-id>  # what matched, and why — the router is never a black box
+bun run test           # unit/integration
+bun run test:e2e       # Playwright smoke tests against a live server
 ```
 
 Set `WISSEL_ORCHESTRATOR=1` to have wissel route eligible tasks
