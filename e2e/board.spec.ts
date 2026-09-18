@@ -72,9 +72,9 @@ test.describe("Board view", () => {
     await expect(busyRow().locator(".active-dot")).toHaveCount(0);
   });
 
-  test("clicking a task card shows its routing decision", async ({ page, request }) => {
+  test("clicking a task card opens its detail drawer with routing decision, description, and actions", async ({ page, request }) => {
     const created = await request.post("/tasks", {
-      data: { title: `Board click test ${Date.now()}`, body: "x", labels: ["intake"], repo: "/tmp/wissel-e2e-repo" },
+      data: { title: `Board click test ${Date.now()}`, body: "Some task body text.", labels: ["intake"], repo: "/tmp/wissel-e2e-repo" },
     });
     const task = await created.json();
     await request.post(`/tasks/${task.id}/decision`, {
@@ -89,9 +89,55 @@ test.describe("Board view", () => {
     await page.goto("/board");
     await page.locator("#kanbanBody").getByText(task.title).click();
 
-    const decisionPanel = page.locator("#decisionPanel");
-    await expect(decisionPanel).toBeVisible();
-    await expect(decisionPanel).toContainText("Routed to");
-    await expect(decisionPanel).toContainText("triager");
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer).toBeVisible();
+    await expect(drawer.locator("#tdTitle")).toHaveText(task.title);
+    await expect(drawer.locator("#tdDescription")).toHaveText("Some task body text.");
+    await expect(drawer.locator("#tdMeta")).toContainText("Inbox");
+    await expect(drawer.locator("#tdDecision")).toContainText("Routed to");
+    await expect(drawer.locator("#tdDecision")).toContainText("triager");
+
+    // Run now is always offered; Mark done/failed only once the task
+    // actually reaches review — never let a click take a shortcut around
+    // the human-review gate.
+    await expect(drawer.getByRole("button", { name: "Run now" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
+    await expect(drawer.getByRole("button", { name: "Mark failed" })).toHaveCount(0);
+
+    await drawer.locator("#tdClose").click();
+    await expect(drawer).toBeHidden();
+  });
+
+  test("a task in review offers Mark done / Mark failed, and marking it done closes the loop", async ({ page, request }) => {
+    const created = await request.post("/tasks", {
+      data: { title: `Review test ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" },
+    });
+    const task = await created.json();
+    await request.post(`/tasks/${task.id}/result`, { data: { agentId: "implementer", ok: true, summary: "opened a PR" } });
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(task.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer.locator("#tdMeta")).toContainText("Review");
+    await expect(drawer.locator("#tdResult")).toContainText("opened a PR");
+
+    await drawer.getByRole("button", { name: "Mark done" }).click();
+    await expect(drawer.locator("#tdMeta")).toContainText("Done");
+    await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
+  });
+
+  test("View diff reports a non-git repo honestly instead of an empty diff", async ({ page, request }) => {
+    const created = await request.post("/tasks", {
+      data: { title: `Diff test ${Date.now()}`, body: "x", labels: [], repo: "/tmp" },
+    });
+    const task = await created.json();
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(task.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await drawer.getByRole("button", { name: "View diff" }).click();
+    await expect(drawer.locator("#tdDiffSection")).toContainText("isn't a git working tree");
   });
 });

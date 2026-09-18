@@ -20,6 +20,9 @@ export interface Board {
    *  reads. */
   getDecision(taskId: string): Promise<RoutingDecision | undefined>;
   recordResult(result: TaskResult): Promise<void>;
+  /** Most recent execution result for a task, if any — what the board
+   *  UI's task detail panel shows once a run has finished. */
+  getResult(taskId: string): Promise<TaskResult | undefined>;
   /** Manual override. Every one of these is a labelled router eval case. */
   recordOverride(taskId: string, routerPick: string, humanPick: string): Promise<void>;
 }
@@ -217,6 +220,20 @@ export class SqliteBoard implements Board {
       [result.taskId, result.agentId, result.ok ? 1 : 0, result.summary, result.artifacts ? JSON.stringify(result.artifacts) : null],
     );
     this.events.emit("event", { type: "task.result", result } satisfies BoardEvent);
+  }
+
+  async getResult(taskId: string): Promise<TaskResult | undefined> {
+    const row = this.db
+      .query("SELECT * FROM task_results WHERE taskId = ? ORDER BY rowid DESC LIMIT 1")
+      .get(taskId) as { taskId: string; agentId: string; ok: number; summary: string; artifacts: string | null } | null;
+    if (!row) return undefined;
+    return {
+      taskId: row.taskId,
+      agentId: row.agentId,
+      ok: row.ok === 1,
+      summary: row.summary,
+      artifacts: row.artifacts ? (JSON.parse(row.artifacts) as string[]) : undefined,
+    };
   }
 
   async recordOverride(taskId: string, routerPick: string, humanPick: string): Promise<void> {

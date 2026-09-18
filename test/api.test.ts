@@ -1,16 +1,22 @@
 import { expect, test } from "bun:test";
-import { createApp } from "../src/api/server.ts";
+import { createApp, type CreateAppOptions } from "../src/api/server.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
-import type { TaskCard } from "../src/core/types.ts";
+import type { AgentDef, Executor, TaskCard, TaskResult } from "../src/core/types.ts";
 
 function req(path: string, init?: RequestInit): Request {
   return new Request(`http://localhost${path}`, init);
 }
 
-async function makeApp(board = new SqliteBoard()) {
+async function makeApp(board = new SqliteBoard(), opts?: CreateAppOptions) {
   const registry = await Registry.load();
-  return createApp(board, registry);
+  return createApp(board, registry, undefined, opts);
+}
+
+/** A fake write executor for `/tasks/:id/run` tests — never spawns a
+ *  real `claude` process. */
+function fakeWriteExecutor(run: Executor["run"]): Executor {
+  return { id: "fake-write", canHandle: (agent: AgentDef) => agent.tier === "write", run };
 }
 
 test("GET /health", async () => {
@@ -265,4 +271,93 @@ test("POST /tasks/:id/result routes a write-tier report to review, a readonly on
     }),
   );
   expect((await (await app(req(`/tasks/${readonlyTask.id}`))).json() as TaskCard).status).toBe("done");
+});
+
+test("GET /tasks/:id/result returns the most recent result, 404s with none", async () => {
+  const app = await makeApp();
+  const created = (await (
+    await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "t", body: "", labels: [], repo: "r" }) }))
+  ).json()) as TaskCard;
+
+  const before = await app(req(`/tasks/${created.id}/result`));
+  expect(before.status).toBe(404);
+
+  await app(req(`/tasks/${created.id}/result`, { method: "POST", body: JSON.stringify({ agentId: "triager", ok: true, summary: "triaged" }) }));
+
+  const after = await app(req(`/tasks/${created.id}/result`));
+  expect(after.status).toBe(200);
+  expect(((await after.json()) as TaskResult).summary).toBe("triaged");
+});
+
+test("GET /tasks/:id/diff reports isGitRepo: false for a task whose repo isn't a git working tree, 404s on unknown id", async () => {
+  const app = await makeApp();
+  const created = (await (
+    await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "t", body: "", labels: [], repo: "/tmp" }) }))
+  ).json()) as TaskCard;
+
+  const res = await app(req(`/tasks/${created.id}/diff`));
+  expect(res.status).toBe(200);
+  const diff = (await res.json()) as { isGitRepo: boolean };
+  expect(diff.isGitRepo).toBe(false);
+
+  const missing = await app(req("/tasks/nope/diff"));
+  expect(missing.status).toBe(404);
+});
+
+test("POST /tasks/:id/run routes and runs a task on the injected manual executor, 404s on unknown id", async () => {
+  const seen: TaskCard[] = [];
+  const app = await makeApp(new SqliteBoard(), {
+    manualExecutors: [
+      fakeWriteExecutor(async (task, agent) => {
+        seen.push(task);
+        return { taskId: task.id, agentId: agent.id, ok: true, summary: "opened a PR" };
+      }),
+    ],
+  });
+
+  const created = (await (
+    await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "t", body: "", labels: ["code"], repo: "r" }) }))
+  ).json()) as TaskCard;
+
+  const run = await app(req(`/tasks/${created.id}/run`, { method: "POST" }));
+  expect(run.status).toBe(202);
+
+  // /run returns once the task is in flight, not once it's done — poll
+  // for the background process() to land, same as the real board UI would.
+  const deadline = Date.now() + 1000;
+  let status: TaskCard["status"] = "inbox";
+  while (Date.now() < deadline) {
+    status = ((await (await app(req(`/tasks/${created.id}`))).json()) as TaskCard).status;
+    if (status !== "inbox" && status !== "running") break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  expect(status).toBe("review");
+  expect(seen.map((t) => t.id)).toEqual([created.id]);
+
+  const missing = await app(req("/tasks/nope/run", { method: "POST" }));
+  expect(missing.status).toBe(404);
+});
+
+test("POST /tasks/:id/run 409s when a run for that task is already in flight", async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const app = await makeApp(new SqliteBoard(), {
+    manualExecutors: [
+      fakeWriteExecutor(async (task, agent) => {
+        await blocked;
+        return { taskId: task.id, agentId: agent.id, ok: true, summary: "ok" };
+      }),
+    ],
+  });
+
+  const created = (await (
+    await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "t", body: "", labels: ["code"], repo: "r" }) }))
+  ).json()) as TaskCard;
+
+  const first = await app(req(`/tasks/${created.id}/run`, { method: "POST" }));
+  expect(first.status).toBe(202);
+
+  const second = await app(req(`/tasks/${created.id}/run`, { method: "POST" }));
+  expect(second.status).toBe(409);
+  release();
 });
