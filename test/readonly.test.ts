@@ -81,7 +81,19 @@ test("passes cwd, plan mode, and the task/agent framing into the prompt", async 
   expect(prompt).toContain(task.body);
 });
 
-test("passes --model through when configured", async () => {
+test("defaults --model to the routed agent's own costProfile.model", async () => {
+  let seenCmd: string[] = [];
+  const executor = new ReadOnlyExecutor({
+    runner: async (cmd) => {
+      seenCmd = cmd;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+  });
+  await executor.run(task, agent);
+  expect(seenCmd[seenCmd.indexOf("--model") + 1]).toBe(agent.costProfile.model);
+});
+
+test("an explicit constructor model overrides the agent's own costProfile.model", async () => {
   let seenCmd: string[] = [];
   const executor = new ReadOnlyExecutor({
     model: "claude-haiku-4-5-20251001",

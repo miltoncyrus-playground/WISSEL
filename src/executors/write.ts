@@ -3,6 +3,11 @@ import { runClaude, runViaBun, type CommandRunner } from "./claude-cli.ts";
 
 export interface WriteExecutorOptions {
   runner?: CommandRunner;
+  /** Explicit override, mainly for tests/evals that want to pin a
+   *  specific model regardless of the manifest. Omitted (the normal
+   *  case) defaults to the routed agent's own `costProfile.model` —
+   *  the manifest's declared, reviewable choice, not whatever the
+   *  ambient claude-cli session happens to default to. */
   model?: string;
 }
 
@@ -37,7 +42,14 @@ export class WriteExecutor implements Executor {
   }
 
   async run(task: TaskCard, agent: AgentDef, harness?: Harness): Promise<TaskResult> {
-    const result = await runClaude({ runner: this.runner, task, agent, permissionMode: "acceptEdits", model: this.model, env: harness?.env });
+    const result = await runClaude({
+      runner: this.runner,
+      task,
+      agent,
+      permissionMode: "acceptEdits",
+      model: this.model ?? agent.costProfile.model,
+      env: harness?.env,
+    });
     return harness ? { ...result, harnessId: harness.id } : result;
   }
 }

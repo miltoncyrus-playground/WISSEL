@@ -131,11 +131,11 @@ agents:
     description: Writes a conventional commit message from a staged diff.
     whenToUse: A diff exists and needs a commit message, nothing more.
     tags: [git, commit]
-    executor: readonly
+    executor: api
     inputs: [diff]
     outputs: [commit-message]
     trustLevel: low
-    toolAccess: [read]
+    toolAccess: []
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.01 }
 
   - id: pr-description-writer
@@ -145,11 +145,11 @@ agents:
     description: Drafts a pull request description from a diff and its task card.
     whenToUse: A branch is ready to open as a PR and needs a description.
     tags: [docs, pr]
-    executor: readonly
+    executor: api
     inputs: [diff, task-card]
     outputs: [pr-description]
     trustLevel: low
-    toolAccess: [read]
+    toolAccess: []
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.02 }
 
   - id: changelog-writer
@@ -159,11 +159,11 @@ agents:
     description: Turns a batch of merged commits into a changelog entry.
     whenToUse: A release is being cut and needs its changelog written.
     tags: [docs, changelog, release]
-    executor: readonly
+    executor: api
     inputs: [commits]
     outputs: [changelog-entry]
     trustLevel: low
-    toolAccess: [read]
+    toolAccess: []
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.03 }
 
   - id: quick-answer
