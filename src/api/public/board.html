@@ -187,7 +187,6 @@
      state, not board state. ---- */
   .harness-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .harness-pill { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; background: var(--surface); font-size: 12px; }
-  .harness-pill.disabled { opacity: 0.5; }
   .harness-pill .h-label { font-weight: 600; }
   .harness-pill .h-tool { color: var(--ink-muted); font-size: 10.5px; }
   .harness-load { font-size: 10.5px; font-weight: 700; color: var(--ink-1); background: var(--accent-wash); border-radius: 999px; padding: 1px 7px; }
@@ -999,24 +998,26 @@
     });
   }
 
-  // One pill per harness: tool it runs on, active dot when it has
-  // in-flight work, a load badge when that count is more than one at
-  // once. A disabled harness (present in harnesses.yaml but turned off)
-  // still shows, dimmed, rather than disappearing — "configured but not
-  // in use" is a different, useful signal from "doesn't exist."
+  // One pill per harness that's actually discovered and available —
+  // enabled: false (a harnesses.yaml entry that failed re-verification,
+  // e.g. a config path from a different machine) is filtered out
+  // entirely rather than shown dimmed. This strip answers "what can
+  // wissel run work under right now"; a harness nothing here is
+  // authenticated for isn't part of that answer.
   function renderHarnessStrip() {
     var wrap = document.getElementById("harnessStrip");
     wrap.textContent = "";
-    if (harnesses.length === 0) {
+    var available = harnesses.filter(function (h) { return h.enabled; });
+    if (available.length === 0) {
       var empty = document.createElement("span");
       empty.className = "harness-strip-empty";
-      empty.textContent = "No execution harnesses configured — add harnesses.yaml to name one.";
+      empty.textContent = "No execution harnesses available — add harnesses.yaml to name one, or log into a claude-cli account.";
       wrap.appendChild(empty);
       return;
     }
-    harnesses.forEach(function (h) {
+    available.forEach(function (h) {
       var pill = document.createElement("span");
-      pill.className = "harness-pill" + (h.enabled ? "" : " disabled");
+      pill.className = "harness-pill";
 
       var label = document.createElement("span");
       label.className = "h-label";
@@ -1034,8 +1035,6 @@
         load.className = "harness-load mono";
         load.textContent = "×" + h.activeCount;
         pill.appendChild(load);
-      } else if (!h.enabled) {
-        pill.title = "disabled in harnesses.yaml";
       }
 
       wrap.appendChild(pill);
