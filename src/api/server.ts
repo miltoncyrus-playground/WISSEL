@@ -9,6 +9,7 @@ import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist } from "../core/orchestrator.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
+import { ApiExecutor } from "../executors/anthropic-api.ts";
 import { getRepoDiff } from "../services/repo-diff.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -57,9 +58,12 @@ export function createApp(
   const harnesses = opts.harnesses ?? HarnessPool.from([]);
 
   const executeWriteTier = opts.executeWriteTier ?? false;
-  const autoExecutors: Executor[] = [new ReadOnlyExecutor()];
+  // ApiExecutor is unconditional, like ReadOnlyExecutor — it's tier-gated
+  // to "readonly" agents (see its canHandle), so there's no write risk to
+  // gate behind executeWriteTier the way WriteExecutor is.
+  const autoExecutors: Executor[] = [new ReadOnlyExecutor(), new ApiExecutor()];
   if (executeWriteTier) autoExecutors.push(new WriteExecutor());
-  const manualExecutors: Executor[] = opts.manualExecutors ?? [new ReadOnlyExecutor(), new WriteExecutor()];
+  const manualExecutors: Executor[] = opts.manualExecutors ?? [new ReadOnlyExecutor(), new ApiExecutor(), new WriteExecutor()];
 
   // One Orchestrator instance regardless of whether the automatic loop is
   // started, so its `inFlight` guard covers both paths — a human clicking

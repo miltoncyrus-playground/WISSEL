@@ -70,22 +70,36 @@ export interface TaskCard {
 }
 
 /** A named execution backend wissel can run work under — a tool (which
- *  CLI) plus an account (which authenticated identity). Distinct from
- *  AgentDef: an agent is a routing-target descriptor ("what kind of work
- *  is this"); a Harness is "which credentialed process actually runs
- *  it." See docs/SDD-execution-harnesses.md. */
-export type HarnessTool = "claude-cli";
+ *  CLI, or the raw API) plus an account (which authenticated identity).
+ *  Distinct from AgentDef: an agent is a routing-target descriptor
+ *  ("what kind of work is this"); a Harness is "which credentialed
+ *  process actually runs it." See docs/SDD-execution-harnesses.md.
+ *
+ *  "anthropic-api" calls the Anthropic Messages API directly — no
+ *  subprocess, no file/tool access, just a prompt in and an answer out
+ *  (see ApiExecutor). It exists for agents/skills that genuinely don't
+ *  need claude-cli's full agentic harness. */
+export type HarnessTool = "claude-cli" | "anthropic-api";
 
 export interface Harness {
   id: string;
   tool: HarnessTool;
   label: string;
   enabled: boolean;
-  /** Env overrides applied to the spawned process — how a harness picks
-   *  an already-authenticated account without wissel holding a secret
-   *  itself. A pointer (e.g. CLAUDE_CONFIG_DIR) to credentials that
-   *  already live somewhere else, never a raw API key/token value. */
+  /** claude-cli only: env overrides applied to the spawned process — how
+   *  a harness picks an already-authenticated account without wissel
+   *  holding a secret itself. A pointer (e.g. CLAUDE_CONFIG_DIR) to
+   *  credentials that already live somewhere else, never a raw API
+   *  key/token value. */
   env?: Record<string, string>;
+  /** anthropic-api only: the NAME of the environment variable holding
+   *  the API key (e.g. "ANTHROPIC_API_KEY_PERSONAL") — read at request
+   *  time, never stored on the Harness itself. Same "pointer, not
+   *  secret" contract as `env` above, since an API key is a real secret
+   *  and can't live inline in a checked-in harnesses.yaml the way a
+   *  config-dir path can. Undefined means "resolve ambiently" — the
+   *  SDK's own ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN resolution. */
+  apiKeyEnv?: string;
 }
 
 export interface Candidate {
@@ -126,6 +140,12 @@ export interface TaskResult {
 
 export interface Executor {
   readonly id: string;
+  /** Which HarnessTool this executor needs a Harness picked from —
+   *  read by Orchestrator before it calls `harnesses.acquire()`, so
+   *  each executor gets a harness for the backend it actually runs
+   *  under instead of every executor being assumed to want claude-cli.
+   *  Undefined means "doesn't use the harness concept at all." */
+  readonly harnessTool?: HarnessTool;
   canHandle(agent: AgentDef): boolean;
   /** `harness`, when given, is the Harness the caller (normally the
    *  Orchestrator) already picked for this run — the executor's job is

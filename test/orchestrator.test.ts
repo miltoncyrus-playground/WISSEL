@@ -17,8 +17,8 @@ async function setup(executors: Executor[], opts?: OrchestratorOptions) {
   return { board, registry, orchestrator };
 }
 
-function fakeExecutor(tier: "readonly" | "write", run: Executor["run"]): Executor {
-  return { id: `fake-${tier}`, canHandle: (agent: AgentDef) => agent.tier === tier, run };
+function fakeExecutor(tier: "readonly" | "write", run: Executor["run"], harnessTool: Executor["harnessTool"] = "claude-cli"): Executor {
+  return { id: `fake-${tier}`, harnessTool, canHandle: (agent: AgentDef) => agent.tier === tier, run };
 }
 
 test("sweep routes an unblocked task and runs it on the matching executor", async () => {
@@ -62,6 +62,32 @@ test("with a HarnessPool configured, a locally-run task is stamped with the pick
   expect(seenHarness.map((h) => h?.id)).toEqual(["claude-personal"]);
   expect(harnesses.activeCount("claude-personal")).toBe(0);
   expect((await board.get(task.id))!.harness).toBe("claude-personal");
+});
+
+test("acquires from the executor's own harnessTool, not a fixed claude-cli — the actual bug behind adding this field", async () => {
+  const seenHarness: (Harness | undefined)[] = [];
+  const harnesses = HarnessPool.from([
+    { id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true },
+    { id: "my-api-key", tool: "anthropic-api", label: "Anthropic API", enabled: true, apiKeyEnv: "ANTHROPIC_API_KEY" },
+  ]);
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor(
+        "readonly",
+        async (task, agent, harness) => {
+          seenHarness.push(harness);
+          return { taskId: task.id, agentId: agent.id, ok: true, summary: "answered" };
+        },
+        "anthropic-api",
+      ),
+    ],
+    { harnesses },
+  );
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+
+  expect(seenHarness.map((h) => h?.id)).toEqual(["my-api-key"]);
 });
 
 test("with no HarnessPool configured, a locally-run task gets no harness — identical to wissel's behavior before harnesses existed", async () => {

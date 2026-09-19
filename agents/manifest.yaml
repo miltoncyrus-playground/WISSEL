@@ -166,6 +166,20 @@ agents:
     toolAccess: [read]
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.03 }
 
+  - id: quick-answer
+    name: Quick answer
+    kind: skill
+    tier: readonly
+    description: Answers a self-contained question with no repo or file access — a direct call to the Anthropic API, not claude-cli.
+    whenToUse: A general question, definition, or explanation that needs nothing from the repo — the task's title/body is the whole input.
+    tags: [question, explain, define]
+    executor: api
+    inputs: [question]
+    outputs: [answer]
+    trustLevel: low
+    toolAccess: []
+    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.01 }
+
   - id: lint-fixer
     name: Lint fixer
     kind: skill

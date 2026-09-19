@@ -22,6 +22,7 @@ export interface ReadOnlyExecutorOptions {
  */
 export class ReadOnlyExecutor implements Executor {
   readonly id = "readonly";
+  readonly harnessTool = "claude-cli" as const;
   private runner: CommandRunner;
   private model?: string;
 

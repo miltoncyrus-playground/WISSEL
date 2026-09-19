@@ -14,6 +14,10 @@ export interface DiscoverHarnessesOptions {
   runner?: CommandRunner;
   /** Injectable so tests never scan the real $HOME. */
   homeDir?: string;
+  /** Injectable so tests never read the real process environment —
+   *  used by discoverApiKeyHarnesses and by validateHarness for an
+   *  anthropic-api entry. Defaults to `process.env`. */
+  env?: Record<string, string | undefined>;
 }
 
 /**
@@ -54,6 +58,44 @@ export async function discoverHarnesses(opts: DiscoverHarnessesOptions = {}): Pr
   return probed.filter((h): h is Harness => h !== undefined);
 }
 
+const API_KEY_VAR = /^ANTHROPIC_API_KEY(_(.+))?$/;
+
+/**
+ * Finds every Anthropic API key already sitting in the environment —
+ * `ANTHROPIC_API_KEY` itself, plus any `ANTHROPIC_API_KEY_<NAME>`
+ * variant (mirrors claude-cli's multi-account `.claude-<name>`
+ * convention, just via env vars instead of config directories).
+ *
+ * Unlike `discoverHarnesses`, this only checks that the variable is
+ * *set*, not that the key actually works — there's no free way to
+ * verify an API key the way `claude auth status` verifies a CLI
+ * session (that's a local check; this would cost a real request, on
+ * every startup, for every candidate key). A bad or revoked key still
+ * surfaces honestly: ApiExecutor.run() reports the real API error the
+ * first time it's actually used, same failure-visibility contract as
+ * everything else here, just resolved at first use instead of at
+ * startup.
+ */
+export function discoverApiKeyHarnesses(opts: DiscoverHarnessesOptions = {}): Harness[] {
+  const env = opts.env ?? process.env;
+  const harnesses: Harness[] = [];
+  for (const [key, value] of Object.entries(env)) {
+    if (!value) continue;
+    const match = API_KEY_VAR.exec(key);
+    if (!match) continue;
+    const name = match[2]; // undefined for bare ANTHROPIC_API_KEY
+    const id = name ? `anthropic-api-${name.toLowerCase()}` : "anthropic-api";
+    harnesses.push({
+      id,
+      tool: "anthropic-api",
+      label: name ? `Anthropic API — ${name}` : "Anthropic API",
+      enabled: true,
+      apiKeyEnv: key,
+    });
+  }
+  return harnesses;
+}
+
 /** Runs `claude auth status --json` under the given env overrides (merged
  *  onto the ambient environment by the runner — an empty/absent `env`
  *  checks whatever's already authenticated ambiently, not nothing).
@@ -78,14 +120,30 @@ export async function checkClaudeCliAuth(
  * Re-verifies a `harnesses.yaml` entry the same way an auto-discovered
  * one is verified, instead of trusting a checked-in file at face value.
  * A stale or wrong entry — a different machine's config path, a revoked
- * login — comes back disabled rather than silently claiming to be
- * usable: visible on the board so it's obvious why, not a confusing
- * failure the first time something tries to actually run under it.
- * Already-disabled entries are returned as-is — no reason to spawn a
- * probe for a harness nobody's going to pick anyway.
+ * login, an env var that's simply unset here — comes back disabled
+ * rather than silently claiming to be usable: visible on the board so
+ * it's obvious why, not a confusing failure the first time something
+ * tries to actually run under it. Already-disabled entries are returned
+ * as-is — no reason to probe a harness nobody's going to pick anyway.
+ *
+ * claude-cli entries get the real `claude auth status` check (free,
+ * local). anthropic-api entries get the presence check
+ * `discoverApiKeyHarnesses` uses — same cost tradeoff as there: a
+ * missing `apiKeyEnv` is exactly the bug this function exists to catch
+ * (a key pointer that's real on one machine and not on this one), but
+ * actually calling the API to verify the key works would spend money on
+ * every startup. An entry with no `apiKeyEnv` at all trusts ambient
+ * resolution, same as every other "no override configured" case here.
  */
 export async function validateHarness(harness: Harness, opts: DiscoverHarnessesOptions = {}): Promise<Harness> {
   if (!harness.enabled) return harness;
+
+  if (harness.tool === "anthropic-api") {
+    if (!harness.apiKeyEnv) return harness;
+    const env = opts.env ?? process.env;
+    return env[harness.apiKeyEnv] ? harness : { ...harness, enabled: false };
+  }
+
   const runner = opts.runner ?? runViaBun;
   const home = opts.homeDir ?? homedir();
   const { authenticated } = await checkClaudeCliAuth(runner, home, harness.env ?? {});

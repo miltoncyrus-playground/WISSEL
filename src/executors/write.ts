@@ -23,6 +23,7 @@ export interface WriteExecutorOptions {
  */
 export class WriteExecutor implements Executor {
   readonly id = "write";
+  readonly harnessTool = "claude-cli" as const;
   private runner: CommandRunner;
   private model?: string;
 

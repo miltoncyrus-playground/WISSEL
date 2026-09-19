@@ -219,8 +219,12 @@ export class Orchestrator {
       // so the board already reflects which harness owns this task the
       // moment a poller/SSE listener sees it running — the same
       // liveness guarantee `routedTo` already gets from recordDecision
-      // happening before dispatch.
-      const harness = this.opts.harnesses?.acquire("claude-cli");
+      // happening before dispatch. Acquires from whichever tool the
+      // executor that's about to run actually needs, not a fixed
+      // "claude-cli" — an executor with no declared harnessTool (or no
+      // pool configured) simply runs without one, unchanged from
+      // wissel's behavior before harnesses existed.
+      const harness = executor!.harnessTool ? this.opts.harnesses?.acquire(executor!.harnessTool) : undefined;
       if (harness) await this.board.setHarness(task.id, harness.id);
 
       await this.board.move(task.id, "running");

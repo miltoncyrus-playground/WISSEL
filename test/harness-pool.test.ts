@@ -76,7 +76,7 @@ test("autoload() lets a manual harnesses.yaml entry override a discovered accoun
       'harnesses:\n  - id: claude-personal\n    tool: claude-cli\n    label: "Claude — personal"\n    enabled: true\n',
     );
 
-    const pool = await HarnessPool.autoload(manifestPath, { runner: loggedInRunner("milton.cyrus@gmail.com"), homeDir: home });
+    const pool = await HarnessPool.autoload(manifestPath, { runner: loggedInRunner("milton.cyrus@gmail.com"), homeDir: home, env: {} });
 
     // The manual label wins over what discovery would have generated
     // ("Claude — milton.cyrus@gmail.com") — proves precedence, not just
@@ -91,7 +91,7 @@ test("autoload() keeps a discovered account that has no matching manual entry", 
   const home = await mkdtemp(join(tmpdir(), "wissel-autoload-"));
   try {
     await mkdir(join(home, ".claude-work"));
-    const pool = await HarnessPool.autoload(join(home, "harnesses.yaml"), { runner: loggedInRunner("work@example.com"), homeDir: home });
+    const pool = await HarnessPool.autoload(join(home, "harnesses.yaml"), { runner: loggedInRunner("work@example.com"), homeDir: home, env: {} });
     expect(pool.get("claude-work")?.label).toBe("Claude — work@example.com");
   } finally {
     await rm(home, { recursive: true, force: true });
@@ -102,7 +102,7 @@ test("autoload() tolerates a missing harnesses.yaml — discovery alone is a val
   const home = await mkdtemp(join(tmpdir(), "wissel-autoload-"));
   try {
     await mkdir(join(home, ".claude-personal"));
-    const pool = await HarnessPool.autoload(join(home, "does-not-exist.yaml"), { runner: loggedInRunner("x@example.com"), homeDir: home });
+    const pool = await HarnessPool.autoload(join(home, "does-not-exist.yaml"), { runner: loggedInRunner("x@example.com"), homeDir: home, env: {} });
     expect(pool.all().map((h) => h.id)).toEqual(["claude-personal"]);
   } finally {
     await rm(home, { recursive: true, force: true });
@@ -132,7 +132,7 @@ test("autoload() disables a manual entry whose declared env isn't actually authe
     // any env it's asked to check, including the manual entry's.
     const runner: CommandRunner = async () => ({ stdout: JSON.stringify({ loggedIn: false }), stderr: "", exitCode: 0 });
 
-    const pool = await HarnessPool.autoload(manifestPath, { runner, homeDir: home });
+    const pool = await HarnessPool.autoload(manifestPath, { runner, homeDir: home, env: {} });
 
     const entry = pool.get("claude-personal");
     expect(entry?.enabled).toBe(false);
@@ -140,6 +140,39 @@ test("autoload() disables a manual entry whose declared env isn't actually authe
     // and diagnosable, not silently dropped.
     expect(entry?.label).toBe("Claude — personal");
     expect(entry?.env).toEqual({ CLAUDE_CONFIG_DIR: "/Users/milton.cyrus/.claude-personal" });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("autoload() layers in discovered ANTHROPIC_API_KEY* accounts alongside claude-cli ones", async () => {
+  const home = await mkdtemp(join(tmpdir(), "wissel-autoload-"));
+  try {
+    const pool = await HarnessPool.autoload(join(home, "does-not-exist.yaml"), {
+      runner: async () => ({ stdout: "", stderr: "", exitCode: 1 }), // nothing under $HOME is logged in
+      homeDir: home,
+      env: { ANTHROPIC_API_KEY: "sk-ant-x", ANTHROPIC_API_KEY_WORK: "sk-ant-y" },
+    });
+
+    expect(pool.all().map((h) => h.id).sort()).toEqual(["anthropic-api", "anthropic-api-work"]);
+    expect(pool.get("anthropic-api")?.tool).toBe("anthropic-api");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("autoload() disables a manual anthropic-api entry whose apiKeyEnv isn't set on this machine", async () => {
+  const home = await mkdtemp(join(tmpdir(), "wissel-autoload-"));
+  const manifestPath = join(home, "harnesses.yaml");
+  try {
+    await writeFile(
+      manifestPath,
+      "harnesses:\n  - id: personal\n    tool: anthropic-api\n    label: Personal\n    enabled: true\n    apiKeyEnv: ANTHROPIC_API_KEY_PERSONAL\n",
+    );
+
+    const pool = await HarnessPool.autoload(manifestPath, { runner: async () => ({ stdout: "", stderr: "", exitCode: 1 }), homeDir: home, env: {} });
+
+    expect(pool.get("personal")?.enabled).toBe(false);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
@@ -156,7 +189,7 @@ test("autoload() never probes a manual entry that's already disabled in the file
       return { stdout: JSON.stringify({ loggedIn: true }), stderr: "", exitCode: 0 };
     };
 
-    const pool = await HarnessPool.autoload(manifestPath, { runner, homeDir: home });
+    const pool = await HarnessPool.autoload(manifestPath, { runner, homeDir: home, env: {} });
 
     expect(pool.get("off")?.enabled).toBe(false);
     expect(calls).toBe(0);

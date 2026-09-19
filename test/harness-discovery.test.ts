@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkClaudeCliAuth, discoverHarnesses, validateHarness } from "../src/core/harness-discovery.ts";
+import { checkClaudeCliAuth, discoverApiKeyHarnesses, discoverHarnesses, validateHarness } from "../src/core/harness-discovery.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
 import type { Harness } from "../src/core/types.ts";
 
@@ -126,4 +126,40 @@ test("validateHarness leaves an already-disabled entry alone without probing", a
 
   expect(await validateHarness(h, { runner })).toEqual(h);
   expect(calls).toBe(0);
+});
+
+test("discoverApiKeyHarnesses finds ANTHROPIC_API_KEY and every named variant, ignoring unrelated/empty vars", () => {
+  const harnesses = discoverApiKeyHarnesses({
+    env: {
+      ANTHROPIC_API_KEY: "sk-ant-bare",
+      ANTHROPIC_API_KEY_PERSONAL: "sk-ant-personal",
+      ANTHROPIC_API_KEY_WORK: "",
+      SOME_OTHER_VAR: "sk-ant-unrelated",
+    },
+  });
+
+  expect(harnesses).toEqual([
+    { id: "anthropic-api", tool: "anthropic-api", label: "Anthropic API", enabled: true, apiKeyEnv: "ANTHROPIC_API_KEY" },
+    { id: "anthropic-api-personal", tool: "anthropic-api", label: "Anthropic API — PERSONAL", enabled: true, apiKeyEnv: "ANTHROPIC_API_KEY_PERSONAL" },
+  ]);
+});
+
+test("discoverApiKeyHarnesses returns nothing when no matching env var is set", () => {
+  expect(discoverApiKeyHarnesses({ env: {} })).toEqual([]);
+});
+
+test("validateHarness keeps an anthropic-api entry enabled when its apiKeyEnv is set", async () => {
+  const h: Harness = { id: "personal", tool: "anthropic-api", label: "Personal", enabled: true, apiKeyEnv: "MY_KEY" };
+  expect(await validateHarness(h, { env: { MY_KEY: "sk-ant-x" } })).toEqual(h);
+});
+
+test("validateHarness disables an anthropic-api entry whose apiKeyEnv isn't set here (the same checked-in-wrong-machine case, for API keys)", async () => {
+  const h: Harness = { id: "personal", tool: "anthropic-api", label: "Personal", enabled: true, apiKeyEnv: "MY_KEY" };
+  const result = await validateHarness(h, { env: {} });
+  expect(result).toEqual({ ...h, enabled: false });
+});
+
+test("validateHarness trusts an anthropic-api entry with no apiKeyEnv at all — ambient resolution, same as every other unconfigured case", async () => {
+  const h: Harness = { id: "ambient", tool: "anthropic-api", label: "Ambient", enabled: true };
+  expect(await validateHarness(h, { env: {} })).toEqual(h);
 });
