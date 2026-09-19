@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
-import { discoverHarnesses, type DiscoverHarnessesOptions } from "./harness-discovery.ts";
+import { discoverHarnesses, validateHarness, type DiscoverHarnessesOptions } from "./harness-discovery.ts";
 import type { Harness, HarnessTool } from "./types.ts";
 
 /**
@@ -32,17 +32,27 @@ export class HarnessPool {
    *  non-claude-cli tool discovery can't probe) is kept as-is. A missing
    *  `harnesses.yaml` is not an error here — unlike `load()`, which
    *  throws — since discovery alone is a complete, valid starting
-   *  point; the file only ever adds overrides. */
+   *  point; the file only ever adds overrides.
+   *
+   *  Every manual entry is re-verified the same way a discovered one is
+   *  (`validateHarness`) before being layered in — `harnesses.yaml` is
+   *  checked into git and can easily describe a different machine (a
+   *  teammate's config path, an account that's since logged out); a
+   *  manual entry that fails verification is kept but reported
+   *  `enabled: false` rather than trusted at face value. */
   static async autoload(path = "harnesses.yaml", discoverOpts: DiscoverHarnessesOptions = {}): Promise<HarnessPool> {
     const manual = await HarnessPool.load(path).then(
       (pool) => pool.all(),
       () => [] as Harness[],
     );
-    const discovered = await discoverHarnesses(discoverOpts);
+    const [discovered, validatedManual] = await Promise.all([
+      discoverHarnesses(discoverOpts),
+      Promise.all(manual.map((h) => validateHarness(h, discoverOpts))),
+    ]);
 
     const byId = new Map<string, Harness>();
     for (const h of discovered) byId.set(h.id, h);
-    for (const h of manual) byId.set(h.id, h);
+    for (const h of validatedManual) byId.set(h.id, h);
     return HarnessPool.from([...byId.values()]);
   }
 

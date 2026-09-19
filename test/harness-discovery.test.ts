@@ -2,8 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { discoverHarnesses } from "../src/core/harness-discovery.ts";
+import { checkClaudeCliAuth, discoverHarnesses, validateHarness } from "../src/core/harness-discovery.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
+import type { Harness } from "../src/core/types.ts";
 
 /** A fake $HOME with the given `.claude*`-named subdirectories, cleaned
  *  up by the caller. Mirrors this machine's own layout (a logged-in
@@ -75,4 +76,54 @@ test("a runner that throws for one candidate doesn't take down the others", asyn
   } finally {
     await rm(home, { recursive: true, force: true });
   }
+});
+
+test("checkClaudeCliAuth reports authenticated + email on a logged-in status", async () => {
+  const runner: CommandRunner = async () => ({ stdout: JSON.stringify({ loggedIn: true, email: "a@example.com" }), stderr: "", exitCode: 0 });
+  expect(await checkClaudeCliAuth(runner, "/tmp")).toEqual({ authenticated: true, email: "a@example.com" });
+});
+
+test("checkClaudeCliAuth reports not authenticated on loggedIn: false, non-zero exit, and a throw", async () => {
+  const notLoggedIn: CommandRunner = async () => ({ stdout: JSON.stringify({ loggedIn: false }), stderr: "", exitCode: 0 });
+  const nonZero: CommandRunner = async () => ({ stdout: "", stderr: "no config", exitCode: 1 });
+  const throws: CommandRunner = async () => { throw new Error("ENOENT"); };
+
+  expect((await checkClaudeCliAuth(notLoggedIn, "/tmp")).authenticated).toBe(false);
+  expect((await checkClaudeCliAuth(nonZero, "/tmp")).authenticated).toBe(false);
+  expect((await checkClaudeCliAuth(throws, "/tmp")).authenticated).toBe(false);
+});
+
+function harness(overrides: Partial<Harness> & Pick<Harness, "id">): Harness {
+  return { tool: "claude-cli", label: overrides.id, enabled: true, ...overrides };
+}
+
+test("validateHarness keeps an entry enabled when its declared env is actually authenticated", async () => {
+  const runner: CommandRunner = async (_cmd, opts) =>
+    opts.env?.CLAUDE_CONFIG_DIR === "/real/path"
+      ? { stdout: JSON.stringify({ loggedIn: true }), stderr: "", exitCode: 0 }
+      : { stdout: JSON.stringify({ loggedIn: false }), stderr: "", exitCode: 0 };
+
+  const h = harness({ id: "real", env: { CLAUDE_CONFIG_DIR: "/real/path" } });
+  expect(await validateHarness(h, { runner })).toEqual(h);
+});
+
+test("validateHarness disables an entry whose declared env is not authenticated (the checked-in-wrong-machine case)", async () => {
+  const runner: CommandRunner = async () => ({ stdout: JSON.stringify({ loggedIn: false }), stderr: "", exitCode: 0 });
+  const h = harness({ id: "claude-personal", env: { CLAUDE_CONFIG_DIR: "/Users/milton.cyrus/.claude-personal" } });
+
+  const result = await validateHarness(h, { runner });
+
+  expect(result).toEqual({ ...h, enabled: false });
+});
+
+test("validateHarness leaves an already-disabled entry alone without probing", async () => {
+  let calls = 0;
+  const runner: CommandRunner = async () => {
+    calls++;
+    return { stdout: JSON.stringify({ loggedIn: true }), stderr: "", exitCode: 0 };
+  };
+  const h = harness({ id: "off", enabled: false });
+
+  expect(await validateHarness(h, { runner })).toEqual(h);
+  expect(calls).toBe(0);
 });

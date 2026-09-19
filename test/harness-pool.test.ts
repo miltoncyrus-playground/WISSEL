@@ -108,3 +108,59 @@ test("autoload() tolerates a missing harnesses.yaml — discovery alone is a val
     await rm(home, { recursive: true, force: true });
   }
 });
+
+// Reproduces the actual bug: harnesses.yaml is checked into git and can
+// describe a config path from a completely different machine (a Mac
+// path, here, checked out on Linux). Before validateHarness() existed,
+// autoload() trusted this at face value and reported it enabled.
+test("autoload() disables a manual entry whose declared env isn't actually authenticated here", async () => {
+  const home = await mkdtemp(join(tmpdir(), "wissel-autoload-"));
+  const manifestPath = join(home, "harnesses.yaml");
+  try {
+    await writeFile(
+      manifestPath,
+      "harnesses:\n" +
+        "  - id: claude-personal\n" +
+        "    tool: claude-cli\n" +
+        '    label: "Claude — personal"\n' +
+        "    enabled: true\n" +
+        "    env:\n" +
+        '      CLAUDE_CONFIG_DIR: "/Users/milton.cyrus/.claude-personal"\n',
+    );
+    // Nothing under $HOME is logged in — the ambient discovery pass
+    // finds zero accounts, and the runner reports "not logged in" for
+    // any env it's asked to check, including the manual entry's.
+    const runner: CommandRunner = async () => ({ stdout: JSON.stringify({ loggedIn: false }), stderr: "", exitCode: 0 });
+
+    const pool = await HarnessPool.autoload(manifestPath, { runner, homeDir: home });
+
+    const entry = pool.get("claude-personal");
+    expect(entry?.enabled).toBe(false);
+    // Everything else about the entry (label, env) survives — visible
+    // and diagnosable, not silently dropped.
+    expect(entry?.label).toBe("Claude — personal");
+    expect(entry?.env).toEqual({ CLAUDE_CONFIG_DIR: "/Users/milton.cyrus/.claude-personal" });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("autoload() never probes a manual entry that's already disabled in the file", async () => {
+  const home = await mkdtemp(join(tmpdir(), "wissel-autoload-"));
+  const manifestPath = join(home, "harnesses.yaml");
+  try {
+    await writeFile(manifestPath, "harnesses:\n  - id: off\n    tool: claude-cli\n    label: Off\n    enabled: false\n");
+    let calls = 0;
+    const runner: CommandRunner = async () => {
+      calls++;
+      return { stdout: JSON.stringify({ loggedIn: true }), stderr: "", exitCode: 0 };
+    };
+
+    const pool = await HarnessPool.autoload(manifestPath, { runner, homeDir: home });
+
+    expect(pool.get("off")?.enabled).toBe(false);
+    expect(calls).toBe(0);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

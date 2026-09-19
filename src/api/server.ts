@@ -275,7 +275,7 @@ if (import.meta.main) {
   );
   console.log(
     harnesses.all().length
-      ? `harnesses: ${harnesses.all().map((h) => h.id).join(", ")}`
+      ? `harnesses: ${harnesses.all().map((h) => (h.enabled ? h.id : `${h.id} (disabled: not authenticated here)`)).join(", ")}`
       : "no harnesses.yaml found — running with no named harness (ambient environment only)",
   );
 }
