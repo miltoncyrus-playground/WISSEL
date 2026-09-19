@@ -425,3 +425,47 @@ async function waitForStatus(board: SqliteBoard, taskId: string, status: TaskCar
   }
   throw new Error(`task ${taskId} never reached status ${status}`);
 }
+
+// Real bug, found live: registered in server.ts's exact order
+// [ReadOnlyExecutor, ApiExecutor, ...], a "question"-tagged task routed
+// correctly to quick-answer (executor: api) but ReadOnlyExecutor —
+// also tier: readonly — won the pool's find() and tried to spawn a
+// real `claude` process instead of ApiExecutor ever running. Uses the
+// real executor classes together, in the real order, to catch exactly
+// this class of bug at the level it actually showed up.
+test("a question-tagged task routes to quick-answer and actually runs on ApiExecutor, not ReadOnlyExecutor, despite ReadOnlyExecutor being registered first", async () => {
+  const { ReadOnlyExecutor } = await import("../src/executors/readonly.ts");
+  const { ApiExecutor } = await import("../src/executors/anthropic-api.ts");
+
+  let apiExecutorRan = false;
+  const executors: Executor[] = [
+    new ReadOnlyExecutor({ runner: async () => { throw new Error("ReadOnlyExecutor should never run for an executor: api agent"); } }),
+    new ApiExecutor({
+      clientFactory: () => ({
+        messages: {
+          create: async () => {
+            apiExecutorRan = true;
+            return {
+              id: "msg_1", type: "message", role: "assistant", model: "claude-sonnet-5",
+              content: [{ type: "text", text: "pong", citations: null }],
+              stop_reason: "end_turn", stop_sequence: null,
+              usage: { input_tokens: 10, output_tokens: 2 },
+            } as never;
+          },
+        },
+      }),
+    }),
+  ];
+
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  const orchestrator = new Orchestrator(board, registry, new Router(registry), executors);
+
+  const task = await board.create({ title: "What is the capital of France?", body: "", labels: ["question"], repo: "/tmp" });
+  await orchestrator.sweep();
+
+  expect(apiExecutorRan).toBe(true);
+  const updated = await board.get(task.id);
+  expect(updated!.routedTo).toBe("quick-answer");
+  expect(updated!.status).toBe("done");
+});

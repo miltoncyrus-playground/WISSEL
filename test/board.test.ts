@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SqliteBoard } from "../src/services/board.ts";
 import type { RoutingDecision, TaskResult } from "../src/core/types.ts";
 
@@ -27,6 +31,85 @@ test("create round-trips parentTaskId, and leaves it undefined when omitted", as
   expect(child.parentTaskId).toBe(parent.id);
   expect((await board.get(child.id))!.parentTaskId).toBe(parent.id);
   expect((await board.get(parent.id))!.parentTaskId).toBeUndefined();
+});
+
+// Reproduces a real bug found live against a real pre-existing
+// ~/.wissel/board.sqlite: `parentTaskId` was added to the tasks table
+// in CREATE TABLE IF NOT EXISTS, which only ever applies to a brand
+// new database — an on-disk DB created before that column existed had
+// no migration guard for it (unlike `harness`, which did), so every
+// create() against it failed with "table tasks has no column named
+// parentTaskId". Every column added after the original schema needs
+// its own ALTER TABLE guard, or exactly this happens again for the
+// next one.
+test("opens and heals a real pre-existing on-disk DB from before parentTaskId existed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-board-legacy-"));
+  const dbPath = join(dir, "board.sqlite");
+  try {
+    const legacy = new Database(dbPath, { create: true });
+    legacy.run(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        labels TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        status TEXT NOT NULL,
+        routedTo TEXT,
+        dependsOn TEXT NOT NULL DEFAULT '[]'
+      );
+    `);
+    legacy.close();
+
+    const board = new SqliteBoard(dbPath);
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+    expect(task.parentTaskId).toBeUndefined();
+    expect((await board.get(task.id))!.id).toBe(task.id);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Same class of bug as above, found immediately after fixing it: a
+// pre-existing routing_decisions table from before `confident` existed
+// broke recordDecision() the same way — "table routing_decisions has
+// no column named confident" — the moment a real board actually tried
+// to route a task.
+test("opens and heals a real pre-existing on-disk DB from before routing_decisions.confident existed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-board-legacy-"));
+  const dbPath = join(dir, "board.sqlite");
+  try {
+    const legacy = new Database(dbPath, { create: true });
+    legacy.run(`
+      CREATE TABLE routing_decisions (
+        taskId TEXT NOT NULL,
+        matchedTags TEXT NOT NULL,
+        candidates TEXT NOT NULL,
+        selected TEXT,
+        reason TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        decidedAt TEXT NOT NULL
+      );
+    `);
+    legacy.close();
+
+    const board = new SqliteBoard(dbPath);
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+    const decision: RoutingDecision = {
+      taskId: task.id,
+      matchedTags: [],
+      candidates: [],
+      selected: "a",
+      confident: true,
+      reason: "test",
+      strategy: "rule",
+      decidedAt: new Date().toISOString(),
+    };
+    await board.recordDecision(decision);
+    expect(await board.getDecision(task.id)).toEqual(decision);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("setDependencies updates dependsOn, rejects unknown ids, emits an event", async () => {

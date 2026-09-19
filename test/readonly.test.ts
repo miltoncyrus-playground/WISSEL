@@ -37,6 +37,16 @@ test("canHandle only accepts readonly-tier agents", () => {
   expect(executor.canHandle({ ...agent, tier: "write" })).toBe(false);
 });
 
+// Real bug found live: both ReadOnlyExecutor and ApiExecutor are
+// tier: "readonly" territory, and a pool's executors.find() just
+// returns the first match — without this exclusion, ReadOnlyExecutor
+// (registered first, in server.ts) always won for an executor: api
+// agent, and ApiExecutor never got a chance regardless of intent.
+test("canHandle excludes executor: api — that's ApiExecutor's territory, not array order", () => {
+  const executor = new ReadOnlyExecutor();
+  expect(executor.canHandle({ ...agent, executor: "api" })).toBe(false);
+});
+
 test("runs claude in plan mode and parses a successful result", async () => {
   const executor = new ReadOnlyExecutor({
     runner: stub({

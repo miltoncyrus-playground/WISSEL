@@ -98,15 +98,21 @@ export class SqliteBoard implements Board {
         harness TEXT
       );
     `);
-    // Heals a pre-existing on-disk DB from before `harness` existed —
+    // Heals a pre-existing on-disk DB from before these columns existed —
     // CREATE TABLE IF NOT EXISTS above only covers a fresh DB. Ignoring
     // the error is the SQLite-idiomatic "add column if missing," since
     // there's no ADD COLUMN IF NOT EXISTS guard old enough SQLite builds
-    // can rely on.
-    try {
-      this.db.run("ALTER TABLE tasks ADD COLUMN harness TEXT;");
-    } catch {
-      // already has the column
+    // can rely on. Every column added to `tasks` after the original
+    // schema needs one of these, or an existing on-disk DB breaks the
+    // moment that column is written to (parentTaskId shipped without
+    // one — found live, against a real pre-existing DB, when this task
+    // couldn't create a task at all).
+    for (const ddl of ["ALTER TABLE tasks ADD COLUMN harness TEXT;", "ALTER TABLE tasks ADD COLUMN parentTaskId TEXT;"]) {
+      try {
+        this.db.run(ddl);
+      } catch {
+        // already has the column
+      }
     }
     this.db.run(`
       CREATE TABLE IF NOT EXISTS routing_decisions (
@@ -120,6 +126,11 @@ export class SqliteBoard implements Board {
         decidedAt TEXT NOT NULL
       );
     `);
+    try {
+      this.db.run("ALTER TABLE routing_decisions ADD COLUMN confident INTEGER NOT NULL DEFAULT 1;");
+    } catch {
+      // already has the column
+    }
     this.db.run(`
       CREATE TABLE IF NOT EXISTS task_results (
         taskId TEXT NOT NULL,

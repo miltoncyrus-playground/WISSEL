@@ -93,6 +93,43 @@ test("checkClaudeCliAuth reports not authenticated on loggedIn: false, non-zero 
   expect((await checkClaudeCliAuth(throws, "/tmp")).authenticated).toBe(false);
 });
 
+// Reproduces a real bug found while adding the anthropic-api harness:
+// the real `claude auth status` treats ANY set ANTHROPIC_API_KEY as
+// valid auth (authMethod: "api_key") independent of CLAUDE_CONFIG_DIR
+// — confirmed by hand against the real binary. Once wissel started
+// holding an ANTHROPIC_API_KEY for its own separate anthropic-api
+// harness, that key leaked into every claude-cli probe's spawned
+// environment and made every CLAUDE_CONFIG_DIR read as authenticated,
+// including ones that were never logged into. This fake mirrors that
+// real behavior: loggedIn: true whenever it sees a non-empty API key
+// in the env it's given, regardless of CLAUDE_CONFIG_DIR.
+function apiKeyLeakSensitiveRunner(): CommandRunner {
+  return async (_cmd, opts) => {
+    if (opts.env?.ANTHROPIC_API_KEY) {
+      return { stdout: JSON.stringify({ loggedIn: true }), stderr: "", exitCode: 0 };
+    }
+    return { stdout: JSON.stringify({ loggedIn: false }), stderr: "", exitCode: 1 };
+  };
+}
+
+test("checkClaudeCliAuth always scrubs ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN before probing, so wissel's own key can't leak into a claude-cli auth check", async () => {
+  const runner = apiKeyLeakSensitiveRunner();
+  // Passed explicitly, exactly as a real caller's own process.env would
+  // carry it through the runner's ambient-merge behavior.
+  const result = await checkClaudeCliAuth(runner, "/tmp", { CLAUDE_CONFIG_DIR: "/never/logged/in", ANTHROPIC_API_KEY: "sk-ant-real-key" });
+  expect(result.authenticated).toBe(false);
+});
+
+test("discoverHarnesses never reports a candidate as logged in purely because ANTHROPIC_API_KEY leaked into the probe", async () => {
+  const home = await fakeHome([".claude-never-logged-in"]);
+  try {
+    const harnesses = await discoverHarnesses({ runner: apiKeyLeakSensitiveRunner(), homeDir: home });
+    expect(harnesses).toEqual([]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 function harness(overrides: Partial<Harness> & Pick<Harness, "id">): Harness {
   return { tool: "claude-cli", label: overrides.id, enabled: true, ...overrides };
 }

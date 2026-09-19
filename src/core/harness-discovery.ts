@@ -100,14 +100,26 @@ export function discoverApiKeyHarnesses(opts: DiscoverHarnessesOptions = {}): Ha
  *  onto the ambient environment by the runner — an empty/absent `env`
  *  checks whatever's already authenticated ambiently, not nothing).
  *  Never throws; a spawn failure, non-zero exit, or unparseable output
- *  all read as "not authenticated," never a crash. */
+ *  all read as "not authenticated," never a crash.
+ *
+ *  Always forces ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN empty:
+ *  `claude auth status` treats either as valid authentication on its
+ *  own (`authMethod: "api_key"`), completely independent of
+ *  CLAUDE_CONFIG_DIR — confirmed empirically while building this. Since
+ *  the runner merges onto wissel's own ambient environment, and wissel
+ *  itself now often holds an ANTHROPIC_API_KEY for the *separate*
+ *  anthropic-api harness, every claude-cli probe would otherwise read
+ *  as authenticated regardless of whether that CLAUDE_CONFIG_DIR has
+ *  ever been logged into — silently defeating the whole point of this
+ *  check the moment both harness kinds are configured at once. */
 export async function checkClaudeCliAuth(
   runner: CommandRunner,
   cwd: string,
   env: Record<string, string> = {},
 ): Promise<{ authenticated: boolean; email?: string }> {
   try {
-    const result = await runner(["claude", "auth", "status", "--json"], { cwd, env });
+    const scoped = { ...env, ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
+    const result = await runner(["claude", "auth", "status", "--json"], { cwd, env: scoped });
     if (result.exitCode !== 0) return { authenticated: false };
     const status = JSON.parse(result.stdout) as ClaudeAuthStatusJson;
     return { authenticated: status.loggedIn === true, email: status.email };
