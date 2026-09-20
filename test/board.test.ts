@@ -250,6 +250,27 @@ test("getResult round-trips worktree info, set by a write-tier run inside an iso
   });
 });
 
+// Found while adding the worktree column above: actualCost/harnessId had
+// shipped on TaskResult well before task_results learned to store either
+// one, so GET /tasks/:id/result silently dropped both — telemetry's own
+// log was the only place they ever actually persisted. Fixed alongside
+// worktree, not a coincidence this test sits right next to that one.
+test("getResult round-trips actualCost and harnessId, not just the fields the table originally shipped with", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+
+  await board.recordResult({ taskId: task.id, agentId: "a", ok: true, summary: "done", actualCost: 0.0347, harnessId: "claude-personal" });
+
+  expect(await board.getResult(task.id)).toEqual({
+    taskId: task.id,
+    agentId: "a",
+    ok: true,
+    summary: "done",
+    actualCost: 0.0347,
+    harnessId: "claude-personal",
+  });
+});
+
 test("delete removes a task and its decision/result/override, rejects unknown ids, emits an event", async () => {
   const board = new SqliteBoard();
   const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });

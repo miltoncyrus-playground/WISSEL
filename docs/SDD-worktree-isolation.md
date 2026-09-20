@@ -93,17 +93,21 @@ buttons.
 
 ## 4. Known gaps, found while building this
 
-- **`TaskResult.actualCost`/`harnessId` are silently dropped by
-  `board.recordResult`/`getResult`** — found while adding the
-  `worktree` column: the SQLite schema only ever had fixed columns for
+- **Fixed in this same pass**: `TaskResult.actualCost`/`harnessId` were
+  silently dropped by `board.recordResult`/`getResult` — found while
+  adding the `worktree` column, since it's the same table. The SQLite
+  schema only ever had fixed columns for
   `taskId/agentId/ok/summary/artifacts`, so cost/harness attribution
-  never made it into `task_results` even though `TaskResult` has carried
-  both fields for a while. Telemetry's own log captures them correctly
-  (`finishResult` records both into `telemetry.record(...)` separately),
-  so the original harness SDD's spend-aggregation plan isn't affected —
-  but `GET /tasks/:id/result` itself has always under-reported. Pre-
-  existing, unrelated to worktree isolation, not fixed here — flagged
-  for a separate pass.
+  never made it into `task_results` even though `TaskResult` had carried
+  both fields for a while — pre-existing, unrelated to worktree
+  isolation itself, but cheap enough (two more columns, same
+  `ALTER TABLE` healing pattern) to fix rather than just flag. Telemetry's
+  own log had always captured both correctly (`finishResult` records them
+  into `telemetry.record(...)` separately), so the original harness
+  SDD's spend-aggregation plan was never actually affected — only
+  `GET /tasks/:id/result`'s single-task view was under-reporting, now
+  fixed. Round-trip covered by a `board.test.ts` case; the board UI's
+  result card now shows harness/cost when present.
 - **§7.2 of `docs/SDD-codex-cli-harness.md` is still open** — the
   sandbox-inside-a-sandbox risk for Codex's `workspace-write` mode,
   re-verification from wissel's own real (non-nested-sandbox) process.

@@ -739,6 +739,15 @@
         worktree.textContent = "Worktree branch: " + result.worktree.branch;
         card.appendChild(worktree);
       }
+      if (result.harnessId || typeof result.actualCost === "number") {
+        var costLine = document.createElement("div");
+        costLine.className = "rc-artifacts";
+        var bits = [];
+        if (result.harnessId) bits.push("harness: " + result.harnessId);
+        if (typeof result.actualCost === "number") bits.push("cost: $" + result.actualCost.toFixed(4));
+        costLine.textContent = bits.join(" · ");
+        card.appendChild(costLine);
+      }
       body.appendChild(card);
     }).catch(function () { section.hidden = true; });
   }
