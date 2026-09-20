@@ -139,6 +139,13 @@ export interface TaskResult {
   actualCost?: number;
   /** Which Harness actually ran this, when one was picked. */
   harnessId?: string;
+  /** Set by WriteExecutor/CodexWriteExecutor when the run happened
+   *  inside an isolated git worktree instead of editing task.repo
+   *  directly — see docs/SDD-worktree-isolation.md. `GET /tasks/:id/diff`
+   *  reads this path instead of task.repo when present; `POST
+   *  /tasks/:id/merge`/`/discard` act on it. Never set for a read-only
+   *  run, or a dispatched task wissel never executed itself. */
+  worktree?: { path: string; branch: string };
 }
 
 export interface Executor {

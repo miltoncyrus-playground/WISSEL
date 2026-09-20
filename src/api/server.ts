@@ -13,6 +13,8 @@ import { ApiExecutor } from "../executors/anthropic-api.ts";
 import { CodexReadOnlyExecutor } from "../executors/codex-readonly.ts";
 import { CodexWriteExecutor } from "../executors/codex-write.ts";
 import { getRepoDiff } from "../services/repo-diff.ts";
+import { mergeTaskWorktree, removeTaskWorktree } from "../services/worktree.ts";
+import { runViaBun } from "../executors/claude-cli.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -179,7 +181,12 @@ export function createApp(
         if (parts.length === 3 && parts[2] === "diff" && req.method === "GET") {
           const task = await board.get(parts[1]!);
           if (!task) return notFound();
-          return json(await getRepoDiff(task.repo));
+          // A worktree-run task's changes live in its worktree, not
+          // task.repo — getRepoDiff needs no changes of its own to
+          // handle that: a worktree is a plain git working tree with
+          // uncommitted edits, same shape it already reads for task.repo.
+          const result = await board.getResult(parts[1]!);
+          return json(await getRepoDiff(result?.worktree?.path ?? task.repo));
         }
 
         // The board UI's "Run" button — an explicit, per-task human
@@ -196,6 +203,36 @@ export function createApp(
             return json({ error: message }, message.startsWith("task not found") ? 404 : 409);
           }
           return new Response(null, { status: 202 });
+        }
+
+        // The board UI's "Merge" action for a worktree-run task —
+        // commits whatever's in the worktree (if anything), merges its
+        // branch into whatever's checked out in task.repo, removes the
+        // worktree, and moves the task to "done". The only place a
+        // worktree's changes ever reach the live repo; never automatic.
+        if (parts.length === 3 && parts[2] === "merge" && req.method === "POST") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          const result = await board.getResult(parts[1]!);
+          if (!result?.worktree) return json({ error: "task has no worktree to merge" }, 409);
+          const merge = await mergeTaskWorktree(task.repo, result.worktree, task, runViaBun);
+          if (!merge.ok) return json({ error: merge.message }, 409);
+          const moved = await board.move(task.id, "done");
+          return json({ merged: true, message: merge.message, task: moved });
+        }
+
+        // The board UI's "Discard" action for a worktree-run task —
+        // removes the worktree and its branch without merging anything,
+        // and moves the task to "failed" (closest existing status for
+        // "reviewed, rejected").
+        if (parts.length === 3 && parts[2] === "discard" && req.method === "POST") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          const result = await board.getResult(parts[1]!);
+          if (!result?.worktree) return json({ error: "task has no worktree to discard" }, 409);
+          await removeTaskWorktree(task.repo, result.worktree, runViaBun);
+          const moved = await board.move(task.id, "failed");
+          return json({ discarded: true, task: moved });
         }
 
         if (parts.length === 3 && parts[2] === "override" && req.method === "POST") {

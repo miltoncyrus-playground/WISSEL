@@ -1,9 +1,13 @@
 # wissel
 
 Routes tasks to a fleet of agents and skills. It decides; it doesn't
-execute. Read-only agents run in-process; write-tier agents are decided
-and handed off to whatever actually runs them (agetor) — wissel never
-spawns a worktree or a session itself.
+execute by default. Read-only agents run in-process; write-tier agents
+are decided and handed off to whatever actually runs them (agetor) —
+wissel never spawns a worktree or a session for *dispatched* work. When
+local write-tier execution is opted into (see
+`WISSEL_EXECUTE_WRITE_TIER` below), wissel does run the work itself,
+inside its own isolated git worktree — never editing a task's repo
+directly until a human explicitly merges it.
 
 Named after the railway switch point — the thing that decides which
 track the work goes down, and makes sure two trains never take the same
@@ -28,27 +32,32 @@ or an unresolved tie all stop before spend, visible on the board as
 
 Set `WISSEL_EXECUTE_WRITE_TIER=1` (in addition to the orchestrator flag
 above) to have wissel run write-tier work itself — headless `claude -p`
-with `--permission-mode acceptEdits` against the task's repo — instead of
-only dispatching it for agetor or another external runner to pick up.
-Off by default; a write-tier success still lands in `review`, never
-`done`, regardless of who ran it.
+(or `codex exec`) against an isolated git worktree of the task's repo —
+instead of only dispatching it for agetor or another external runner to
+pick up. Off by default; a write-tier success still lands in `review`,
+never `done`, regardless of who ran it. From `review`, the board's
+**Merge**/**Discard** actions (or `POST /tasks/:id/merge` /
+`/tasks/:id/discard`) either land the worktree's changes into the task's
+repo (`git merge --no-ff`, then the worktree is removed) or throw them
+away — see `docs/SDD-worktree-isolation.md`.
 
-**Warning: don't run `bun run dev` while dispatching a write-tier task
-against wissel's own repo.** `--watch` restarts the server on every file
-change — including files the task itself just edited — which kills the
-in-flight `claude`/`codex` subprocess mid-run with no result ever
-recorded, leaving the task stuck at `running` forever (happened for
-real while building the `codex-cli` harness; see
-`docs/SDD-codex-cli-harness.md`). Use `bun run serve` instead whenever
-`WISSEL_EXECUTE_WRITE_TIER=1` and the task's `repo` is this repo;
-`--watch` is fine for pure UI/interactive dev with no tasks running.
+Earlier versions of this ran write-tier subprocesses directly against
+`task.repo`'s own working tree, which meant a self-hosted task (repo ==
+wissel's own source) editing files could trigger `bun run dev`'s
+`--watch` mid-run and orphan its own subprocess — hit for real while
+building the `codex-cli` harness. Worktree isolation (above) fixes this
+structurally: a write-tier task never touches `task.repo` at all until a
+human merges it, so `bun run dev` is safe to use even with tasks
+running. `bun run serve` (no `--watch`) still exists if you want it, but
+isn't required for this anymore.
 
 Known gaps:
 - No sandboxing beyond whatever the underlying agent CLI already does —
   not solved here, noted so it isn't assumed.
-- No crash/restart recovery for a task orphaned mid-run (see the
-  warning above) — it stays `running` until someone notices and closes
-  it out by hand via `POST /tasks/:id/result`.
+- Merging/discarding a worktree is a manual, per-task action — nothing
+  auto-merges, and an abandoned worktree (task deleted, never
+  merged/discarded) just sits under `~/.wissel/worktrees/` until cleaned
+  up by hand.
 
 Design decisions and build order: `docs/HANDOVER.md` — but read
 `docs/HANDOVER-2026-09-17.md` first, it's the current spec and supersedes

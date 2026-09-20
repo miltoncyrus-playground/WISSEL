@@ -229,6 +229,27 @@ test("getResult returns the most recent result, and undefined for a task with no
   });
 });
 
+test("getResult round-trips worktree info, set by a write-tier run inside an isolated worktree", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+
+  await board.recordResult({
+    taskId: task.id,
+    agentId: "a",
+    ok: true,
+    summary: "done",
+    worktree: { path: "/home/x/.wissel/worktrees/" + task.id, branch: "wissel/" + task.id },
+  });
+
+  expect(await board.getResult(task.id)).toEqual({
+    taskId: task.id,
+    agentId: "a",
+    ok: true,
+    summary: "done",
+    worktree: { path: "/home/x/.wissel/worktrees/" + task.id, branch: "wissel/" + task.id },
+  });
+});
+
 test("delete removes a task and its decision/result/override, rejects unknown ids, emits an event", async () => {
   const board = new SqliteBoard();
   const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });

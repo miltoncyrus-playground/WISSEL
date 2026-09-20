@@ -585,7 +585,7 @@
     else { el.hidden = true; }
   }
 
-  function renderDrawerActions(task) {
+  function renderDrawerActions(task, result) {
     var wrap = document.getElementById("tdActions");
     wrap.textContent = "";
     setDrawerActionError(null);
@@ -606,14 +606,36 @@
     // success — a human confirms before "done" regardless of who ran it.
     // Marking a task done/failed from any other status would bypass that
     // review look, so the buttons only appear once it's actually earned.
+    //
+    // A worktree-run task (result.worktree set — see
+    // docs/SDD-worktree-isolation.md) never touched task.repo directly,
+    // so "Mark done" alone would leave its changes stranded in the
+    // worktree forever. Merge/Discard replace Mark done/failed for
+    // exactly that case — same review gate, but the action actually
+    // moves the changes (or discards them) instead of just flipping a
+    // status flag.
     if (task.status === "review") {
-      wrap.appendChild(drawerAction("Mark done", {
-        onClick: function () { moveTask(task.id, "done"); },
-      }));
-      wrap.appendChild(drawerAction("Mark failed", {
-        className: "danger",
-        onClick: function () { moveTask(task.id, "failed"); },
-      }));
+      if (result && result.worktree) {
+        wrap.appendChild(drawerAction("Merge", {
+          className: "primary",
+          onClick: function () { mergeTask(task.id); },
+        }));
+        wrap.appendChild(drawerAction("Discard", {
+          className: "danger",
+          onClick: function () {
+            if (!window.confirm("Discard this task's worktree (" + result.worktree.branch + ")? This can't be undone.")) return;
+            discardTask(task.id);
+          },
+        }));
+      } else {
+        wrap.appendChild(drawerAction("Mark done", {
+          onClick: function () { moveTask(task.id, "done"); },
+        }));
+        wrap.appendChild(drawerAction("Mark failed", {
+          className: "danger",
+          onClick: function () { moveTask(task.id, "failed"); },
+        }));
+      }
     }
 
     wrap.appendChild(drawerAction("View diff", {
@@ -634,6 +656,22 @@
     fetch("/tasks/" + taskId + "/move", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: status }),
     }).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).catch(function (err) { setDrawerActionError(err.message); });
+  }
+
+  function mergeTask(taskId) {
+    setDrawerActionError(null);
+    fetch("/tasks/" + taskId + "/merge", { method: "POST" }).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).catch(function (err) { setDrawerActionError(err.message); });
+  }
+
+  function discardTask(taskId) {
+    setDrawerActionError(null);
+    fetch("/tasks/" + taskId + "/discard", { method: "POST" }).then(function (r) {
       if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
       return refetchTasks();
     }).catch(function (err) { setDrawerActionError(err.message); });
@@ -663,6 +701,11 @@
     });
   }
 
+  // Also re-renders the drawer's action buttons once the result (and
+  // whether it carries a worktree) is known — renderDrawerActions is
+  // called eagerly, without a result, when the drawer first opens, and
+  // again here so Merge/Discard can replace Mark done/failed for a
+  // worktree-run task. See docs/SDD-worktree-isolation.md.
   function loadDrawerResult(taskId) {
     var section = document.getElementById("tdResultSection");
     var body = document.getElementById("tdResult");
@@ -670,6 +713,8 @@
       if (r.status === 404) { section.hidden = true; return null; }
       return r.json();
     }).then(function (result) {
+      var task = findTask(taskId);
+      if (task) renderDrawerActions(task, result);
       if (!result) return;
       section.hidden = false;
       body.textContent = "";
@@ -687,6 +732,12 @@
         artifacts.className = "rc-artifacts";
         artifacts.textContent = "Artifacts: " + result.artifacts.join(", ");
         card.appendChild(artifacts);
+      }
+      if (result.worktree) {
+        var worktree = document.createElement("div");
+        worktree.className = "rc-artifacts";
+        worktree.textContent = "Worktree branch: " + result.worktree.branch;
+        card.appendChild(worktree);
       }
       body.appendChild(card);
     }).catch(function () { section.hidden = true; });

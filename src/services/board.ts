@@ -137,9 +137,15 @@ export class SqliteBoard implements Board {
         agentId TEXT NOT NULL,
         ok INTEGER NOT NULL,
         summary TEXT NOT NULL,
-        artifacts TEXT
+        artifacts TEXT,
+        worktree TEXT
       );
     `);
+    try {
+      this.db.run("ALTER TABLE task_results ADD COLUMN worktree TEXT;");
+    } catch {
+      // already has the column
+    }
     this.db.run(`
       CREATE TABLE IF NOT EXISTS overrides (
         taskId TEXT NOT NULL,
@@ -258,16 +264,28 @@ export class SqliteBoard implements Board {
 
   async recordResult(result: TaskResult): Promise<void> {
     this.db.run(
-      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts) VALUES (?, ?, ?, ?, ?)",
-      [result.taskId, result.agentId, result.ok ? 1 : 0, result.summary, result.artifacts ? JSON.stringify(result.artifacts) : null],
+      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        result.taskId,
+        result.agentId,
+        result.ok ? 1 : 0,
+        result.summary,
+        result.artifacts ? JSON.stringify(result.artifacts) : null,
+        result.worktree ? JSON.stringify(result.worktree) : null,
+      ],
     );
     this.events.emit("event", { type: "task.result", result } satisfies BoardEvent);
   }
 
   async getResult(taskId: string): Promise<TaskResult | undefined> {
-    const row = this.db
-      .query("SELECT * FROM task_results WHERE taskId = ? ORDER BY rowid DESC LIMIT 1")
-      .get(taskId) as { taskId: string; agentId: string; ok: number; summary: string; artifacts: string | null } | null;
+    const row = this.db.query("SELECT * FROM task_results WHERE taskId = ? ORDER BY rowid DESC LIMIT 1").get(taskId) as {
+      taskId: string;
+      agentId: string;
+      ok: number;
+      summary: string;
+      artifacts: string | null;
+      worktree: string | null;
+    } | null;
     if (!row) return undefined;
     return {
       taskId: row.taskId,
@@ -275,6 +293,7 @@ export class SqliteBoard implements Board {
       ok: row.ok === 1,
       summary: row.summary,
       artifacts: row.artifacts ? (JSON.parse(row.artifacts) as string[]) : undefined,
+      worktree: row.worktree ? (JSON.parse(row.worktree) as TaskResult["worktree"]) : undefined,
     };
   }
 
