@@ -602,10 +602,16 @@
       },
     }));
 
-    // The review gate is wissel's one non-negotiable policy for write-tier
-    // success — a human confirms before "done" regardless of who ran it.
-    // Marking a task done/failed from any other status would bypass that
-    // review look, so the buttons only appear once it's actually earned.
+    // The review gate is wissel's default policy for write-tier success
+    // — a human confirms before "done" regardless of who ran it. The one
+    // exception is an agent that's declared both autoMerge: true and
+    // trustLevel: "high" (AgentDef.autoMerge) — its successful runs skip
+    // straight to "done" and never reach "review" at all, so this drawer
+    // simply never renders these buttons for them, same as any other
+    // status this drawer doesn't add actions for. Marking a task
+    // done/failed from any other status would bypass the review look
+    // that every non-exempted task still gets, so the buttons only
+    // appear once it's actually earned.
     //
     // A worktree-run task (result.worktree set — see
     // docs/SDD-worktree-isolation.md) never touched task.repo directly,

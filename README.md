@@ -34,12 +34,16 @@ Set `WISSEL_EXECUTE_WRITE_TIER=1` (in addition to the orchestrator flag
 above) to have wissel run write-tier work itself — headless `claude -p`
 (or `codex exec`) against an isolated git worktree of the task's repo —
 instead of only dispatching it for agetor or another external runner to
-pick up. Off by default; a write-tier success still lands in `review`,
-never `done`, regardless of who ran it. From `review`, the board's
-**Merge**/**Discard** actions (or `POST /tasks/:id/merge` /
-`/tasks/:id/discard`) either land the worktree's changes into the task's
-repo (`git merge --no-ff`, then the worktree is removed) or throw them
-away — see `docs/SDD-worktree-isolation.md`.
+pick up. Off by default; a write-tier success lands in `review`, never
+`done`, regardless of who ran it — unless the routed agent declares
+both `autoMerge: true` and `trustLevel: "high"` in `agents/manifest.yaml`,
+in which case it skips straight to `done` (a real `git merge --no-ff`
+still happens for a worktree result; a genuine conflict falls back to
+`review` like normal, never a silent `done`). No agent opts into this by
+default. From `review`, the board's **Merge**/**Discard** actions (or
+`POST /tasks/:id/merge` / `/tasks/:id/discard`) either land the
+worktree's changes into the task's repo or throw them away — see
+`docs/SDD-worktree-isolation.md`.
 
 Earlier versions of this ran write-tier subprocesses directly against
 `task.repo`'s own working tree, which meant a self-hosted task (repo ==

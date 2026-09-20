@@ -40,6 +40,20 @@ export interface AgentDef {
   costProfile: CostProfile;
   trustLevel: TrustLevel;
   toolAccess: string[];
+  /** Narrow, explicit exception to wissel's one non-negotiable
+   *  write-tier policy — a human reviews every write-tier success
+   *  before it's "done" (see finishResult). Setting this true lets THIS
+   *  agent's successful write-tier runs skip that stop and land straight
+   *  on `done` instead. Only takes effect when `trustLevel` is also
+   *  `"high"` — the two conditions are required together on purpose, so
+   *  a manifest typo (or a copy-pasted entry) on a lower-trust agent
+   *  can't silently bypass review. A worktree-run result still gets
+   *  merged for real (git merge --no-ff, same as a human clicking
+   *  Merge); a merge conflict falls back to the normal `review` stop
+   *  rather than pretending to succeed. Undefined (the default) means
+   *  no exception — every write-tier success from this agent stops for
+   *  a human, unchanged. See docs/SDD-worktree-isolation.md §6. */
+  autoMerge?: boolean;
 }
 
 export interface TaskCard {

@@ -3,7 +3,10 @@
 Status: **Built and verified**, both by unit test (fake `CommandRunner`,
 no real git spawned) and by a live smoke test against a real repo
 (create → edit → diff → commit → merge → cleanup, full lifecycle, real
-`git` — see §5).
+`git` — see §6). §4 (autoMerge, an opt-in exception to the review gate)
+built and tested the same way — no live smoke test for that one
+specifically, since it's the same `mergeTaskWorktree` code path already
+covered by §6, just called from a different trigger.
 
 ## 1. Why
 
@@ -81,7 +84,7 @@ buttons.
   `task.repo` are invisible to the worktree. Deliberate: a task's
   worktree should reflect the repo's real history, not leak whatever a
   human happened to have half-written at dispatch time. Confirmed live
-  (§5) that this is exactly what happens, not assumed.
+  (§6) that this is exactly what happens, not assumed.
 - **Doesn't resolve merge conflicts.** `mergeTaskWorktree` reports a
   conflict as a clean `{ok: false, message}` and leaves the worktree
   entirely alone (never removed on failure — confirmed by test) so
@@ -91,7 +94,47 @@ buttons.
   `git merge` itself, the normal safe default — not specially handled
   here, doesn't need to be.
 
-## 4. Known gaps, found while building this
+## 4. `autoMerge` — an opt-in, per-agent exception to the review gate
+
+Added on request: Milton asked whether a card in `review` genuinely
+needs a human every time, or could sometimes go straight to `done`. The
+review gate itself (§1's whole reason for existing — a human confirms
+before a write-tier success is "done", regardless of who ran it) stays
+the default. `AgentDef` gains one new optional field:
+
+```ts
+autoMerge?: boolean;
+```
+
+Both `autoMerge: true` **and** `trustLevel: "high"` are required
+together before anything skips review — deliberate, so a manifest typo
+or a copy-pasted low-trust entry can't silently bypass the gate by
+accident. Enforced in `finishResult` (`orchestrator.ts`), the single
+choke point that already decides where every finished task lands,
+regardless of whether wissel ran it locally or an external runner
+(agetor, a human) reported it back via `POST /tasks/:id/result` — same
+policy either way, since the risk being gated (trusting a reported
+`ok: true` without a second look) is the same regardless of who
+produced it.
+
+Critically, this is never just a status flip. When the result carries a
+`worktree`, `finishResult` calls the exact same `mergeTaskWorktree` the
+board's own Merge button calls — a real `git merge --no-ff`, not a
+shortcut that pretends the merge happened. **A genuine merge conflict
+falls back to the normal `review` stop**, not a silently-abandoned
+`done` — auto-merge only ever succeeds by actually merging cleanly; any
+failure gets the same human attention every other write-tier task gets.
+A result with no worktree (e.g. an external report with no local
+execution behind it) has nothing to reconcile, so `autoMerge` there
+just means "don't stop for review" — the result was never going to
+touch a worktree either way.
+
+No agent in `agents/manifest.yaml` opts into this — shipped as pure
+mechanism, same as `codex-cli` Phase 1 shipped without a pilot agent.
+Picking which agent(s), if any, should get `autoMerge: true` is still
+Milton's call, not decided here.
+
+## 5. Known gaps, found while building this
 
 - **Fixed in this same pass**: `TaskResult.actualCost`/`harnessId` were
   silently dropped by `board.recordResult`/`getResult` — found while
@@ -118,7 +161,7 @@ buttons.
   disk, no live process), just not automatic — a `wissel gc` style
   command would be the natural fast-follow if this becomes clutter.
 
-## 5. Verified live
+## 6. Verified live
 
 Ran the full lifecycle against a real throwaway git repo, not just the
 unit tests' fakes: `git worktree add -b wissel/<id> <path> HEAD` →

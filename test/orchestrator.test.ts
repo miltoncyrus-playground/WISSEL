@@ -184,6 +184,106 @@ test("finishResult moves any failed report to failed", async () => {
   expect((await board.get(task.id))!.status).toBe("failed");
 });
 
+// autoMerge is the one deliberate, narrow exception to the write-tier
+// review gate (AgentDef.autoMerge) — these exercise it directly against
+// a synthetic agent rather than the real manifest, so they don't depend
+// on any agent in agents/manifest.yaml ever opting in.
+const autoMergeAgent: AgentDef = {
+  id: "trusted-auto",
+  name: "Trusted auto",
+  kind: "agent",
+  tier: "write",
+  description: "d",
+  whenToUse: "w",
+  tags: [],
+  executor: "handoff",
+  inputs: [],
+  outputs: [],
+  trustLevel: "high",
+  toolAccess: [],
+  costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.1 },
+  autoMerge: true,
+};
+
+test("autoMerge + trustLevel high, no worktree on the result — lands straight on done, no git touched", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([autoMergeAgent]);
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "/repo" });
+  let gitCalled = false;
+  const runner = async (cmd: string[]) => {
+    gitCalled = true;
+    return { stdout: "", stderr: "", exitCode: 0 };
+  };
+
+  await finishResult(board, registry, { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done" }, undefined, runner);
+
+  expect((await board.get(task.id))!.status).toBe("done");
+  expect(gitCalled).toBe(false);
+});
+
+test("autoMerge + trustLevel high, a worktree result — actually merges (real git commands), then lands on done", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([autoMergeAgent]);
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "/repo" });
+  const seenCmds: string[][] = [];
+  const runner = async (cmd: string[]) => {
+    seenCmds.push(cmd);
+    return { stdout: "", stderr: "", exitCode: 0 };
+  };
+
+  await finishResult(
+    board,
+    registry,
+    { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done", worktree: { path: "/wt/t", branch: "wissel/t" } },
+    undefined,
+    runner,
+  );
+
+  expect((await board.get(task.id))!.status).toBe("done");
+  expect(seenCmds.some((c) => c[0] === "git" && c[1] === "merge")).toBe(true);
+  expect(seenCmds.some((c) => c[0] === "git" && c[1] === "worktree" && c[2] === "remove")).toBe(true);
+});
+
+test("autoMerge + trustLevel high, but the merge actually conflicts — falls back to review, not a silent done", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([autoMergeAgent]);
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "/repo" });
+  const runner = async (cmd: string[]) => {
+    if (cmd[1] === "merge") return { stdout: "", stderr: "CONFLICT", exitCode: 1 };
+    return { stdout: "", stderr: "", exitCode: 0 };
+  };
+
+  await finishResult(
+    board,
+    registry,
+    { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done", worktree: { path: "/wt/t", branch: "wissel/t" } },
+    undefined,
+    runner,
+  );
+
+  expect((await board.get(task.id))!.status).toBe("review");
+});
+
+test("autoMerge alone, without trustLevel: high, does NOT skip review — both conditions required together", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([{ ...autoMergeAgent, trustLevel: "medium" }]);
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "/repo" });
+
+  await finishResult(board, registry, { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done" });
+
+  expect((await board.get(task.id))!.status).toBe("review");
+});
+
+test("trustLevel: high alone, without autoMerge, does NOT skip review either", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([{ ...autoMergeAgent, autoMerge: undefined }]);
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "/repo" });
+
+  await finishResult(board, registry, { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done" });
+
+  expect((await board.get(task.id))!.status).toBe("review");
+});
+
 test("a failed run ends in failed", async () => {
   const { board, orchestrator } = await setup([
     fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: false, summary: "broke" })),

@@ -4,6 +4,9 @@ import type { TelemetryLog } from "../services/telemetry.ts";
 import type { HarnessPool } from "./harness-pool.ts";
 import type { Registry } from "./registry.ts";
 import type { Router } from "./router.ts";
+import type { CommandRunner } from "../executors/claude-cli.ts";
+import { runViaBun } from "../executors/claude-cli.ts";
+import { mergeTaskWorktree } from "../services/worktree.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "./types.ts";
 
 /**
@@ -11,20 +14,61 @@ import type { Executor, RoutingDecision, TaskCard, TaskResult } from "./types.ts
  * or an external report for a write-tier task wissel only decided and
  * handed off — and applies the one piece of policy that decides where a
  * finished task lands: a write-tier success needs a human look at the
- * diff before it's "done", read-only work doesn't.
+ * diff before it's "done", read-only work doesn't. The one narrow,
+ * explicit exception is an agent that declares both `autoMerge: true`
+ * and `trustLevel: "high"` (see AgentDef.autoMerge) — its successful
+ * write-tier runs skip the review stop and land on `done` directly, with
+ * a worktree result actually merged first (never just a status flip
+ * pretending the merge happened).
+ *
+ * `runner` is only used for that auto-merge path — injectable so tests
+ * never spawn a real git process; defaults to the real one.
  */
 export async function finishResult(
   board: Board,
   registry: Registry,
   result: TaskResult,
   telemetry?: TelemetryLog,
+  runner: CommandRunner = runViaBun,
 ): Promise<void> {
   await board.recordResult(result);
   await telemetry?.record({ type: "result", taskId: result.taskId, agentId: result.agentId, actualCost: result.actualCost, harnessId: result.harnessId });
 
   const agent = registry.get(result.agentId);
-  const finalStatus = result.ok ? (agent?.tier === "write" ? "review" : "done") : "failed";
-  await board.move(result.taskId, finalStatus);
+
+  if (!result.ok) {
+    await board.move(result.taskId, "failed");
+    return;
+  }
+
+  if (agent?.tier !== "write") {
+    await board.move(result.taskId, "done");
+    return;
+  }
+
+  if (agent.autoMerge && agent.trustLevel === "high" && (await tryAutoMerge(board, result, runner))) {
+    await board.move(result.taskId, "done");
+    return;
+  }
+
+  // Either no auto-merge exception applies, or it does but couldn't
+  // complete cleanly (a real merge conflict, or the task itself is
+  // gone) — falls back to the same human gate every other write-tier
+  // success gets. Never silently drops a failed auto-merge attempt.
+  await board.move(result.taskId, "review");
+}
+
+/** True only when the write-tier success is actually safe to land on
+ *  `done` unattended: no worktree to merge (nothing to reconcile — e.g.
+ *  an external report with no local execution behind it), or a worktree
+ *  whose merge genuinely succeeded (git merge --no-ff, same as a human
+ *  clicking Merge — never a bare status change masquerading as one). */
+async function tryAutoMerge(board: Board, result: TaskResult, runner: CommandRunner): Promise<boolean> {
+  if (!result.worktree) return true;
+  const task = await board.get(result.taskId);
+  if (!task) return false;
+  const merge = await mergeTaskWorktree(task.repo, result.worktree, task, runner);
+  return merge.ok;
 }
 
 /**
