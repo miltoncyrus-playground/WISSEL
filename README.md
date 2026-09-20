@@ -12,6 +12,7 @@ one.
 ```bash
 bun install
 bun run dev            # board API + web fleet view, at :8787 — includes a New Task tab
+bun run serve          # same, without --watch — see warning below before using bun run dev
 bun run agents         # list the fleet
 bun run why <task-id>  # what matched, and why — the router is never a black box
 bun run team create <prefix>  # scaffold a coordinator + 3 specialists, delegation pre-wired
@@ -32,8 +33,22 @@ only dispatching it for agetor or another external runner to pick up.
 Off by default; a write-tier success still lands in `review`, never
 `done`, regardless of who ran it.
 
-Known gap: no sandboxing beyond whatever the underlying agent CLI already
-does — not solved here, noted so it isn't assumed.
+**Warning: don't run `bun run dev` while dispatching a write-tier task
+against wissel's own repo.** `--watch` restarts the server on every file
+change — including files the task itself just edited — which kills the
+in-flight `claude`/`codex` subprocess mid-run with no result ever
+recorded, leaving the task stuck at `running` forever (happened for
+real while building the `codex-cli` harness; see
+`docs/SDD-codex-cli-harness.md`). Use `bun run serve` instead whenever
+`WISSEL_EXECUTE_WRITE_TIER=1` and the task's `repo` is this repo;
+`--watch` is fine for pure UI/interactive dev with no tasks running.
+
+Known gaps:
+- No sandboxing beyond whatever the underlying agent CLI already does —
+  not solved here, noted so it isn't assumed.
+- No crash/restart recovery for a task orphaned mid-run (see the
+  warning above) — it stays `running` until someone notices and closes
+  it out by hand via `POST /tasks/:id/result`.
 
 Design decisions and build order: `docs/HANDOVER.md` — but read
 `docs/HANDOVER-2026-09-17.md` first, it's the current spec and supersedes
