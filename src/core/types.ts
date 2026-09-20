@@ -78,19 +78,22 @@ export interface TaskCard {
  *  "anthropic-api" calls the Anthropic Messages API directly — no
  *  subprocess, no file/tool access, just a prompt in and an answer out
  *  (see ApiExecutor). It exists for agents/skills that genuinely don't
- *  need claude-cli's full agentic harness. */
-export type HarnessTool = "claude-cli" | "anthropic-api";
+ *  need claude-cli's full agentic harness. "codex-cli" is OpenAI's Codex
+ *  CLI (binary `codex`) — a second full agentic subprocess harness,
+ *  same shape as claude-cli, just a different tool/account pair (see
+ *  docs/SDD-codex-cli-harness.md). */
+export type HarnessTool = "claude-cli" | "anthropic-api" | "codex-cli";
 
 export interface Harness {
   id: string;
   tool: HarnessTool;
   label: string;
   enabled: boolean;
-  /** claude-cli only: env overrides applied to the spawned process — how
-   *  a harness picks an already-authenticated account without wissel
-   *  holding a secret itself. A pointer (e.g. CLAUDE_CONFIG_DIR) to
-   *  credentials that already live somewhere else, never a raw API
-   *  key/token value. */
+  /** claude-cli and codex-cli only: env overrides applied to the spawned
+   *  process — how a harness picks an already-authenticated account
+   *  without wissel holding a secret itself. A pointer (e.g.
+   *  CLAUDE_CONFIG_DIR, CODEX_HOME) to credentials that already live
+   *  somewhere else, never a raw API key/token value. */
   env?: Record<string, string>;
   /** anthropic-api only: the NAME of the environment variable holding
    *  the API key (e.g. "ANTHROPIC_API_KEY_PERSONAL") — read at request

@@ -2,7 +2,14 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkClaudeCliAuth, discoverApiKeyHarnesses, discoverHarnesses, validateHarness } from "../src/core/harness-discovery.ts";
+import {
+  checkClaudeCliAuth,
+  checkCodexCliAuth,
+  discoverApiKeyHarnesses,
+  discoverCodexHarnesses,
+  discoverHarnesses,
+  validateHarness,
+} from "../src/core/harness-discovery.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
 import type { Harness } from "../src/core/types.ts";
 
@@ -199,4 +206,107 @@ test("validateHarness disables an anthropic-api entry whose apiKeyEnv isn't set 
 test("validateHarness trusts an anthropic-api entry with no apiKeyEnv at all — ambient resolution, same as every other unconfigured case", async () => {
   const h: Harness = { id: "ambient", tool: "anthropic-api", label: "Ambient", enabled: true };
   expect(await validateHarness(h, { env: {} })).toEqual(h);
+});
+
+// codex-cli's own auth-status output isn't JSON (§5 of
+// docs/SDD-codex-cli-harness.md — codex login status has no reliable
+// --json support on this version), so the fake runner here returns one
+// of the four fixed plain-text lines instead of a JSON blob.
+function codexStatusFor(loggedInDirs: Record<string, string>): CommandRunner {
+  return async (_cmd, opts) => {
+    const configDir = opts.env?.CODEX_HOME ?? "";
+    const line = Object.entries(loggedInDirs).find(([dir]) => configDir.endsWith(dir))?.[1];
+    if (line === undefined) return { stdout: "Not logged in", stderr: "", exitCode: 0 };
+    return { stdout: line, stderr: "", exitCode: 0 };
+  };
+}
+
+test("discoverCodexHarnesses returns a Harness only for candidate dirs codex login status reports as logged in", async () => {
+  const home = await fakeHome([".codex", ".codex-personal", ".not-codex-at-all"]);
+  try {
+    const runner = codexStatusFor({
+      ".codex": "Not logged in",
+      ".codex-personal": "Logged in using ChatGPT",
+    });
+    const harnesses = await discoverCodexHarnesses({ runner, homeDir: home });
+    expect(harnesses).toEqual([
+      {
+        id: "codex-personal",
+        tool: "codex-cli",
+        label: "Codex — ChatGPT",
+        enabled: true,
+        env: { CODEX_HOME: join(home, ".codex-personal") },
+      },
+    ]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("discoverCodexHarnesses falls back to the derived id as the label when the logged-in string doesn't match any known auth mode", async () => {
+  const home = await fakeHome([".codex-future"]);
+  try {
+    const runner = codexStatusFor({ ".codex-future": "Logged in using some future auth method" });
+    const harnesses = await discoverCodexHarnesses({ runner, homeDir: home });
+    expect(harnesses[0]!.label).toBe("codex-future");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("discoverCodexHarnesses degrades to zero discovered harnesses on an unreadable $HOME or a runner that throws, never a crash", async () => {
+  const unreadable = await discoverCodexHarnesses({ homeDir: "/definitely/does/not/exist", runner: async () => ({ stdout: "", stderr: "", exitCode: 0 }) });
+  expect(unreadable).toEqual([]);
+
+  const home = await fakeHome([".codex-a"]);
+  try {
+    const harnesses = await discoverCodexHarnesses({
+      runner: async () => {
+        throw new Error("ENOENT");
+      },
+      homeDir: home,
+    });
+    expect(harnesses).toEqual([]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("checkCodexCliAuth reports authenticated + the matched auth mode for each of the three known logged-in strings", async () => {
+  for (const [line, authMode] of [
+    ["Logged in using an API key", "API key"],
+    ["Logged in using ChatGPT", "ChatGPT"],
+    ["Logged in using Agent Identity", "Agent Identity"],
+  ] as const) {
+    const runner: CommandRunner = async () => ({ stdout: line, stderr: "", exitCode: 0 });
+    expect(await checkCodexCliAuth(runner, "/tmp")).toEqual({ authenticated: true, authMode });
+  }
+});
+
+test("checkCodexCliAuth reports not authenticated on 'Not logged in', non-zero exit, and a throw", async () => {
+  const notLoggedIn: CommandRunner = async () => ({ stdout: "Not logged in", stderr: "", exitCode: 0 });
+  const nonZero: CommandRunner = async () => ({ stdout: "", stderr: "no config", exitCode: 1 });
+  const throws: CommandRunner = async () => {
+    throw new Error("ENOENT");
+  };
+
+  expect((await checkCodexCliAuth(notLoggedIn, "/tmp")).authenticated).toBe(false);
+  expect((await checkCodexCliAuth(nonZero, "/tmp")).authenticated).toBe(false);
+  expect((await checkCodexCliAuth(throws, "/tmp")).authenticated).toBe(false);
+});
+
+test("validateHarness keeps a codex-cli entry enabled when its declared env is actually authenticated", async () => {
+  const runner: CommandRunner = async (_cmd, opts) =>
+    opts.env?.CODEX_HOME === "/real/path" ? { stdout: "Logged in using ChatGPT", stderr: "", exitCode: 0 } : { stdout: "Not logged in", stderr: "", exitCode: 0 };
+
+  const h: Harness = { id: "codex-real", tool: "codex-cli", label: "codex-real", enabled: true, env: { CODEX_HOME: "/real/path" } };
+  expect(await validateHarness(h, { runner })).toEqual(h);
+});
+
+test("validateHarness disables a codex-cli entry whose declared env is not authenticated (the checked-in-wrong-machine case)", async () => {
+  const runner: CommandRunner = async () => ({ stdout: "Not logged in", stderr: "", exitCode: 0 });
+  const h: Harness = { id: "codex-personal", tool: "codex-cli", label: "codex-personal", enabled: true, env: { CODEX_HOME: "~/.codex" } };
+
+  const result = await validateHarness(h, { runner });
+  expect(result).toEqual({ ...h, enabled: false });
 });

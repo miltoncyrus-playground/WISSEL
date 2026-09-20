@@ -22,3 +22,13 @@ harnesses:
     enabled: true
     env:
       CLAUDE_CONFIG_DIR: "/Users/milton.cyrus/.claude-personal"
+  - id: codex-personal
+    tool: codex-cli
+    label: "Codex — personal"
+    enabled: true
+    env:
+      # Absolute, not "~/.codex" — env vars passed to a spawned process
+      # never get shell tilde-expansion, so a literal "~" doesn't resolve
+      # and validateHarness disables the entry as unauthenticated. Same
+      # convention claude-personal's CLAUDE_CONFIG_DIR above already uses.
+      CODEX_HOME: "/home/mcyrus/.codex"

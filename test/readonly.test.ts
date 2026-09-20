@@ -47,6 +47,12 @@ test("canHandle excludes executor: api — that's ApiExecutor's territory, not a
   expect(executor.canHandle({ ...agent, executor: "api" })).toBe(false);
 });
 
+// Same mutual-exclusion contract, added alongside CodexReadOnlyExecutor.
+test("canHandle excludes executor: codex — that's CodexReadOnlyExecutor's territory, not array order", () => {
+  const executor = new ReadOnlyExecutor();
+  expect(executor.canHandle({ ...agent, executor: "codex" })).toBe(false);
+});
+
 test("runs claude in plan mode and parses a successful result", async () => {
   const executor = new ReadOnlyExecutor({
     runner: stub({

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
-import { discoverApiKeyHarnesses, discoverHarnesses, validateHarness, type DiscoverHarnessesOptions } from "./harness-discovery.ts";
+import { discoverApiKeyHarnesses, discoverCodexHarnesses, discoverHarnesses, validateHarness, type DiscoverHarnessesOptions } from "./harness-discovery.ts";
 import type { Harness, HarnessTool } from "./types.ts";
 
 /**
@@ -45,14 +45,15 @@ export class HarnessPool {
       (pool) => pool.all(),
       () => [] as Harness[],
     );
-    const [discoveredCli, validatedManual] = await Promise.all([
+    const [discoveredCli, discoveredCodex, validatedManual] = await Promise.all([
       discoverHarnesses(discoverOpts),
+      discoverCodexHarnesses(discoverOpts),
       Promise.all(manual.map((h) => validateHarness(h, discoverOpts))),
     ]);
     const discoveredApiKeys = discoverApiKeyHarnesses(discoverOpts);
 
     const byId = new Map<string, Harness>();
-    for (const h of [...discoveredCli, ...discoveredApiKeys]) byId.set(h.id, h);
+    for (const h of [...discoveredCli, ...discoveredCodex, ...discoveredApiKeys]) byId.set(h.id, h);
     for (const h of validatedManual) byId.set(h.id, h);
     return HarnessPool.from([...byId.values()]);
   }

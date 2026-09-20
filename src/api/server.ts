@@ -10,6 +10,8 @@ import { Orchestrator, finishResult, resolveHandoffAllowlist } from "../core/orc
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
 import { ApiExecutor } from "../executors/anthropic-api.ts";
+import { CodexReadOnlyExecutor } from "../executors/codex-readonly.ts";
+import { CodexWriteExecutor } from "../executors/codex-write.ts";
 import { getRepoDiff } from "../services/repo-diff.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -58,12 +60,19 @@ export function createApp(
   const harnesses = opts.harnesses ?? HarnessPool.from([]);
 
   const executeWriteTier = opts.executeWriteTier ?? false;
-  // ApiExecutor is unconditional, like ReadOnlyExecutor — it's tier-gated
-  // to "readonly" agents (see its canHandle), so there's no write risk to
-  // gate behind executeWriteTier the way WriteExecutor is.
-  const autoExecutors: Executor[] = [new ReadOnlyExecutor(), new ApiExecutor()];
-  if (executeWriteTier) autoExecutors.push(new WriteExecutor());
-  const manualExecutors: Executor[] = opts.manualExecutors ?? [new ReadOnlyExecutor(), new ApiExecutor(), new WriteExecutor()];
+  // ApiExecutor and CodexReadOnlyExecutor are unconditional, like
+  // ReadOnlyExecutor — all three are tier-gated to "readonly" agents
+  // (see their canHandle), so there's no write risk to gate behind
+  // executeWriteTier the way WriteExecutor/CodexWriteExecutor are.
+  const autoExecutors: Executor[] = [new ReadOnlyExecutor(), new ApiExecutor(), new CodexReadOnlyExecutor()];
+  if (executeWriteTier) autoExecutors.push(new WriteExecutor(), new CodexWriteExecutor());
+  const manualExecutors: Executor[] = opts.manualExecutors ?? [
+    new ReadOnlyExecutor(),
+    new ApiExecutor(),
+    new CodexReadOnlyExecutor(),
+    new WriteExecutor(),
+    new CodexWriteExecutor(),
+  ];
 
   // One Orchestrator instance regardless of whether the automatic loop is
   // started, so its `inFlight` guard covers both paths — a human clicking

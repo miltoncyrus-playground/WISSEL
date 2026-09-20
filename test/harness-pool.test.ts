@@ -145,6 +145,35 @@ test("autoload() disables a manual entry whose declared env isn't actually authe
   }
 });
 
+test("autoload() layers in discovered codex-cli accounts alongside claude-cli ones", async () => {
+  const home = await mkdtemp(join(tmpdir(), "wissel-autoload-"));
+  try {
+    await mkdir(join(home, ".claude-personal"));
+    await mkdir(join(home, ".codex-personal"));
+    const runner: CommandRunner = async (cmd, opts) => {
+      if (cmd[0] === "claude") return { stdout: JSON.stringify({ loggedIn: true, email: "milton@example.com" }), stderr: "", exitCode: 0 };
+      // codex login status has no --json support (SDD §5) — one of the
+      // four fixed plain-text lines instead.
+      return opts.env?.CODEX_HOME?.endsWith(".codex-personal")
+        ? { stdout: "Logged in using ChatGPT", stderr: "", exitCode: 0 }
+        : { stdout: "Not logged in", stderr: "", exitCode: 0 };
+    };
+
+    const pool = await HarnessPool.autoload(join(home, "does-not-exist.yaml"), { runner, homeDir: home, env: {} });
+
+    expect(pool.get("claude-personal")?.tool).toBe("claude-cli");
+    expect(pool.get("codex-personal")).toEqual({
+      id: "codex-personal",
+      tool: "codex-cli",
+      label: "Codex — ChatGPT",
+      enabled: true,
+      env: { CODEX_HOME: join(home, ".codex-personal") },
+    });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("autoload() layers in discovered ANTHROPIC_API_KEY* accounts alongside claude-cli ones", async () => {
   const home = await mkdtemp(join(tmpdir(), "wissel-autoload-"));
   try {

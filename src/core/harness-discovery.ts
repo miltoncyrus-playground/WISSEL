@@ -138,8 +138,8 @@ export async function checkClaudeCliAuth(
  * tries to actually run under it. Already-disabled entries are returned
  * as-is — no reason to probe a harness nobody's going to pick anyway.
  *
- * claude-cli entries get the real `claude auth status` check (free,
- * local). anthropic-api entries get the presence check
+ * claude-cli and codex-cli entries get the real, free, local auth-status
+ * check for that tool. anthropic-api entries get the presence check
  * `discoverApiKeyHarnesses` uses — same cost tradeoff as there: a
  * missing `apiKeyEnv` is exactly the bug this function exists to catch
  * (a key pointer that's real on one machine and not on this one), but
@@ -158,6 +158,12 @@ export async function validateHarness(harness: Harness, opts: DiscoverHarnessesO
 
   const runner = opts.runner ?? runViaBun;
   const home = opts.homeDir ?? homedir();
+
+  if (harness.tool === "codex-cli") {
+    const { authenticated } = await checkCodexCliAuth(runner, home, harness.env ?? {});
+    return authenticated ? harness : { ...harness, enabled: false };
+  }
+
   const { authenticated } = await checkClaudeCliAuth(runner, home, harness.env ?? {});
   return authenticated ? harness : { ...harness, enabled: false };
 }
@@ -174,5 +180,95 @@ async function probe(runner: CommandRunner, home: string, dirName: string): Prom
     label: email ? `Claude — ${email}` : id,
     enabled: true,
     env: { CLAUDE_CONFIG_DIR: configDir },
+  };
+}
+
+/** The four fixed human-readable lines `codex login status` prints as
+ *  of this research (confirmed live — see docs/SDD-codex-cli-harness.md
+ *  §5). Keyed by the exact substring so a future release that adds more
+ *  text around them (but keeps the phrase itself) still matches. */
+const CODEX_AUTH_MODES: Record<string, string> = {
+  "Logged in using an API key": "API key",
+  "Logged in using ChatGPT": "ChatGPT",
+  "Logged in using Agent Identity": "Agent Identity",
+};
+
+function parseCodexAuthMode(stdout: string): string | undefined {
+  for (const [line, label] of Object.entries(CODEX_AUTH_MODES)) {
+    if (stdout.includes(line)) return label;
+  }
+  return undefined;
+}
+
+/** Runs `codex login status` under the given env overrides (merged onto
+ *  the ambient environment by the runner, same contract as
+ *  checkClaudeCliAuth). Never throws; a spawn failure, non-zero exit, or
+ *  unrecognized output all read as "not authenticated," never a crash.
+ *
+ *  Unlike `claude auth status --json`, this version of `codex login
+ *  status` has no reliable `--json` output at all (open feature request,
+ *  SDD §5's #19866) — only one of four fixed plain-text lines. Detection
+ *  has to substring-match stdout instead of parsing structured JSON,
+ *  which is strictly more brittle than the claude-cli path: a future
+ *  Codex release that reworks that string breaks detection silently,
+ *  degrading to "not discovered" rather than crashing (accepted risk,
+ *  SDD §8.1). No email-equivalent is available this way either, so
+ *  callers fall back to a `Codex — <authMode>` label parsed from
+ *  whichever logged-in string matched, or the bare id if the string
+ *  shape ever changes too. */
+export async function checkCodexCliAuth(
+  runner: CommandRunner,
+  cwd: string,
+  env: Record<string, string> = {},
+): Promise<{ authenticated: boolean; authMode?: string }> {
+  try {
+    const result = await runner(["codex", "login", "status"], { cwd, env });
+    const authenticated = result.exitCode === 0 && !result.stdout.includes("Not logged in");
+    return { authenticated, authMode: parseCodexAuthMode(result.stdout) };
+  } catch {
+    return { authenticated: false };
+  }
+}
+
+/**
+ * Finds every already-authenticated Codex account on this machine —
+ * the codex-cli sibling of `discoverHarnesses`, same `.claude*`-probing
+ * heuristic applied to `.codex*`-prefixed directories under $HOME
+ * instead: scan for candidates, probe each with `CODEX_HOME` pointed at
+ * it, keep only the ones `codex login status` reports as logged in. See
+ * docs/SDD-codex-cli-harness.md §5.
+ *
+ * Never throws — same "degrades to zero discovered, never a startup
+ * failure" contract as `discoverHarnesses`.
+ */
+export async function discoverCodexHarnesses(opts: DiscoverHarnessesOptions = {}): Promise<Harness[]> {
+  const runner = opts.runner ?? runViaBun;
+  const home = opts.homeDir ?? homedir();
+
+  let candidateNames: string[];
+  try {
+    candidateNames = (await readdir(home, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith(".codex"))
+      .map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+
+  const probed = await Promise.all(candidateNames.map((name) => probeCodex(runner, home, name)));
+  return probed.filter((h): h is Harness => h !== undefined);
+}
+
+async function probeCodex(runner: CommandRunner, home: string, dirName: string): Promise<Harness | undefined> {
+  const configDir = join(home, dirName);
+  const { authenticated, authMode } = await checkCodexCliAuth(runner, home, { CODEX_HOME: configDir });
+  if (!authenticated) return undefined;
+
+  const id = dirName.replace(/^\./, "");
+  return {
+    id,
+    tool: "codex-cli",
+    label: authMode ? `Codex — ${authMode}` : id,
+    enabled: true,
+    env: { CODEX_HOME: configDir },
   };
 }

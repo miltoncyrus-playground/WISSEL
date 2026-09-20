@@ -38,7 +38,10 @@ export class WriteExecutor implements Executor {
   }
 
   canHandle(agent: AgentDef): boolean {
-    return agent.tier === "write";
+    // executor: codex is CodexWriteExecutor's territory — excluded
+    // explicitly so the two don't depend on array order in whatever
+    // pool they're both registered in to stay mutually exclusive.
+    return agent.tier === "write" && agent.executor !== "codex";
   }
 
   async run(task: TaskCard, agent: AgentDef, harness?: Harness): Promise<TaskResult> {

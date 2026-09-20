@@ -38,6 +38,13 @@ test("canHandle only accepts write-tier agents", () => {
   expect(executor.canHandle({ ...agent, tier: "readonly" })).toBe(false);
 });
 
+// Added alongside CodexWriteExecutor — that's its territory now, not
+// array order in whatever pool they're both registered in.
+test("canHandle excludes executor: codex — that's CodexWriteExecutor's territory, not array order", () => {
+  const executor = new WriteExecutor();
+  expect(executor.canHandle({ ...agent, executor: "codex" })).toBe(false);
+});
+
 test("runs claude in acceptEdits mode and parses a successful result", async () => {
   const executor = new WriteExecutor({
     runner: stub({
