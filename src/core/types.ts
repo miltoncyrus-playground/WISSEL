@@ -54,6 +54,24 @@ export interface AgentDef {
    *  no exception — every write-tier success from this agent stops for
    *  a human, unchanged. See docs/SDD-worktree-isolation.md §6. */
   autoMerge?: boolean;
+  /** Agent-specific machine-parseable output contract, appended verbatim
+   *  to the end of the prompt by buildAgentPrompt when present. Only the
+   *  reviewer agent sets this today (see agents/manifest.yaml) — its
+   *  final message must end with a ```review-verdict``` fenced block,
+   *  parsed by parseReviewVerdict (src/executors/parse-review-verdict.ts)
+   *  rather than by ad hoc prose-scraping downstream. Undefined means
+   *  "no contract beyond description/whenToUse" — the prior behavior. */
+  outputContract?: string;
+}
+
+/** The reviewer agent's mandated final-message contract: a
+ *  ```review-verdict``` fenced block containing exactly this shape,
+ *  nothing more permissive. See parseReviewVerdict, which is the only
+ *  code allowed to construct one from raw text — never hand-roll a
+ *  fallback verdict elsewhere. */
+export interface ReviewVerdict {
+  verdict: "approve" | "changes_requested";
+  feedback: string;
 }
 
 export interface TaskCard {
