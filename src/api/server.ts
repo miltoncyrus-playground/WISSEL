@@ -14,7 +14,9 @@ import { CodexReadOnlyExecutor } from "../executors/codex-readonly.ts";
 import { CodexWriteExecutor } from "../executors/codex-write.ts";
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { mergeTaskWorktree, removeTaskWorktree } from "../services/worktree.ts";
-import { runViaBun } from "../executors/claude-cli.ts";
+import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
+import { checkHarnessAuth } from "../core/harness-discovery.ts";
+import { setHarnessEnabled } from "../core/harness-manifest.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -38,6 +40,16 @@ export interface CreateAppOptions {
    *  harness concept in play), matching wissel's behavior before
    *  harnesses existed. */
   harnesses?: HarnessPool;
+  /** Path to the harnesses.yaml manifest — where `POST
+   *  /harnesses/:id/enable`/`/disable` persist a human's decision (see
+   *  docs/SDD-harness-enable-disable.md). Defaults to the same
+   *  "harnesses.yaml" relative path HarnessPool.load()/autoload()
+   *  already default to. */
+  harnessesPath?: string;
+  /** Used only by `POST /harnesses/:id/enable`'s re-validation check —
+   *  injectable so tests never spawn a real `claude`/`codex` process.
+   *  Defaults to the real one. */
+  harnessRunner?: CommandRunner;
 }
 
 /**
@@ -60,6 +72,8 @@ export function createApp(
   // Task tab's live preview works even with WISSEL_ORCHESTRATOR unset.
   const router = new Router(registry);
   const harnesses = opts.harnesses ?? HarnessPool.from([]);
+  const harnessesPath = opts.harnessesPath ?? "harnesses.yaml";
+  const harnessRunner = opts.harnessRunner ?? runViaBun;
 
   const executeWriteTier = opts.executeWriteTier ?? false;
   // ApiExecutor and CodexReadOnlyExecutor are unconditional, like
@@ -108,6 +122,33 @@ export function createApp(
 
       if (url.pathname === "/harnesses" && req.method === "GET") {
         return json(harnesses.all().map((h) => ({ ...h, activeCount: harnesses.activeCount(h.id) })));
+      }
+
+      if (parts[0] === "harnesses" && parts.length === 3) {
+        const harness = harnesses.get(parts[1]!);
+        if (!harness) return notFound();
+
+        // A human's own decision always wins, but an enable is only
+        // ever granted for real — re-runs the exact same tool-specific
+        // auth check validateHarness does at startup (see
+        // checkHarnessAuth) before flipping enabled: true, and refuses
+        // with a clear reason instead of a harness that would just fail
+        // the moment a task actually tries to use it. See
+        // docs/SDD-harness-enable-disable.md §6.
+        if (parts[2] === "enable" && req.method === "POST") {
+          const { authenticated } = await checkHarnessAuth(harness, { runner: harnessRunner });
+          if (!authenticated) {
+            harnesses.setEnabled(harness.id, false, "not authenticated");
+            return json({ error: "still not authenticated" }, 409);
+          }
+          await setHarnessEnabled(harnessesPath, harness, true);
+          return json(harnesses.setEnabled(harness.id, true));
+        }
+
+        if (parts[2] === "disable" && req.method === "POST") {
+          await setHarnessEnabled(harnessesPath, harness, false);
+          return json(harnesses.setEnabled(harness.id, false));
+        }
       }
 
       if (url.pathname === "/events" && req.method === "GET") {

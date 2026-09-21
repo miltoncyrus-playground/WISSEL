@@ -55,11 +55,24 @@ human merges it, so `bun run dev` is safe to use even with tasks
 running. `bun run serve` (no `--watch`) still exists if you want it, but
 isn't required for this anymore.
 
+Each execution harness (see `harnesses.yaml`) can be turned on or off by
+hand from the board — the strip at the top only ever shows what's usable
+right now, but the **Manage harnesses** panel next to it lists every
+configured harness (including disabled/not-authenticated ones) with a
+toggle. Disabling just stops new work from picking it (nothing in
+flight is interrupted); enabling re-checks that the harness is actually
+authenticated before flipping the switch, refusing with a clear error
+otherwise. Either way it's `POST /harnesses/:id/enable` /`/disable`,
+and it's `harnesses.yaml` itself that gets updated (comments preserved),
+so the decision survives a restart — see
+`docs/SDD-harness-enable-disable.md`.
+
 Known gaps:
 - No sandboxing beyond whatever the underlying agent CLI already does —
   not solved here, noted so it isn't assumed.
 - Merging/discarding a worktree is a manual, per-task action — nothing
-  auto-merges, and an abandoned worktree (task deleted, never
+  auto-merges (unless the routed agent opted into `autoMerge`, see
+  above), and an abandoned worktree (task deleted, never
   merged/discarded) just sits under `~/.wissel/worktrees/` until cleaned
   up by hand.
 

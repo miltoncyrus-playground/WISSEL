@@ -58,6 +58,49 @@ test("a disabled harness is never picked even when it would otherwise be least-l
   expect(pool.acquire("claude-cli")?.id).toBe("b");
 });
 
+test("setEnabled() mutates the live copy, visible to a subsequent acquire()", () => {
+  const pool = HarnessPool.from([harness({ id: "a" })]);
+  expect(pool.acquire("claude-cli")?.id).toBe("a");
+  pool.release("a");
+
+  const updated = pool.setEnabled("a", false);
+
+  expect(updated?.enabled).toBe(false);
+  expect(pool.get("a")?.enabled).toBe(false);
+  expect(pool.acquire("claude-cli")).toBeUndefined();
+});
+
+test("setEnabled() returns undefined and changes nothing for an unknown id", () => {
+  const pool = HarnessPool.from([harness({ id: "a" })]);
+  expect(pool.setEnabled("missing", false)).toBeUndefined();
+  expect(pool.get("a")?.enabled).toBe(true);
+});
+
+test("setEnabled() can set disabledReason (a failed re-validation attempt) without touching harnesses.yaml", () => {
+  const pool = HarnessPool.from([harness({ id: "a", enabled: false, disabledReason: "not authenticated" })]);
+  const updated = pool.setEnabled("a", false, "not authenticated");
+  expect(updated?.disabledReason).toBe("not authenticated");
+});
+
+test("setEnabled() clears disabledReason when a human enables a harness — their choice supersedes the auto-diagnosis", () => {
+  const pool = HarnessPool.from([harness({ id: "a", enabled: false, disabledReason: "not authenticated" })]);
+  const updated = pool.setEnabled("a", true);
+  expect(updated?.enabled).toBe(true);
+  expect(updated?.disabledReason).toBeUndefined();
+});
+
+test("disabling an already-acquired harness doesn't interrupt what's already running under it", () => {
+  const pool = HarnessPool.from([harness({ id: "a" })]);
+  const acquired = pool.acquire("claude-cli")!;
+  pool.setEnabled("a", false);
+
+  // Still tracked as active — disable only affects the *next* pick, it
+  // never forcibly releases in-flight work.
+  expect(pool.activeCount(acquired.id)).toBe(1);
+  pool.release(acquired.id);
+  expect(pool.activeCount(acquired.id)).toBe(0);
+});
+
 function loggedInRunner(email: string): CommandRunner {
   return async () => ({ stdout: JSON.stringify({ loggedIn: true, email }), stderr: "", exitCode: 0 });
 }

@@ -106,4 +106,22 @@ export class HarnessPool {
     if (n <= 1) this.inFlight.delete(id);
     else this.inFlight.set(id, n - 1);
   }
+
+  /** Mutates the live pool's copy of a harness in place — the in-memory
+   *  half of a human enable/disable decision (the other half,
+   *  persisting to harnesses.yaml, is `setHarnessEnabled` in
+   *  harness-manifest.ts — always done first by the caller, so a failed
+   *  disk write never leaves memory and disk disagreeing about which
+   *  one's the truth). Returns undefined, changing nothing, for an
+   *  unknown id. Doesn't touch `inFlight`: disabling an already-acquired
+   *  harness never interrupts whatever's currently running under it —
+   *  `acquire()` only consults `enabled` for the *next* pick. See
+   *  docs/SDD-harness-enable-disable.md §7. */
+  setEnabled(id: string, enabled: boolean, disabledReason?: string): Harness | undefined {
+    const existing = this.harnesses.get(id);
+    if (!existing) return undefined;
+    const updated: Harness = { ...existing, enabled, disabledReason };
+    this.harnesses.set(id, updated);
+    return updated;
+  }
 }

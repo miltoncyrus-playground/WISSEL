@@ -157,7 +157,7 @@ test("validateHarness disables an entry whose declared env is not authenticated 
 
   const result = await validateHarness(h, { runner });
 
-  expect(result).toEqual({ ...h, enabled: false });
+  expect(result).toEqual({ ...h, enabled: false, disabledReason: "not authenticated" });
 });
 
 test("validateHarness leaves an already-disabled entry alone without probing", async () => {
@@ -200,7 +200,7 @@ test("validateHarness keeps an anthropic-api entry enabled when its apiKeyEnv is
 test("validateHarness disables an anthropic-api entry whose apiKeyEnv isn't set here (the same checked-in-wrong-machine case, for API keys)", async () => {
   const h: Harness = { id: "personal", tool: "anthropic-api", label: "Personal", enabled: true, apiKeyEnv: "MY_KEY" };
   const result = await validateHarness(h, { env: {} });
-  expect(result).toEqual({ ...h, enabled: false });
+  expect(result).toEqual({ ...h, enabled: false, disabledReason: "not authenticated" });
 });
 
 test("validateHarness trusts an anthropic-api entry with no apiKeyEnv at all — ambient resolution, same as every other unconfigured case", async () => {
@@ -308,5 +308,5 @@ test("validateHarness disables a codex-cli entry whose declared env is not authe
   const h: Harness = { id: "codex-personal", tool: "codex-cli", label: "codex-personal", enabled: true, env: { CODEX_HOME: "~/.codex" } };
 
   const result = await validateHarness(h, { runner });
-  expect(result).toEqual({ ...h, enabled: false });
+  expect(result).toEqual({ ...h, enabled: false, disabledReason: "not authenticated" });
 });

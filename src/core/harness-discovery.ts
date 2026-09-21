@@ -149,23 +149,36 @@ export async function checkClaudeCliAuth(
  */
 export async function validateHarness(harness: Harness, opts: DiscoverHarnessesOptions = {}): Promise<Harness> {
   if (!harness.enabled) return harness;
+  const { authenticated } = await checkHarnessAuth(harness, opts);
+  return authenticated ? harness : { ...harness, enabled: false, disabledReason: "not authenticated" };
+}
 
+/**
+ * The tool-specific "is this harness actually usable right now" check,
+ * factored out of `validateHarness` so the `POST /harnesses/:id/enable`
+ * endpoint (docs/SDD-harness-enable-disable.md §6) can run the exact
+ * same check on demand — regardless of the harness's current `enabled`
+ * value, which `validateHarness` itself deliberately skips re-checking
+ * ("no reason to probe a harness nobody's going to pick anyway").
+ * Same cost tradeoffs as `validateHarness`'s own doc comment: free/local
+ * for claude-cli and codex-cli, a presence-only check for anthropic-api
+ * (verifying the key actually works would spend money on every call).
+ */
+export async function checkHarnessAuth(harness: Harness, opts: DiscoverHarnessesOptions = {}): Promise<{ authenticated: boolean }> {
   if (harness.tool === "anthropic-api") {
-    if (!harness.apiKeyEnv) return harness;
+    if (!harness.apiKeyEnv) return { authenticated: true };
     const env = opts.env ?? process.env;
-    return env[harness.apiKeyEnv] ? harness : { ...harness, enabled: false };
+    return { authenticated: Boolean(env[harness.apiKeyEnv]) };
   }
 
   const runner = opts.runner ?? runViaBun;
   const home = opts.homeDir ?? homedir();
 
   if (harness.tool === "codex-cli") {
-    const { authenticated } = await checkCodexCliAuth(runner, home, harness.env ?? {});
-    return authenticated ? harness : { ...harness, enabled: false };
+    return checkCodexCliAuth(runner, home, harness.env ?? {});
   }
 
-  const { authenticated } = await checkClaudeCliAuth(runner, home, harness.env ?? {});
-  return authenticated ? harness : { ...harness, enabled: false };
+  return checkClaudeCliAuth(runner, home, harness.env ?? {});
 }
 
 async function probe(runner: CommandRunner, home: string, dirName: string): Promise<Harness | undefined> {

@@ -140,4 +140,46 @@ test.describe("Board view", () => {
     await drawer.getByRole("button", { name: "View diff" }).click();
     await expect(drawer.locator("#tdDiffSection")).toContainText("isn't a git working tree");
   });
+
+  // Deliberately never calls the mutating /enable or /disable endpoints
+  // here — the e2e server boots against this repo's real harnesses.yaml
+  // (see playwright.config.ts), and which harnesses exist/authenticate
+  // is genuinely machine-dependent, unlike the static agents/manifest.yaml
+  // every other test in this file reads from. This test only exercises
+  // open/close/render — real DOM wiring a syntax check can't catch —
+  // without asserting on, or mutating, machine-specific harness content.
+  test("Manage harnesses panel opens from the strip, renders coherently, and closes via X/Escape/overlay", async ({ page }) => {
+    await page.goto("/board");
+
+    const panel = page.locator("#harnessPanel");
+    await expect(panel).toBeHidden();
+
+    await page.locator("#hmOpenBtn").click();
+    await expect(panel).toBeVisible();
+    // Whatever this machine's real harnesses.yaml/auth state produces,
+    // the panel renders either real rows or the explicit empty state —
+    // never a blank list, which would mean rendering silently failed.
+    const rowCount = await panel.locator(".hm-row").count();
+    const emptyCount = await panel.locator(".hm-empty").count();
+    expect(rowCount + emptyCount).toBeGreaterThan(0);
+    // Every row's toggle button says exactly one of these two things —
+    // proves renderHarnessPanel's enabled/disabled branch actually ran,
+    // not just that some button exists.
+    for (const label of await panel.locator(".hm-toggle").allTextContents()) {
+      expect(["Enable", "Disable"]).toContain(label);
+    }
+
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+
+    await page.locator("#hmOpenBtn").click();
+    await expect(panel).toBeVisible();
+    await page.locator("#hmClose").click();
+    await expect(panel).toBeHidden();
+
+    await page.locator("#hmOpenBtn").click();
+    await expect(panel).toBeVisible();
+    await page.locator("#hmOverlay").click({ position: { x: 5, y: 5 } });
+    await expect(panel).toBeHidden();
+  });
 });

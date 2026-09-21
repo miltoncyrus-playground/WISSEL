@@ -117,6 +117,15 @@ export interface Harness {
    *  config-dir path can. Undefined means "resolve ambiently" — the
    *  SDK's own ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN resolution. */
   apiKeyEnv?: string;
+  /** Why `enabled` is false, when it's false for a reason other than a
+   *  human's own choice — e.g. "not authenticated" (set by
+   *  validateHarness/discovery). Undefined when enabled is true, OR
+   *  when a human explicitly disabled it themselves (see
+   *  HarnessPool.setEnabled) — the "Manage harnesses" panel needs to
+   *  tell "disabled because you turned it off" apart from "disabled
+   *  because it can't work right now" without guessing from context.
+   *  See docs/SDD-harness-enable-disable.md §4. */
+  disabledReason?: string;
 }
 
 export interface Candidate {

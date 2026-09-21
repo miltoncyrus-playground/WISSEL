@@ -185,12 +185,38 @@
      routing fleet. Sits above the toolbar so it's visible regardless of
      which view (Board / New task) is open, since it's fleet-adjacent
      state, not board state. ---- */
+  .harness-strip-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
   .harness-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .harness-pill { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; background: var(--surface); font-size: 12px; }
   .harness-pill .h-label { font-weight: 600; }
   .harness-pill .h-tool { color: var(--ink-muted); font-size: 10.5px; }
   .harness-load { font-size: 10.5px; font-weight: 700; color: var(--ink-1); background: var(--accent-wash); border-radius: 999px; padding: 1px 7px; }
   .harness-strip-empty { font-size: 12.5px; color: var(--ink-muted); }
+  /* "Manage harnesses" — a separate panel (see docs/SDD-harness-enable-
+     disable.md §9), not a change to the strip above: the strip stays
+     usable-only (51904ff), this is where every configured harness,
+     including disabled ones, can be reviewed and toggled. */
+  .harness-manage-btn {
+    appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-muted);
+    font: inherit; font-size: 11.5px; font-weight: 600; padding: 5px 11px; border-radius: 999px; cursor: pointer; flex: none;
+  }
+  .harness-manage-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .hm-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .hm-row:last-child { border-bottom: none; }
+  .hm-row-main { flex: 1; min-width: 0; }
+  .hm-row-label { font-size: 13px; font-weight: 600; color: var(--ink-1); }
+  .hm-row-meta { font-size: 11px; color: var(--ink-muted); margin-top: 2px; }
+  .hm-row-meta.reason { color: var(--critical); }
+  .hm-toggle {
+    appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-1);
+    font: inherit; font-size: 11.5px; font-weight: 700; padding: 5px 12px; border-radius: 7px; cursor: pointer; flex: none;
+  }
+  .hm-toggle:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .hm-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+  .hm-toggle.is-enabled { border-color: var(--critical); color: var(--critical); }
+  .hm-toggle.is-enabled:hover:not(:disabled) { border-color: var(--critical); color: var(--critical); opacity: 0.8; }
+  .hm-error { font-size: 11.5px; color: var(--critical); margin-top: 4px; }
+  .hm-empty { font-size: 12.5px; color: var(--ink-muted); padding: 8px 0; }
 
   .decision-head { font-size: 13px; color: var(--ink-2); margin: 0 0 12px; }
   .decision-head b { color: var(--ink-1); }
@@ -326,7 +352,10 @@
     <p class="lede">Every task's status, and the fleet that can pick one up. Click a task for its full detail — routing decision, result, diff, and the actions to move it forward.</p>
   </header>
 
-  <div class="harness-strip" id="harnessStrip"></div>
+  <div class="harness-strip-row">
+    <div class="harness-strip" id="harnessStrip"></div>
+    <button type="button" class="harness-manage-btn" id="hmOpenBtn">Manage harnesses</button>
+  </div>
 
   <div class="toolbar">
     <div class="segmented" id="viewToggle" role="group" aria-label="View">
@@ -461,6 +490,20 @@
   </div>
 </aside>
 
+<div class="drawer-overlay" id="hmOverlay" hidden></div>
+<aside class="drawer" id="harnessPanel" role="dialog" aria-modal="true" aria-labelledby="hmTitle" hidden>
+  <div class="drawer-head">
+    <h2 id="hmTitle">Manage harnesses</h2>
+    <button type="button" class="drawer-close" id="hmClose" aria-label="Close">×</button>
+  </div>
+  <div class="drawer-body">
+    <section class="drawer-section">
+      <p class="drawer-desc">Every configured harness — enabled, manually disabled, or not authenticated right now. The strip above only ever shows what's usable at a glance; this is everything, with a toggle.</p>
+    </section>
+    <section class="drawer-section" id="hmList"></section>
+  </div>
+</aside>
+
 <script>
 (function () {
   "use strict";
@@ -531,6 +574,7 @@
   // than closing under the user while a run is in flight.
 
   var drawerTaskId = null;
+  var harnessPanelOpen = false;
 
   function statusPill(status) {
     var pill = document.createElement("span");
@@ -867,7 +911,119 @@
   document.getElementById("drawerOverlay").addEventListener("click", closeTaskDrawer);
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && drawerTaskId) closeTaskDrawer();
+    if (ev.key === "Escape" && harnessPanelOpen) closeHarnessPanel();
   });
+
+  // "Manage harnesses" — a separate panel from the glance strip on
+  // purpose (docs/SDD-harness-enable-disable.md §2/§9): the strip stays
+  // usable-only, this shows every configured harness (enabled,
+  // manually disabled, or not authenticated) with a toggle. Reuses the
+  // task drawer's own overlay/slide-in mechanism and CSS verbatim —
+  // same open/close shape as openTaskDrawer/closeTaskDrawer above, just
+  // a second independent instance rather than sharing state with it.
+  function openHarnessPanel() {
+    harnessPanelOpen = true;
+    renderHarnessPanel();
+    document.getElementById("hmOverlay").hidden = false;
+    document.getElementById("harnessPanel").hidden = false;
+    requestAnimationFrame(function () {
+      document.getElementById("hmOverlay").classList.add("open");
+      document.getElementById("harnessPanel").classList.add("open");
+    });
+  }
+
+  function closeHarnessPanel() {
+    harnessPanelOpen = false;
+    document.getElementById("hmOverlay").classList.remove("open");
+    document.getElementById("harnessPanel").classList.remove("open");
+    setTimeout(function () {
+      document.getElementById("hmOverlay").hidden = true;
+      document.getElementById("harnessPanel").hidden = true;
+    }, 180);
+  }
+
+  var hmActionError = null;
+
+  // Renders from the same `harnesses` array the strip reads (already
+  // unfiltered — only renderHarnessStrip() ever hides disabled ones),
+  // so this stays live across the normal SSE-driven refetch cycle with
+  // no separate fetch of its own. Guarded by harnessPanelOpen in
+  // render() below, same "only do the work if it's actually open"
+  // pattern refreshOpenDrawer() already uses for the task drawer.
+  function renderHarnessPanel() {
+    var list = document.getElementById("hmList");
+    list.textContent = "";
+
+    if (harnesses.length === 0) {
+      var empty = document.createElement("p");
+      empty.className = "hm-empty";
+      empty.textContent = "No harnesses configured or discovered yet.";
+      list.appendChild(empty);
+      return;
+    }
+
+    harnesses.forEach(function (h) {
+      var row = document.createElement("div");
+      row.className = "hm-row";
+
+      var main = document.createElement("div");
+      main.className = "hm-row-main";
+      var label = document.createElement("div");
+      label.className = "hm-row-label";
+      label.textContent = h.label || h.id;
+      main.appendChild(label);
+
+      var meta = document.createElement("div");
+      meta.className = "hm-row-meta";
+      var metaBits = [h.tool];
+      if (h.activeCount > 0) metaBits.push(h.activeCount + " active");
+      meta.textContent = metaBits.join(" · ");
+      main.appendChild(meta);
+
+      if (!h.enabled) {
+        var reason = document.createElement("div");
+        reason.className = "hm-row-meta reason";
+        reason.textContent = h.disabledReason || "disabled by you";
+        main.appendChild(reason);
+      }
+
+      row.appendChild(main);
+
+      var toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "hm-toggle" + (h.enabled ? " is-enabled" : "");
+      toggle.textContent = h.enabled ? "Disable" : "Enable";
+      toggle.addEventListener("click", function () { toggleHarness(h.id, !h.enabled); });
+      row.appendChild(toggle);
+
+      list.appendChild(row);
+
+      if (hmActionError && hmActionError.id === h.id) {
+        var err = document.createElement("p");
+        err.className = "hm-error";
+        err.textContent = hmActionError.message;
+        list.appendChild(err);
+      }
+    });
+  }
+
+  function toggleHarness(id, enable) {
+    hmActionError = null;
+    var action = enable ? "enable" : "disable";
+    fetch("/harnesses/" + id + "/" + action, { method: "POST" }).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).then(function () {
+      renderHarnessPanel();
+    }).catch(function (err) {
+      hmActionError = { id: id, message: err.message };
+      renderHarnessPanel();
+    });
+  }
+
+  document.getElementById("hmOpenBtn").addEventListener("click", openHarnessPanel);
+  document.getElementById("hmClose").addEventListener("click", closeHarnessPanel);
+  document.getElementById("hmOverlay").addEventListener("click", closeHarnessPanel);
 
   // Pulsing green dot — "actively working," reused verbatim on a running
   // task's box and on a fleet row currently doing work.
@@ -1040,6 +1196,7 @@
     renderKanban();
     renderFleetBoxes();
     renderHarnessStrip();
+    if (harnessPanelOpen) renderHarnessPanel();
     renderRepoOptions();
     renderDependsOnOptions();
     renderParentTaskOptions();

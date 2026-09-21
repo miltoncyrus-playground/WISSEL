@@ -1,9 +1,14 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parse } from "yaml";
 import { createApp, type CreateAppOptions } from "../src/api/server.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
-import type { AgentDef, Executor, TaskCard, TaskResult } from "../src/core/types.ts";
+import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../src/core/types.ts";
+import type { CommandRunner } from "../src/executors/claude-cli.ts";
 
 function req(path: string, init?: RequestInit): Request {
   return new Request(`http://localhost${path}`, init);
@@ -52,6 +57,86 @@ test("GET /harnesses defaults to empty, and returns configured harnesses with a 
   const res = await withHarness(req("/harnesses"));
   const body = (await res.json()) as { id: string; tool: string; label: string; enabled: boolean; activeCount: number }[];
   expect(body).toEqual([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true, activeCount: 0 }]);
+});
+
+async function harnessesFixture(content: string): Promise<{ dir: string; path: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-harnesses-test-"));
+  const path = join(dir, "harnesses.yaml");
+  await writeFile(path, content);
+  return { dir, path };
+}
+
+test("POST /harnesses/:id/disable persists to harnesses.yaml and updates the live pool, no re-validation needed", async () => {
+  const { dir, path } = await harnessesFixture("harnesses:\n  - id: a\n    tool: claude-cli\n    label: A\n    enabled: true\n");
+  try {
+    const harnesses = HarnessPool.from([{ id: "a", tool: "claude-cli", label: "A", enabled: true }]);
+    let runnerCalled = false;
+    const app = await makeApp(new SqliteBoard(), {
+      harnesses,
+      harnessesPath: path,
+      harnessRunner: async () => {
+        runnerCalled = true;
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+    });
+
+    const res = await app(req("/harnesses/a/disable", { method: "POST" }));
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Harness).enabled).toBe(false);
+    expect(harnesses.get("a")?.enabled).toBe(false);
+    expect(runnerCalled).toBe(false);
+    const onDisk = parse(await readFile(path, "utf8")) as { harnesses: Harness[] };
+    expect(onDisk.harnesses.find((h) => h.id === "a")?.enabled).toBe(false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /harnesses/:id/enable re-validates first — succeeds and clears disabledReason when still authenticated", async () => {
+  const { dir, path } = await harnessesFixture("harnesses:\n  - id: a\n    tool: claude-cli\n    label: A\n    enabled: false\n    disabledReason: not authenticated\n");
+  try {
+    const harnesses = HarnessPool.from([{ id: "a", tool: "claude-cli", label: "A", enabled: false, disabledReason: "not authenticated" }]);
+    const runner: CommandRunner = async () => ({ stdout: JSON.stringify({ loggedIn: true }), stderr: "", exitCode: 0 });
+    const app = await makeApp(new SqliteBoard(), { harnesses, harnessesPath: path, harnessRunner: runner });
+
+    const res = await app(req("/harnesses/a/enable", { method: "POST" }));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Harness;
+    expect(body.enabled).toBe(true);
+    expect(body.disabledReason).toBeUndefined();
+    expect(harnesses.get("a")?.enabled).toBe(true);
+    const onDisk = parse(await readFile(path, "utf8")) as { harnesses: Harness[] };
+    expect(onDisk.harnesses.find((h) => h.id === "a")?.enabled).toBe(true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /harnesses/:id/enable refuses with 409 when still not authenticated, and never touches harnesses.yaml", async () => {
+  const { dir, path } = await harnessesFixture("harnesses:\n  - id: a\n    tool: claude-cli\n    label: A\n    enabled: false\n");
+  const before = await readFile(path, "utf8");
+  try {
+    const harnesses = HarnessPool.from([{ id: "a", tool: "claude-cli", label: "A", enabled: false }]);
+    const runner: CommandRunner = async () => ({ stdout: JSON.stringify({ loggedIn: false }), stderr: "", exitCode: 0 });
+    const app = await makeApp(new SqliteBoard(), { harnesses, harnessesPath: path, harnessRunner: runner });
+
+    const res = await app(req("/harnesses/a/enable", { method: "POST" }));
+
+    expect(res.status).toBe(409);
+    expect(harnesses.get("a")?.enabled).toBe(false);
+    expect(harnesses.get("a")?.disabledReason).toBe("not authenticated");
+    expect(await readFile(path, "utf8")).toBe(before);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /harnesses/:id/enable and /disable 404 for an unknown id", async () => {
+  const app = await makeApp(new SqliteBoard(), { harnesses: HarnessPool.from([]) });
+  expect((await app(req("/harnesses/missing/enable", { method: "POST" }))).status).toBe(404);
+  expect((await app(req("/harnesses/missing/disable", { method: "POST" }))).status).toBe(404);
 });
 
 test("POST /tasks then GET /tasks round-trips, defaulting dependsOn to []", async () => {
