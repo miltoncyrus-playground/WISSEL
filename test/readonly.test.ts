@@ -140,6 +140,35 @@ test("passes cwd, plan mode, and the task/agent framing into the prompt", async 
   expect(prompt).toContain(task.body);
 });
 
+// Real bug found live: a claude-cli harness's real execution never
+// scrubbed ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN the way the
+// harness-discovery auth-status probe already did — an ambient
+// ANTHROPIC_API_KEY (set for the separate anthropic-api harness) broke
+// every real claude-cli run on a machine that also has one configured.
+test("always forces ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN empty, with no harness env at all", async () => {
+  let seenEnv: Record<string, string> | undefined;
+  const executor = new ReadOnlyExecutor({
+    runner: async (_cmd, opts) => {
+      seenEnv = opts.env;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+  });
+  await executor.run(task, agent);
+  expect(seenEnv).toEqual({ ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" });
+});
+
+test("forces the same two vars empty on top of a harness's own env, without dropping the rest of it", async () => {
+  let seenEnv: Record<string, string> | undefined;
+  const executor = new ReadOnlyExecutor({
+    runner: async (_cmd, opts) => {
+      seenEnv = opts.env;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+  });
+  await executor.run(task, agent, { id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true, env: { CLAUDE_CONFIG_DIR: "/x" } });
+  expect(seenEnv).toEqual({ CLAUDE_CONFIG_DIR: "/x", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" });
+});
+
 test("defaults --model to the routed agent's own costProfile.model", async () => {
   let seenCmd: string[] = [];
   const executor = new ReadOnlyExecutor({

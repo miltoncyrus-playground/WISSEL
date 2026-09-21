@@ -57,9 +57,11 @@ export interface RunClaudeOptions {
    *  available model", which is already the local default — never
    *  silently downgrade here). */
   model?: string;
-  /** The picked harness's env overrides, passed straight through to the
-   *  runner. Undefined when no harness was picked — identical to
-   *  wissel's behavior before harnesses existed. */
+  /** The picked harness's env overrides, passed to the runner. Undefined
+   *  when no harness was picked — identical to wissel's behavior before
+   *  harnesses existed. Either way, runClaude always additionally forces
+   *  ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN empty before spawning — see
+   *  the comment in runClaude itself. */
   env?: Record<string, string>;
 }
 
@@ -74,9 +76,21 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   const cmd = ["claude", "-p", buildAgentPrompt(task, agent), "--output-format", "json", "--permission-mode", permissionMode];
   if (model) cmd.push("--model", model);
 
+  // Always force these two empty, harness or no harness — confirmed
+  // live (not just for the auth-status probe): an ambient
+  // ANTHROPIC_API_KEY set for the separate anthropic-api harness makes
+  // claude treat it as the active identity, overriding the intended
+  // CLAUDE_CONFIG_DIR-based claude.ai login regardless of CLAUDE_CONFIG_DIR
+  // itself — the run fails outright ("connectors are disabled..."), not
+  // just a cosmetic warning. harness-discovery.ts's checkClaudeCliAuth
+  // already scrubs these two for its own probe; this was the real
+  // execution path that was missing the same guard until a live pipeline
+  // run hit it for real.
+  const scopedEnv = { ...(env ?? {}), ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
+
   let cmdResult: CommandResult;
   try {
-    cmdResult = await runner(cmd, { cwd: task.repo, env });
+    cmdResult = await runner(cmd, { cwd: task.repo, env: scopedEnv });
   } catch (e) {
     return fail(task, agent, `failed to spawn claude: ${(e as Error).message}`);
   }
