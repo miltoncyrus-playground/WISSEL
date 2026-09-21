@@ -1,5 +1,6 @@
 import type { AgentDef, TaskCard, TaskResult } from "../core/types.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
+import { parseReviewVerdict } from "./parse-review-verdict.ts";
 
 export interface CommandResult {
   stdout: string;
@@ -94,7 +95,23 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   }
 
   const denials = parsed.permission_denials ?? [];
-  const summary = denials.length > 0 ? `${parsed.result ?? "(no result)"} [${denials.length} permission denial(s)]` : parsed.result ?? "(no result)";
+  let ok = !parsed.is_error;
+  let summary = denials.length > 0 ? `${parsed.result ?? "(no result)"} [${denials.length} permission denial(s)]` : parsed.result ?? "(no result)";
+
+  // Agents with a declared outputContract (today: only the reviewer —
+  // see AgentDef.outputContract) must end their message with a
+  // machine-parseable verdict block. A claude run that otherwise
+  // "succeeded" but produced prose instead of the contract is still a
+  // failure from the caller's point of view: nothing downstream can
+  // trust `summary` as a verdict. Never default to approve here — see
+  // parseReviewVerdict's own contract.
+  if (ok && agent.outputContract) {
+    const verdict = parseReviewVerdict(parsed.result ?? "");
+    if (verdict === null) {
+      ok = false;
+      summary = `${agent.name} violated its output contract — expected a trailing \`\`\`review-verdict fenced block with {"verdict":"approve"|"changes_requested","feedback":"..."}, got: ${parsed.result ?? "(no result)"}`;
+    }
+  }
 
   // Undefined (not a zero-valued object) when nothing was spawned — "no
   // field" and "definitely spawned nothing" read the same way the rest
@@ -105,7 +122,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   return {
     taskId: task.id,
     agentId: agent.id,
-    ok: !parsed.is_error,
+    ok,
     summary,
     actualCost: parsed.total_cost_usd,
     subagents,

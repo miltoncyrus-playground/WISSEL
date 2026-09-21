@@ -50,6 +50,34 @@ agents:
     trustLevel: medium
     toolAccess: [read]
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.12 }
+    outputContract: |
+      Output contract — mandatory, machine-parsed, no exceptions:
+
+      Your final message MUST end with a fenced code block of exactly
+      this form, and nothing may follow it:
+
+      ```review-verdict
+      {"verdict": "approve", "feedback": "..."}
+      ```
+
+      or
+
+      ```review-verdict
+      {"verdict": "changes_requested", "feedback": "..."}
+      ```
+
+      Rules:
+      - `verdict` must be exactly "approve" or "changes_requested" — no
+        other value, no synonyms, no omission.
+      - `feedback` is a plain string summarizing your review (what you
+        checked, and — for changes_requested — exactly what must change).
+      - The block must be valid JSON on its own: no trailing commas, no
+        comments, no code fences nested inside it.
+      - Write your normal prose review first if you want, but the
+        ```review-verdict``` block must be the last thing in your
+        message. A missing, malformed, or extra block after it is
+        treated as a failed review, not an approval — never omit it or
+        leave it ambiguous "to be safe."
 
   - id: repo-briefer
     name: Repo briefer
