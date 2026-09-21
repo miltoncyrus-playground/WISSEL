@@ -54,6 +54,10 @@ interface TaskRow {
   dependsOn: string;
   parentTaskId: string | null;
   harness: string | null;
+  pushbackCount: number | null;
+  reviewLineageId: string | null;
+  supersededBy: string | null;
+  escalationContext: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -68,6 +72,10 @@ function rowToCard(row: TaskRow): TaskCard {
     dependsOn: JSON.parse(row.dependsOn) as string[],
     parentTaskId: row.parentTaskId ?? undefined,
     harness: row.harness ?? undefined,
+    pushbackCount: row.pushbackCount ?? undefined,
+    reviewLineageId: row.reviewLineageId ?? undefined,
+    supersededBy: row.supersededBy ?? undefined,
+    escalationContext: row.escalationContext ?? undefined,
   };
 }
 
@@ -95,7 +103,11 @@ export class SqliteBoard implements Board {
         routedTo TEXT,
         dependsOn TEXT NOT NULL DEFAULT '[]',
         parentTaskId TEXT,
-        harness TEXT
+        harness TEXT,
+        pushbackCount INTEGER,
+        reviewLineageId TEXT,
+        supersededBy TEXT,
+        escalationContext TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -107,7 +119,14 @@ export class SqliteBoard implements Board {
     // moment that column is written to (parentTaskId shipped without
     // one — found live, against a real pre-existing DB, when this task
     // couldn't create a task at all).
-    for (const ddl of ["ALTER TABLE tasks ADD COLUMN harness TEXT;", "ALTER TABLE tasks ADD COLUMN parentTaskId TEXT;"]) {
+    for (const ddl of [
+      "ALTER TABLE tasks ADD COLUMN harness TEXT;",
+      "ALTER TABLE tasks ADD COLUMN parentTaskId TEXT;",
+      "ALTER TABLE tasks ADD COLUMN pushbackCount INTEGER;",
+      "ALTER TABLE tasks ADD COLUMN reviewLineageId TEXT;",
+      "ALTER TABLE tasks ADD COLUMN supersededBy TEXT;",
+      "ALTER TABLE tasks ADD COLUMN escalationContext TEXT;",
+    ]) {
       try {
         this.db.run(ddl);
       } catch {
@@ -141,7 +160,9 @@ export class SqliteBoard implements Board {
         worktree TEXT,
         actualCost REAL,
         harnessId TEXT,
-        subagents TEXT
+        subagents TEXT,
+        verdict TEXT,
+        reviewFeedback TEXT
       );
     `);
     // actualCost/harnessId shipped on TaskResult well before this table
@@ -155,6 +176,8 @@ export class SqliteBoard implements Board {
       "ALTER TABLE task_results ADD COLUMN actualCost REAL;",
       "ALTER TABLE task_results ADD COLUMN harnessId TEXT;",
       "ALTER TABLE task_results ADD COLUMN subagents TEXT;",
+      "ALTER TABLE task_results ADD COLUMN verdict TEXT;",
+      "ALTER TABLE task_results ADD COLUMN reviewFeedback TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -196,7 +219,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -208,6 +231,10 @@ export class SqliteBoard implements Board {
         JSON.stringify(full.dependsOn),
         full.parentTaskId ?? null,
         full.harness ?? null,
+        full.pushbackCount ?? null,
+        full.reviewLineageId ?? null,
+        full.supersededBy ?? null,
+        full.escalationContext ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
@@ -280,7 +307,7 @@ export class SqliteBoard implements Board {
 
   async recordResult(result: TaskResult): Promise<void> {
     this.db.run(
-      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         result.taskId,
         result.agentId,
@@ -291,6 +318,8 @@ export class SqliteBoard implements Board {
         result.actualCost ?? null,
         result.harnessId ?? null,
         result.subagents ? JSON.stringify(result.subagents) : null,
+        result.verdict ?? null,
+        result.reviewFeedback ?? null,
       ],
     );
     this.events.emit("event", { type: "task.result", result } satisfies BoardEvent);
@@ -307,6 +336,8 @@ export class SqliteBoard implements Board {
       actualCost: number | null;
       harnessId: string | null;
       subagents: string | null;
+      verdict: TaskResult["verdict"] | null;
+      reviewFeedback: string | null;
     } | null;
     if (!row) return undefined;
     return {
@@ -319,6 +350,8 @@ export class SqliteBoard implements Board {
       actualCost: row.actualCost ?? undefined,
       harnessId: row.harnessId ?? undefined,
       subagents: row.subagents ? (JSON.parse(row.subagents) as TaskResult["subagents"]) : undefined,
+      verdict: row.verdict ?? undefined,
+      reviewFeedback: row.reviewFeedback ?? undefined,
     };
   }
 

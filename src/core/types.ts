@@ -83,8 +83,13 @@ export interface TaskCard {
   /** dispatched: routed to a write-tier agent and handed off — wissel
    *  isn't the one running it, so it waits for an external result.
    *  no-match: routing stopped before spend because nothing matched
-   *  confidently; see the task's recorded RoutingDecision for why. */
-  status: "inbox" | "ready" | "running" | "dispatched" | "review" | "done" | "failed" | "no-match";
+   *  confidently; see the task's recorded RoutingDecision for why.
+   *  pending-review: an implementer's result is queued for a reviewer
+   *  agent's automated pass, distinct from `review` (a human's queue).
+   *  escalated: a reviewer requested changes `pushbackCount` times
+   *  without resolution and kicked it to a human — see
+   *  `escalationContext`. */
+  status: "inbox" | "ready" | "running" | "dispatched" | "review" | "done" | "failed" | "no-match" | "pending-review" | "escalated";
   routedTo?: string;
   /** Task ids this one is blocked on. Absent/empty means unblocked. */
   dependsOn?: string[];
@@ -99,6 +104,29 @@ export interface TaskCard {
    *  Never set for a `dispatched` task: wissel hands those to agetor and
    *  has no visibility into which harness agetor runs them under. */
   harness?: string;
+  /** How many times a reviewer has sent this task's lineage back with
+   *  `changes_requested`. Incremented each pushback round; distinct from
+   *  a plain retry count because it's scoped to the review loop, not to
+   *  execution failures. Undefined/0 means never pushed back. */
+  pushbackCount?: number;
+  /** Groups every attempt in one review-pushback chain (original attempt
+   *  plus every re-attempt spawned by `changes_requested`) under a single
+   *  id, set on the first attempt and carried forward by each
+   *  `supersededBy` re-attempt — how a human or the board reconstructs
+   *  "everything that happened trying to land this card" across rows
+   *  that are otherwise separate TaskCards. */
+  reviewLineageId?: string;
+  /** Id of the re-attempt TaskCard spawned to replace this one after a
+   *  pushback — set on the superseded (old) card, never on the new one.
+   *  Undefined means either this card hasn't been superseded, or it IS
+   *  the newest attempt in its lineage. */
+  supersededBy?: string;
+  /** Why a task landed on `escalated` instead of another pushback round
+   *  — e.g. pushbackCount hit its limit, or the reviewer's feedback was
+   *  the same unresolved issue twice in a row. Set only when
+   *  status === "escalated"; a human reads this instead of replaying the
+   *  whole reviewLineageId chain to find out why it stalled. */
+  escalationContext?: string;
 }
 
 /** A named execution backend wissel can run work under — a tool (which
@@ -193,6 +221,14 @@ export interface TaskResult {
    *  or when it's exactly zero — set only when count > 0, so absence
    *  always means "nothing to show," never "unknown." */
   subagents?: { count: number; failed: number; byType: Record<string, number> };
+  /** Set when this result came from a reviewer agent pass — same shape
+   *  as ReviewVerdict, flattened onto TaskResult so the board/orchestrator
+   *  can read a review outcome without a second lookup. Undefined for a
+   *  non-review run. */
+  verdict?: "approve" | "changes_requested";
+  /** The reviewer's feedback text, paired with `verdict`. Undefined
+   *  whenever `verdict` is. */
+  reviewFeedback?: string;
 }
 
 export interface Executor {
