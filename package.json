@@ -10,6 +10,7 @@
     "agents": "bun run src/cli.ts agents",
     "why": "bun run src/cli.ts why",
     "team": "bun run src/cli.ts team",
+    "version": "bun run src/cli.ts --version",
     "typecheck": "tsc --noEmit",
     "test": "bun test test/",
     "test:e2e": "playwright test",

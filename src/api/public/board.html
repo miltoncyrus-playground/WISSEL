@@ -94,6 +94,7 @@
   .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); margin: 0 0 6px; }
   h1 { font-size: clamp(22px, 4vw, 28px); margin: 0 0 8px; letter-spacing: -0.01em; }
   .lede { color: var(--ink-2); font-size: 14px; line-height: 1.5; max-width: 62ch; margin: 0; }
+  .version-badge { color: var(--ink-muted); font-size: 11px; font-family: "IBM Plex Mono", monospace; margin: 8px 0 0; cursor: default; }
 
   .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; padding: 3px; gap: 2px; background: var(--surface); }
@@ -351,6 +352,7 @@
     <p class="eyebrow">wissel</p>
     <h1>Board</h1>
     <p class="lede">Every task's status, and the fleet that can pick one up. Click a task for its full detail — routing decision, result, diff, and the actions to move it forward.</p>
+    <p class="version-badge" id="versionBadge"></p>
   </header>
 
   <div class="harness-strip-row">
@@ -1539,6 +1541,12 @@
     var repo = document.getElementById("ntRepo").value.trim();
     document.getElementById("ntSubmit").disabled = !(title && body && repo);
   }
+
+  fetch("/version").then(function (r) { return r.json(); }).then(function (v) {
+    var badge = document.getElementById("versionBadge");
+    badge.textContent = "wissel " + v.commitShort + (v.dirty ? " (dirty)" : "");
+    badge.title = "commit " + v.commit + (v.dirty ? " (dirty)" : "") + " on " + v.branch + ", pkg " + v.packageVersion;
+  }).catch(function () {});
 
   Promise.all([
     fetch("/agents").then(function (r) { return r.json(); }),

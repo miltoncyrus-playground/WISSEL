@@ -4,12 +4,19 @@ import { parse } from "yaml";
 import { Registry } from "./core/registry.ts";
 import { applyTeamPreset, renderTeamPresetYaml } from "./core/team-preset.ts";
 import type { AgentDef, RoutingDecision } from "./core/types.ts";
+import { getVersionInfo } from "./core/version.ts";
 
 const apiUrl = process.env.WISSEL_API_URL ?? "http://localhost:8787";
 const MANIFEST_PATH = "agents/manifest.yaml";
 const [command, ...args] = process.argv.slice(2);
 
 switch (command) {
+  case "--version":
+  case "-v": {
+    const v = getVersionInfo();
+    console.log(`wissel ${v.commitShort}${v.dirty ? "+dirty" : ""} (${v.branch}, pkg ${v.packageVersion})`);
+    break;
+  }
   case "agents": {
     const registry = await Registry.load();
     for (const agent of registry.all()) {
@@ -36,10 +43,11 @@ switch (command) {
     break;
   }
   default:
-    console.log("usage: wissel <agents|why|team> ...");
+    console.log("usage: wissel <agents|why|team|--version> ...");
     console.log("  wissel agents             list the fleet");
     console.log("  wissel why <task-id>      show the routing decision — what matched, and why");
     console.log("  wissel team create <pfx>  scaffold a coordinator + 3 specialists into the manifest");
+    console.log("  wissel --version, -v      print the commit/branch this build is running");
     process.exit(1);
 }
 

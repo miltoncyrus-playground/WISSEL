@@ -1,6 +1,15 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("Board view", () => {
+  test("shows a version badge populated from GET /version", async ({ page }) => {
+    await page.goto("/board");
+
+    const badge = page.locator("#versionBadge");
+    await expect(badge).toBeVisible();
+    await expect(badge).toContainText("wissel ");
+    await expect(badge).toHaveAttribute("title", /pkg 0\.0\.0/);
+  });
+
   test("is the default view and shows status stats, task-by-status, and both fleet boxes", async ({ page }) => {
     await page.goto("/board");
 
