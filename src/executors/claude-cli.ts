@@ -35,6 +35,10 @@ interface ClaudeResultJson {
   result?: string;
   permission_denials?: unknown[];
   total_cost_usd?: number;
+  /** Already present on the same `--output-format json` object
+   *  runClaude has always parsed — confirmed live, no format switch
+   *  needed (see docs/SDD-subagent-visibility.md §2). */
+  subagent_stats?: { spawned: number; failed: number; by_type: Record<string, number> };
 }
 
 export type PermissionMode = "plan" | "acceptEdits" | "bypassPermissions";
@@ -92,12 +96,19 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   const denials = parsed.permission_denials ?? [];
   const summary = denials.length > 0 ? `${parsed.result ?? "(no result)"} [${denials.length} permission denial(s)]` : parsed.result ?? "(no result)";
 
+  // Undefined (not a zero-valued object) when nothing was spawned — "no
+  // field" and "definitely spawned nothing" read the same way the rest
+  // of TaskResult already treats absence (see SDD §3).
+  const stats = parsed.subagent_stats;
+  const subagents = stats && stats.spawned > 0 ? { count: stats.spawned, failed: stats.failed, byType: stats.by_type } : undefined;
+
   return {
     taskId: task.id,
     agentId: agent.id,
     ok: !parsed.is_error,
     summary,
     actualCost: parsed.total_cost_usd,
+    subagents,
   };
 }
 

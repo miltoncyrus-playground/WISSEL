@@ -169,6 +169,12 @@ export interface TaskResult {
    *  /tasks/:id/merge`/`/discard` act on it. Never set for a read-only
    *  run, or a dispatched task wissel never executed itself. */
   worktree?: { path: string; branch: string };
+  /** Subagents this run spawned — claude-cli only (see
+   *  docs/SDD-subagent-visibility.md; no codex-cli equivalent has been
+   *  checked). Undefined when the harness/executor doesn't report this,
+   *  or when it's exactly zero — set only when count > 0, so absence
+   *  always means "nothing to show," never "unknown." */
+  subagents?: { count: number; failed: number; byType: Record<string, number> };
 }
 
 export interface Executor {

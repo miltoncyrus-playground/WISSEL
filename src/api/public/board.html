@@ -305,6 +305,7 @@
   .result-card .rc-head { font-weight: 700; margin-bottom: 4px; }
   .result-card .rc-summary { color: var(--ink-2); white-space: pre-wrap; line-height: 1.45; }
   .result-card .rc-artifacts { margin-top: 6px; font-size: 11px; color: var(--ink-muted); }
+  .result-card .rc-artifacts.warn { color: var(--critical); }
   .diff-empty { font-size: 12.5px; color: var(--ink-muted); }
   .diff-view {
     font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.55;
@@ -797,6 +798,16 @@
         if (typeof result.actualCost === "number") bits.push("cost: $" + result.actualCost.toFixed(4));
         costLine.textContent = bits.join(" · ");
         card.appendChild(costLine);
+      }
+      if (result.subagents) {
+        var subagents = document.createElement("div");
+        subagents.className = "rc-artifacts" + (result.subagents.failed > 0 ? " warn" : "");
+        var byType = Object.keys(result.subagents.byType).map(function (k) { return k + ": " + result.subagents.byType[k]; }).join(", ");
+        var sLabel = "Spawned " + result.subagents.count + " subagent" + (result.subagents.count === 1 ? "" : "s");
+        if (byType) sLabel += " (" + byType + ")";
+        if (result.subagents.failed > 0) sLabel += " — " + result.subagents.failed + " failed";
+        subagents.textContent = sLabel;
+        card.appendChild(subagents);
       }
       body.appendChild(card);
     }).catch(function () { section.hidden = true; });

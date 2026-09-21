@@ -271,6 +271,27 @@ test("getResult round-trips actualCost and harnessId, not just the fields the ta
   });
 });
 
+test("getResult round-trips subagents (docs/SDD-subagent-visibility.md)", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+
+  await board.recordResult({
+    taskId: task.id,
+    agentId: "a",
+    ok: true,
+    summary: "done",
+    subagents: { count: 2, failed: 1, byType: { "general-purpose": 1, Explore: 1 } },
+  });
+
+  expect(await board.getResult(task.id)).toEqual({
+    taskId: task.id,
+    agentId: "a",
+    ok: true,
+    summary: "done",
+    subagents: { count: 2, failed: 1, byType: { "general-purpose": 1, Explore: 1 } },
+  });
+});
+
 test("delete removes a task and its decision/result/override, rejects unknown ids, emits an event", async () => {
   const board = new SqliteBoard();
   const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });

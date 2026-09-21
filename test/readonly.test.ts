@@ -65,6 +65,59 @@ test("runs claude in plan mode and parses a successful result", async () => {
   expect(result).toEqual({ taskId: "t1", agentId: "triager", ok: true, summary: "pong" });
 });
 
+// Confirmed live (docs/SDD-subagent-visibility.md §2) — subagent_stats
+// is already on the same --output-format json object runClaude has
+// always parsed, no format switch needed.
+test("surfaces spawned subagents from subagent_stats", async () => {
+  const executor = new ReadOnlyExecutor({
+    runner: stub({
+      stdout: JSON.stringify({
+        type: "result", subtype: "success", is_error: false, result: "done",
+        subagent_stats: { spawned: 2, failed: 0, by_type: { "general-purpose": 1, Explore: 1 } },
+      }),
+      stderr: "", exitCode: 0,
+    }),
+  });
+  const result = await executor.run(task, agent);
+  expect(result.subagents).toEqual({ count: 2, failed: 0, byType: { "general-purpose": 1, Explore: 1 } });
+});
+
+test("omits subagents entirely when spawned is 0 — absence always means nothing to show", async () => {
+  const executor = new ReadOnlyExecutor({
+    runner: stub({
+      stdout: JSON.stringify({
+        type: "result", subtype: "success", is_error: false, result: "done",
+        subagent_stats: { spawned: 0, failed: 0, by_type: {} },
+      }),
+      stderr: "", exitCode: 0,
+    }),
+  });
+  const result = await executor.run(task, agent);
+  expect(result.subagents).toBeUndefined();
+});
+
+test("omits subagents when the response has no subagent_stats field at all (older claude-cli builds)", async () => {
+  const executor = new ReadOnlyExecutor({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }), stderr: "", exitCode: 0 }),
+  });
+  const result = await executor.run(task, agent);
+  expect(result.subagents).toBeUndefined();
+});
+
+test("carries a failed subagent count through even when some spawned successfully", async () => {
+  const executor = new ReadOnlyExecutor({
+    runner: stub({
+      stdout: JSON.stringify({
+        type: "result", subtype: "success", is_error: false, result: "done",
+        subagent_stats: { spawned: 3, failed: 1, by_type: { "general-purpose": 3 } },
+      }),
+      stderr: "", exitCode: 0,
+    }),
+  });
+  const result = await executor.run(task, agent);
+  expect(result.subagents).toEqual({ count: 3, failed: 1, byType: { "general-purpose": 3 } });
+});
+
 test("passes cwd, plan mode, and the task/agent framing into the prompt", async () => {
   let seenCmd: string[] = [];
   let seenCwd = "";

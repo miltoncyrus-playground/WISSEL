@@ -140,7 +140,8 @@ export class SqliteBoard implements Board {
         artifacts TEXT,
         worktree TEXT,
         actualCost REAL,
-        harnessId TEXT
+        harnessId TEXT,
+        subagents TEXT
       );
     `);
     // actualCost/harnessId shipped on TaskResult well before this table
@@ -149,7 +150,12 @@ export class SqliteBoard implements Board {
     // even though telemetry's own log captured them correctly the whole
     // time (finishResult records them into both places). Healed the same
     // way every other column added after the original schema is healed.
-    for (const ddl of ["ALTER TABLE task_results ADD COLUMN worktree TEXT;", "ALTER TABLE task_results ADD COLUMN actualCost REAL;", "ALTER TABLE task_results ADD COLUMN harnessId TEXT;"]) {
+    for (const ddl of [
+      "ALTER TABLE task_results ADD COLUMN worktree TEXT;",
+      "ALTER TABLE task_results ADD COLUMN actualCost REAL;",
+      "ALTER TABLE task_results ADD COLUMN harnessId TEXT;",
+      "ALTER TABLE task_results ADD COLUMN subagents TEXT;",
+    ]) {
       try {
         this.db.run(ddl);
       } catch {
@@ -274,7 +280,7 @@ export class SqliteBoard implements Board {
 
   async recordResult(result: TaskResult): Promise<void> {
     this.db.run(
-      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         result.taskId,
         result.agentId,
@@ -284,6 +290,7 @@ export class SqliteBoard implements Board {
         result.worktree ? JSON.stringify(result.worktree) : null,
         result.actualCost ?? null,
         result.harnessId ?? null,
+        result.subagents ? JSON.stringify(result.subagents) : null,
       ],
     );
     this.events.emit("event", { type: "task.result", result } satisfies BoardEvent);
@@ -299,6 +306,7 @@ export class SqliteBoard implements Board {
       worktree: string | null;
       actualCost: number | null;
       harnessId: string | null;
+      subagents: string | null;
     } | null;
     if (!row) return undefined;
     return {
@@ -310,6 +318,7 @@ export class SqliteBoard implements Board {
       worktree: row.worktree ? (JSON.parse(row.worktree) as TaskResult["worktree"]) : undefined,
       actualCost: row.actualCost ?? undefined,
       harnessId: row.harnessId ?? undefined,
+      subagents: row.subagents ? (JSON.parse(row.subagents) as TaskResult["subagents"]) : undefined,
     };
   }
 
