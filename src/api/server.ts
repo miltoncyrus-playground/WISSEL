@@ -17,6 +17,7 @@ import { mergeTaskWorktree, removeTaskWorktree } from "../services/worktree.ts";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
 import { checkHarnessAuth } from "../core/harness-discovery.ts";
 import { setHarnessEnabled } from "../core/harness-manifest.ts";
+import { getVersionInfo } from "../core/version.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -111,6 +112,9 @@ export function createApp(
 
     try {
       if (url.pathname === "/health") return new Response("ok");
+
+      // No auth, same as /health — nothing in VersionInfo is sensitive.
+      if (url.pathname === "/version") return json(getVersionInfo());
 
       if ((url.pathname === "/" || url.pathname === "/board") && req.method === "GET") {
         return new Response(Bun.file(new URL("board.html", PUBLIC_DIR)));
@@ -359,6 +363,8 @@ if (import.meta.main) {
 
   Bun.serve({ port, fetch: createApp(board, registry, telemetry, { orchestratorEnabled, executeWriteTier, harnesses }) });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
+  const v = getVersionInfo();
+  console.log(`version: ${v.commitShort}${v.dirty ? "+dirty" : ""} (${v.branch})`);
   console.log(
     orchestratorEnabled
       ? `wissel orchestrator running${executeWriteTier ? " — executing write-tier work locally, no agetor handoff" : ""}`

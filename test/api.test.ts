@@ -31,6 +31,26 @@ test("GET /health", async () => {
   expect(await res.text()).toBe("ok");
 });
 
+test("GET /version", async () => {
+  const app = await makeApp();
+  const res = await app(req("/version"));
+  const body = (await res.json()) as {
+    commit: string;
+    commitShort: string;
+    branch: string;
+    dirty: boolean;
+    packageVersion: string;
+    startedAt: string;
+  };
+  // Shape/types only, not the literal SHA — that would flake on every commit.
+  expect(typeof body.commit).toBe("string");
+  expect(typeof body.commitShort).toBe("string");
+  expect(typeof body.branch).toBe("string");
+  expect(typeof body.dirty).toBe("boolean");
+  expect(body.packageVersion).toBe("0.0.0");
+  expect(typeof body.startedAt).toBe("string");
+});
+
 test("GET / and GET /board serve the board UI", async () => {
   const app = await makeApp();
   for (const path of ["/", "/board"]) {

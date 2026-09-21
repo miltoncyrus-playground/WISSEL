@@ -20,6 +20,7 @@ bun run serve          # same, without --watch — see warning below before usin
 bun run agents         # list the fleet
 bun run why <task-id>  # what matched, and why — the router is never a black box
 bun run team create <prefix>  # scaffold a coordinator + 3 specialists, delegation pre-wired
+bun run version        # commit/branch/dirty this checkout is actually running
 bun run test           # unit/integration
 bun run test:e2e       # Playwright smoke tests against a live server
 ```
@@ -66,6 +67,15 @@ otherwise. Either way it's `POST /harnesses/:id/enable` /`/disable`,
 and it's `harnesses.yaml` itself that gets updated (comments preserved),
 so the decision survives a restart — see
 `docs/SDD-harness-enable-disable.md`.
+
+Wissel reports which commit/build it's actually running, snapshotted
+once at process startup (not a live git check, so it always describes
+what this process loaded, not whatever's currently on disk — see
+`docs/SDD-version-info.md`): `GET /version` returns
+`{commit, commitShort, branch, dirty, packageVersion, startedAt}`,
+`wissel --version` (or `-v`) prints the same as one line, and the
+startup log always includes a `version: ...` line. The board's header
+also shows a small commit badge (hover for the full commit/branch).
 
 Known gaps:
 - No sandboxing beyond whatever the underlying agent CLI already does —
