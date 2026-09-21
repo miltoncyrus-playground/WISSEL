@@ -127,6 +127,44 @@ test.describe("Board view", () => {
     await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
   });
 
+  // Covers a gap the original review-gate test (above) never touched: a
+  // worktree-carrying result should render Merge/Discard, not Mark
+  // done/Mark failed, and that has to survive board activity elsewhere
+  // (an unrelated task appearing triggers the same SSE-driven
+  // refreshOpenDrawer() path a second real task would). NOTE: this does
+  // NOT conclusively prove which exact code path a user-reported "no
+  // Discard button" symptom came from — confirmed by testing directly
+  // that this assertion passes against both the pre- and post-fix
+  // board.html (the race window, if real, is apparently too narrow for
+  // a local Playwright run to catch reliably). The code fix (caching the
+  // last-known result instead of rendering with none on every SSE
+  // refresh, plus a request-sequencing guard against out-of-order
+  // fetches) is real and correct on its own merits regardless.
+  test("Merge/Discard for a worktree-run task render correctly and survive unrelated board activity", async ({ page, request }) => {
+    const created = await request.post("/tasks", {
+      data: { title: `Worktree review test ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" },
+    });
+    const task = await created.json();
+    await request.post(`/tasks/${task.id}/result`, {
+      data: { agentId: "implementer", ok: true, summary: "did the thing", worktree: { path: "/tmp/wissel-e2e-wt", branch: "wissel/" + task.id } },
+    });
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(task.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer.getByRole("button", { name: "Merge" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Discard" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
+
+    await request.post("/tasks", { data: { title: `Unrelated ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+    await page.waitForTimeout(500);
+
+    await expect(drawer.getByRole("button", { name: "Merge" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Discard" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
+  });
+
   test("View diff reports a non-git repo honestly instead of an empty diff", async ({ page, request }) => {
     const created = await request.post("/tasks", {
       data: { title: `Diff test ${Date.now()}`, body: "x", labels: [], repo: "/tmp" },

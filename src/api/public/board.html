@@ -576,6 +576,17 @@
 
   var drawerTaskId = null;
   var harnessPanelOpen = false;
+  // Real bug found live: refreshOpenDrawer() fires on every SSE event
+  // (any task moving, anywhere — not just this one), and used to call
+  // renderDrawerActions(task) with no result, which reset a review-gated
+  // task's buttons to Mark done/Mark failed until the async
+  // loadDrawerResult() fetch corrected it back to Merge/Discard a moment
+  // later. With events firing every few seconds during normal activity,
+  // that's a real flicker, not just a cold-open flash — caching the last
+  // known result here lets refreshOpenDrawer reuse it instead of
+  // resetting to "unknown" on every single event.
+  var drawerLastResult = null;
+  var drawerResultRequestSeq = 0;
 
   function statusPill(status) {
     var pill = document.createElement("span");
@@ -760,10 +771,18 @@
   function loadDrawerResult(taskId) {
     var section = document.getElementById("tdResultSection");
     var body = document.getElementById("tdResult");
+    // refreshOpenDrawer calls this on every SSE event, so multiple
+    // fetches for the same task can be in flight at once — without this
+    // guard, an earlier (slower) one resolving after a later (faster)
+    // one could overwrite fresher state with stale data. Only the most
+    // recently *started* request is allowed to apply what it finds.
+    var seq = ++drawerResultRequestSeq;
     fetch("/tasks/" + taskId + "/result").then(function (r) {
       if (r.status === 404) { section.hidden = true; return null; }
       return r.json();
     }).then(function (result) {
+      if (seq !== drawerResultRequestSeq || drawerTaskId !== taskId) return; // superseded or drawer moved on
+      drawerLastResult = result;
       var task = findTask(taskId);
       if (task) renderDrawerActions(task, result);
       if (!result) return;
@@ -880,8 +899,9 @@
     var task = findTask(taskId);
     if (!task) return;
     drawerTaskId = taskId;
+    drawerLastResult = null; // genuinely unknown until loadDrawerResult resolves for this task
     renderDrawerHeader(task);
-    renderDrawerActions(task);
+    renderDrawerActions(task, null);
     loadDrawerDecision(taskId);
     loadDrawerResult(taskId);
     document.getElementById("tdDiffSection").hidden = true;
@@ -913,7 +933,12 @@
     var task = findTask(drawerTaskId);
     if (!task) { closeTaskDrawer(); return; }
     renderDrawerHeader(task);
-    renderDrawerActions(task);
+    // Reuses the last known result instead of rendering with none — an
+    // unconditional bare call here used to flicker a review-gated task's
+    // buttons back to Mark done/Mark failed on every SSE event, until
+    // loadDrawerResult's fetch corrected it a moment later. See the
+    // comment on drawerLastResult's declaration.
+    renderDrawerActions(task, drawerLastResult);
     loadDrawerResult(drawerTaskId);
     if (!document.getElementById("tdDiffSection").hidden) fetchAndRenderDiff(drawerTaskId);
   }
