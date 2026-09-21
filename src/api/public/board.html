@@ -586,7 +586,6 @@
   // known result here lets refreshOpenDrawer reuse it instead of
   // resetting to "unknown" on every single event.
   var drawerLastResult = null;
-  var drawerResultRequestSeq = 0;
 
   function statusPill(status) {
     var pill = document.createElement("span");
@@ -771,17 +770,21 @@
   function loadDrawerResult(taskId) {
     var section = document.getElementById("tdResultSection");
     var body = document.getElementById("tdResult");
-    // refreshOpenDrawer calls this on every SSE event, so multiple
-    // fetches for the same task can be in flight at once — without this
-    // guard, an earlier (slower) one resolving after a later (faster)
-    // one could overwrite fresher state with stale data. Only the most
-    // recently *started* request is allowed to apply what it finds.
-    var seq = ++drawerResultRequestSeq;
+    // Real regression found live: an earlier version of this guarded
+    // against out-of-order fetch resolution by comparing against a
+    // counter bumped when each request *started* — under the SSE
+    // traffic actively-running tasks generate, new requests can start
+    // faster than old ones resolve, so no response could ever satisfy
+    // the check and nothing rendered at all (worse than the flicker it
+    // was meant to prevent). Just apply whatever comes back, same as
+    // before that guard existed — the only thing actually worth
+    // checking is whether the drawer has since moved to a different
+    // task entirely.
     fetch("/tasks/" + taskId + "/result").then(function (r) {
       if (r.status === 404) { section.hidden = true; return null; }
       return r.json();
     }).then(function (result) {
-      if (seq !== drawerResultRequestSeq || drawerTaskId !== taskId) return; // superseded or drawer moved on
+      if (drawerTaskId !== taskId) return; // drawer moved on to a different task
       drawerLastResult = result;
       var task = findTask(taskId);
       if (task) renderDrawerActions(task, result);

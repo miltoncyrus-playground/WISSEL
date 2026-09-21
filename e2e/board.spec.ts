@@ -165,6 +165,45 @@ test.describe("Board view", () => {
     await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
   });
 
+  // Coverage for a hazard found by reading the code, not by reproducing
+  // it here: an earlier fix guarded loadDrawerResult against
+  // out-of-order fetch resolution by comparing against a counter bumped
+  // when each request *started* — under real, sustained SSE traffic,
+  // new requests can start before old ones resolve, so a response could
+  // fail that check and never render. Removed rather than tuned,
+  // because the failure mode it risked (a permanently blank result
+  // section) is worse than the one it guarded against (briefly
+  // re-rendering identical data). NOTE: over localhost with near-zero
+  // fetch latency this test passes against both the guarded and
+  // unguarded code — it does not deterministically prove the race,
+  // it's regression coverage for "a burst of concurrent events doesn't
+  // leave the result section blank," which is true either way here.
+  test("result content (including subagent info) still renders after a burst of rapid unrelated SSE events", async ({ page, request }) => {
+    const created = await request.post("/tasks", {
+      data: { title: `Burst test ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" },
+    });
+    const task = await created.json();
+    await request.post(`/tasks/${task.id}/result`, {
+      data: { agentId: "implementer", ok: true, summary: "spawned some helpers", subagents: { count: 2, failed: 0, byType: { "general-purpose": 2 } } },
+    });
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(task.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer.locator("#tdResult")).toContainText("Spawned 2 subagents");
+
+    // Fire a burst of unrelated task creations without awaiting each one
+    // — the point is overlap, not sequence.
+    await Promise.all(
+      Array.from({ length: 8 }, (_, i) => request.post("/tasks", { data: { title: `Burst ${Date.now()}-${i}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } })),
+    );
+
+    // The result content must still be there once the dust settles —
+    // this is exactly what went permanently blank under the regression.
+    await expect(drawer.locator("#tdResult")).toContainText("Spawned 2 subagents", { timeout: 5000 });
+  });
+
   test("View diff reports a non-git repo honestly instead of an empty diff", async ({ page, request }) => {
     const created = await request.post("/tasks", {
       data: { title: `Diff test ${Date.now()}`, body: "x", labels: [], repo: "/tmp" },
