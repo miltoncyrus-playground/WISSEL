@@ -25,7 +25,7 @@ test.describe("Board view", () => {
     await expect(page.locator("#agentsBox .tier-chip.write").first()).toContainText("handed off");
     await expect(page.locator("#skillsBox")).toContainText("lint-fixer");
     await expect(page.locator("#agentsCount")).toContainText("8 agents");
-    await expect(page.locator("#skillsCount")).toContainText("4 skills");
+    await expect(page.locator("#skillsCount")).toContainText("5 skills");
 
     // No cost figure anywhere in the fleet boxes — replaced by the active dot.
     await expect(page.locator(".fleet-cost")).toHaveCount(0);
