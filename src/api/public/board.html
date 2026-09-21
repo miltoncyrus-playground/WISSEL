@@ -512,18 +512,23 @@
   "use strict";
 
   // Status signal colors: a real green for "done", distinct blues for
-  // ready/running, and a shared amber for "review"/"no-match" — both
-  // mean "a human needs to look," same as a caution aspect on a signal.
+  // ready/running (pending-review joins that blue "in progress"
+  // treatment — it's an automated reviewer pass still running, not yet
+  // waiting on a human), and a shared amber for "review"/"no-match"/
+  // "escalated" — all three mean "a human needs to look," same as a
+  // caution aspect on a signal.
   var STATUS_COLOR = {
     inbox: "--sig-inbox", ready: "--sig-ready", running: "--sig-running",
     dispatched: "--accent", review: "--no-match", done: "--sig-done",
     failed: "--critical", "no-match": "--no-match",
+    "pending-review": "--sig-running", escalated: "--no-match",
   };
   var STATUS_LABEL = {
     inbox: "Inbox", ready: "Ready", running: "Running", dispatched: "Dispatched",
     review: "Review", done: "Done", failed: "Failed", "no-match": "No match",
+    "pending-review": "Pending review", escalated: "Escalated",
   };
-  var COLUMNS = ["inbox", "ready", "running", "dispatched", "review", "done", "failed", "no-match"];
+  var COLUMNS = ["inbox", "ready", "running", "dispatched", "pending-review", "review", "escalated", "done", "failed", "no-match"];
   var tasks = [];
   var agentsById = {};
 

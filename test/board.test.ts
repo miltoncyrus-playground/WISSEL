@@ -310,6 +310,118 @@ test("delete removes a task and its decision/result/override, rejects unknown id
   await expect(board.delete("nope")).rejects.toThrow("task not found");
 });
 
+// Round-trip for the review-pushback lineage fields (pushbackCount,
+// reviewLineageId, escalationContext) and the "escalated" status —
+// create() sets the lineage fields directly, move() drives status the
+// same way every other status transition already does.
+test("round-trips review lineage fields and the escalated status", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({
+    title: "t",
+    body: "b",
+    labels: [],
+    repo: "r",
+    pushbackCount: 3,
+    reviewLineageId: "lineage-1",
+    escalationContext: "same feedback twice in a row, kicked to a human",
+  });
+  expect(task.pushbackCount).toBe(3);
+  expect(task.reviewLineageId).toBe("lineage-1");
+  expect(task.escalationContext).toBe("same feedback twice in a row, kicked to a human");
+
+  const escalated = await board.move(task.id, "escalated");
+  expect(escalated.status).toBe("escalated");
+
+  const fetched = await board.get(task.id);
+  expect(fetched).toEqual(escalated);
+  expect(fetched!.pushbackCount).toBe(3);
+  expect(fetched!.reviewLineageId).toBe("lineage-1");
+  expect(fetched!.escalationContext).toBe("same feedback twice in a row, kicked to a human");
+});
+
+test("create round-trips supersededBy, and leaves review lineage fields undefined when omitted", async () => {
+  const board = new SqliteBoard();
+  const untouched = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  expect(untouched.pushbackCount).toBeUndefined();
+  expect(untouched.reviewLineageId).toBeUndefined();
+  expect(untouched.supersededBy).toBeUndefined();
+  expect(untouched.escalationContext).toBeUndefined();
+
+  const reattempt = await board.create({ title: "t (attempt 2)", body: "", labels: [], repo: "r", reviewLineageId: "lineage-1" });
+  const superseded = await board.create({
+    title: "t (attempt 1)",
+    body: "",
+    labels: [],
+    repo: "r",
+    reviewLineageId: "lineage-1",
+    supersededBy: reattempt.id,
+  });
+  expect(superseded.supersededBy).toBe(reattempt.id);
+  expect((await board.get(superseded.id))!.supersededBy).toBe(reattempt.id);
+});
+
+// Same class of bug covered for parentTaskId/confident/worktree above: a
+// pre-existing on-disk DB from before the review-lineage columns existed
+// must not break create() the moment those columns are read/written.
+test("opens and heals a real pre-existing on-disk DB from before review lineage columns existed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-board-legacy-"));
+  const dbPath = join(dir, "board.sqlite");
+  try {
+    const legacy = new Database(dbPath, { create: true });
+    legacy.run(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        labels TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        status TEXT NOT NULL,
+        routedTo TEXT,
+        dependsOn TEXT NOT NULL DEFAULT '[]',
+        parentTaskId TEXT,
+        harness TEXT
+      );
+    `);
+    legacy.close();
+
+    const board = new SqliteBoard(dbPath);
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r", pushbackCount: 1, reviewLineageId: "lineage-legacy" });
+    expect(task.pushbackCount).toBe(1);
+    expect(task.reviewLineageId).toBe("lineage-legacy");
+    expect((await board.get(task.id))!.pushbackCount).toBe(1);
+
+    const escalated = await board.move(task.id, "escalated");
+    expect(escalated.status).toBe("escalated");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// TaskResult's review-verdict fields (verdict, reviewFeedback) need the
+// same round-trip guarantee as every other task_results column.
+test("getResult round-trips verdict and reviewFeedback", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+
+  await board.recordResult({
+    taskId: task.id,
+    agentId: "a",
+    ok: true,
+    summary: "reviewed",
+    verdict: "changes_requested",
+    reviewFeedback: "board.html hardcodes the status enum, missing pending-review/escalated",
+  });
+
+  expect(await board.getResult(task.id)).toEqual({
+    taskId: task.id,
+    agentId: "a",
+    ok: true,
+    summary: "reviewed",
+    verdict: "changes_requested",
+    reviewFeedback: "board.html hardcodes the status enum, missing pending-review/escalated",
+  });
+});
+
 test("create and move emit events", async () => {
   const board = new SqliteBoard();
   const events: string[] = [];
