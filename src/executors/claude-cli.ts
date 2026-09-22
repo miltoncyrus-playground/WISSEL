@@ -1,4 +1,4 @@
-import type { AgentDef, TaskCard, TaskResult } from "../core/types.ts";
+import type { AgentDef, ReviewVerdict, TaskCard, TaskResult } from "../core/types.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
 
@@ -119,8 +119,9 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // failure from the caller's point of view: nothing downstream can
   // trust `summary` as a verdict. Never default to approve here — see
   // parseReviewVerdict's own contract.
+  let verdict: ReviewVerdict | null = null;
   if (ok && agent.outputContract) {
-    const verdict = parseReviewVerdict(parsed.result ?? "");
+    verdict = parseReviewVerdict(parsed.result ?? "");
     if (verdict === null) {
       ok = false;
       summary = `${agent.name} violated its output contract — expected a trailing \`\`\`review-verdict fenced block with {"verdict":"approve"|"changes_requested","feedback":"..."}, got: ${parsed.result ?? "(no result)"}`;
@@ -140,6 +141,11 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     summary,
     actualCost: parsed.total_cost_usd,
     subagents,
+    // Flattened onto TaskResult (see its own doc comment) so the
+    // orchestrator can branch on a review outcome without a second
+    // lookup — undefined for every non-review run, same as `verdict`
+    // being null above.
+    ...(verdict ? { verdict: verdict.verdict, reviewFeedback: verdict.feedback } : {}),
   };
 }
 

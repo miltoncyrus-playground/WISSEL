@@ -19,6 +19,20 @@ export interface Board {
    *  starts executing it locally, before the run finishes, so the board
    *  can show a harness as active live. See TaskCard.harness. */
   setHarness(id: string, harnessId: string): Promise<TaskCard>;
+  /** Marks `id` as replaced by `supersededByTaskId` — set on the
+   *  superseded (old) card of a review-pushback pair, never touching its
+   *  `status`. See TaskCard.supersededBy. */
+  setSupersededBy(id: string, supersededByTaskId: string): Promise<TaskCard>;
+  /** Moves a task to `escalated` and records why in one atomic step —
+   *  there's no valid intermediate state where a task is `escalated`
+   *  without an `escalationContext`, so this never exists as two calls
+   *  the way `move` + a hypothetical `setEscalationContext` would. See
+   *  TaskCard.escalationContext. */
+  escalate(id: string, escalationContext: string): Promise<TaskCard>;
+  /** Every TaskCard sharing a `reviewLineageId`, oldest first — the full
+   *  history of a review-pushback chain across however many separate
+   *  rows it spans. See TaskCard.reviewLineageId. */
+  getLineage(reviewLineageId: string): Promise<TaskCard[]>;
   recordDecision(decision: RoutingDecision): Promise<void>;
   /** Most recent routing decision for a task, if any — what `wissel why`
    *  reads. */
@@ -38,6 +52,7 @@ export type BoardEvent =
   | { type: "task.moved"; task: TaskCard }
   | { type: "task.dependencies"; task: TaskCard }
   | { type: "task.harness"; task: TaskCard }
+  | { type: "task.superseded"; task: TaskCard }
   | { type: "task.decided"; decision: RoutingDecision }
   | { type: "task.result"; result: TaskResult }
   | { type: "task.override"; taskId: string; routerPick: string; humanPick: string }
@@ -133,6 +148,11 @@ export class SqliteBoard implements Board {
         // already has the column
       }
     }
+    // Safe on a fresh DB and a healed pre-existing one alike — unlike the
+    // ADD COLUMN guards above, CREATE INDEX IF NOT EXISTS doesn't need a
+    // try/catch dance. Every escalation walks a whole lineage
+    // (getLineage below); without this a growing board scans every row.
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_tasks_reviewLineageId ON tasks(reviewLineageId);");
     this.db.run(`
       CREATE TABLE IF NOT EXISTS routing_decisions (
         taskId TEXT NOT NULL,
@@ -266,6 +286,29 @@ export class SqliteBoard implements Board {
     const updated: TaskCard = { ...existing, harness: harnessId };
     this.events.emit("event", { type: "task.harness", task: updated } satisfies BoardEvent);
     return updated;
+  }
+
+  async setSupersededBy(id: string, supersededByTaskId: string): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET supersededBy = ? WHERE id = ?", [supersededByTaskId, id]);
+    const updated: TaskCard = { ...existing, supersededBy: supersededByTaskId };
+    this.events.emit("event", { type: "task.superseded", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async escalate(id: string, escalationContext: string): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET status = ?, escalationContext = ? WHERE id = ?", ["escalated", escalationContext, id]);
+    const updated: TaskCard = { ...existing, status: "escalated", escalationContext };
+    this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async getLineage(reviewLineageId: string): Promise<TaskCard[]> {
+    const rows = this.db.query("SELECT * FROM tasks WHERE reviewLineageId = ? ORDER BY rowid").all(reviewLineageId) as TaskRow[];
+    return rows.map(rowToCard);
   }
 
   async recordDecision(decision: RoutingDecision): Promise<void> {

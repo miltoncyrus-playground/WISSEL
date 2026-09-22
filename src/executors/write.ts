@@ -60,7 +60,11 @@ export class WriteExecutor implements Executor {
   }
 
   async run(task: TaskCard, agent: AgentDef, harness?: Harness): Promise<TaskResult> {
-    const worktree = await createTaskWorktree(task.repo, task.id, { runner: this.runner, homeDir: this.homeDir });
+    // A pushback re-attempt (task.reviewLineageId set) reuses the same
+    // worktree/branch as every other attempt in its lineage instead of
+    // cloning fresh off HEAD — see createTaskWorktree's doc comment.
+    const worktreeKey = task.reviewLineageId ?? task.id;
+    const worktree = await createTaskWorktree(task.repo, worktreeKey, { runner: this.runner, homeDir: this.homeDir });
     if ("error" in worktree) return fail(task, agent, worktree.error);
 
     const result = await runClaude({

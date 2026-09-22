@@ -122,7 +122,11 @@ test.describe("Board view", () => {
       data: { title: `Review test ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" },
     });
     const task = await created.json();
-    await request.post(`/tasks/${task.id}/result`, { data: { agentId: "implementer", ok: true, summary: "opened a PR" } });
+    // "fixer" (not "implementer") deliberately — implementer now declares
+    // handoffs: [reviewer] and lands on pending-review instead, see
+    // orchestrator-review-lifecycle.test.ts. This test is about the
+    // generic write-tier review UI, not implementer's auto-handoff.
+    await request.post(`/tasks/${task.id}/result`, { data: { agentId: "fixer", ok: true, summary: "opened a PR" } });
 
     await page.goto("/board");
     await page.locator("#kanbanBody").getByText(task.title).click();
@@ -154,8 +158,9 @@ test.describe("Board view", () => {
       data: { title: `Worktree review test ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" },
     });
     const task = await created.json();
+    // "fixer" (not "implementer") — see the review-gate test above.
     await request.post(`/tasks/${task.id}/result`, {
-      data: { agentId: "implementer", ok: true, summary: "did the thing", worktree: { path: "/tmp/wissel-e2e-wt", branch: "wissel/" + task.id } },
+      data: { agentId: "fixer", ok: true, summary: "did the thing", worktree: { path: "/tmp/wissel-e2e-wt", branch: "wissel/" + task.id } },
     });
 
     await page.goto("/board");
@@ -192,8 +197,9 @@ test.describe("Board view", () => {
       data: { title: `Burst test ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" },
     });
     const task = await created.json();
+    // "fixer" (not "implementer") — see the review-gate test above.
     await request.post(`/tasks/${task.id}/result`, {
-      data: { agentId: "implementer", ok: true, summary: "spawned some helpers", subagents: { count: 2, failed: 0, byType: { "general-purpose": 2 } } },
+      data: { agentId: "fixer", ok: true, summary: "spawned some helpers", subagents: { count: 2, failed: 0, byType: { "general-purpose": 2 } } },
     });
 
     await page.goto("/board");
