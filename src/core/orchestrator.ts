@@ -7,6 +7,7 @@ import type { Router } from "./router.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import { runViaBun } from "../executors/claude-cli.ts";
 import { mergeTaskWorktree } from "../services/worktree.ts";
+import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "./types.ts";
 
 /**
@@ -32,7 +33,9 @@ import type { Executor, RoutingDecision, TaskCard, TaskResult } from "./types.ts
  *
  * `runner` is used for the auto-merge path and passed through to
  * handleReviewVerdict for the same reason — injectable so tests never
- * spawn a real git process; defaults to the real one.
+ * spawn a real git process; defaults to the real one. `memoryPath` is
+ * the same kind of injection point for the memory-persistence hook
+ * below — defaults to the real repo-root memory/lessons.md.
  */
 export async function finishResult(
   board: Board,
@@ -40,6 +43,7 @@ export async function finishResult(
   result: TaskResult,
   telemetry?: TelemetryLog,
   runner: CommandRunner = runViaBun,
+  memoryPath: string = DEFAULT_MEMORY_PATH,
 ): Promise<void> {
   await board.recordResult(result);
   await telemetry?.record({ type: "result", taskId: result.taskId, agentId: result.agentId, actualCost: result.actualCost, harnessId: result.harnessId });
@@ -70,6 +74,18 @@ export async function finishResult(
   if (result.verdict !== undefined) {
     await handleReviewVerdict(board, registry, result, runner);
     return;
+  }
+
+  // The memory-curation hook: reads the agent's own declared `outputs`
+  // contract (agents/manifest.yaml), never a hardcoded agent id — a
+  // future second memory-writing agent gets this for free. Wholesale
+  // replace, not append: memory-curator is handed the current file's own
+  // contents as part of its input (see gatherSessionLessons,
+  // src/core/memory-scheduler.ts) precisely so its own summary is
+  // already deduped/consolidated against what's already there — see
+  // docs/SDD-memory-curator.md §9.
+  if (agent?.outputs.includes("memory-entries")) {
+    await writeMemoryLessons(memoryPath, result.summary);
   }
 
   if (agent?.tier !== "write") {
@@ -412,6 +428,13 @@ export interface OrchestratorOptions {
    *  known until they finish). Requires `telemetry` to be set — a no-op
    *  otherwise. */
   spendCeilingUsd?: number;
+  /** Passed straight through to every internal `finishResult` call's own
+   *  `memoryPath` param — see its doc comment. Undefined defaults to the
+   *  real repo-root memory/lessons.md, same as finishResult's own
+   *  default; overridable so tests (and src/core/memory-scheduler.ts's
+   *  own gather step, kept in sync via the same option at the
+   *  createApp/server.ts level) never touch this repo's real file. */
+  memoryPath?: string;
 }
 
 /** Midnight UTC on `now`'s calendar day — the window `spendCeilingUsd`
@@ -613,7 +636,7 @@ export class Orchestrator {
       } finally {
         if (harness) this.opts.harnesses!.release(harness.id);
       }
-      await finishResult(this.board, this.registry, result, this.telemetry);
+      await finishResult(this.board, this.registry, result, this.telemetry, undefined, this.opts.memoryPath);
     } catch (e) {
       console.error(`orchestrator: unexpected error processing task ${task.id}: ${(e as Error).message}`);
     }

@@ -17,6 +17,7 @@ const reviewerAgent: AgentDef = {
   toolAccess: ["read"],
   costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.12 },
   outputContract: "Your final message must end with a ```review-verdict``` block.",
+  outputContractFormat: "review-verdict",
 };
 
 const plainAgent: AgentDef = {

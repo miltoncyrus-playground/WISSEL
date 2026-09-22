@@ -8,6 +8,7 @@ import { HarnessPool } from "../core/harness-pool.ts";
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
+import { startMemoryScheduler } from "../core/memory-scheduler.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
 import { ApiExecutor } from "../executors/anthropic-api.ts";
@@ -58,6 +59,19 @@ export interface CreateAppOptions {
    *  injectable so tests never spawn a real `claude`/`codex` process.
    *  Defaults to the real one. */
   harnessRunner?: CommandRunner;
+  /** Starts the in-process memory-curation scheduler (see
+   *  src/core/memory-scheduler.ts) — off by default, same gate pattern
+   *  as orchestratorEnabled. A no-op if `telemetry` isn't also given:
+   *  due-ness is read from the telemetry log, so there's nothing to
+   *  schedule against without one. */
+  memoryCurationEnabled?: boolean;
+  /** Passed straight through to startMemoryScheduler's option of the
+   *  same name — see its own doc comment. Defaults to 24 there. */
+  memoryIntervalHours?: number;
+  /** Where the global memory file lives — see
+   *  src/services/memory.ts's DEFAULT_MEMORY_PATH. Overridable so tests
+   *  never touch this repo's own real memory/lessons.md. */
+  memoryPath?: string;
 }
 
 /**
@@ -88,14 +102,18 @@ export function createApp(
   // ReadOnlyExecutor — all three are tier-gated to "readonly" agents
   // (see their canHandle), so there's no write risk to gate behind
   // executeWriteTier the way WriteExecutor/CodexWriteExecutor are.
-  const autoExecutors: Executor[] = [new ReadOnlyExecutor(), new ApiExecutor(), new CodexReadOnlyExecutor()];
-  if (executeWriteTier) autoExecutors.push(new WriteExecutor(), new CodexWriteExecutor());
-  const manualExecutors: Executor[] = opts.manualExecutors ?? [
-    new ReadOnlyExecutor(),
+  const autoExecutors: Executor[] = [
+    new ReadOnlyExecutor({ memoryPath: opts.memoryPath }),
     new ApiExecutor(),
-    new CodexReadOnlyExecutor(),
-    new WriteExecutor(),
-    new CodexWriteExecutor(),
+    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath }),
+  ];
+  if (executeWriteTier) autoExecutors.push(new WriteExecutor({ memoryPath: opts.memoryPath }), new CodexWriteExecutor({ memoryPath: opts.memoryPath }));
+  const manualExecutors: Executor[] = opts.manualExecutors ?? [
+    new ReadOnlyExecutor({ memoryPath: opts.memoryPath }),
+    new ApiExecutor(),
+    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath }),
+    new WriteExecutor({ memoryPath: opts.memoryPath }),
+    new CodexWriteExecutor({ memoryPath: opts.memoryPath }),
   ];
 
   // One Orchestrator instance regardless of whether the automatic loop is
@@ -109,7 +127,7 @@ export function createApp(
     router,
     autoExecutors,
     telemetry,
-    { executeWriteTier, harnesses, maxConcurrentTasks: opts.maxConcurrentTasks, spendCeilingUsd: opts.spendCeilingUsd },
+    { executeWriteTier, harnesses, maxConcurrentTasks: opts.maxConcurrentTasks, spendCeilingUsd: opts.spendCeilingUsd, memoryPath: opts.memoryPath },
   );
   if (opts.orchestratorEnabled) orchestrator.start();
   // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
@@ -121,6 +139,22 @@ export function createApp(
   // human's explicit POST /tasks/:id/merge, below) — see
   // wireAutoIntegrator's own doc comment.
   wireAutoIntegrator(board as Board & { events: import("node:events").EventEmitter }, registry);
+
+  // Off by default (WISSEL_MEMORY_CURATION) — see
+  // src/core/memory-scheduler.ts and docs/SDD-memory-curator.md §9.
+  // Uses the same manualExecutors pool and orchestrator.runNow path a
+  // human's board "Run now" click already uses, so a curation run is
+  // never a separate execution mechanism to keep in sync.
+  if (opts.memoryCurationEnabled && telemetry) {
+    startMemoryScheduler({
+      board: board as Board,
+      orchestrator,
+      executors: manualExecutors,
+      telemetryPath: telemetry.filePath,
+      intervalHours: opts.memoryIntervalHours,
+      memoryPath: opts.memoryPath,
+    });
+  }
 
   return async function fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -445,9 +479,23 @@ if (import.meta.main) {
   const maxConcurrentTasks = process.env.WISSEL_MAX_CONCURRENT_TASKS ? Number(process.env.WISSEL_MAX_CONCURRENT_TASKS) : undefined;
   const spendCeilingUsd = process.env.WISSEL_SWEEP_SPEND_CEILING_USD ? Number(process.env.WISSEL_SWEEP_SPEND_CEILING_USD) : undefined;
 
+  // Off by default: wissel learning from its own session history (see
+  // docs/SDD-memory-curator.md). WISSEL_MEMORY_INTERVAL_HOURS only
+  // matters once this is on.
+  const memoryCurationEnabled = ["1", "true"].includes(process.env.WISSEL_MEMORY_CURATION ?? "");
+  const memoryIntervalHours = process.env.WISSEL_MEMORY_INTERVAL_HOURS ? Number(process.env.WISSEL_MEMORY_INTERVAL_HOURS) : 24;
+
   Bun.serve({
     port,
-    fetch: createApp(board, registry, telemetry, { orchestratorEnabled, executeWriteTier, harnesses, maxConcurrentTasks, spendCeilingUsd }),
+    fetch: createApp(board, registry, telemetry, {
+      orchestratorEnabled,
+      executeWriteTier,
+      harnesses,
+      maxConcurrentTasks,
+      spendCeilingUsd,
+      memoryCurationEnabled,
+      memoryIntervalHours,
+    }),
   });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
   const v = getVersionInfo();
@@ -461,5 +509,10 @@ if (import.meta.main) {
     harnesses.all().length
       ? `harnesses: ${harnesses.all().map((h) => (h.enabled ? h.id : `${h.id} (disabled: not authenticated here)`)).join(", ")}`
       : "no harnesses.yaml found — running with no named harness (ambient environment only)",
+  );
+  console.log(
+    memoryCurationEnabled
+      ? `memory curation scheduled every ${memoryIntervalHours}h (WISSEL_MEMORY_CURATION=1)`
+      : "memory curation not started — set WISSEL_MEMORY_CURATION=1 to let wissel learn from its own session history",
   );
 }

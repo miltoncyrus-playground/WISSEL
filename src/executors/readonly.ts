@@ -11,6 +11,10 @@ export interface ReadOnlyExecutorOptions {
    *  the manifest's declared, reviewable choice, not whatever the
    *  ambient claude-cli session happens to default to. */
   model?: string;
+  /** Passed straight through to runClaude's option of the same name —
+   *  see its own doc comment. Overridable so tests never fall back to
+   *  this repo's real memory/lessons.md. */
+  memoryPath?: string;
 }
 
 /**
@@ -30,10 +34,12 @@ export class ReadOnlyExecutor implements Executor {
   readonly harnessTool = "claude-cli" as const;
   private runner: CommandRunner;
   private model?: string;
+  private memoryPath?: string;
 
   constructor(opts: ReadOnlyExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
+    this.memoryPath = opts.memoryPath;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -52,6 +58,7 @@ export class ReadOnlyExecutor implements Executor {
       permissionMode: "plan",
       model: this.model ?? agent.costProfile.model,
       env: harness?.env,
+      memoryPath: this.memoryPath,
     });
     return harness ? { ...result, harnessId: harness.id } : result;
   }

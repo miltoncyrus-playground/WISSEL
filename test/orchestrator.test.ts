@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteBoard } from "../src/services/board.ts";
@@ -310,6 +310,95 @@ test("trustLevel: high alone, without autoMerge, does NOT skip review either", a
   await finishResult(board, registry, { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done" });
 
   expect((await board.get(task.id))!.status).toBe("review");
+});
+
+// --- memory persistence hook (docs/SDD-memory-curator.md §9) ---
+// finishResult writes result.summary to memory/lessons.md wholesale,
+// but only for an agent whose declared `outputs` includes
+// "memory-entries" (read from the manifest contract, never a hardcoded
+// agent id) — mirrors the autoMerge tests' shape above.
+
+const memoryCuratorAgent: AgentDef = {
+  id: "memory-curator",
+  name: "Memory curator",
+  kind: "agent",
+  tier: "readonly",
+  description: "Dedups and promotes session lessons into durable memory.",
+  whenToUse: "Scheduled housekeeping, not task-triggered.",
+  tags: ["memory", "housekeeping"],
+  executor: "readonly",
+  inputs: ["session-lessons"],
+  outputs: ["memory-entries"],
+  trustLevel: "low",
+  toolAccess: ["read"],
+  costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.05 },
+};
+
+test("finishResult persists result.summary to memory/lessons.md when the routed agent declares outputs: [memory-entries]", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-memory-test-"));
+  try {
+    const memoryPath = join(dir, "memory", "lessons.md");
+    const board = new SqliteBoard();
+    const registry = Registry.from([memoryCuratorAgent]);
+    const task = await board.create({ title: "Curate session memory", body: "raw lessons", labels: ["memory"], repo: "r" });
+
+    await finishResult(
+      board,
+      registry,
+      { taskId: task.id, agentId: "memory-curator", ok: true, summary: "- Always run bun test before reporting done." },
+      undefined,
+      undefined,
+      memoryPath,
+    );
+
+    expect((await board.get(task.id))!.status).toBe("done");
+    expect(await readFile(memoryPath, "utf8")).toBe("- Always run bun test before reporting done.");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("finishResult replaces memory/lessons.md wholesale, not appends, on a second curation run", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-memory-test-"));
+  try {
+    const memoryPath = join(dir, "memory", "lessons.md");
+    const board = new SqliteBoard();
+    const registry = Registry.from([memoryCuratorAgent]);
+    const first = await board.create({ title: "Curate session memory", body: "raw lessons", labels: ["memory"], repo: "r" });
+    await finishResult(board, registry, { taskId: first.id, agentId: "memory-curator", ok: true, summary: "old lesson" }, undefined, undefined, memoryPath);
+
+    const second = await board.create({ title: "Curate session memory", body: "raw lessons", labels: ["memory"], repo: "r" });
+    await finishResult(
+      board,
+      registry,
+      { taskId: second.id, agentId: "memory-curator", ok: true, summary: "consolidated lesson, old one dropped" },
+      undefined,
+      undefined,
+      memoryPath,
+    );
+
+    const content = await readFile(memoryPath, "utf8");
+    expect(content).toBe("consolidated lesson, old one dropped");
+    expect(content).not.toContain("old lesson");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("finishResult does nothing to memory/lessons.md for every other agent", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-memory-test-"));
+  try {
+    const memoryPath = join(dir, "memory", "lessons.md");
+    const { board, registry } = await setup([]);
+    const task = await board.create({ title: "triage", body: "", labels: ["intake"], repo: "r" });
+
+    await finishResult(board, registry, { taskId: task.id, agentId: "triager", ok: true, summary: "triaged" }, undefined, undefined, memoryPath);
+
+    expect((await board.get(task.id))!.status).toBe("done");
+    await expect(readFile(memoryPath, "utf8")).rejects.toThrow();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("a failed run ends in failed", async () => {

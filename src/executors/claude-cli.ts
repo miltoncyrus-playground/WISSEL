@@ -1,5 +1,6 @@
 import type { AgentDef, ReviewVerdict, TaskCard, TaskResult } from "../core/types.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
+import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
 import { parseSessionLimitReset } from "./parse-session-limit-reset.ts";
 
@@ -93,6 +94,12 @@ export interface RunClaudeOptions {
    *  ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN empty before spawning — see
    *  the comment in runClaude itself. */
   env?: Record<string, string>;
+  /** Path to the global memory/lessons.md file, read fresh on every call
+   *  and folded into the prompt when present (see buildAgentPrompt,
+   *  docs/SDD-memory-curator.md §9). Defaults to the repo-root
+   *  "memory/lessons.md" path; overridable so tests never depend on
+   *  whatever's actually on disk. */
+  memoryPath?: string;
 }
 
 /**
@@ -102,8 +109,9 @@ export interface RunClaudeOptions {
  * tiers is `--permission-mode`, which the caller picks.
  */
 export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
-  const { runner, task, agent, permissionMode, model, env, allowedTools } = opts;
-  const cmd = ["claude", "-p", buildAgentPrompt(task, agent), "--output-format", "json", "--permission-mode", permissionMode];
+  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath } = opts;
+  const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
+  const cmd = ["claude", "-p", buildAgentPrompt(task, agent, memory), "--output-format", "json", "--permission-mode", permissionMode];
   if (model) cmd.push("--model", model);
   if (allowedTools && allowedTools.length > 0) cmd.push("--allowedTools", ...allowedTools);
 
@@ -175,15 +183,20 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   let ok = !parsed.is_error;
   let summary = denials.length > 0 ? `${parsed.result ?? "(no result)"} [${denials.length} permission denial(s)]` : parsed.result ?? "(no result)";
 
-  // Agents with a declared outputContract (today: only the reviewer —
-  // see AgentDef.outputContract) must end their message with a
-  // machine-parseable verdict block. A claude run that otherwise
-  // "succeeded" but produced prose instead of the contract is still a
-  // failure from the caller's point of view: nothing downstream can
-  // trust `summary` as a verdict. Never default to approve here — see
-  // parseReviewVerdict's own contract.
+  // Only agents that opt into outputContractFormat: "review-verdict"
+  // (today: just the reviewer — see AgentDef.outputContractFormat) get
+  // their message forced through the machine-parsed verdict block. A
+  // claude run that otherwise "succeeded" but produced prose instead of
+  // the contract is still a failure from the caller's point of view:
+  // nothing downstream can trust `summary` as a verdict. Never default
+  // to approve here — see parseReviewVerdict's own contract. An agent
+  // with outputContract but no outputContractFormat (e.g.
+  // memory-curator, whose contract is prose formatting instructions,
+  // not a machine-parsed shape) is deliberately never routed through
+  // this — its raw `summary` is trusted as-is, same as before
+  // outputContract existed.
   let verdict: ReviewVerdict | null = null;
-  if (ok && agent.outputContract) {
+  if (ok && agent.outputContract && agent.outputContractFormat === "review-verdict") {
     verdict = parseReviewVerdict(parsed.result ?? "");
     if (verdict === null) {
       ok = false;

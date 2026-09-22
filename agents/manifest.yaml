@@ -76,6 +76,13 @@ agents:
     # `handoffs` list gets this entire behavior for free, no code
     # changes required. Full state machine and verdict/lineage contract:
     # docs/SDD-review-handoff.md.
+    # Pairs with outputContract below — this is what actually turns on
+    # parseReviewVerdict's strict machine-parsing in runClaude
+    # (src/executors/claude-cli.ts). See AgentDef.outputContractFormat's
+    # own doc comment for why this is a separate field from
+    # outputContract itself (memory-curator below has an outputContract
+    # too, but deliberately no outputContractFormat).
+    outputContractFormat: review-verdict
     outputContract: |
       Output contract — mandatory, machine-parsed, no exceptions:
 
@@ -132,6 +139,46 @@ agents:
     trustLevel: low
     toolAccess: [read]
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.05 }
+    # Declaring `outputs: [memory-entries]` above is what makes
+    # finishResult (src/core/orchestrator.ts) write this agent's raw
+    # `result.summary` to memory/lessons.md, wholesale, replacing
+    # whatever was there — no hardcoded agent id, keyed only off this
+    # contract (see docs/SDD-memory-curator.md §9). That makes the
+    # format of the final message load-bearing in a way no other
+    # readonly agent's output is: a stray "Here's the curated memory:"
+    # preamble would get written into the one file injected into every
+    # future agent's prompt (src/core/prompt.ts) and stay there until
+    # the next curation run. This outputContract exists to prevent
+    # exactly that. Deliberately no outputContractFormat — unlike
+    # reviewer, this isn't a machine-parsed JSON shape, just formatting
+    # discipline; runClaude trusts the raw message as-is either way (see
+    # AgentDef.outputContractFormat, src/core/types.ts).
+    outputContract: |
+      Output contract — mandatory, no exceptions:
+
+      Your final message becomes the literal, wholesale replacement for
+      memory/lessons.md. It is written to that file byte for byte,
+      nothing added and nothing stripped.
+
+      Rules:
+      - Your final message must contain ONLY the curated markdown
+        content for memory/lessons.md — nothing else.
+      - No preamble, no conversational wrapper, no sign-off ("Here's
+        the curated memory", "I've deduped the lessons below", "Let me
+        know if...", etc). The first character of your final message
+        must be the first character of the actual curated content.
+      - Do not wrap the content in a fenced code block — the file
+        itself is markdown, not a code sample to display.
+      - You were given the current memory/lessons.md contents (if any)
+        as part of your input, specifically so you can dedup and
+        consolidate against it — merge new lessons into the existing
+        structure rather than appending blindly, and drop anything
+        that's stale, redundant, or superseded.
+      - If there is nothing worth keeping at all (no prior file and no
+        durable lesson from this batch), your final message must still
+        be valid, minimal markdown for the file — never empty output
+        and never an explanatory sentence about why there's nothing to
+        write.
 
   - id: implementer
     name: Implementer

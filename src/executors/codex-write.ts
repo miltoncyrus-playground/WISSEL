@@ -13,6 +13,10 @@ export interface CodexWriteExecutorOptions {
    *  createTaskWorktree — injectable so tests never touch the real
    *  $HOME. Omitted uses the real one (`~/.wissel/worktrees/<taskId>`). */
   homeDir?: string;
+  /** Passed straight through to runCodex's option of the same name —
+   *  see its own doc comment. Overridable so tests never fall back to
+   *  this repo's real memory/lessons.md. */
+  memoryPath?: string;
 }
 
 /**
@@ -42,11 +46,13 @@ export class CodexWriteExecutor implements Executor {
   private runner: CommandRunner;
   private model?: string;
   private homeDir?: string;
+  private memoryPath?: string;
 
   constructor(opts: CodexWriteExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
     this.homeDir = opts.homeDir;
+    this.memoryPath = opts.memoryPath;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -68,6 +74,7 @@ export class CodexWriteExecutor implements Executor {
       sandbox: "workspace-write",
       model: this.model ?? agent.costProfile.model,
       env: harness?.env,
+      memoryPath: this.memoryPath,
     });
 
     const withHarness = harness ? { ...result, harnessId: harness.id } : result;
