@@ -50,6 +50,24 @@ agents:
     trustLevel: medium
     toolAccess: [read]
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.12 }
+    # This isn't just documentation of the shape below — declaring
+    # outputContract is what makes a run's final message get parsed by
+    # parseReviewVerdict (src/executors/parse-review-verdict.ts) instead
+    # of trusted as prose (see src/executors/claude-cli.ts). Combined
+    # with any write-tier agent listing "reviewer" in its own
+    # `handoffs` (see e.g. implementer below), this is also what turns
+    # on the automated push-back loop: a write-tier success queues a
+    # reviewer pass instead of stopping for a human, changes_requested
+    # spawns a pushback re-attempt (up to 5 times) or escalates, and
+    # approve resumes the normal done/review decision. None of that
+    # wiring is implementer-specific — it lives in `finishResult`/
+    # `handleReviewVerdict` (src/core/orchestrator.ts) and keys only off
+    # `handoffs.includes("reviewer")` plus this contract existing on
+    # whatever agent id is being handed off to. A future write-tier
+    # agent (fixer, integrator, ...) that adds `reviewer` to its own
+    # `handoffs` list gets this entire behavior for free, no code
+    # changes required. Full state machine and verdict/lineage contract:
+    # docs/SDD-review-handoff.md.
     outputContract: |
       Output contract — mandatory, machine-parsed, no exceptions:
 
@@ -121,6 +139,11 @@ agents:
     trustLevel: high
     toolAccess: [read, write, bash]
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.60 }
+    # Declaring "reviewer" here (not implementer-specific — see the
+    # comment on reviewer.outputContract above) is the whole trigger for
+    # the automated push-back loop: a successful run lands on
+    # pending-review instead of review, and only reaches a human after
+    # the reviewer approves, or rejects it enough times to escalate.
 
   - id: fixer
     name: Fixer
