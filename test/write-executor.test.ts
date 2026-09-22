@@ -117,6 +117,27 @@ test("runs claude inside the worktree, not task.repo directly — the whole poin
   }
 });
 
+test("always passes the narrow self-verification Bash allowlist — acceptEdits alone gates Bash behind an approval prompt a headless run can't answer", async () => {
+  const home = await fakeHome();
+  try {
+    let seenCmd: string[] = [];
+    const executor = new WriteExecutor({
+      homeDir: home,
+      runner: async (cmd) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenCmd = cmd;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(task, agent);
+    const idx = seenCmd.indexOf("--allowedTools");
+    expect(idx).toBeGreaterThan(-1);
+    expect(seenCmd.slice(idx + 1, idx + 3)).toEqual(["Bash(bun test:*)", "Bash(bun run typecheck:*)"]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("defaults --model to the routed agent's own costProfile.model", async () => {
   const home = await fakeHome();
   try {

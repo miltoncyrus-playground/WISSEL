@@ -1,5 +1,5 @@
 import type { EventEmitter } from "node:events";
-import type { Board } from "../services/board.ts";
+import type { Board, BoardEvent } from "../services/board.ts";
 import type { TelemetryLog } from "../services/telemetry.ts";
 import type { HarnessPool } from "./harness-pool.ts";
 import type { Registry } from "./registry.ts";
@@ -45,6 +45,17 @@ export async function finishResult(
   await telemetry?.record({ type: "result", taskId: result.taskId, agentId: result.agentId, actualCost: result.actualCost, harnessId: result.harnessId });
 
   const agent = registry.get(result.agentId);
+
+  // A detected session-limit (429) hit isn't a real failure — it's a
+  // clock. Checked before the plain `!result.ok` branch below (a 429
+  // result also carries `ok: false`) so it reschedules instead of
+  // stranding the task on `failed` for a human to notice and manually
+  // re-run — see runClaude/parseSessionLimitReset and
+  // docs/SDD-pipeline-automation.md §3.2.
+  if (result.retryAfter) {
+    await board.scheduleRetry(result.taskId, result.retryAfter);
+    return;
+  }
 
   if (!result.ok) {
     await board.move(result.taskId, "failed");
@@ -276,6 +287,95 @@ export async function resolveHandoffAllowlist(
   return parentAgent.handoffs;
 }
 
+/** Label the auto-created integrator follow-up carries — must overlap
+ *  the `integrator` agent's declared tags in agents/manifest.yaml for
+ *  the router to dispatch it with confidence, and doubles as the marker
+ *  `maybeSpawnIntegrator` checks for to stay idempotent (see below). */
+const INTEGRATOR_LABEL = "integration";
+
+/**
+ * Watches for every sibling under one `parentTaskId` reaching `done`,
+ * and auto-creates a single `integrator` follow-up scoped to the
+ * *parent* once they all have — closes a real gap found live in this
+ * project's own review-handoff feature (subtasks D/E: D's reviewer
+ * never saw board.html, E's reviewer explicitly deferred integration
+ * verification pending D, and nothing ever re-checked the pair once
+ * both landed — a human had to manually diff both worktrees to find the
+ * resulting request-body mismatch). A per-subtask reviewer only ever
+ * sees one subtask's diff; this is the check that runs once the whole
+ * *set* has landed.
+ *
+ * Always wired (not gated behind WISSEL_ORCHESTRATOR) — the same way
+ * `spawnReviewerTask` always queues its follow-up regardless of whether
+ * the automatic sweep loop dispatches it. The integrator card still
+ * needs to actually run via `sweep()` or a manual `/run`, same as any
+ * other auto-created follow-up; this only guarantees the card exists
+ * the moment the set completes, not that it dispatches itself.
+ *
+ * Listens on every `task.moved` event rather than hooking into
+ * `finishResult` specifically: a real completion just as often happens
+ * through `POST /tasks/:id/merge` (a human's explicit click, which
+ * calls `board.move(id, "done")` directly, never through
+ * `finishResult`) as through an automated done-vs-review decision —
+ * confirmed against server.ts's own merge handler. Board events are the
+ * one place every path that can produce `status: "done"` converges.
+ */
+export function wireAutoIntegrator(board: Board & { events: EventEmitter }, registry: Registry): void {
+  board.events.on("event", (evt: BoardEvent) => {
+    if (evt.type !== "task.moved" || evt.task.status !== "done") return;
+    void maybeSpawnIntegrator(board, registry, evt.task).catch((e) =>
+      console.error(`orchestrator: failed to check/spawn integrator for ${evt.task.id}: ${(e as Error).message}`),
+    );
+  });
+}
+
+async function maybeSpawnIntegrator(board: Board, registry: Registry, task: TaskCard): Promise<void> {
+  const parentId = task.parentTaskId;
+  if (!parentId) return;
+  const parent = await board.get(parentId);
+  if (!parent) return;
+
+  const siblings = (await board.list()).filter((t) => t.parentTaskId === parentId);
+  // An integrator card is itself a sibling under the same parentTaskId
+  // (see below) — excluded here so it's never counted as one of "the
+  // subtasks" that must all be done, and its own presence is what makes
+  // this idempotent: multiple siblings reaching `done` in quick
+  // succession each fire this listener, but only the first one to
+  // observe "no integrator card yet" creates one.
+  const subtasks = siblings.filter((t) => !t.labels.includes(INTEGRATOR_LABEL));
+  if (subtasks.length === 0) return;
+  if (!subtasks.every((t) => t.status === "done")) return;
+  if (siblings.some((t) => t.labels.includes(INTEGRATOR_LABEL))) return;
+
+  const integratorAgent = registry.get("integrator");
+  if (!integratorAgent) return; // no integrator agent registered — nothing to route this to
+
+  await board.create({
+    title: `Integrate: ${parent.title}`,
+    body: buildIntegratorBody(parent, subtasks),
+    labels: [INTEGRATOR_LABEL],
+    repo: parent.repo,
+    parentTaskId: parentId,
+  });
+}
+
+function buildIntegratorBody(parent: TaskCard, subtasks: TaskCard[]): string {
+  const list = subtasks.map((t) => `- ${t.title} (${t.id})`).join("\n");
+  return [
+    `Every subtask under "${parent.title}" has landed. Verify the set together, not just each piece individually:`,
+    "",
+    list,
+    "",
+    "Run the full test suite. Then specifically check for cross-subtask integration defects a per-subtask reviewer" +
+      " structurally can't catch — e.g. a UI change calling an endpoint another subtask defined, with mismatched" +
+      " request/response shapes (this exact bug shipped once in this project: one subtask's fetch() call sent no" +
+      " request body at all for an endpoint another subtask required one for). Grep every fetch()/request call added" +
+      " across these subtasks against the endpoint it targets and confirm the shapes actually match.",
+    "",
+    "Report any defect found, with the specific files/lines on both sides of the mismatch.",
+  ].join("\n");
+}
+
 export interface OrchestratorOptions {
   /** Off by default — the documented design is "wissel decides, agetor
    *  executes," and every existing deployment keeps that unless it
@@ -292,6 +392,34 @@ export interface OrchestratorOptions {
    *  existed. A `dispatched` (handed-off) task never gets a harness:
    *  wissel doesn't execute it, so there's nothing to pick one for. */
   harnesses?: HarnessPool;
+  /** Caps how many tasks `sweep()` will have in flight at once — see
+   *  docs/SDD-pipeline-automation.md §3.6. Undefined means unlimited
+   *  (today's behavior). Only meaningful once WISSEL_ORCHESTRATOR is on;
+   *  a human's manual `/run` (runNow) always bypasses this, the same
+   *  way it bypasses every other sweep() gate. Exists specifically so
+   *  turning on autonomous dispatch doesn't also turn a credit-limited
+   *  account's slow, supervised pipeline into a fast, unsupervised one —
+   *  built after this project's own pipeline hit real 429s under
+   *  entirely manual, one-at-a-time dispatch. */
+  maxConcurrentTasks?: number;
+  /** Caps total `actualCost` sweep() will let accumulate (from
+   *  telemetry's own recorded spend, not estimates) within the current
+   *  UTC day before it stops dispatching further work — undefined means
+   *  unlimited. Checked once per sweep() call, not per task: a coarse,
+   *  same-round guard against runaway multi-day spend, not a
+   *  per-dispatch meter (dispatched-but-not-yet-finished tasks in the
+   *  same round aren't counted against it, since their real cost isn't
+   *  known until they finish). Requires `telemetry` to be set — a no-op
+   *  otherwise. */
+  spendCeilingUsd?: number;
+}
+
+/** Midnight UTC on `now`'s calendar day — the window `spendCeilingUsd`
+ *  is measured against. A plain top-of-UTC-day boundary, not
+ *  timezone-aware to Milton's own clock — simple and unambiguous is
+ *  worth more here than perfectly matching a human's sense of "today". */
+function startOfUtcDay(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 }
 
 /**
@@ -337,16 +465,31 @@ export class Orchestrator {
     const byId = new Map(tasks.map((t) => [t.id, t]));
     const pending: Promise<void>[] = [];
 
+    // Computed once per sweep() call, not per task — see
+    // OrchestratorOptions.spendCeilingUsd's own doc comment for why this
+    // is a coarse per-round guard, not a precise per-dispatch meter.
+    const spentToday =
+      this.opts.spendCeilingUsd !== undefined && this.telemetry ? await this.telemetry.sumCostSince(startOfUtcDay(new Date())) : undefined;
+    const overSpendCeiling = spentToday !== undefined && this.opts.spendCeilingUsd !== undefined && spentToday >= this.opts.spendCeilingUsd;
+
     for (const task of tasks) {
       if (this.inFlight.has(task.id)) continue;
       if (task.routedTo) continue; // already routed — a human or a prior run owns it now
       if (task.status !== "inbox" && task.status !== "ready") continue;
+
+      // A task Board.scheduleRetry rescheduled after a 429 isn't
+      // eligible again until its clock has passed — reads the same as
+      // "blocked" below, just on a timer instead of a dependency.
+      if (task.retryAfter && new Date(task.retryAfter).getTime() > Date.now()) continue;
 
       const deps = task.dependsOn ?? [];
       // A dangling or not-yet-done dependency both read as "blocked" — never
       // guess a dependency is satisfied just because we can't find it.
       const blocked = deps.some((depId) => byId.get(depId)?.status !== "done");
       if (blocked) continue;
+
+      if (this.opts.maxConcurrentTasks !== undefined && this.inFlight.size >= this.opts.maxConcurrentTasks) continue;
+      if (overSpendCeiling) continue;
 
       this.inFlight.add(task.id);
       pending.push(this.process(task).finally(() => this.inFlight.delete(task.id)));

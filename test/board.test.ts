@@ -458,3 +458,84 @@ test("create and move emit events", async () => {
 
   expect(events).toEqual(["task.created", "task.moved"]);
 });
+
+test("scheduleRetry moves a task back to inbox, clears routedTo, sets retryAfter, and emits task.moved", async () => {
+  const board = new SqliteBoard();
+  const events: BoardEvent[] = [];
+  board.events.on("event", (e: BoardEvent) => events.push(e));
+
+  const task = await board.create({ title: "t", body: "", labels: ["code"], repo: "r" });
+  await board.recordDecision({
+    taskId: task.id, matchedTags: [], candidates: [], selected: "implementer", confident: true,
+    reason: "r", strategy: "manual", decidedAt: new Date().toISOString(),
+  });
+  await board.move(task.id, "running");
+  expect((await board.get(task.id))!.routedTo).toBe("implementer");
+
+  const retryAfter = "2026-09-22T15:10:00.000Z";
+  const updated = await board.scheduleRetry(task.id, retryAfter);
+  expect(updated.status).toBe("inbox");
+  expect(updated.routedTo).toBeUndefined();
+  expect(updated.retryAfter).toBe(retryAfter);
+
+  const fetched = await board.get(task.id);
+  expect(fetched).toEqual(updated);
+
+  expect(events.at(-1)).toEqual({ type: "task.moved", task: updated });
+});
+
+test("scheduleRetry rejects an unknown task id", async () => {
+  const board = new SqliteBoard();
+  await expect(board.scheduleRetry("no-such-task", "2026-09-22T15:10:00.000Z")).rejects.toThrow("task not found");
+});
+
+test("recordDecision clears a previously-set retryAfter — a task that's actually routing again no longer has a pending retry", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: ["code"], repo: "r" });
+  await board.scheduleRetry(task.id, "2026-09-22T15:10:00.000Z");
+  expect((await board.get(task.id))!.retryAfter).toBe("2026-09-22T15:10:00.000Z");
+
+  await board.recordDecision({
+    taskId: task.id, matchedTags: [], candidates: [], selected: "implementer", confident: true,
+    reason: "r", strategy: "manual", decidedAt: new Date().toISOString(),
+  });
+
+  const after = await board.get(task.id);
+  expect(after!.routedTo).toBe("implementer");
+  expect(after!.retryAfter).toBeUndefined();
+});
+
+test("opens and heals a real pre-existing on-disk DB from before retryAfter existed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-board-legacy-retryafter-"));
+  const dbPath = join(dir, "board.sqlite");
+  try {
+    const legacy = new Database(dbPath, { create: true });
+    legacy.run(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        labels TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        status TEXT NOT NULL,
+        routedTo TEXT,
+        dependsOn TEXT NOT NULL DEFAULT '[]',
+        parentTaskId TEXT,
+        harness TEXT,
+        pushbackCount INTEGER,
+        reviewLineageId TEXT,
+        supersededBy TEXT,
+        escalationContext TEXT
+      );
+    `);
+    legacy.close();
+
+    const board = new SqliteBoard(dbPath);
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+    const retried = await board.scheduleRetry(task.id, "2026-09-22T15:10:00.000Z");
+    expect(retried.retryAfter).toBe("2026-09-22T15:10:00.000Z");
+    expect((await board.get(task.id))!.retryAfter).toBe("2026-09-22T15:10:00.000Z");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

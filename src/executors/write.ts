@@ -74,6 +74,14 @@ export class WriteExecutor implements Executor {
       permissionMode: "acceptEdits",
       model: this.model ?? agent.costProfile.model,
       env: harness?.env,
+      // Guarantees the two commands verificationContract (see
+      // agents/manifest.yaml's implementer) tells the agent to run
+      // actually run, every time — plain acceptEdits' own Bash gating
+      // was found live to be inconsistent (see RunClaudeOptions.allowedTools'
+      // own doc comment for the smoke-test evidence), so this doesn't
+      // widen access, it makes these two specific commands reliable.
+      // See docs/SDD-pipeline-automation.md §3.4.
+      allowedTools: ["Bash(bun test:*)", "Bash(bun run typecheck:*)"],
     });
 
     const withHarness = harness ? { ...result, harnessId: harness.id } : result;

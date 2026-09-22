@@ -1,9 +1,13 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, type OrchestratorOptions } from "../src/core/orchestrator.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
+import { TelemetryLog } from "../src/services/telemetry.ts";
 import type { AgentDef, Executor, Harness, TaskCard } from "../src/core/types.ts";
 
 // agents/manifest.yaml's real tags: "intake" -> triager (readonly),
@@ -607,4 +611,243 @@ test("a question-tagged task routes to quick-answer and actually runs on ApiExec
   const updated = await board.get(task.id);
   expect(updated!.routedTo).toBe("quick-answer");
   expect(updated!.status).toBe("done");
+});
+
+// --- retryAfter gating (docs/SDD-pipeline-automation.md §3.2) ---
+
+test("a task with a future retryAfter is skipped by sweep(), same as a blocked dependency", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" })),
+  ]);
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await board.scheduleRetry(task.id, new Date(Date.now() + 60_000).toISOString());
+
+  await orchestrator.sweep();
+
+  const after = await board.get(task.id);
+  expect(after!.status).toBe("inbox");
+  expect(after!.routedTo).toBeUndefined();
+});
+
+test("a task whose retryAfter has already passed is eligible again", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" })),
+  ]);
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await board.scheduleRetry(task.id, new Date(Date.now() - 60_000).toISOString());
+
+  await orchestrator.sweep();
+
+  expect((await board.get(task.id))!.status).toBe("done");
+});
+
+test("finishResult reschedules a retryAfter result instead of failing the task — a 429 isn't a real failure", async () => {
+  const { board, registry } = await setup([]);
+  const task = await board.create({ title: "build the thing", body: "", labels: ["code"], repo: "r" });
+  await board.recordDecision({
+    taskId: task.id, matchedTags: [], candidates: [], selected: "implementer", confident: true,
+    reason: "r", strategy: "manual", decidedAt: new Date().toISOString(),
+  });
+
+  const retryAfter = new Date(Date.now() + 60_000).toISOString();
+  await finishResult(board, registry, { taskId: task.id, agentId: "implementer", ok: false, summary: "session limit hit", retryAfter });
+
+  const after = await board.get(task.id);
+  expect(after!.status).toBe("inbox");
+  expect(after!.routedTo).toBeUndefined();
+  expect(after!.retryAfter).toBe(retryAfter);
+});
+
+test("a real 429-then-retry round trip through sweep()/WriteExecutor reuses the exact same worktree, no fresh one created", async () => {
+  const { WriteExecutor } = await import("../src/executors/write.ts");
+  const home = await mkdtemp(join(tmpdir(), "wissel-429-retry-test-"));
+  try {
+    const seenCwds: string[] = [];
+    let call = 0;
+    const runner = async (cmd: string[], opts: { cwd: string }) => {
+      if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+      seenCwds.push(opts.cwd);
+      call++;
+      if (call === 1) {
+        // A real 429 shape, captured live.
+        return {
+          stdout: JSON.stringify({
+            type: "result", subtype: "success", is_error: true,
+            result: "You've hit your session limit · resets 11:59pm (UTC)",
+            total_cost_usd: 1.5, api_error_status: 429,
+          }),
+          stderr: "",
+          exitCode: 1,
+        };
+      }
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "shipped" }), stderr: "", exitCode: 0 };
+    };
+
+    const board = new SqliteBoard();
+    const registry = await Registry.load();
+    const orchestrator = new Orchestrator(board, registry, new Router(registry), [new WriteExecutor({ runner, homeDir: home })], undefined, {
+      executeWriteTier: true,
+    });
+
+    const task = await board.create({ title: "build the thing", body: "", labels: ["code"], repo: "r" });
+    await orchestrator.sweep();
+
+    const afterFirstAttempt = await board.get(task.id);
+    expect(afterFirstAttempt!.status).toBe("inbox"); // rescheduled, not failed
+    expect(afterFirstAttempt!.retryAfter).toBeDefined();
+
+    // Force the retry eligible immediately instead of waiting out a real
+    // 24h window — same task row, so this is purely "is the clock past,"
+    // nothing about worktree/lineage identity changes.
+    await board.scheduleRetry(task.id, new Date(Date.now() - 1000).toISOString());
+    await orchestrator.sweep();
+
+    const afterRetry = await board.get(task.id);
+    expect(afterRetry!.status).toBe("pending-review"); // real implementer declares handoffs: [reviewer]
+    expect(seenCwds.length).toBe(2);
+    expect(seenCwds[0]).toBe(seenCwds[1]); // exact same worktree path both times
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+// --- maxConcurrentTasks (docs/SDD-pipeline-automation.md §3.6) ---
+
+test("maxConcurrentTasks caps how many tasks are in flight at once, one dispatch per sweep round until it's freed", async () => {
+  let running = 0;
+  let maxRunning = 0;
+  const releases: (() => void)[] = [];
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor("readonly", async (task, agent) => {
+        running++;
+        maxRunning = Math.max(maxRunning, running);
+        await new Promise<void>((resolve) => releases.push(resolve));
+        running--;
+        return { taskId: task.id, agentId: agent.id, ok: true, summary: "ok" };
+      }),
+    ],
+    { maxConcurrentTasks: 1 },
+  );
+
+  const t1 = await board.create({ title: "a", body: "", labels: ["intake"], repo: "r" });
+  const t2 = await board.create({ title: "b", body: "", labels: ["intake"], repo: "r" });
+  const t3 = await board.create({ title: "c", body: "", labels: ["intake"], repo: "r" });
+
+  const sweep1 = orchestrator.sweep();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(maxRunning).toBe(1); // t2/t3 never even started this round
+  expect((await board.get(t2.id))!.routedTo).toBeUndefined();
+  expect((await board.get(t3.id))!.routedTo).toBeUndefined();
+  releases.shift()!();
+  await sweep1;
+  expect((await board.get(t1.id))!.status).toBe("done");
+
+  const sweep2 = orchestrator.sweep();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(maxRunning).toBe(1);
+  releases.shift()!();
+  await sweep2;
+
+  const sweep3 = orchestrator.sweep();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  releases.shift()!();
+  await sweep3;
+
+  expect((await board.get(t2.id))!.status).toBe("done");
+  expect((await board.get(t3.id))!.status).toBe("done");
+});
+
+test("maxConcurrentTasks unset (the default) behaves identically to no cap at all", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" })),
+  ]);
+  const t1 = await board.create({ title: "a", body: "", labels: ["intake"], repo: "r" });
+  const t2 = await board.create({ title: "b", body: "", labels: ["intake"], repo: "r" });
+
+  await orchestrator.sweep();
+
+  expect((await board.get(t1.id))!.status).toBe("done");
+  expect((await board.get(t2.id))!.status).toBe("done");
+});
+
+// --- spendCeilingUsd (docs/SDD-pipeline-automation.md §3.6) ---
+
+test("spendCeilingUsd stops sweep() from dispatching once today's real recorded spend is at or over it", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-telemetry-test-"));
+  try {
+    const telemetry = new TelemetryLog(join(dir, "telemetry.jsonl"));
+    await telemetry.record({ type: "result", taskId: "prior-task", agentId: "implementer", actualCost: 5 });
+
+    const board = new SqliteBoard();
+    const registry = await Registry.load();
+    const orchestrator = new Orchestrator(
+      board,
+      registry,
+      new Router(registry),
+      [fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" }))],
+      telemetry,
+      { spendCeilingUsd: 5 },
+    );
+
+    const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+    await orchestrator.sweep();
+
+    const after = await board.get(task.id);
+    expect(after!.status).toBe("inbox");
+    expect(after!.routedTo).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("spendCeilingUsd set above today's recorded spend lets sweep() dispatch normally", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-telemetry-test-"));
+  try {
+    const telemetry = new TelemetryLog(join(dir, "telemetry.jsonl"));
+    await telemetry.record({ type: "result", taskId: "prior-task", agentId: "implementer", actualCost: 1 });
+
+    const board = new SqliteBoard();
+    const registry = await Registry.load();
+    const orchestrator = new Orchestrator(
+      board,
+      registry,
+      new Router(registry),
+      [fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" }))],
+      telemetry,
+      { spendCeilingUsd: 5 },
+    );
+
+    const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+    await orchestrator.sweep();
+
+    expect((await board.get(task.id))!.status).toBe("done");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("spendCeilingUsd unset (the default) behaves identically to no cap at all, even with telemetry configured", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-telemetry-test-"));
+  try {
+    const telemetry = new TelemetryLog(join(dir, "telemetry.jsonl"));
+    await telemetry.record({ type: "result", taskId: "prior-task", agentId: "implementer", actualCost: 1000 });
+
+    const board = new SqliteBoard();
+    const registry = await Registry.load();
+    const orchestrator = new Orchestrator(
+      board,
+      registry,
+      new Router(registry),
+      [fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ok" }))],
+      telemetry,
+    );
+
+    const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+    await orchestrator.sweep();
+
+    expect((await board.get(task.id))!.status).toBe("done");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -29,6 +29,17 @@ export interface Board {
    *  the way `move` + a hypothetical `setEscalationContext` would. See
    *  TaskCard.escalationContext. */
   escalate(id: string, escalationContext: string): Promise<TaskCard>;
+  /** Reschedules a task after a transient failure (today: a claude-cli
+   *  429 session-limit hit — see TaskCard.retryAfter, TaskResult.retryAfter,
+   *  runClaude/parseSessionLimitReset) instead of moving it to `failed`.
+   *  Clears `routedTo` so `sweep()` treats it as freshly eligible once
+   *  `retryAfter` has passed — the same code path a brand-new task takes
+   *  — and sets `retryAfter` so `sweep()` doesn't retry it early (see
+   *  Orchestrator.sweep's eligibility check). Everything else
+   *  (reviewLineageId, parentTaskId, labels, body) is untouched, so a
+   *  write-tier retry reuses its existing worktree exactly the way a
+   *  pushback re-attempt does. */
+  scheduleRetry(id: string, retryAfter: string): Promise<TaskCard>;
   /** Every TaskCard sharing a `reviewLineageId`, oldest first — the full
    *  history of a review-pushback chain across however many separate
    *  rows it spans. See TaskCard.reviewLineageId. */
@@ -81,6 +92,7 @@ interface TaskRow {
   reviewLineageId: string | null;
   supersededBy: string | null;
   escalationContext: string | null;
+  retryAfter: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -99,6 +111,7 @@ function rowToCard(row: TaskRow): TaskCard {
     reviewLineageId: row.reviewLineageId ?? undefined,
     supersededBy: row.supersededBy ?? undefined,
     escalationContext: row.escalationContext ?? undefined,
+    retryAfter: row.retryAfter ?? undefined,
   };
 }
 
@@ -130,7 +143,8 @@ export class SqliteBoard implements Board {
         pushbackCount INTEGER,
         reviewLineageId TEXT,
         supersededBy TEXT,
-        escalationContext TEXT
+        escalationContext TEXT,
+        retryAfter TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -149,6 +163,7 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN reviewLineageId TEXT;",
       "ALTER TABLE tasks ADD COLUMN supersededBy TEXT;",
       "ALTER TABLE tasks ADD COLUMN escalationContext TEXT;",
+      "ALTER TABLE tasks ADD COLUMN retryAfter TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -325,6 +340,15 @@ export class SqliteBoard implements Board {
     return updated;
   }
 
+  async scheduleRetry(id: string, retryAfter: string): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET status = ?, routedTo = NULL, retryAfter = ? WHERE id = ?", ["inbox", retryAfter, id]);
+    const updated: TaskCard = { ...existing, status: "inbox", routedTo: undefined, retryAfter };
+    this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
   async getLineage(reviewLineageId: string): Promise<TaskCard[]> {
     const rows = this.db.query("SELECT * FROM tasks WHERE reviewLineageId = ? ORDER BY rowid").all(reviewLineageId) as TaskRow[];
     return rows.map(rowToCard);
@@ -344,7 +368,12 @@ export class SqliteBoard implements Board {
         decision.decidedAt,
       ],
     );
-    this.db.run("UPDATE tasks SET routedTo = ? WHERE id = ?", [decision.selected, decision.taskId]);
+    // retryAfter cleared unconditionally here, not just for a task that
+    // actually had one set — a task that scheduleRetry rescheduled and
+    // is now routing again for real no longer has a pending retry, and
+    // clearing an already-null column is a harmless no-op for every
+    // other task.
+    this.db.run("UPDATE tasks SET routedTo = ?, retryAfter = NULL WHERE id = ?", [decision.selected, decision.taskId]);
     this.events.emit("event", { type: "task.decided", decision } satisfies BoardEvent);
   }
 

@@ -7,7 +7,7 @@ import { TelemetryLog } from "../services/telemetry.ts";
 import { HarnessPool } from "../core/harness-pool.ts";
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
-import { Orchestrator, finishResult, resolveHandoffAllowlist } from "../core/orchestrator.ts";
+import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
 import { ApiExecutor } from "../executors/anthropic-api.ts";
@@ -32,6 +32,12 @@ export interface CreateAppOptions {
    *  dispatching it. Off by default. Doesn't affect the manual
    *  `/tasks/:id/run` endpoint below, which always can. */
   executeWriteTier?: boolean;
+  /** Passed straight through to Orchestrator's option of the same name
+   *  — see its own doc comment. Undefined means unlimited. */
+  maxConcurrentTasks?: number;
+  /** Passed straight through to Orchestrator's option of the same name
+   *  — see its own doc comment. Undefined means unlimited. */
+  spendCeilingUsd?: number;
   /** Executor pool the manual `/tasks/:id/run` endpoint uses — defaults
    *  to a real ReadOnlyExecutor + WriteExecutor pair. Overridable so
    *  tests can inject fakes instead of spawning a real `claude`
@@ -103,9 +109,18 @@ export function createApp(
     router,
     autoExecutors,
     telemetry,
-    { executeWriteTier, harnesses },
+    { executeWriteTier, harnesses, maxConcurrentTasks: opts.maxConcurrentTasks, spendCeilingUsd: opts.spendCeilingUsd },
   );
   if (opts.orchestratorEnabled) orchestrator.start();
+  // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
+  // subtask set should get its integrator card queued the moment it
+  // completes, the same way spawnReviewerTask always queues a reviewer
+  // card, whether or not anything dispatches it automatically. Uses the
+  // board's own event stream, which every path that can produce
+  // `status: "done"` emits on (finishResult's several branches AND a
+  // human's explicit POST /tasks/:id/merge, below) — see
+  // wireAutoIntegrator's own doc comment.
+  wireAutoIntegrator(board as Board & { events: import("node:events").EventEmitter }, registry);
 
   return async function fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -424,8 +439,16 @@ if (import.meta.main) {
   // "Run" button works either way — see createApp's manualExecutors.
   const orchestratorEnabled = ["1", "true"].includes(process.env.WISSEL_ORCHESTRATOR ?? "");
   const executeWriteTier = ["1", "true"].includes(process.env.WISSEL_EXECUTE_WRITE_TIER ?? "");
+  // Undefined (unlimited) unless explicitly set — see
+  // Orchestrator.sweep's own doc comments for what each guards against.
+  // Only meaningful once orchestratorEnabled is also on.
+  const maxConcurrentTasks = process.env.WISSEL_MAX_CONCURRENT_TASKS ? Number(process.env.WISSEL_MAX_CONCURRENT_TASKS) : undefined;
+  const spendCeilingUsd = process.env.WISSEL_SWEEP_SPEND_CEILING_USD ? Number(process.env.WISSEL_SWEEP_SPEND_CEILING_USD) : undefined;
 
-  Bun.serve({ port, fetch: createApp(board, registry, telemetry, { orchestratorEnabled, executeWriteTier, harnesses }) });
+  Bun.serve({
+    port,
+    fetch: createApp(board, registry, telemetry, { orchestratorEnabled, executeWriteTier, harnesses, maxConcurrentTasks, spendCeilingUsd }),
+  });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
   const v = getVersionInfo();
   console.log(`version: ${v.commitShort}${v.dirty ? "+dirty" : ""} (${v.branch})`);

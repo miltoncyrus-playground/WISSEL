@@ -62,6 +62,19 @@ export interface AgentDef {
    *  rather than by ad hoc prose-scraping downstream. Undefined means
    *  "no contract beyond description/whenToUse" — the prior behavior. */
   outputContract?: string;
+  /** Agent-specific self-verification instructions, appended verbatim to
+   *  the prompt by buildAgentPrompt when present — same mechanism as
+   *  outputContract, different purpose: tells the agent to actually run
+   *  something (e.g. `bun run typecheck` && `bun test test/`) and fix
+   *  failures before reporting done, instead of shipping unverified
+   *  code. Pair it with the matching Bash allowlist on whatever executor
+   *  runs this agent (see WriteExecutor's `allowedTools`) so the
+   *  commands it's told to run are guaranteed to actually run, rather
+   *  than depending on the permission mode's own (empirically
+   *  inconsistent — see allowedTools' doc comment) Bash gating.
+   *  Undefined means no self-verification instruction is added —
+   *  today's behavior. */
+  verificationContract?: string;
 }
 
 /** The reviewer agent's mandated final-message contract: a
@@ -127,6 +140,15 @@ export interface TaskCard {
    *  status === "escalated"; a human reads this instead of replaying the
    *  whole reviewLineageId chain to find out why it stalled. */
   escalationContext?: string;
+  /** Set when a claude-cli run failed with a detected session-limit
+   *  (429) error whose reset time could be parsed — see
+   *  parseSessionLimitReset and runClaude in
+   *  src/executors/claude-cli.ts. `finishResult` reschedules the task
+   *  (Board.scheduleRetry) instead of failing it outright; `sweep()`
+   *  treats a task with a future `retryAfter` as ineligible, the same
+   *  way a blocked `dependsOn` is. ISO timestamp; undefined means no
+   *  pending retry. */
+  retryAfter?: string;
 }
 
 /** A named execution backend wissel can run work under — a tool (which
@@ -229,6 +251,14 @@ export interface TaskResult {
   /** The reviewer's feedback text, paired with `verdict`. Undefined
    *  whenever `verdict` is. */
   reviewFeedback?: string;
+  /** Set by runClaude when a failure was specifically a detected
+   *  claude-cli session-limit (429) error with a parseable reset time —
+   *  see parseSessionLimitReset. `ok` is still `false` alongside this;
+   *  `finishResult` checks `retryAfter` before the plain `!ok` branch
+   *  and reschedules instead of failing the task outright. ISO
+   *  timestamp; undefined for every other kind of failure (or a
+   *  success). */
+  retryAfter?: string;
 }
 
 export interface Executor {

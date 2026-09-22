@@ -46,6 +46,35 @@ default. From `review`, the board's **Merge**/**Discard** actions (or
 worktree's changes into the task's repo or throw them away — see
 `docs/SDD-worktree-isolation.md`.
 
+Turning both flags on moves the pipeline from "wissel decides, a human
+dispatches every step by hand" to genuinely unattended: an
+implementer→reviewer→pushback/escalation loop (see
+`docs/SDD-review-handoff.md`) runs start to finish with no manual
+`POST /tasks/:id/run` in between, all the way up to the one deliberate
+human checkpoint (`review`, or `escalated` after repeated rejection).
+Set a concurrency and/or spend cap before turning this on for a
+credit-limited account — see `docs/SDD-pipeline-automation.md` §2.6 for
+why (built after this project's own pipeline burned through real spend
+under entirely manual, one-at-a-time dispatch and still hit usage
+limits):
+
+- `WISSEL_MAX_CONCURRENT_TASKS` — caps how many tasks the automatic
+  sweep loop has in flight at once. Undefined/unset means unlimited.
+  Doesn't affect a human's manual `POST /tasks/:id/run`, which always
+  bypasses this the same way it bypasses every other sweep gate.
+- `WISSEL_SWEEP_SPEND_CEILING_USD` — caps total real spend (from
+  telemetry's own recorded `actualCost`, not estimates) the sweep loop
+  will let accumulate within the current UTC day before it stops
+  dispatching further work. Undefined/unset means unlimited. Checked
+  once per sweep round, not per task — a coarse same-round guard
+  against runaway multi-day spend, not a precise per-dispatch meter.
+
+A claude-cli session-limit (429) hit no longer strands a task on
+`failed` for a human to notice and manually retry — `runClaude` detects
+it, parses the real reset time out of the error text, and
+`Board.scheduleRetry` reschedules the task (reusing its existing
+worktree) instead. See `docs/SDD-pipeline-automation.md` §3.2.
+
 Earlier versions of this ran write-tier subprocesses directly against
 `task.repo`'s own working tree, which meant a self-hosted task (repo ==
 wissel's own source) editing files could trigger `bun run dev`'s

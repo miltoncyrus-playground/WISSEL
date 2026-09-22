@@ -30,7 +30,15 @@ agents:
     whenToUse: Card describes an outcome but not the steps to get there.
     tags: [planning, decomposition]
     executor: readonly
-    handoffs: [implementer, reviewer]
+    # integrator added alongside the auto-integrator feature
+    # (wireAutoIntegrator/maybeSpawnIntegrator, src/core/orchestrator.ts):
+    # its auto-created follow-up card carries parentTaskId = the planner
+    # task, so without integrator in this allowlist,
+    # resolveHandoffAllowlist would restrict that card's routing
+    # candidates to exactly [implementer, reviewer] and it would always
+    # land on no-match regardless of tag overlap. See
+    # docs/SDD-pipeline-automation.md §3.5.
+    handoffs: [implementer, reviewer, integrator]
     inputs: [task-card]
     outputs: [subtask-cards, acceptance-criteria]
     trustLevel: low
@@ -139,6 +147,22 @@ agents:
     trustLevel: high
     toolAccess: [read, write, bash]
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.60 }
+    # verificationContract — see AgentDef.verificationContract and
+    # WriteExecutor's matching --allowedTools grant
+    # (src/executors/write.ts). Only takes effect together with that
+    # allowlist; the two are declared in separate files but must stay in
+    # sync (the allowlist is what makes running these two commands
+    # actually possible under acceptEdits, which otherwise gates Bash
+    # behind an approval prompt no headless run can answer).
+    verificationContract: |
+      Before reporting done, run:
+        bun run typecheck
+        bun test test/
+      If either fails, fix it and re-run both — do not report done with
+      either one red. If a failure is pre-existing and clearly unrelated
+      to your change (confirm this by checking whether it also fails on
+      a clean checkout before your edits), say so explicitly in your
+      summary instead of silently leaving it broken.
     # Declaring "reviewer" here (not implementer-specific — see the
     # comment on reviewer.outputContract above) is the whole trigger for
     # the automated push-back loop: a successful run lands on
@@ -163,9 +187,15 @@ agents:
     name: Integrator
     kind: agent
     tier: write
-    description: Rebases, resolves conflicts, merges.
-    whenToUse: Work is complete but does not land cleanly.
-    tags: [merge, rebase, conflict]
+    description: Rebases, resolves conflicts, merges. Also verifies a completed set of subtasks fits together — the
+      cross-cutting integration pass a per-subtask reviewer structurally can't perform (see
+      wireAutoIntegrator/maybeSpawnIntegrator, src/core/orchestrator.ts).
+    whenToUse: Work is complete but does not land cleanly, OR every subtask under a parent card has landed and needs a
+      combined check before the parent is considered done.
+    # "integration" is what the auto-created follow-up card
+    # (maybeSpawnIntegrator) carries as its label — must overlap this
+    # list for the router to dispatch it with confidence.
+    tags: [merge, rebase, conflict, integration]
     executor: handoff
     inputs: [branch]
     outputs: [merged-branch]

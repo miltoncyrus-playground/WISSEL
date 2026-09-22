@@ -1,7 +1,14 @@
 # SDD — Autonomous pipeline operation: sweep loop, self-verification, failure recovery, spend guard
 
-Status: **Not built — proposed.** Written from a live retro of the review-handoff
-pipeline's first real end-to-end run (subtasks A–H,
+Status: **Built and verified**, subtasks 1-5 (unit/integration tests, `bun run
+typecheck` clean, plus real live smoke tests against the actual `claude` CLI for
+subtask 3 — see its own subtask entry below for what was empirically confirmed
+and what corrected an assumption this doc originally made). Subtask 6
+(deploying with `WISSEL_ORCHESTRATOR`/`WISSEL_EXECUTE_WRITE_TIER` actually on)
+is documented in `README.md` but deliberately not flipped on this machine's
+dev server without Milton naming real concurrency/spend numbers first — see
+§4's Confusion Protocol note. Originally written from a live retro of the
+review-handoff pipeline's first real end-to-end run (subtasks A–H,
 `docs/SDD-review-handoff.md`'s own feature, this session). Every claim below is
 sourced from actual task results, telemetry, and file:line reads taken during
 that run — not hypothetical.
@@ -244,6 +251,26 @@ before reporting done.
 - Explicit non-goal test: a fixture where `bun test` itself is broken
   (not the task's fault) doesn't loop forever — bounded to the same
   turn/attempt budget `claude` already enforces, not a new retry loop here.
+
+**Built and verified — with one corrected assumption.** Three live smoke tests
+against the real `claude` CLI (not simulated): (1) a fixture repo with a
+seeded, committed bug — the implementer ran `bun run typecheck` + `bun test
+test/` via the new allowlist, caught the real failure, fixed it, and both
+checks were independently re-verified passing afterward; (2) a `cat` on a file
+outside the worktree was correctly denied — the path-scoping half of the
+sandbox works as expected; (3) a bare `whoami` — **not** in the allowlist —
+ran successfully anyway, and a follow-up test confirmed this predates this
+change entirely: `acceptEdits` with *no* `allowedTools` also let `whoami`
+through. This means §2.2's original claim ("acceptEdits gates Bash behind an
+approval prompt no headless run can answer") doesn't hold as a blanket
+statement — it was taken from every real pipeline run's own self-reported "no
+Bash access," never independently verified until now. The corrected, still
+verified-true claim: what `allowedTools` actually, reliably guarantees is that
+the *specific listed commands* run every time, regardless of whatever
+acceptEdits' own (apparently inconsistent) Bash heuristics would otherwise
+decide — which is what test (1) needed and got. See the doc comments on
+`RunClaudeOptions.allowedTools` (`src/executors/claude-cli.ts`) for the same
+finding in the code itself.
 
 ### 4. Auto-integrator on subtask-set completion
 New orchestrator hook: on any task reaching `done` with a `parentTaskId`,

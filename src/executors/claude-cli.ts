@@ -1,6 +1,15 @@
 import type { AgentDef, ReviewVerdict, TaskCard, TaskResult } from "../core/types.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
+import { parseSessionLimitReset } from "./parse-session-limit-reset.ts";
+
+/** A retriable 429's reset time must be within this window of "now" —
+ *  parseSessionLimitReset can in principle only ever return same-day or
+ *  next-day (it rolls forward exactly once), so this is defense in
+ *  depth against a future change to that parser silently widening the
+ *  window, not a case reachable today. Guards against ever scheduling a
+ *  near-infinite wait off a misparsed timestamp. */
+const MAX_RETRY_DELAY_MS = 24 * 60 * 60 * 1000;
 
 export interface CommandResult {
   stdout: string;
@@ -36,6 +45,9 @@ interface ClaudeResultJson {
   result?: string;
   permission_denials?: unknown[];
   total_cost_usd?: number;
+  /** Present on a 429 session-limit failure — confirmed live (a real
+   *  hit mid-pipeline). Absent on every other result shape. */
+  api_error_status?: number;
   /** Already present on the same `--output-format json` object
    *  runClaude has always parsed — confirmed live, no format switch
    *  needed (see docs/SDD-subagent-visibility.md §2). */
@@ -58,6 +70,23 @@ export interface RunClaudeOptions {
    *  available model", which is already the local default — never
    *  silently downgrade here). */
   model?: string;
+  /** Passed straight through as `--allowedTools`. Real write-tier
+   *  results this session repeatedly self-reported "no Bash access
+   *  under acceptEdits," which motivated this option — but a direct,
+   *  isolated smoke test (see docs/SDD-pipeline-automation.md §3.4's
+   *  own verification notes) found `acceptEdits` alone already permits
+   *  at least some Bash calls with no allowlist at all (a bare `whoami`
+   *  ran unprompted); a path-restricted command (`cat` on a file
+   *  outside the worktree) was correctly denied either way. What this
+   *  option empirically, verifiably does: guarantees the exact listed
+   *  command(s) run every time, instead of implementer's Bash access
+   *  being whatever acceptEdits' own (evidently inconsistent, possibly
+   *  identity/harness-dependent) heuristics happen to allow that run —
+   *  confirmed live: with this set to `["Bash(bun test:*)", "Bash(bun
+   *  run typecheck:*)"]`, an implementer run caught and fixed a real
+   *  seeded bug via its own `bun test` output before reporting done.
+   *  Undefined means no allowlist is passed — same as today. */
+  allowedTools?: string[];
   /** The picked harness's env overrides, passed to the runner. Undefined
    *  when no harness was picked — identical to wissel's behavior before
    *  harnesses existed. Either way, runClaude always additionally forces
@@ -73,9 +102,10 @@ export interface RunClaudeOptions {
  * tiers is `--permission-mode`, which the caller picks.
  */
 export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
-  const { runner, task, agent, permissionMode, model, env } = opts;
+  const { runner, task, agent, permissionMode, model, env, allowedTools } = opts;
   const cmd = ["claude", "-p", buildAgentPrompt(task, agent), "--output-format", "json", "--permission-mode", permissionMode];
   if (model) cmd.push("--model", model);
+  if (allowedTools && allowedTools.length > 0) cmd.push("--allowedTools", ...allowedTools);
 
   // Always force these two empty, harness or no harness — confirmed
   // live (not just for the auth-status probe): an ambient
@@ -97,15 +127,48 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   }
 
   const { stdout, stderr, exitCode } = cmdResult;
-  if (exitCode !== 0) {
-    return fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`);
-  }
 
-  let parsed: ClaudeResultJson;
+  // Parsed *before* branching on exitCode (unlike before): a non-zero
+  // exit can still carry a fully-formed JSON payload with real cost and
+  // error detail — confirmed live on a 429 session-limit hit, whose
+  // $2.37 real charge used to vanish entirely because the old code
+  // returned from the exitCode!==0 branch before ever attempting to
+  // parse stdout. A parse failure here is tolerated, not thrown — the
+  // exitCode branch below falls back to raw stderr/stdout exactly like
+  // before when there's nothing to parse.
+  let parsed: ClaudeResultJson | undefined;
+  let parseError: Error | undefined;
   try {
     parsed = JSON.parse(stdout) as ClaudeResultJson;
   } catch (e) {
-    return fail(task, agent, `could not parse claude output: ${(e as Error).message}`);
+    parseError = e as Error;
+  }
+
+  if (exitCode !== 0) {
+    // A 429 with a parseable, sane reset time isn't a real failure —
+    // it's a clock. Surfacing it as `retryAfter` instead of a plain
+    // fail() lets finishResult reschedule the task (Board.scheduleRetry)
+    // instead of stranding it on `failed` for a human to notice and
+    // manually re-run — see docs/SDD-pipeline-automation.md §3.2.
+    if (parsed?.api_error_status === 429) {
+      const resetAt = parseSessionLimitReset(parsed.result ?? "");
+      const delayMs = resetAt ? resetAt.getTime() - Date.now() : undefined;
+      if (resetAt && delayMs !== undefined && delayMs > 0 && delayMs <= MAX_RETRY_DELAY_MS) {
+        return {
+          taskId: task.id,
+          agentId: agent.id,
+          ok: false,
+          summary: `claude session limit hit — retrying after ${resetAt.toISOString()}`,
+          actualCost: parsed.total_cost_usd,
+          retryAfter: resetAt.toISOString(),
+        };
+      }
+    }
+    return fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`, parsed?.total_cost_usd);
+  }
+
+  if (!parsed) {
+    return fail(task, agent, `could not parse claude output: ${parseError!.message}`);
   }
 
   const denials = parsed.permission_denials ?? [];
@@ -149,6 +212,6 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   };
 }
 
-function fail(task: TaskCard, agent: AgentDef, summary: string): TaskResult {
-  return { taskId: task.id, agentId: agent.id, ok: false, summary };
+function fail(task: TaskCard, agent: AgentDef, summary: string, actualCost?: number): TaskResult {
+  return { taskId: task.id, agentId: agent.id, ok: false, summary, ...(actualCost !== undefined ? { actualCost } : {}) };
 }

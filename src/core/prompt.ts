@@ -15,5 +15,8 @@ export function buildAgentPrompt(task: TaskCard, agent: AgentDef): string {
   if (agent.outputContract) {
     lines.push("", agent.outputContract);
   }
+  if (agent.verificationContract) {
+    lines.push("", agent.verificationContract);
+  }
   return lines.join("\n");
 }
