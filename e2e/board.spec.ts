@@ -48,6 +48,92 @@ async function driveToEscalated(request: APIRequestContext, title: string, repo:
   return finalTasks.find((t: { title: string; status: string }) => t.title === title && t.status === "escalated");
 }
 
+test.describe("Memory tab", () => {
+  test("switches from Board, shows the empty state (no curation has run in this fixture server), and back", async ({ page }) => {
+    await page.goto("/board");
+
+    await page.getByRole("button", { name: "Memory", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Memory", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("#memoryPanel")).toBeVisible();
+    await expect(page.locator("#boardPanel")).toBeHidden();
+    await expect(page.locator("#newTaskPanel")).toBeHidden();
+
+    // WISSEL_MEMORY_CURATION is unset in this fixture server (see
+    // playwright.config.ts) — memory/lessons.md has never been written,
+    // exactly the state a fresh install is in.
+    await expect(page.locator("#memoryContent")).toHaveText(/hasn't run, or WISSEL_MEMORY_CURATION is off/);
+    // The exact path is env-configured (WISSEL_MEMORY_PATH, see
+    // playwright.config.ts) so this fixture never touches the real
+    // project's own memory/lessons.md — assert it's shown, not a
+    // literal value this test would otherwise have to keep in sync.
+    await expect(page.locator("#memoryPath")).not.toBeEmpty();
+    await expect(page.locator("#memoryHistory")).toContainText("No curation runs yet.");
+    await expect(page.locator("#memoryHistory details")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Board" }).click();
+    await expect(page.locator("#boardPanel")).toBeVisible();
+    await expect(page.locator("#memoryPanel")).toBeHidden();
+  });
+
+  test("a real curation run shows up with its content, expanded by default", async ({ page, request }) => {
+    // Simulates what a real memory-curator pass leaves behind, purely
+    // over HTTP — same principle as driveToEscalated above: exercise the
+    // UI against real recorded state, not a hand-rolled stand-in for it.
+    const created = await request.post("/tasks", { data: { title: "Curate session memory", body: "x", labels: ["memory", "housekeeping"], repo: "." } });
+    const taskId = (await created.json()).id as string;
+    await request.post(`/tasks/${taskId}/result`, {
+      data: { agentId: "memory-curator", ok: true, summary: "# Lessons\n\nA real curated lesson from this test.", actualCost: 0.05, harnessId: "claude" },
+    });
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "Memory", exact: true }).click();
+
+    await expect(page.locator("#memoryHistory details")).toHaveCount(1);
+    const entry = page.locator("#memoryHistory details").first();
+    await expect(entry).toHaveJSProperty("open", true);
+    await expect(entry.locator("summary")).toContainText("·"); // timestamp/cost/harness separator
+    await expect(entry).toContainText("A real curated lesson from this test.");
+  });
+
+  test("content following the topic contract renders one drilldown per topic, detail collapsed until expanded", async ({ page, request }) => {
+    const created = await request.post("/tasks", { data: { title: "Curate session memory", body: "x", labels: ["memory", "housekeeping"], repo: "." } });
+    const taskId = (await created.json()).id as string;
+    const content = [
+      "# Wissel engineering lessons",
+      "",
+      "## Worktree isolation",
+      "Write-tier work happens in its own copy of the repo, so it never messes with what you're already looking at.",
+      "",
+      "Mechanism: git worktree add off HEAD, under ~/.wissel/worktrees/<key>. See src/services/worktree.ts.",
+      "",
+      "## Output contracts",
+      "Agents whose reply becomes data, not just words on a screen, need a strict format so a stray sentence can't corrupt it.",
+    ].join("\n");
+    await request.post(`/tasks/${taskId}/result`, { data: { agentId: "memory-curator", ok: true, summary: content } });
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "Memory", exact: true }).click();
+
+    const topics = page.locator("#memoryContent details.memory-topic");
+    await expect(topics).toHaveCount(2);
+
+    const first = topics.first();
+    await expect(first.locator(".mt-title")).toHaveText("Worktree isolation");
+    await expect(first.locator(".mt-eli5")).toContainText("never messes with what you're already looking at");
+    // Detail exists but is collapsed by default — scanning topics means
+    // reading ELI5 lines, not implementation detail, until asked for it.
+    await expect(first).toHaveJSProperty("open", false);
+    await expect(first.locator(".mt-detail")).toContainText("src/services/worktree.ts");
+    await expect(first.locator(".mt-detail")).toBeHidden();
+
+    await first.locator("summary").click();
+    await expect(first).toHaveJSProperty("open", true);
+    await expect(first.locator(".mt-detail")).toBeVisible();
+
+    await expect(page.locator("#memoryContent .memory-lede")).toHaveText("Wissel engineering lessons");
+  });
+});
+
 test.describe("Board view", () => {
   test("shows a version badge populated from GET /version", async ({ page }) => {
     await page.goto("/board");

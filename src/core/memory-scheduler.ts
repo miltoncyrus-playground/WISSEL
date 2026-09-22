@@ -30,7 +30,7 @@ interface RawResultEvent {
   at?: string;
 }
 
-interface ResultEvent {
+export interface ResultEvent {
   taskId: string;
   agentId: string;
   at: string;
@@ -79,6 +79,20 @@ export async function getLastMemoryCurationAt(telemetryPath: string, agentId: st
     if (!latest || at.getTime() > latest.getTime()) latest = at;
   }
   return latest;
+}
+
+/**
+ * Every past memory-curator run, most recent first — what the board
+ * UI's Memory tab shows as curation history. Each run's own
+ * `TaskResult.summary` (read separately, via `board.getResult`, by the
+ * caller) is the exact curated content that run wrote to
+ * `memory/lessons.md` at the time — durable per-run history that
+ * survives even though the file itself is always wholesale-replaced
+ * (see writeMemoryLessons), since task_results is never overwritten.
+ */
+export async function getMemoryCurationHistory(telemetryPath: string, agentId: string = MEMORY_CURATOR_AGENT_ID): Promise<ResultEvent[]> {
+  const events = await readResultEvents(telemetryPath);
+  return events.filter((e) => e.agentId === agentId).sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 }
 
 /** Pure due-ness check: never run reads as due now; otherwise due once

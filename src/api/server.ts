@@ -8,7 +8,8 @@ import { HarnessPool } from "../core/harness-pool.ts";
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
-import { startMemoryScheduler } from "../core/memory-scheduler.ts";
+import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
+import { readMemoryLessons, DEFAULT_MEMORY_PATH } from "../services/memory.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
 import { ApiExecutor } from "../executors/anthropic-api.ts";
@@ -178,6 +179,32 @@ export function createApp(
         return json(harnesses.all().map((h) => ({ ...h, activeCount: harnesses.activeCount(h.id) })));
       }
 
+      // Current curated memory — what's actually injected into every
+      // agent's prompt right now (see buildAgentPrompt/readMemoryLessons).
+      // `content: undefined` (never an error) means curation hasn't
+      // produced a file yet — the board UI's Memory tab shows that as an
+      // empty state, not a fetch failure.
+      if (url.pathname === "/memory" && req.method === "GET") {
+        const content = await readMemoryLessons(opts.memoryPath ?? DEFAULT_MEMORY_PATH);
+        return json({ content, path: opts.memoryPath ?? DEFAULT_MEMORY_PATH });
+      }
+
+      // Every past curation run, most recent first, each carrying the
+      // exact content it wrote at the time — durable history the current
+      // file alone can't show, since every run wholesale-replaces it
+      // (see getMemoryCurationHistory's own doc comment).
+      if (url.pathname === "/memory/history" && req.method === "GET") {
+        if (!telemetry) return json([]);
+        const events = await getMemoryCurationHistory(telemetry.filePath);
+        const runs = await Promise.all(
+          events.map(async (e) => {
+            const result = await board.getResult(e.taskId);
+            return { taskId: e.taskId, at: e.at, actualCost: e.actualCost, harnessId: e.harnessId, summary: result?.summary };
+          }),
+        );
+        return json(runs);
+      }
+
       if (parts[0] === "harnesses" && parts.length === 3) {
         const harness = harnesses.get(parts[1]!);
         if (!harness) return notFound();
@@ -264,7 +291,13 @@ export function createApp(
 
         if (parts.length === 3 && parts[2] === "result" && req.method === "POST") {
           const body = (await req.json()) as Omit<TaskResult, "taskId">;
-          await finishResult(board as Board, registry, { ...body, taskId: parts[1]! }, telemetry);
+          // memoryPath explicitly threaded through — found live the hard
+          // way: without it, finishResult's own default (DEFAULT_MEMORY_PATH)
+          // silently wins over whatever this app was configured with,
+          // meaning any caller of this endpoint (including a fixture
+          // server) writes memory-curator results into the real project's
+          // memory/lessons.md regardless of opts.memoryPath.
+          await finishResult(board as Board, registry, { ...body, taskId: parts[1]! }, telemetry, runViaBun, opts.memoryPath ?? DEFAULT_MEMORY_PATH);
           return new Response(null, { status: 204 });
         }
 
@@ -484,6 +517,14 @@ if (import.meta.main) {
   // matters once this is on.
   const memoryCurationEnabled = ["1", "true"].includes(process.env.WISSEL_MEMORY_CURATION ?? "");
   const memoryIntervalHours = process.env.WISSEL_MEMORY_INTERVAL_HOURS ? Number(process.env.WISSEL_MEMORY_INTERVAL_HOURS) : 24;
+  // Undefined (falls back to DEFAULT_MEMORY_PATH, "memory/lessons.md"
+  // relative to cwd) unless overridden — exists specifically so a test
+  // fixture (see playwright.config.ts) can point this somewhere
+  // disposable instead of writing into the real project file. Confirmed
+  // live the hard way: an e2e run with this unset overwrote this
+  // project's own real, git-committed memory/lessons.md with test
+  // fixture content.
+  const memoryPath = process.env.WISSEL_MEMORY_PATH;
 
   Bun.serve({
     port,
@@ -495,6 +536,7 @@ if (import.meta.main) {
       spendCeilingUsd,
       memoryCurationEnabled,
       memoryIntervalHours,
+      memoryPath,
     }),
   });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);

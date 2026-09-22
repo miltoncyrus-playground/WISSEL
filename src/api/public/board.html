@@ -318,6 +318,17 @@
   .result-card .rc-summary { color: var(--ink-2); white-space: pre-wrap; line-height: 1.45; }
   .result-card .rc-artifacts { margin-top: 6px; font-size: 11px; color: var(--ink-muted); }
   .result-card .rc-artifacts.warn { color: var(--critical); }
+  #memoryHistory { display: flex; flex-direction: column; gap: 10px; }
+  #memoryHistory details.result-card summary { cursor: pointer; list-style: none; }
+  #memoryHistory details.result-card summary::-webkit-details-marker { display: none; }
+  #memoryHistory details.result-card .rc-summary { margin-top: 8px; }
+  #memoryContent { display: flex; flex-direction: column; gap: 10px; }
+  .memory-lede { color: var(--ink-muted); font-size: 12.5px; margin-bottom: 4px; }
+  details.memory-topic summary { cursor: pointer; list-style: none; }
+  details.memory-topic summary::-webkit-details-marker { display: none; }
+  details.memory-topic .mt-title { font-weight: 700; margin-bottom: 4px; }
+  details.memory-topic .mt-eli5 { color: var(--ink-2); font-weight: 400; line-height: 1.45; white-space: pre-wrap; }
+  details.memory-topic .mt-detail { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); color: var(--ink-2); white-space: pre-wrap; line-height: 1.45; }
   .diff-empty { font-size: 12.5px; color: var(--ink-muted); }
   .diff-view {
     font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; line-height: 1.55;
@@ -375,6 +386,7 @@
     <div class="segmented" id="viewToggle" role="group" aria-label="View">
       <button type="button" data-view="board" aria-pressed="true">Board</button>
       <button type="button" data-view="newtask" aria-pressed="false">New task</button>
+      <button type="button" data-view="memory" aria-pressed="false">Memory</button>
     </div>
     <div style="display: flex; align-items: center; gap: 16px;">
       <div class="segmented" id="themeToggle" role="group" aria-label="Theme">
@@ -465,6 +477,23 @@
         <button type="submit" id="ntSubmit" disabled>Create task</button>
       </div>
     </form>
+  </section>
+
+  <section class="panel" id="memoryPanel" hidden>
+    <p class="eyebrow">Memory</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">What wissel has learned from its own session history — folded into every agent's prompt before it runs. Wholesale-replaced by each curation pass; the history below is what survives.</p>
+
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Current lessons</h2><span class="count" id="memoryPath"></span></div>
+      <div style="padding: 16px;">
+        <div id="memoryContent">Loading…</div>
+      </div>
+    </section>
+
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Curation history</h2><span class="count" id="memoryHistoryCount"></span></div>
+      <div style="padding: 16px;" id="memoryHistory"></div>
+    </section>
   </section>
 </div>
 
@@ -1852,6 +1881,7 @@
 
   var boardPanel = document.getElementById("boardPanel");
   var newTaskPanel = document.getElementById("newTaskPanel");
+  var memoryPanel = document.getElementById("memoryPanel");
   document.querySelectorAll("#viewToggle button").forEach(function (btn) {
     btn.addEventListener("click", function () {
       document.querySelectorAll("#viewToggle button").forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
@@ -1859,8 +1889,144 @@
       var view = btn.getAttribute("data-view");
       boardPanel.hidden = view !== "board";
       newTaskPanel.hidden = view !== "newtask";
+      memoryPanel.hidden = view !== "memory";
+      // Refetched on every visit, not cached — a curation run since the
+      // last time this tab was open should show up without a manual
+      // page reload, and this is cheap (two small local reads).
+      if (view === "memory") loadMemoryTab();
     });
   });
+
+  // --- Memory tab ----------------------------------------------------
+  function formatMemoryRunHead(run) {
+    var when = new Date(run.at).toLocaleString();
+    var parts = [when];
+    if (typeof run.actualCost === "number") parts.push("$" + run.actualCost.toFixed(4));
+    if (run.harnessId) parts.push(run.harnessId);
+    return parts.join(" · ");
+  }
+
+  // memory-curator's outputContract (agents/manifest.yaml) mandates
+  // "## <topic>\n<ELI5 paragraph>\n\n<detail>" per lesson — this parses
+  // that shape. Deliberately tolerant: content that doesn't follow it
+  // (an older curation run, or the model drifting off-contract) returns
+  // null rather than throwing, so the caller can fall back to showing
+  // it flat instead of breaking the tab. Mirrors parseEscalationRounds'
+  // own marker-scanning approach elsewhere in this file.
+  function parseMemoryTopics(content) {
+    if (!content) return null;
+    var marker = /(?:^|\n)## ([^\n]+)\n/g;
+    var starts = [];
+    var m;
+    while ((m = marker.exec(content)) !== null) {
+      starts.push({ title: m[1].trim(), matchIndex: m.index, bodyStart: marker.lastIndex });
+    }
+    if (!starts.length) return null;
+
+    var lede = content.slice(0, starts[0].matchIndex).replace(/^#\s+/, "").trim();
+    var topics = starts.map(function (s, i) {
+      var end = i + 1 < starts.length ? starts[i + 1].matchIndex : content.length;
+      var body = content.slice(s.bodyStart, end).trim();
+      var breakIdx = body.search(/\n\s*\n/);
+      var eli5 = breakIdx === -1 ? body : body.slice(0, breakIdx).trim();
+      var detail = breakIdx === -1 ? "" : body.slice(breakIdx).trim();
+      return { title: s.title, eli5: eli5, detail: detail };
+    });
+    return { lede: lede, topics: topics };
+  }
+
+  // Renders curated memory content into `container`: one topic at a
+  // time is exactly the point — the ELI5 paragraph is what's always on
+  // screen, the full detail is a drilldown (native <details>, collapsed
+  // by default) so scanning ten lessons doesn't mean reading ten
+  // paragraphs of implementation detail first. Falls back to plain text
+  // when the content doesn't parse into topics at all (see
+  // parseMemoryTopics), so this never renders blank.
+  function renderMemoryContent(container, content, opts) {
+    container.textContent = "";
+    var parsed = parseMemoryTopics(content);
+    if (!parsed) {
+      var p = document.createElement("p");
+      p.className = "drawer-desc";
+      p.textContent = content;
+      container.appendChild(p);
+      return;
+    }
+    if (parsed.lede) {
+      var lede = document.createElement("p");
+      lede.className = "memory-lede";
+      lede.textContent = parsed.lede;
+      container.appendChild(lede);
+    }
+    parsed.topics.forEach(function (topic, i) {
+      var details = document.createElement("details");
+      details.className = "memory-topic";
+      if (opts && opts.openFirst && i === 0) details.open = true;
+      var summary = document.createElement("summary");
+      var title = document.createElement("div");
+      title.className = "mt-title";
+      title.textContent = topic.title;
+      var eli5 = document.createElement("div");
+      eli5.className = "mt-eli5";
+      eli5.textContent = topic.eli5;
+      summary.appendChild(title);
+      summary.appendChild(eli5);
+      details.appendChild(summary);
+      if (topic.detail) {
+        var detail = document.createElement("div");
+        detail.className = "mt-detail";
+        detail.textContent = topic.detail;
+        details.appendChild(detail);
+      }
+      container.appendChild(details);
+    });
+  }
+
+  function loadMemoryTab() {
+    var contentEl = document.getElementById("memoryContent");
+    var pathEl = document.getElementById("memoryPath");
+    var historyEl = document.getElementById("memoryHistory");
+    var countEl = document.getElementById("memoryHistoryCount");
+
+    fetch("/memory").then(function (r) { return r.json(); }).then(function (data) {
+      pathEl.textContent = data.path || "";
+      if (!data.content) {
+        contentEl.textContent = "No curated memory yet — memory-curator hasn't run, or WISSEL_MEMORY_CURATION is off.";
+        return;
+      }
+      renderMemoryContent(contentEl, data.content, {});
+    }).catch(function (err) {
+      contentEl.textContent = "Failed to load: " + err.message;
+    });
+
+    fetch("/memory/history").then(function (r) { return r.json(); }).then(function (runs) {
+      countEl.textContent = runs.length ? (runs.length + (runs.length === 1 ? " run" : " runs")) : "";
+      historyEl.textContent = "";
+      if (runs.length === 0) {
+        var empty = document.createElement("p");
+        empty.className = "muted";
+        empty.textContent = "No curation runs yet.";
+        historyEl.appendChild(empty);
+        return;
+      }
+      runs.forEach(function (run, i) {
+        var details = document.createElement("details");
+        details.className = "result-card ok";
+        if (i === 0) details.open = true; // most recent run expanded by default
+        var summary = document.createElement("summary");
+        summary.className = "rc-head";
+        summary.textContent = formatMemoryRunHead(run);
+        details.appendChild(summary);
+        var body = document.createElement("div");
+        body.className = "rc-summary";
+        renderMemoryContent(body, run.summary || "(no recorded content for this run)", { openFirst: true });
+        details.appendChild(body);
+        historyEl.appendChild(details);
+      });
+    }).catch(function (err) {
+      historyEl.textContent = "Failed to load history: " + err.message;
+    });
+  }
 
   // Theme toggle: mirrors the view segmented-control's click/aria-pressed
   // pattern. "" (Auto) means no override — remove the attribute so the

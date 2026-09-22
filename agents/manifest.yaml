@@ -180,6 +180,31 @@ agents:
         and never an explanatory sentence about why there's nothing to
         write.
 
+      Structure — every lesson is a topic, and every topic follows this
+      exact two-part shape (the board UI's Memory tab parses on it, see
+      parseMemoryTopics in src/api/public/board.html — a topic that
+      doesn't follow this shape still displays, just without a
+      drilldown split):
+
+      ## <short topic title>
+      <ELI5 summary: one paragraph, plain language, no jargon, as if
+      explaining to someone who's never seen this codebase. This is
+      the ONLY thing shown by default — it must stand alone and
+      actually convey the lesson, not just tease that more detail
+      exists.>
+
+      <Detail: everything else about this topic — the mechanism, the
+      exact files/functions involved, why it matters, what broke
+      without it. Shown only on drilldown (expand). Can be as long
+      and as technical as the lesson needs.>
+
+      The ELI5 paragraph and the detail are separated by a single
+      blank line, same as every other paragraph break in markdown —
+      no special marker needed, the topic heading plus "first
+      paragraph vs. rest" is the whole contract. A topic with nothing
+      beyond its ELI5 paragraph is fine — omit the detail rather than
+      padding it out.
+
   - id: implementer
     name: Implementer
     kind: agent

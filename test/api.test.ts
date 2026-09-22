@@ -79,6 +79,57 @@ test("GET /harnesses defaults to empty, and returns configured harnesses with a 
   expect(body).toEqual([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true, activeCount: 0 }]);
 });
 
+test("GET /memory returns undefined content when nothing has been curated yet, and the real content once it has", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-memory-test-"));
+  try {
+    const memoryPath = join(dir, "lessons.md");
+    const empty = await makeApp(new SqliteBoard(), { memoryPath });
+    const emptyBody = (await (await empty(req("/memory"))).json()) as { content: string | undefined; path: string };
+    expect(emptyBody.content).toBeUndefined();
+    expect(emptyBody.path).toBe(memoryPath);
+
+    await writeFile(memoryPath, "# Lessons\n\nSome curated content.");
+    const withContent = await makeApp(new SqliteBoard(), { memoryPath });
+    const body = (await (await withContent(req("/memory"))).json()) as { content: string | undefined };
+    expect(body.content).toBe("# Lessons\n\nSome curated content.");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /memory/history returns [] with no telemetry configured, and real runs most-recent-first once it is", async () => {
+  const { TelemetryLog } = await import("../src/services/telemetry.ts");
+  const noTelemetryApp = await makeApp();
+  expect(await (await noTelemetryApp(req("/memory/history"))).json()).toEqual([]);
+
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-memory-history-test-"));
+  try {
+    const telemetryPath = join(dir, "telemetry.jsonl");
+    const telemetry = new TelemetryLog(telemetryPath);
+    await telemetry.record({ type: "result", taskId: "run-1", agentId: "memory-curator", actualCost: 0.1, harnessId: "claude" });
+    await new Promise((resolve) => setTimeout(resolve, 5)); // distinct `at` timestamps, so ordering is unambiguous
+    await telemetry.record({ type: "result", taskId: "run-2", agentId: "memory-curator", actualCost: 0.2, harnessId: "claude" });
+    // A non-memory-curator result must never show up in curation history.
+    await telemetry.record({ type: "result", taskId: "run-3", agentId: "implementer", actualCost: 5, harnessId: "claude" });
+
+    const board = new SqliteBoard();
+    await board.create({ title: "t", body: "", labels: [], repo: "r" }); // just to exercise a real id space
+    await board.recordResult({ taskId: "run-1", agentId: "memory-curator", ok: true, summary: "first curation" });
+    await board.recordResult({ taskId: "run-2", agentId: "memory-curator", ok: true, summary: "second curation" });
+
+    const registry = await Registry.load();
+    const app = createApp(board, registry, telemetry, {});
+    const runs = (await (await app(req("/memory/history"))).json()) as { taskId: string; summary: string | undefined; actualCost: number }[];
+
+    expect(runs.map((r) => r.taskId)).toEqual(["run-2", "run-1"]); // most recent first
+    expect(runs[0]!.summary).toBe("second curation");
+    expect(runs[1]!.summary).toBe("first curation");
+    expect(runs.some((r) => r.taskId === "run-3")).toBe(false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 async function harnessesFixture(content: string): Promise<{ dir: string; path: string }> {
   const dir = await mkdtemp(join(tmpdir(), "wissel-api-harnesses-test-"));
   const path = join(dir, "harnesses.yaml");
