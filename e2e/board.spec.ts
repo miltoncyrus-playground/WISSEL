@@ -343,6 +343,140 @@ test.describe("Board view", () => {
     await expect(drawer.getByRole("button", { name: "Abandon" })).toBeVisible();
   });
 
+  // Regression coverage for the bug found reading Subtask D's and E's
+  // diffs side by side: escalationAction() used to fire `fetch(url, {
+  // method: "POST" })` with no body at all, but POST
+  // /tasks/:id/escalation/approve 400s without a real { actor, reason }
+  // JSON body (see server.ts). This drives a real click through the real
+  // browser dialogs (window.confirm, then two window.prompt calls) and
+  // asserts against the real server response, not just that the button
+  // is visible.
+  test("Approve anyway collects actor/reason via dialogs, POSTs them, and moves the task to review", async ({ page, request }) => {
+    const escalated = await driveToEscalated(request, `Approve test ${Date.now()}`, "/tmp/wissel-e2e-repo");
+    expect(escalated).toBeDefined();
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(escalated.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer.getByRole("button", { name: "Approve anyway" })).toBeVisible();
+
+    const dialogTypes: string[] = [];
+    page.on("dialog", async (dialog) => {
+      dialogTypes.push(dialog.type());
+      if (dialog.type() === "confirm") await dialog.accept();
+      else if (dialogTypes.length === 2) await dialog.accept("QA Human");
+      else await dialog.accept("Looks fine despite the rejected rounds, shipping as-is.");
+    });
+
+    await drawer.getByRole("button", { name: "Approve anyway" }).click();
+
+    // Proves all three dialogs actually fired (confirm, then the two
+    // prompts) rather than the click short-circuiting somewhere.
+    await expect.poll(() => dialogTypes).toEqual(["confirm", "prompt", "prompt"]);
+
+    await expect(drawer.locator("#tdMeta")).toContainText("Review");
+    await expect(drawer.locator("#tdActionError")).toBeHidden();
+
+    const tasksAfter = await (await request.get("/tasks")).json();
+    const approved = tasksAfter.find((t: { id: string }) => t.id === escalated.id);
+    expect(approved.status).toBe("review");
+  });
+
+  // Cancelling either prompt must abort the request entirely — never a
+  // partial POST with a missing actor or reason.
+  test("Approve anyway sends nothing if the reason prompt is cancelled", async ({ page, request }) => {
+    const escalated = await driveToEscalated(request, `Approve cancel test ${Date.now()}`, "/tmp/wissel-e2e-repo");
+    expect(escalated).toBeDefined();
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(escalated.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    let promptCount = 0;
+    page.on("dialog", async (dialog) => {
+      if (dialog.type() === "confirm") { await dialog.accept(); return; }
+      promptCount++;
+      if (promptCount === 1) await dialog.accept("QA Human");
+      else await dialog.dismiss(); // cancel the reason prompt
+    });
+
+    await drawer.getByRole("button", { name: "Approve anyway" }).click();
+    await expect.poll(() => promptCount).toBe(2);
+    await page.waitForTimeout(300);
+
+    await expect(drawer.locator("#tdMeta")).toContainText("Escalated");
+    const tasksAfter = await (await request.get("/tasks")).json();
+    const stillEscalated = tasksAfter.find((t: { id: string }) => t.id === escalated.id);
+    expect(stillEscalated.status).toBe("escalated");
+  });
+
+  // Same underlying bug, the Retry button: POST
+  // /tasks/:id/escalation/retry 400s without a real { body } — the
+  // human-edited restart instructions. This exercises the inline
+  // textarea board.html now shows instead of a single-line window.prompt
+  // (multi-line restart instructions don't fit a prompt() well), a real
+  // click into it, and asserts against the real server response.
+  test("Retry collects the restart body from the inline form and starts a fresh lineage", async ({ page, request }) => {
+    const escalated = await driveToEscalated(request, `Retry test ${Date.now()}`, "/tmp/wissel-e2e-repo");
+    expect(escalated).toBeDefined();
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(escalated.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    const retryForm = drawer.locator("#tdRetryForm");
+    await expect(retryForm).toBeHidden();
+
+    await drawer.getByRole("button", { name: "Retry" }).click();
+    await expect(retryForm).toBeVisible();
+
+    const restartBody = "Try a narrower fix this time: only touch the parser, not the renderer.";
+    await retryForm.locator("#tdRetryBody").fill(restartBody);
+    await retryForm.getByRole("button", { name: "Send retry" }).click();
+
+    await expect(retryForm).toBeHidden();
+    await expect(drawer.locator("#tdActionError")).toBeHidden();
+
+    const tasksAfter = await (await request.get("/tasks")).json();
+    const oldTask = tasksAfter.find((t: { id: string }) => t.id === escalated.id);
+    expect(oldTask.supersededBy).toBeTruthy();
+
+    const nextAttempt = tasksAfter.find((t: { id: string }) => t.id === oldTask.supersededBy);
+    expect(nextAttempt).toBeDefined();
+    expect(nextAttempt.title).toBe(escalated.title);
+    expect(nextAttempt.body).toBe(restartBody);
+    expect(nextAttempt.pushbackCount).toBe(0);
+    expect(nextAttempt.reviewLineageId).toBeTruthy();
+    expect(nextAttempt.reviewLineageId).not.toBe(escalated.reviewLineageId);
+  });
+
+  // Empty/whitespace-only restart instructions must never reach the
+  // server as a truthy-looking body — mirrors the 400 server.ts returns
+  // for a missing body, caught client-side instead of round-tripping.
+  test("Retry refuses to send an empty restart body", async ({ page, request }) => {
+    const escalated = await driveToEscalated(request, `Retry empty test ${Date.now()}`, "/tmp/wissel-e2e-repo");
+    expect(escalated).toBeDefined();
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(escalated.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await drawer.getByRole("button", { name: "Retry" }).click();
+
+    const retryForm = drawer.locator("#tdRetryForm");
+    await retryForm.locator("#tdRetryBody").fill("   ");
+    await retryForm.getByRole("button", { name: "Send retry" }).click();
+
+    await expect(drawer.locator("#tdActionError")).toContainText("Restart instructions are required.");
+    await expect(retryForm).toBeVisible();
+
+    const tasksAfter = await (await request.get("/tasks")).json();
+    const stillEscalated = tasksAfter.find((t: { id: string }) => t.id === escalated.id);
+    expect(stillEscalated.status).toBe("escalated");
+    expect(stillEscalated.supersededBy).toBeFalsy();
+  });
+
   test("View diff reports a non-git repo honestly instead of an empty diff", async ({ page, request }) => {
     const created = await request.post("/tasks", {
       data: { title: `Diff test ${Date.now()}`, body: "x", labels: [], repo: "/tmp" },

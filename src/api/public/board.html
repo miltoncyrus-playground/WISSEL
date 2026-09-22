@@ -306,6 +306,11 @@
   .drawer-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .drawer-actions button.primary:hover:not(:disabled) { color: #fff; opacity: 0.92; }
   .drawer-actions button.danger:hover:not(:disabled) { border-color: var(--critical); color: var(--critical); }
+  /* Inline "restart instructions" form the Retry button reveals — a
+     textarea fits the multi-line human-edited instructions the
+     escalation/retry endpoint requires far better than a single-line
+     window.prompt would (see server.ts's POST .../escalation/retry). */
+  #tdRetryForm { margin-top: 10px; }
   .result-card { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }
   .result-card.ok { border-left: 3px solid var(--sig-done); }
   .result-card.fail { border-left: 3px solid var(--critical); }
@@ -484,6 +489,15 @@
 
     <section class="drawer-section">
       <div class="drawer-actions" id="tdActions"></div>
+      <div class="field" id="tdRetryForm" hidden>
+        <label for="tdRetryBody">Restart instructions</label>
+        <textarea id="tdRetryBody" rows="4" placeholder="What should the next attempt do differently?"></textarea>
+        <p class="field-hint">Starts a fresh lineage with pushback count reset to 0.</p>
+        <div class="drawer-actions">
+          <button type="button" class="primary" id="tdRetrySend">Send retry</button>
+          <button type="button" id="tdRetryCancel">Cancel</button>
+        </div>
+      </div>
       <p class="field-error" id="tdActionError" hidden></p>
     </section>
 
@@ -704,6 +718,12 @@
     var wrap = document.getElementById("tdActions");
     wrap.textContent = "";
     setDrawerActionError(null);
+    // #tdRetryForm lives outside `wrap` (see openRetryForm/closeRetryForm)
+    // so it survives re-renders of the button row while still escalated —
+    // but if the task moved off escalated entirely (this action resolved
+    // it, or another client did), a lingering open form would target a
+    // task that no longer accepts a retry.
+    if (task.status !== "escalated") closeRetryForm();
 
     var running = task.status === "running";
     wrap.appendChild(drawerAction(running ? "Running…" : "Run now", {
@@ -786,11 +806,20 @@
         className: "primary",
         onClick: function () {
           if (!window.confirm("Approve this attempt despite " + ((task.pushbackCount || 0) + 1) + " rejected review round(s)? This resumes the normal done/review flow.")) return;
-          escalationAction(task.id, "approve");
+          // approve requires { actor, reason } (server.ts) — collected here
+          // rather than baked into the confirm() above, since the confirm
+          // text is static and can't carry per-click free text. Cancelling
+          // either prompt (or leaving it blank) aborts, same as cancelling
+          // the confirm() does.
+          var actor = window.prompt("Your name (recorded on the override):");
+          if (!actor) return;
+          var reason = window.prompt("Reason for approving despite the rejected review round(s):");
+          if (!reason) return;
+          escalationAction(task.id, "approve", { actor: actor, reason: reason });
         },
       }));
       wrap.appendChild(drawerAction("Retry", {
-        onClick: function () { escalationAction(task.id, "retry"); },
+        onClick: function () { openRetryForm(); },
       }));
       wrap.appendChild(drawerAction("Abandon", {
         className: "danger",
@@ -841,13 +870,40 @@
   }
 
   // See renderDrawerActions' escalated branch for the endpoint contract
-  // this depends on.
-  function escalationAction(taskId, action) {
+  // this depends on. `body`, when given, is JSON-encoded as the POST body
+  // with the matching Content-Type — approve needs { actor, reason },
+  // retry needs { body }, abandon needs nothing (see server.ts). Returns
+  // the fetch promise (rejecting on failure, after recording the error)
+  // so callers that need to react to success — closing the retry form
+  // only once the request actually lands — can chain off it, same as
+  // deleteTask already does below.
+  function escalationAction(taskId, action, body) {
     setDrawerActionError(null);
-    fetch("/tasks/" + taskId + "/escalation/" + action, { method: "POST" }).then(function (r) {
+    var opts = { method: "POST" };
+    if (body) {
+      opts.headers = { "content-type": "application/json" };
+      opts.body = JSON.stringify(body);
+    }
+    return fetch("/tasks/" + taskId + "/escalation/" + action, opts).then(function (r) {
       if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
       return refetchTasks();
-    }).catch(function (err) { setDrawerActionError(err.message); });
+    }).catch(function (err) { setDrawerActionError(err.message); throw err; });
+  }
+
+  // Inline "restart instructions" form the Retry button reveals — see the
+  // #tdRetryForm comment in the CSS above for why a textarea beats
+  // window.prompt here. A static element toggled in place (not rebuilt by
+  // renderDrawerActions on every SSE-driven re-render) so an in-progress
+  // draft survives unrelated board activity instead of being wiped out
+  // from under the person typing it.
+  function openRetryForm() {
+    document.getElementById("tdRetryForm").hidden = false;
+    document.getElementById("tdRetryBody").focus();
+  }
+
+  function closeRetryForm() {
+    document.getElementById("tdRetryForm").hidden = true;
+    document.getElementById("tdRetryBody").value = "";
   }
 
   function deleteTask(taskId) {
@@ -1015,6 +1071,7 @@
     if (!task) return;
     drawerTaskId = taskId;
     drawerLastResult = null; // genuinely unknown until loadDrawerResult resolves for this task
+    closeRetryForm(); // a different task's drawer must never open mid-draft from the last one
     renderDrawerHeader(task);
     renderDrawerActions(task, null);
     loadDrawerDecision(taskId);
@@ -1032,6 +1089,7 @@
 
   function closeTaskDrawer() {
     drawerTaskId = null;
+    closeRetryForm();
     document.getElementById("drawerOverlay").classList.remove("open");
     document.getElementById("taskDrawer").classList.remove("open");
     setTimeout(function () {
@@ -1060,6 +1118,19 @@
 
   document.getElementById("tdClose").addEventListener("click", closeTaskDrawer);
   document.getElementById("drawerOverlay").addEventListener("click", closeTaskDrawer);
+  document.getElementById("tdRetryCancel").addEventListener("click", closeRetryForm);
+  document.getElementById("tdRetrySend").addEventListener("click", function () {
+    if (!drawerTaskId) return;
+    var bodyText = document.getElementById("tdRetryBody").value.trim();
+    if (!bodyText) { setDrawerActionError("Restart instructions are required."); return; }
+    escalationAction(drawerTaskId, "retry", { body: bodyText }).then(function () {
+      closeRetryForm();
+    }).catch(function () {
+      // Error already surfaced via setDrawerActionError inside
+      // escalationAction — leave the form open with its draft intact so
+      // a failed request doesn't cost the person their typed text.
+    });
+  });
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && drawerTaskId) closeTaskDrawer();
     if (ev.key === "Escape" && harnessPanelOpen) closeHarnessPanel();
