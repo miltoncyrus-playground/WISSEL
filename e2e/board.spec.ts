@@ -156,7 +156,7 @@ test.describe("Board view", () => {
     // see orchestrator.ts's finishResult/handleReviewVerdict).
     const statLabels = page.locator("#stats .l");
     await expect(statLabels).toHaveText([
-      "Inbox", "Ready", "Running", "Dispatched", "Pending review", "Review", "Escalated", "Done", "Failed", "No match",
+      "Inbox", "Ready", "Running", "Dispatched", "Pending review", "Review", "Escalated", "Done", "Failed", "No match", "Superseded",
     ]);
 
     // Task-by-status sits above the fleet boxes.
@@ -442,6 +442,14 @@ test.describe("Board view", () => {
     const realPendingReviewCount = allTasks.filter((t: { status: string; supersededBy?: string }) => t.status === "pending-review" && !t.supersededBy).length;
     const statTile = page.locator("#stats .stat", { has: page.locator(".l", { hasText: "Pending review" }) });
     await expect(statTile.locator(".n")).toHaveText(String(realPendingReviewCount));
+
+    // It isn't hidden entirely, though — it has a dedicated home: the
+    // "Superseded" bucket, styled distinctly (dashed border, struck
+    // through title) so it reads as history, not a live card.
+    const supersededCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: "Superseded" }) });
+    const supersededCard = supersededCol.locator(".kcard", { hasText: title });
+    await expect(supersededCard).toHaveCount(1);
+    await expect(supersededCard).toHaveClass(/superseded/);
   });
 
   test("an escalated task renders its full round-by-round timeline and the three resolution actions", async ({ page, request }) => {
@@ -674,5 +682,80 @@ test.describe("Board view", () => {
     await expect(panel).toBeVisible();
     await page.locator("#hmOverlay").click({ position: { x: 5, y: 5 } });
     await expect(panel).toBeHidden();
+  });
+
+  test("an empty column collapses to just its header instead of reserving full card space", async ({ page }) => {
+    await page.goto("/board");
+    // "No match" is reliably empty in a fresh fixture board — nothing in
+    // this file's other tests routes a task there without a human/sweep
+    // step this fixture never runs.
+    const noMatchCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: "No match" }) });
+    await expect(noMatchCol).toHaveClass(/kcol-empty/);
+    await expect(noMatchCol.locator(".kcard")).toHaveCount(0);
+
+    // A column that does have cards (Board view's own default state
+    // always has at least one, per the earlier "is the default view..."
+    // test) never gets the collapsed treatment.
+    const doneCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: /^Done/ }) });
+    await expect(doneCol).not.toHaveClass(/kcol-empty/);
+  });
+});
+
+test.describe("Swimlanes view", () => {
+  test("switches from Board and back, showing a lane per standalone task with no relations to tag", async ({ page, request }) => {
+    const title = `Standalone swimlane test ${Date.now()}`;
+    await request.post("/tasks", { data: { title, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Swimlanes", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("#swimlanesPanel")).toBeVisible();
+    await expect(page.locator("#boardPanel")).toBeHidden();
+
+    const lane = page.locator(".swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
+    await expect(lane).toBeVisible();
+    await expect(lane.locator(".swimlane-head .sl-count")).toHaveText("1 card");
+    await expect(lane.locator(".slcard")).toHaveCount(1);
+    await expect(lane.locator(".slcard .sl-relations")).toHaveCount(0); // nothing to tag — no parent, no dependsOn
+
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    await expect(page.locator("#boardPanel")).toBeVisible();
+    await expect(page.locator("#swimlanesPanel")).toBeHidden();
+  });
+
+  test("a follow-up lineage (implementer + auto-created reviewer) shares one lane, tagged with the relationship", async ({ page, request }) => {
+    const title = `Lineage swimlane test ${Date.now()}`;
+    const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo" } });
+    const originalId = (await created.json()).id as string;
+    await request.post(`/tasks/${originalId}/result`, { data: { agentId: "implementer", ok: true, summary: "did the thing" } });
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+
+    const lane = page.locator(".swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
+    await expect(lane.locator(".swimlane-head .sl-count")).toHaveText("2 cards");
+    await expect(lane.locator(".slcard")).toHaveCount(2);
+    // The reviewer follow-up's own card carries the "follows up on"
+    // relation tag pointing back at the implementer card that spawned it.
+    const reviewerCard = lane.locator(".slcard", { hasText: `Review: ${title}` });
+    await expect(reviewerCard.locator(".sl-tag")).toContainText(title);
+  });
+
+  test("dependsOn renders as a relation tag naming the depended-on task's title and status", async ({ page, request }) => {
+    const depTitle = `Dependency target ${Date.now()}`;
+    const dep = await request.post("/tasks", { data: { title: depTitle, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+    const depId = (await dep.json()).id as string;
+
+    const title = `Blocked task ${Date.now()}`;
+    await request.post("/tasks", { data: { title, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo", dependsOn: [depId] } });
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+
+    // Two separate lanes — dependsOn is a blocking relationship, not a
+    // lineage one, so it doesn't merge the two into the same lane.
+    const blockedLane = page.locator(".swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
+    await expect(blockedLane.locator(".slcard .sl-tag")).toContainText(depTitle);
+    await expect(blockedLane.locator(".slcard .sl-tag")).toHaveAttribute("title", new RegExp(depTitle));
   });
 });

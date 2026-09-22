@@ -144,6 +144,40 @@
   .kcard .ka .kind-dot { width: 6px; height: 6px; }
   .kcard .ka .sep { opacity: 0.45; }
   .kcard .ka .repo { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* An empty column collapses to just its header — no reserved card
+     area — so a board with a lot of columns but few active statuses
+     doesn't read as mostly dead space. */
+  .kcol-empty { flex: 0 0 auto; min-width: 0; }
+  .kcol-empty h3 { margin-bottom: 0; opacity: 0.55; white-space: nowrap; }
+  /* A superseded card (TaskCard.supersededBy set) — real history, never
+     "current state," so it's visually receded rather than either hidden
+     or presented as equally live. */
+  .kcard.superseded { opacity: 0.6; border-left-style: dashed; }
+  .kcard.superseded .kt { text-decoration: line-through; text-decoration-color: var(--ink-muted); }
+  .kcard .sl-tag { font-size: 9.5px; padding: 1px 5px; border-radius: 999px; background: var(--page); border: 1px solid var(--border); color: var(--ink-muted); white-space: nowrap; }
+
+  /* --- Swimlanes -------------------------------------------------- */
+  .swimlanes { display: flex; flex-direction: column; gap: 14px; }
+  .swimlane { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .swimlane-head {
+    display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: var(--page);
+    border-bottom: 1px solid var(--border); font-size: 12.5px; font-weight: 700;
+  }
+  .swimlane-head .sl-count { font-weight: 400; color: var(--ink-muted); font-size: 11px; }
+  .swimlane-body { display: flex; gap: 10px; padding: 12px; overflow-x: auto; }
+  .slcard {
+    position: relative; flex: 0 0 190px; border: 1px solid var(--border); border-left: 3px solid var(--card-accent, var(--line));
+    border-radius: 7px; padding: 7px 10px; background: var(--surface); font-size: 12px; line-height: 1.3;
+    cursor: pointer; transition: border-color .15s;
+  }
+  .slcard:hover { border-color: var(--accent); border-left-color: var(--card-accent, var(--accent)); }
+  .slcard:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .slcard .kt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-weight: 600; margin-bottom: 4px; }
+  .slcard .sl-status { display: flex; align-items: center; gap: 5px; color: var(--ink-muted); font-size: 10px; margin-bottom: 4px; }
+  .slcard .sl-status .swatch { width: 7px; height: 7px; border-radius: 999px; flex: none; }
+  .slcard .sl-relations { display: flex; flex-wrap: wrap; gap: 4px; }
+  .slcard.superseded { opacity: 0.55; border-left-style: dashed; }
+  .slcard.superseded .kt { text-decoration: line-through; text-decoration-color: var(--ink-muted); }
 
   /* "Actively working" glyph — a pulsing green dot, reused identically
      on a running task's box and on a fleet row currently doing work, so
@@ -385,6 +419,7 @@
   <div class="toolbar">
     <div class="segmented" id="viewToggle" role="group" aria-label="View">
       <button type="button" data-view="board" aria-pressed="true">Board</button>
+      <button type="button" data-view="swimlanes" aria-pressed="false">Swimlanes</button>
       <button type="button" data-view="newtask" aria-pressed="false">New task</button>
       <button type="button" data-view="memory" aria-pressed="false">Memory</button>
     </div>
@@ -416,6 +451,15 @@
         <div class="fleet-list" id="skillsBox"></div>
       </section>
     </div>
+  </section>
+
+  <section id="swimlanesPanel" hidden>
+    <p class="eyebrow">Swimlanes</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">One lane per lineage root — every subtask, review pass, and pushback re-attempt that traces back to it, grouped together. Tags show what a card follows up on and what it depends on.</p>
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Tasks by feature</h2><span class="count" id="swimlanesCount"></span></div>
+      <div style="padding: 16px;" id="swimlanesBody"></div>
+    </section>
   </section>
 
   <section class="panel" id="newTaskPanel" hidden>
@@ -1288,21 +1332,62 @@
     return wrap;
   }
 
+  // Shared by the flat kanban and the "Superseded" bucket — a
+  // .kcard-shaped task box, styled after agetor's TaskCard. `statusLabel`
+  // is what the card's aria-label reports (the real status name even for
+  // a superseded card, since that's still factually its status —
+  // superseded-ness is a separate, additional fact shown via styling).
+  function buildKanbanCard(t, statusLabel) {
+    var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
+
+    var card = document.createElement("div");
+    card.className = "kcard" + (t.supersededBy ? " superseded" : "");
+    card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", t.title + ", " + statusLabel + (t.supersededBy ? ", superseded" : "") + ", show task details");
+
+    var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
+
+    var ka = document.createElement("div"); ka.className = "ka";
+    var kindDot = document.createElement("span"); kindDot.className = "kind-dot";
+    kindDot.style.background = agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--ink-muted)";
+    ka.appendChild(kindDot);
+    var nameSpan = document.createElement("span"); nameSpan.textContent = t.routedTo || "unrouted";
+    ka.appendChild(nameSpan);
+    // Same criterion as the fleet box's active dot: running (wissel's
+    // own in-process work) or dispatched (handed off, presumably
+    // still in flight) both read as "actively working" here.
+    if (!t.supersededBy && (t.status === "running" || t.status === "dispatched")) ka.appendChild(activeDot("actively working"));
+    var sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
+    ka.appendChild(sep);
+    var repoSpan = document.createElement("span"); repoSpan.className = "repo"; repoSpan.textContent = t.repo;
+    ka.appendChild(repoSpan);
+
+    card.appendChild(kt); card.appendChild(ka);
+    card.addEventListener("click", function () { openTaskDrawer(t.id); });
+    card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openTaskDrawer(t.id); } });
+    return card;
+  }
+
   function renderKanban() {
     var body = document.getElementById("kanbanBody");
     body.textContent = "";
     COLUMNS.forEach(function (status) {
-      var col = document.createElement("div");
-      col.className = "kcol";
       // A superseded card (supersededBy set — a pushback re-attempt or an
       // escalation retry replaced it) keeps its old status forever by
-      // design (see TaskCard.supersededBy) — it's lineage history, never
-      // "the current state of anything," so it's excluded from every
-      // column rather than showing as a stale, confusing duplicate next
-      // to whatever attempt actually succeeded it. Still fully present
-      // in the board/API for anyone tracing a lineage by hand — only the
-      // kanban view filters it out.
+      // design (see TaskCard.supersededBy) — showing it as a live
+      // "Pending review"/etc. card would be misleading, so it's excluded
+      // from every real status column. It isn't hidden, though — see the
+      // dedicated "Superseded" bucket appended after this loop, which is
+      // the one place it does show up.
       var inCol = tasks.filter(function (t) { return t.status === status && !t.supersededBy; });
+
+      var col = document.createElement("div");
+      // Collapses to just its header when empty — a board with many
+      // columns but few active statuses shouldn't read as mostly empty
+      // reserved space.
+      col.className = "kcol" + (inCol.length === 0 ? " kcol-empty" : "");
       var h3 = document.createElement("h3");
       var dot = document.createElement("span");
       dot.className = "swatch";
@@ -1326,40 +1411,23 @@
         h3.appendChild(clearBtn);
       }
       col.appendChild(h3);
-      inCol.forEach(function (t) {
-        var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
-
-        var card = document.createElement("div");
-        card.className = "kcard";
-        card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
-        card.tabIndex = 0;
-        card.setAttribute("role", "button");
-        card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[status] + ", show task details");
-
-        var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
-
-        var ka = document.createElement("div"); ka.className = "ka";
-        var kindDot = document.createElement("span"); kindDot.className = "kind-dot";
-        kindDot.style.background = agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--ink-muted)";
-        ka.appendChild(kindDot);
-        var nameSpan = document.createElement("span"); nameSpan.textContent = t.routedTo || "unrouted";
-        ka.appendChild(nameSpan);
-        // Same criterion as the fleet box's active dot: running (wissel's
-        // own in-process work) or dispatched (handed off, presumably
-        // still in flight) both read as "actively working" here.
-        if (status === "running" || status === "dispatched") ka.appendChild(activeDot("actively working"));
-        var sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
-        ka.appendChild(sep);
-        var repoSpan = document.createElement("span"); repoSpan.className = "repo"; repoSpan.textContent = t.repo;
-        ka.appendChild(repoSpan);
-
-        card.appendChild(kt); card.appendChild(ka);
-        card.addEventListener("click", function () { openTaskDrawer(t.id); });
-        card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openTaskDrawer(t.id); } });
-        col.appendChild(card);
-      });
+      inCol.forEach(function (t) { col.appendChild(buildKanbanCard(t, STATUS_LABEL[status])); });
       body.appendChild(col);
     });
+
+    // The dedicated home for every superseded card, regardless of its
+    // own underlying status — see the exclusion above.
+    var superseded = tasks.filter(function (t) { return !!t.supersededBy; });
+    var supCol = document.createElement("div");
+    supCol.className = "kcol" + (superseded.length === 0 ? " kcol-empty" : "");
+    var supH3 = document.createElement("h3");
+    var supDot = document.createElement("span"); supDot.className = "swatch"; supDot.style.background = "var(--ink-muted)";
+    supH3.appendChild(supDot);
+    var supLabel = document.createElement("span"); supLabel.textContent = "Superseded (" + superseded.length + ")";
+    supH3.appendChild(supLabel);
+    supCol.appendChild(supH3);
+    superseded.forEach(function (t) { supCol.appendChild(buildKanbanCard(t, STATUS_LABEL[t.status])); });
+    body.appendChild(supCol);
   }
 
   function renderStats() {
@@ -1384,6 +1452,20 @@
       tile.appendChild(n); tile.appendChild(l);
       wrap.appendChild(tile);
     });
+
+    // Matches the kanban's own dedicated "Superseded" bucket — same
+    // count, same neutral color, appended after the real status tiles.
+    var supCount = tasks.filter(function (t) { return !!t.supersededBy; }).length;
+    var supTile = document.createElement("div");
+    supTile.className = "stat";
+    supTile.style.setProperty("--stat-color", "var(--ink-muted)");
+    var supN = document.createElement("div"); supN.className = "n mono"; supN.textContent = supCount;
+    var supL = document.createElement("div"); supL.className = "l";
+    var supDot = document.createElement("span"); supDot.className = "swatch"; supDot.style.background = "var(--ink-muted)";
+    supL.appendChild(supDot);
+    supL.appendChild(document.createTextNode("Superseded"));
+    supTile.appendChild(supN); supTile.appendChild(supL);
+    wrap.appendChild(supTile);
   }
 
   // "Active" means routed to a task that's currently running (readonly,
@@ -1454,9 +1536,135 @@
     document.getElementById("skillsCount").textContent = skills.length + (skills.length === 1 ? " skill" : " skills");
   }
 
+  // Walks TaskCard.parentTaskId up to the root of its lineage tree — a
+  // task with no parent, or whose parent id isn't (or is no longer) on
+  // the board. `seen` guards against a cycle corrupting the board from
+  // ever hanging the UI in an infinite loop; a real cycle shouldn't
+  // exist, but this function must never assume the data is clean.
+  function findLineageRoot(task, byId) {
+    var current = task;
+    var seen = {};
+    while (current.parentTaskId && byId[current.parentTaskId] && !seen[current.id]) {
+      seen[current.id] = true;
+      current = byId[current.parentTaskId];
+    }
+    return current;
+  }
+
+  function renderSwimlanes() {
+    var wrap = document.getElementById("swimlanesBody");
+    var countEl = document.getElementById("swimlanesCount");
+    wrap.textContent = "";
+    if (tasks.length === 0) {
+      countEl.textContent = "";
+      var empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No tasks yet.";
+      wrap.appendChild(empty);
+      return;
+    }
+
+    var byId = {};
+    tasks.forEach(function (t) { byId[t.id] = t; });
+
+    // Groups every task by its lineage root — a whole feature's subtask
+    // fan-out, review passes, and pushback re-attempts all trace back to
+    // the same root and land in the same lane, however many separate
+    // TaskCards that ends up being. A standalone task with no parent and
+    // no descendants is the root of its own single-card lane. Insertion
+    // order (an object's own string keys, in first-seen order — every
+    // supported browser guarantees this for non-numeric keys) mirrors
+    // `tasks`' own creation order, so lanes appear oldest-root-first
+    // with no extra sort needed.
+    var laneOrder = [];
+    var lanes = {};
+    tasks.forEach(function (t) {
+      var root = findLineageRoot(t, byId);
+      if (!lanes[root.id]) { lanes[root.id] = []; laneOrder.push(root.id); }
+      lanes[root.id].push(t);
+    });
+
+    countEl.textContent = laneOrder.length === 1 ? "1 lane" : laneOrder.length + " lanes";
+
+    laneOrder.forEach(function (rootId) {
+      var members = lanes[rootId];
+      var root = byId[rootId];
+
+      var lane = document.createElement("div");
+      lane.className = "swimlane";
+
+      var head = document.createElement("div");
+      head.className = "swimlane-head";
+      var dot = document.createElement("span"); dot.className = "swatch";
+      dot.style.background = "var(" + (STATUS_COLOR[root.status] || "--ink-muted") + ")";
+      head.appendChild(dot);
+      var title = document.createElement("span"); title.textContent = root.title;
+      head.appendChild(title);
+      var count = document.createElement("span"); count.className = "sl-count";
+      count.textContent = members.length === 1 ? "1 card" : members.length + " cards";
+      head.appendChild(count);
+      lane.appendChild(head);
+
+      var laneBody = document.createElement("div");
+      laneBody.className = "swimlane-body";
+      members.forEach(function (t) {
+        var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
+        var card = document.createElement("div");
+        card.className = "slcard" + (t.supersededBy ? " superseded" : "");
+        card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[t.status] + (t.supersededBy ? ", superseded" : "") + ", show task details");
+
+        var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
+        card.appendChild(kt);
+
+        var statusRow = document.createElement("div"); statusRow.className = "sl-status";
+        var sdot = document.createElement("span"); sdot.className = "swatch";
+        sdot.style.background = "var(" + STATUS_COLOR[t.status] + ")";
+        statusRow.appendChild(sdot);
+        statusRow.appendChild(document.createTextNode(STATUS_LABEL[t.status]));
+        card.appendChild(statusRow);
+
+        var relations = document.createElement("div"); relations.className = "sl-relations";
+        // Follow-up relationship (review pass, pushback re-attempt, or a
+        // planner-decomposed subtask) — what actually put this card in
+        // this lane, made explicit rather than left implicit in the
+        // grouping alone. Shown for every non-root card, including one
+        // whose direct parent happens to be the lane's own root — that's
+        // the single most common shape (implementer → its own reviewer)
+        // and the tag is exactly as informative there as anywhere else.
+        if (t.parentTaskId && byId[t.parentTaskId]) {
+          var upTag = document.createElement("span"); upTag.className = "sl-tag";
+          upTag.textContent = "↳ " + byId[t.parentTaskId].title;
+          upTag.title = "Follow-up of: " + byId[t.parentTaskId].title;
+          relations.appendChild(upTag);
+        }
+        // dependsOn is a different relationship from parentTaskId (a
+        // blocking order, not a lineage) — surfaced the same way so both
+        // kinds of dependency are visible without opening the drawer.
+        (t.dependsOn || []).forEach(function (depId) {
+          var dep = byId[depId];
+          var depTag = document.createElement("span"); depTag.className = "sl-tag";
+          depTag.textContent = "⛔ " + (dep ? dep.title : depId);
+          depTag.title = "Depends on: " + (dep ? dep.title + " (" + STATUS_LABEL[dep.status] + ")" : depId + " (not found)");
+          relations.appendChild(depTag);
+        });
+        if (relations.childNodes.length) card.appendChild(relations);
+
+        card.addEventListener("click", function () { openTaskDrawer(t.id); });
+        card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openTaskDrawer(t.id); } });
+        laneBody.appendChild(card);
+      });
+      lane.appendChild(laneBody);
+      wrap.appendChild(lane);
+    });
+  }
+
   function render() {
     renderStats();
     renderKanban();
+    renderSwimlanes();
     renderFleetBoxes();
     renderHarnessStrip();
     if (harnessPanelOpen) renderHarnessPanel();
@@ -1892,6 +2100,7 @@
   });
 
   var boardPanel = document.getElementById("boardPanel");
+  var swimlanesPanel = document.getElementById("swimlanesPanel");
   var newTaskPanel = document.getElementById("newTaskPanel");
   var memoryPanel = document.getElementById("memoryPanel");
   document.querySelectorAll("#viewToggle button").forEach(function (btn) {
@@ -1900,6 +2109,7 @@
       btn.setAttribute("aria-pressed", "true");
       var view = btn.getAttribute("data-view");
       boardPanel.hidden = view !== "board";
+      swimlanesPanel.hidden = view !== "swimlanes";
       newTaskPanel.hidden = view !== "newtask";
       memoryPanel.hidden = view !== "memory";
       // Refetched on every visit, not cached — a curation run since the
