@@ -1,5 +1,6 @@
 import type { AgentDef, TaskCard, TaskResult } from "../core/types.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
+import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import type { CommandResult, CommandRunner } from "./claude-cli.ts";
 
 export type { CommandResult, CommandRunner } from "./claude-cli.ts";
@@ -96,6 +97,9 @@ export interface RunCodexOptions {
   /** The picked harness's env overrides, passed straight through to the
    *  runner (e.g. CODEX_HOME). Undefined when no harness was picked. */
   env?: Record<string, string>;
+  /** Path to the global memory/lessons.md file — see
+   *  RunClaudeOptions.memoryPath's own doc comment, identical contract. */
+  memoryPath?: string;
 }
 
 /**
@@ -109,10 +113,11 @@ export interface RunCodexOptions {
  * this parses.
  */
 export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
-  const { runner, task, agent, sandbox, model, env } = opts;
+  const { runner, task, agent, sandbox, model, env, memoryPath } = opts;
+  const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
   const cmd = ["codex", "exec", "--json", "-s", sandbox];
   if (model) cmd.push("-m", model);
-  cmd.push(buildAgentPrompt(task, agent));
+  cmd.push(buildAgentPrompt(task, agent, memory));
 
   let cmdResult: CommandResult;
   try {

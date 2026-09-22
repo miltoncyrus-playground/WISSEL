@@ -41,3 +41,30 @@ test("appends outputContract verbatim to the end of the prompt when present", ()
   expect(prompt).toContain(task.body);
   expect(prompt.indexOf(task.body)).toBeLessThan(prompt.indexOf(contract));
 });
+
+// Memory (docs/SDD-memory-curator.md §9) — buildAgentPrompt itself never
+// touches the filesystem; the caller (runClaude/runCodex) reads
+// memory/lessons.md and passes its content through this parameter.
+
+test("omits the memory section entirely when no memory content is given — first run, nothing to regress", () => {
+  const prompt = buildAgentPrompt(task, agent);
+  expect(prompt).not.toContain("Lessons learned from prior sessions");
+});
+
+test("omits the memory section for an explicitly empty string too, not just undefined", () => {
+  const prompt = buildAgentPrompt(task, agent, "");
+  expect(prompt).not.toContain("Lessons learned from prior sessions");
+});
+
+test("includes prior-session memory verbatim when given, ahead of any output/verification contract", () => {
+  const memory = "- Always run `bun test` before reporting done.\n- Never touch node_modules directly.";
+  const contract = 'End with a ```review-verdict``` block.';
+  const prompt = buildAgentPrompt(task, { ...agent, outputContract: contract }, memory);
+
+  expect(prompt).toContain("Lessons learned from prior sessions:");
+  expect(prompt).toContain(memory);
+  expect(prompt.indexOf(memory)).toBeLessThan(prompt.indexOf(contract));
+  // Still carries the normal task framing too.
+  expect(prompt).toContain(task.title);
+  expect(prompt).toContain(task.body);
+});

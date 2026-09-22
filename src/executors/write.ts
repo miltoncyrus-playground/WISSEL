@@ -14,6 +14,10 @@ export interface WriteExecutorOptions {
    *  createTaskWorktree — injectable so tests never touch the real
    *  $HOME. Omitted uses the real one (`~/.wissel/worktrees/<taskId>`). */
   homeDir?: string;
+  /** Passed straight through to runClaude's option of the same name —
+   *  see its own doc comment. Overridable so tests never fall back to
+   *  this repo's real memory/lessons.md. */
+  memoryPath?: string;
 }
 
 /**
@@ -45,11 +49,13 @@ export class WriteExecutor implements Executor {
   private runner: CommandRunner;
   private model?: string;
   private homeDir?: string;
+  private memoryPath?: string;
 
   constructor(opts: WriteExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
     this.homeDir = opts.homeDir;
+    this.memoryPath = opts.memoryPath;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -82,6 +88,7 @@ export class WriteExecutor implements Executor {
       // widen access, it makes these two specific commands reliable.
       // See docs/SDD-pipeline-automation.md §3.4.
       allowedTools: ["Bash(bun test:*)", "Bash(bun run typecheck:*)"],
+      memoryPath: this.memoryPath,
     });
 
     const withHarness = harness ? { ...result, harnessId: harness.id } : result;

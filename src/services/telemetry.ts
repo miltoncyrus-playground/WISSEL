@@ -14,7 +14,10 @@ export type TelemetryEvent =
  * before anything consumes it.
  */
 export class TelemetryLog {
-  constructor(private filePath: string) {}
+  /** Public so callers that need to read the raw log themselves (e.g.
+   *  src/core/memory-scheduler.ts's due-ness check) don't need a second,
+   *  separately-threaded copy of the same path. */
+  constructor(readonly filePath: string) {}
 
   async record(event: TelemetryEvent): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });

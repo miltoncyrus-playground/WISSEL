@@ -54,14 +54,33 @@ export interface AgentDef {
    *  no exception — every write-tier success from this agent stops for
    *  a human, unchanged. See docs/SDD-worktree-isolation.md §6. */
   autoMerge?: boolean;
-  /** Agent-specific machine-parseable output contract, appended verbatim
-   *  to the end of the prompt by buildAgentPrompt when present. Only the
-   *  reviewer agent sets this today (see agents/manifest.yaml) — its
-   *  final message must end with a ```review-verdict``` fenced block,
-   *  parsed by parseReviewVerdict (src/executors/parse-review-verdict.ts)
-   *  rather than by ad hoc prose-scraping downstream. Undefined means
-   *  "no contract beyond description/whenToUse" — the prior behavior. */
+  /** Agent-specific output contract, appended verbatim to the end of the
+   *  prompt by buildAgentPrompt when present. Two agents set this today
+   *  (see agents/manifest.yaml): reviewer, whose final message must end
+   *  with a ```review-verdict``` fenced block, and memory-curator, whose
+   *  final message becomes the literal, wholesale replacement for
+   *  memory/lessons.md (see finishResult's `outputs.includes
+   *  ("memory-entries")` hook, src/core/orchestrator.ts) and so must
+   *  contain nothing but the curated content itself — no preamble, no
+   *  sign-off. Plain prose instructions by default; whether the raw
+   *  output additionally gets machine-parsed and rejected when
+   *  non-conforming is controlled separately by outputContractFormat
+   *  below. Undefined means "no contract beyond description/whenToUse"
+   *  — the prior behavior. */
   outputContract?: string;
+  /** Discriminates *how* outputContract (above) is enforced, not just
+   *  displayed. `"review-verdict"` is the only value today: it's what
+   *  makes runClaude (src/executors/claude-cli.ts) route the raw final
+   *  message through parseReviewVerdict and fail the run outright on a
+   *  missing/malformed block, instead of trusting it as plain prose.
+   *  Deliberately a separate field from outputContract itself — an
+   *  agent can have prose-only formatting instructions (memory-curator)
+   *  without being forced through review-verdict parsing, which would
+   *  reject every one of its runs for lacking a block it was never
+   *  asked to produce. Undefined means "no machine parsing beyond the
+   *  is_error the harness itself reports" — outputContract text still
+   *  reaches the prompt, its content just isn't validated downstream. */
+  outputContractFormat?: "review-verdict";
   /** Agent-specific self-verification instructions, appended verbatim to
    *  the prompt by buildAgentPrompt when present — same mechanism as
    *  outputContract, different purpose: tells the agent to actually run

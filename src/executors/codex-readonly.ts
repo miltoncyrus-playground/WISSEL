@@ -12,6 +12,10 @@ export interface CodexReadOnlyExecutorOptions {
    *  see runCodex's own doc comment on why that's usually itself
    *  omitted downstream (no verified working codex model id yet). */
   model?: string;
+  /** Passed straight through to runCodex's option of the same name —
+   *  see its own doc comment. Overridable so tests never fall back to
+   *  this repo's real memory/lessons.md. */
+  memoryPath?: string;
 }
 
 /**
@@ -30,10 +34,12 @@ export class CodexReadOnlyExecutor implements Executor {
   readonly harnessTool = "codex-cli" as const;
   private runner: CommandRunner;
   private model?: string;
+  private memoryPath?: string;
 
   constructor(opts: CodexReadOnlyExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
+    this.memoryPath = opts.memoryPath;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -48,6 +54,7 @@ export class CodexReadOnlyExecutor implements Executor {
       sandbox: "read-only",
       model: this.model ?? agent.costProfile.model,
       env: harness?.env,
+      memoryPath: this.memoryPath,
     });
     return harness ? { ...result, harnessId: harness.id } : result;
   }
