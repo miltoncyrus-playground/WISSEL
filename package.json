@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test test/",
     "test:e2e": "playwright test",
-    "eval:readonly": "bun run eval/readonly.eval.ts"
+    "eval:readonly": "bun run eval/readonly.eval.ts",
+    "eval:implementer-reviewer": "bun run eval/implementer-reviewer.eval.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
