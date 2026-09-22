@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
@@ -48,6 +48,11 @@ function branchName(worktreeKey: string): string {
  * instead of failing — `git worktree add` on an already-existing
  * path/branch would otherwise error every time, and both a retry and a
  * pushback re-attempt are exactly the cases that need this most.
+ *
+ * Also symlinks the source repo's own `node_modules` into the new
+ * worktree, when there is one — see `linkNodeModules` below for why:
+ * without it, every implementer/reviewer/integrator pass on the same
+ * subtask paid for its own `bun install` before it could run anything.
  */
 export async function createTaskWorktree(repo: string, worktreeKey: string, opts: WorktreeOptions): Promise<TaskWorktree | { error: string }> {
   const root = worktreesRoot(opts.homeDir);
@@ -57,6 +62,7 @@ export async function createTaskWorktree(repo: string, worktreeKey: string, opts
 
   const existing = await opts.runner(["git", "worktree", "list", "--porcelain"], { cwd: repo });
   if (existing.exitCode === 0 && existing.stdout.includes(`worktree ${path}`)) {
+    linkNodeModules(repo, path);
     return { path, branch };
   }
 
@@ -64,7 +70,43 @@ export async function createTaskWorktree(repo: string, worktreeKey: string, opts
   if (result.exitCode !== 0) {
     return { error: `failed to create worktree for ${worktreeKey}: ${(result.stderr || result.stdout).trim()}` };
   }
+  linkNodeModules(repo, path);
   return { path, branch };
+}
+
+/**
+ * Symlinks the source repo's own `node_modules` into a freshly created
+ * worktree, when the repo has one and the worktree doesn't already —
+ * `git worktree add` never populates `node_modules` (gitignored, never
+ * part of what a checkout brings along), so every implementer/reviewer/
+ * integrator pass that needed to run anything had to `bun install`
+ * first, on every single subtask, every time — confirmed live, directly
+ * in this project's own real reviewer output ("Ran bun install
+ * (node_modules was missing in this worktree — pre-existing gap,
+ * unrelated to this diff)"), repeated across nearly every subtask this
+ * project's own review-handoff feature went through. Pure avoidable
+ * cost: the dependency tree doesn't change between subtasks, only the
+ * source files being reviewed do.
+ *
+ * Silently skipped, never an error, when the repo has no `node_modules`
+ * of its own (not every `task.repo` is a Node/Bun project) — this is a
+ * convenience, not a contract any caller depends on. Never overwrites
+ * anything already at that path in the worktree (a real directory from
+ * a worktree that ran its own `bun install` anyway, or an existing
+ * symlink from a prior call) — `existsSync` follows symlinks, so a
+ * live, working symlink already in place is left alone rather than
+ * needlessly recreated.
+ */
+function linkNodeModules(repo: string, worktreePath: string): void {
+  const source = join(repo, "node_modules");
+  const target = join(worktreePath, "node_modules");
+  if (!existsSync(source) || existsSync(target)) return;
+  try {
+    symlinkSync(source, target, "dir");
+  } catch {
+    // Best-effort — a worktree without node_modules still works, it
+    // just needs its own `bun install` the way it always has.
+  }
 }
 
 /**

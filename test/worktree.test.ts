@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTaskWorktree, mergeTaskWorktree, removeTaskWorktree } from "../src/services/worktree.ts";
@@ -76,6 +77,94 @@ test("createTaskWorktree reports a clear error instead of throwing when git work
     expect(result).toEqual({ error: expect.stringContaining("fatal: not a git repository") });
   } finally {
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+// node_modules symlinking (docs/SDD-pipeline-automation.md follow-up):
+// avoids every implementer/reviewer/integrator pass on the same
+// subtask paying for its own `bun install` — confirmed live in this
+// project's own reviewer output, repeatedly, before this fix.
+test("createTaskWorktree symlinks the repo's node_modules into a freshly created worktree", async () => {
+  const home = await fakeHome();
+  const repo = await mkdtemp(join(tmpdir(), "wissel-worktree-repo-"));
+  try {
+    mkdirSync(join(repo, "node_modules"), { recursive: true });
+    writeFileSync(join(repo, "node_modules", "marker.txt"), "real deps");
+
+    const runner = async (cmd: string[]) => {
+      if (cmd[1] === "worktree" && cmd[2] === "list") return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd[1] === "worktree" && cmd[2] === "add") {
+        // Mimics what a real `git worktree add` does — creates the directory.
+        mkdirSync(cmd[5]!, { recursive: true });
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+
+    const result = await createTaskWorktree(repo, "t1", { runner, homeDir: home });
+    expect("error" in result).toBe(false);
+    const worktreePath = (result as { path: string }).path;
+
+    const linkPath = join(worktreePath, "node_modules");
+    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(linkPath, "marker.txt"), "utf8")).toBe("real deps");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("createTaskWorktree skips the symlink silently when the repo has no node_modules of its own", async () => {
+  const home = await fakeHome();
+  const repo = await mkdtemp(join(tmpdir(), "wissel-worktree-repo-"));
+  try {
+    const runner = async (cmd: string[]) => {
+      if (cmd[1] === "worktree" && cmd[2] === "list") return { stdout: "", stderr: "", exitCode: 0 };
+      if (cmd[1] === "worktree" && cmd[2] === "add") {
+        mkdirSync(cmd[5]!, { recursive: true });
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+
+    const result = await createTaskWorktree(repo, "t1", { runner, homeDir: home });
+    expect("error" in result).toBe(false);
+    const worktreePath = (result as { path: string }).path;
+
+    expect(existsSync(join(worktreePath, "node_modules"))).toBe(false);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("createTaskWorktree never clobbers an existing node_modules already in the worktree (idempotent-reuse case)", async () => {
+  const home = await fakeHome();
+  const repo = await mkdtemp(join(tmpdir(), "wissel-worktree-repo-"));
+  try {
+    mkdirSync(join(repo, "node_modules"), { recursive: true });
+    writeFileSync(join(repo, "node_modules", "marker.txt"), "repo's real deps");
+
+    const path = join(home, ".wissel", "worktrees", "t1");
+    // Simulates a worktree that already ran its own `bun install` —
+    // a real directory, not a symlink, with its own distinct content.
+    mkdirSync(join(path, "node_modules"), { recursive: true });
+    writeFileSync(join(path, "node_modules", "marker.txt"), "worktree's own deps");
+
+    const runner = async (cmd: string[]) => {
+      if (cmd[1] === "worktree" && cmd[2] === "list") {
+        return { stdout: `worktree ${path}\nHEAD abc\nbranch refs/heads/wissel/t1\n`, stderr: "", exitCode: 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+
+    await createTaskWorktree(repo, "t1", { runner, homeDir: home });
+
+    expect(lstatSync(join(path, "node_modules")).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(path, "node_modules", "marker.txt"), "utf8")).toBe("worktree's own deps");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true });
   }
 });
 
