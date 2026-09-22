@@ -1294,7 +1294,15 @@
     COLUMNS.forEach(function (status) {
       var col = document.createElement("div");
       col.className = "kcol";
-      var inCol = tasks.filter(function (t) { return t.status === status; });
+      // A superseded card (supersededBy set — a pushback re-attempt or an
+      // escalation retry replaced it) keeps its old status forever by
+      // design (see TaskCard.supersededBy) — it's lineage history, never
+      // "the current state of anything," so it's excluded from every
+      // column rather than showing as a stale, confusing duplicate next
+      // to whatever attempt actually succeeded it. Still fully present
+      // in the board/API for anyone tracing a lineage by hand — only the
+      // kanban view filters it out.
+      var inCol = tasks.filter(function (t) { return t.status === status && !t.supersededBy; });
       var h3 = document.createElement("h3");
       var dot = document.createElement("span");
       dot.className = "swatch";
@@ -1358,7 +1366,11 @@
     var wrap = document.getElementById("stats");
     var counts = {};
     COLUMNS.forEach(function (s) { counts[s] = 0; });
-    tasks.forEach(function (t) { counts[t.status] = (counts[t.status] || 0) + 1; });
+    // Excludes superseded cards from the count too — see renderKanban's
+    // own comment on the same filter. Otherwise the stat strip and the
+    // kanban columns below it would disagree on how many tasks are
+    // actually in a given status.
+    tasks.forEach(function (t) { if (!t.supersededBy) counts[t.status] = (counts[t.status] || 0) + 1; });
     wrap.textContent = "";
     COLUMNS.forEach(function (status) {
       var tile = document.createElement("div");

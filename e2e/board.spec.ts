@@ -34,7 +34,7 @@ async function driveToEscalated(request: APIRequestContext, title: string, repo:
       },
     });
     await request.post(`/tasks/${reviewer.id}/result`, {
-      data: { agentId: "reviewer", ok: true, verdict: "changes_requested", reviewFeedback: `round ${round}: still not right` },
+      data: { agentId: "reviewer", ok: true, summary: `round ${round}: changes requested`, verdict: "changes_requested", reviewFeedback: `round ${round}: still not right` },
     });
 
     if (round < 6) {
@@ -385,6 +385,63 @@ test.describe("Board view", () => {
     await page.waitForTimeout(500);
     await expect(drawer.locator("#tdActions")).toContainText("Automated review in progress (attempt 3 of 6).");
     await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
+  });
+
+  // Real bug, fixed live: a superseded card (a pushback re-attempt
+  // replaced it) keeps its old `pending-review` status forever by
+  // design (TaskCard.supersededBy), but nothing used to exclude it from
+  // the kanban/stats — a lineage that had already moved on still showed
+  // a stale duplicate sitting in "Pending review" next to whatever
+  // attempt actually succeeded it.
+  test("a superseded card never shows in the kanban board or the stat counts, even though its status is untouched", async ({ page, request }) => {
+    const title = `Superseded test ${Date.now()}`;
+    const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo" } });
+    const originalId = (await created.json()).id as string;
+    await request.post(`/tasks/${originalId}/result`, { data: { agentId: "implementer", ok: true, summary: "attempt 1" } });
+
+    const afterImpl = await (await request.get("/tasks")).json();
+    const reviewer = afterImpl.find((t: { parentTaskId?: string }) => t.parentTaskId === originalId);
+    await request.post(`/tasks/${reviewer.id}/decision`, {
+      data: {
+        matchedTags: ["review"], candidates: [{ agentId: "reviewer", score: 1, reason: "tag overlap 1/1" }],
+        selected: "reviewer", confident: true, strategy: "rule", reason: "tag overlap 1/1", decidedAt: new Date().toISOString(),
+      },
+    });
+    // changes_requested, under the pushback limit — spawns a fresh
+    // attempt and marks `originalId` supersededBy, status left untouched
+    // (still "pending-review") per handleReviewVerdict's own contract.
+    await request.post(`/tasks/${reviewer.id}/result`, {
+      data: { agentId: "reviewer", ok: true, summary: "requested changes", verdict: "changes_requested", reviewFeedback: "not quite right" },
+    });
+
+    const original = await (await request.get(`/tasks/${originalId}`)).json();
+    expect(original.status).toBe("pending-review");
+    const pushbackId = original.supersededBy as string;
+    expect(pushbackId).toBeDefined();
+    // The pushback attempt itself isn't auto-dispatched in this fixture
+    // (no sweep loop running) — it sits in "inbox" until routed, which
+    // is fine: this test is about the *original* never cluttering its
+    // old column, not about driving the whole lineage further.
+    const pushback = await (await request.get(`/tasks/${pushbackId}`)).json();
+    expect(pushback.status).toBe("inbox");
+
+    await page.goto("/board");
+
+    // The superseded original's own exact title never shows up in the
+    // "Pending review" column specifically — not "zero matches anywhere
+    // on the board" (the live pushback attempt and its own "Review: ..."
+    // follow-up legitimately share the substring and sit in other
+    // columns), just excluded from the one column its stale status
+    // would otherwise place it in.
+    const pendingReviewCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: "Pending review" }) });
+    await expect(pendingReviewCol.locator(".kcard", { hasText: title })).toHaveCount(0);
+
+    // The stat tile agrees — its count excludes the superseded original
+    // too, matching what the API itself reports once filtered the same way.
+    const allTasks = await (await request.get("/tasks")).json();
+    const realPendingReviewCount = allTasks.filter((t: { status: string; supersededBy?: string }) => t.status === "pending-review" && !t.supersededBy).length;
+    const statTile = page.locator("#stats .stat", { has: page.locator(".l", { hasText: "Pending review" }) });
+    await expect(statTile.locator(".n")).toHaveText(String(realPendingReviewCount));
   });
 
   test("an escalated task renders its full round-by-round timeline and the three resolution actions", async ({ page, request }) => {
