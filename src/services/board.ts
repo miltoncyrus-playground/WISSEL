@@ -193,6 +193,41 @@ export class SqliteBoard implements Board {
     } catch {
       // already has the column
     }
+    // Heals a real, confirmed-live schema drift: a routing_decisions
+    // table created before RoutingDecision.selected became nullable (to
+    // record a no-match decision — TaskCard.status "no-match") still
+    // has `selected TEXT NOT NULL` on disk. Every no-match decision on
+    // such a database has always thrown on INSERT — silently, since
+    // recordDecision's only caller (orchestrator.ts's process()) wraps
+    // it in a try/catch that logs and swallows, leaving the task stuck
+    // unrouted in `inbox` forever, reprocessed and re-failing on every
+    // sweep. Confirmed live the moment the sweep loop first actually
+    // dispatched for real against this machine's own on-disk
+    // board.sqlite. SQLite has no ALTER COLUMN DROP NOT NULL, so this
+    // rebuilds the table when the drift is detected — safe and cheap:
+    // this table is pure append-only audit history, never updated in
+    // place, and small (one row per routing decision ever made).
+    const routingDecisionsInfo = this.db.query("PRAGMA table_info(routing_decisions)").all() as { name: string; notnull: number }[];
+    if (routingDecisionsInfo.some((c) => c.name === "selected" && c.notnull === 1)) {
+      this.db.run("ALTER TABLE routing_decisions RENAME TO routing_decisions_pre_nullable_selected;");
+      this.db.run(`
+        CREATE TABLE routing_decisions (
+          taskId TEXT NOT NULL,
+          matchedTags TEXT NOT NULL,
+          candidates TEXT NOT NULL,
+          selected TEXT,
+          confident INTEGER NOT NULL DEFAULT 1,
+          reason TEXT NOT NULL,
+          strategy TEXT NOT NULL,
+          decidedAt TEXT NOT NULL
+        );
+      `);
+      this.db.run(
+        "INSERT INTO routing_decisions (taskId, matchedTags, candidates, selected, confident, reason, strategy, decidedAt) " +
+          "SELECT taskId, matchedTags, candidates, selected, confident, reason, strategy, decidedAt FROM routing_decisions_pre_nullable_selected;",
+      );
+      this.db.run("DROP TABLE routing_decisions_pre_nullable_selected;");
+    }
     this.db.run(`
       CREATE TABLE IF NOT EXISTS task_results (
         taskId TEXT NOT NULL,

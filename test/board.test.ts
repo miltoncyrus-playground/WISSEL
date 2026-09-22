@@ -113,6 +113,60 @@ test("opens and heals a real pre-existing on-disk DB from before routing_decisio
   }
 });
 
+// Real bug, found live: a real on-disk board.sqlite (this project's
+// own dev database) had `selected TEXT NOT NULL` from before
+// RoutingDecision.selected became nullable to represent a no-match
+// decision — every no-match recordDecision() on that exact database
+// had been silently throwing (caught and swallowed by orchestrator.ts's
+// process(), leaving the task stuck unrouted in inbox forever) until
+// the sweep loop actually ran for real against it. Exact schema
+// reproduced from that real database, confident column included.
+test("opens and heals a real pre-existing on-disk DB from before routing_decisions.selected was nullable", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-board-legacy-"));
+  const dbPath = join(dir, "board.sqlite");
+  try {
+    const legacy = new Database(dbPath, { create: true });
+    legacy.run(`
+      CREATE TABLE routing_decisions (
+        taskId TEXT NOT NULL,
+        matchedTags TEXT NOT NULL,
+        candidates TEXT NOT NULL,
+        selected TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        decidedAt TEXT NOT NULL
+      , confident INTEGER NOT NULL DEFAULT 1);
+    `);
+    // A real row already on disk, the way an existing database would
+    // have one — must survive the migration intact.
+    legacy.run(
+      "INSERT INTO routing_decisions (taskId, matchedTags, candidates, selected, confident, reason, strategy, decidedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ["pre-existing-task", "[]", "[]", "implementer", 1, "old decision", "rule", "2026-01-01T00:00:00.000Z"],
+    );
+    legacy.close();
+
+    const board = new SqliteBoard(dbPath);
+
+    // The pre-existing row survived the table rebuild.
+    expect(await board.getDecision("pre-existing-task")).toEqual({
+      taskId: "pre-existing-task", matchedTags: [], candidates: [], selected: "implementer",
+      confident: true, reason: "old decision", strategy: "rule", decidedAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    // The actual bug: a no-match decision (selected: null) must no
+    // longer throw.
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+    const noMatch: RoutingDecision = {
+      taskId: task.id, matchedTags: [], candidates: [], selected: null,
+      confident: false, reason: "zero tag overlap", strategy: "rule", decidedAt: new Date().toISOString(),
+    };
+    await board.recordDecision(noMatch);
+    expect(await board.getDecision(task.id)).toEqual(noMatch);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("setDependencies updates dependsOn, rejects unknown ids, emits an event", async () => {
   const board = new SqliteBoard();
   const events: string[] = [];

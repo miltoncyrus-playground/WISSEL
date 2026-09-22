@@ -330,6 +330,28 @@ export function wireAutoIntegrator(board: Board & { events: EventEmitter }, regi
 }
 
 async function maybeSpawnIntegrator(board: Board, registry: Registry, task: TaskCard): Promise<void> {
+  // `parentTaskId` means two structurally different things depending on
+  // which task carries it, and this function must only ever react to
+  // one of them. A genuine subtask card (e.g. one of a planner's
+  // decomposed pieces) has its parentTaskId point at the planner task.
+  // But a reviewer task's parentTaskId points at the implementer it
+  // reviewed, and a pushback re-attempt's parentTaskId points at the
+  // reviewer that rejected it (see spawnReviewerTask/
+  // spawnPushbackImplementer) — review-lineage chaining, not subtask
+  // decomposition. A reviewer task reaches `done` on *every* review
+  // pass, approve or reject (handleReviewVerdict), which — confirmed
+  // live, the first time the sweep loop actually ran this for real —
+  // fired this function on every single review completion, spawning a
+  // bogus "Integrate: ..." card whose parentTaskId pointed at an
+  // implementer task, got its routing candidates wrongly restricted to
+  // that implementer's own handoffs (e.g. just `[reviewer]`), and
+  // crashed or landed on no-match. Reviewer tasks always carry `labels:
+  // ["review"]`; every task in a pushback lineage (the reviewer's own
+  // follow-up entry and every re-attempt) always carries a defined
+  // `pushbackCount`, including 0 on the very first reviewer pass — a
+  // genuine top-level subtask card never has either set at creation.
+  if (task.labels.includes("review") || task.pushbackCount !== undefined) return;
+
   const parentId = task.parentTaskId;
   if (!parentId) return;
   const parent = await board.get(parentId);
