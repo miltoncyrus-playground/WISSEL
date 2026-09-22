@@ -41,8 +41,16 @@ export interface Board {
   /** Most recent execution result for a task, if any — what the board
    *  UI's task detail panel shows once a run has finished. */
   getResult(taskId: string): Promise<TaskResult | undefined>;
-  /** Manual override. Every one of these is a labelled router eval case. */
-  recordOverride(taskId: string, routerPick: string, humanPick: string): Promise<void>;
+  /** Manual override. Every one of these is a labelled router eval case —
+   *  OR, when `actor`/`reason` are given, a human forcing an `escalated`
+   *  task's outcome (see `POST /tasks/:id/escalation/approve`, the only
+   *  caller that passes them). `routerPick`/`humanPick` are repurposed
+   *  for that case as "state before"/"state after" (e.g. "escalated" /
+   *  "review") rather than agent ids — the audit trail this produces
+   *  (who forced it, when, why) is the point; the field names are just
+   *  reused instead of duplicating the whole event shape for one more
+   *  kind of override. */
+  recordOverride(taskId: string, routerPick: string, humanPick: string, actor?: string, reason?: string): Promise<void>;
   /** Removes a task and its recorded decisions/results/overrides. */
   delete(id: string): Promise<void>;
 }
@@ -55,7 +63,7 @@ export type BoardEvent =
   | { type: "task.superseded"; task: TaskCard }
   | { type: "task.decided"; decision: RoutingDecision }
   | { type: "task.result"; result: TaskResult }
-  | { type: "task.override"; taskId: string; routerPick: string; humanPick: string }
+  | { type: "task.override"; taskId: string; routerPick: string; humanPick: string; actor?: string; reason?: string; at: string }
   | { type: "task.deleted"; taskId: string };
 
 interface TaskRow {
@@ -213,6 +221,17 @@ export class SqliteBoard implements Board {
         recordedAt TEXT NOT NULL
       );
     `);
+    // actor/reason shipped after the original overrides table — same
+    // heal-on-open pattern as every other post-launch column above, so
+    // an existing on-disk DB doesn't break the moment
+    // POST /tasks/:id/escalation/approve tries to write one.
+    for (const ddl of ["ALTER TABLE overrides ADD COLUMN actor TEXT;", "ALTER TABLE overrides ADD COLUMN reason TEXT;"]) {
+      try {
+        this.db.run(ddl);
+      } catch {
+        // already has the column
+      }
+    }
   }
 
   async list(filter?: Partial<Pick<TaskCard, "status" | "repo">>): Promise<TaskCard[]> {
@@ -398,12 +417,13 @@ export class SqliteBoard implements Board {
     };
   }
 
-  async recordOverride(taskId: string, routerPick: string, humanPick: string): Promise<void> {
+  async recordOverride(taskId: string, routerPick: string, humanPick: string, actor?: string, reason?: string): Promise<void> {
+    const recordedAt = new Date().toISOString();
     this.db.run(
-      "INSERT INTO overrides (taskId, routerPick, humanPick, recordedAt) VALUES (?, ?, ?, ?)",
-      [taskId, routerPick, humanPick, new Date().toISOString()],
+      "INSERT INTO overrides (taskId, routerPick, humanPick, actor, reason, recordedAt) VALUES (?, ?, ?, ?, ?, ?)",
+      [taskId, routerPick, humanPick, actor ?? null, reason ?? null, recordedAt],
     );
-    this.events.emit("event", { type: "task.override", taskId, routerPick, humanPick } satisfies BoardEvent);
+    this.events.emit("event", { type: "task.override", taskId, routerPick, humanPick, actor, reason, at: recordedAt } satisfies BoardEvent);
   }
 
   async delete(id: string): Promise<void> {

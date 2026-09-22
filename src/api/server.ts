@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Board, BoardEvent } from "../services/board.ts";
@@ -284,6 +285,69 @@ export function createApp(
           const { routerPick, humanPick } = (await req.json()) as { routerPick: string; humanPick: string };
           await board.recordOverride(parts[1]!, routerPick, humanPick);
           return new Response(null, { status: 204 });
+        }
+
+        // Human resolution actions for a task sitting in `escalated` —
+        // the reviewer/implementer loop gave up on it (pushbackCount hit
+        // its limit, see orchestrator.ts's handleReviewVerdict), so
+        // these are the only ways it moves again. All three 400 when the
+        // task isn't actually `escalated` — a stale board view must
+        // never let a second click silently redo (or race) a resolution
+        // that already happened.
+        if (parts.length === 4 && parts[2] === "escalation") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+
+          // The actual override: forces the task to `review` despite
+          // whatever unresolved reviewer objections got it escalated in
+          // the first place. Recorded through the same audit trail as a
+          // router override (see board.recordOverride/task.override
+          // BoardEvent), now carrying who did it and why — an escalation
+          // exists precisely because the automated loop couldn't resolve
+          // it safely, so the human decision that overrides it has to be
+          // attributable, not just a bare status flip.
+          if (parts[3] === "approve" && req.method === "POST") {
+            if (task.status !== "escalated") return json({ error: "task is not escalated" }, 400);
+            const { actor, reason } = (await req.json()) as { actor?: string; reason?: string };
+            if (!actor || !reason) return json({ error: "actor and reason are required" }, 400);
+            await board.recordOverride(task.id, "escalated", "review", actor, reason);
+            const moved = await board.move(task.id, "review");
+            return json(moved);
+          }
+
+          // Gives up on the task outright — closest existing status for
+          // "a human looked at it and it's not worth pursuing," same
+          // terminal state a discarded worktree lands on.
+          if (parts[3] === "abandon" && req.method === "POST") {
+            if (task.status !== "escalated") return json({ error: "task is not escalated" }, 400);
+            const moved = await board.move(task.id, "failed");
+            return json(moved);
+          }
+
+          // Human-edited instructions start a brand-new lineage —
+          // pushbackCount back to 0 and a fresh reviewLineageId (never
+          // the escalated task's own id/lineage, which is exactly the
+          // exhausted one that got it here) so this reads as an explicit
+          // restart, not a silent continuation of a chain that already
+          // proved it couldn't converge. Mirrors spawnPushbackImplementer
+          // (orchestrator.ts): new TaskCard, old one marked
+          // `supersededBy` with its own status left untouched (see
+          // TaskCard.supersededBy) rather than repurposed as a failure.
+          if (parts[3] === "retry" && req.method === "POST") {
+            if (task.status !== "escalated") return json({ error: "task is not escalated" }, 400);
+            const { body } = (await req.json()) as { body?: string };
+            if (!body) return json({ error: "body is required" }, 400);
+            const nextAttempt = await board.create({
+              title: task.title,
+              body,
+              labels: task.labels,
+              repo: task.repo,
+              pushbackCount: 0,
+              reviewLineageId: randomUUID(),
+            });
+            await board.setSupersededBy(task.id, nextAttempt.id);
+            return json(nextAttempt, 201);
+          }
         }
 
         if (parts.length === 2 && req.method === "DELETE") {

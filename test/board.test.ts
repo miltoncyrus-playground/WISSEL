@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteBoard } from "../src/services/board.ts";
+import type { BoardEvent } from "../src/services/board.ts";
 import type { RoutingDecision, TaskResult } from "../src/core/types.ts";
 
 test("create then get round-trips a task", async () => {
@@ -213,6 +214,31 @@ test("recordResult and recordOverride do not throw and emit events", async () =>
   await board.recordOverride(task.id, "a", "b");
 
   expect(events).toEqual(["task.result", "task.override"]);
+});
+
+// actor/reason turn a plain router override into a full audit trail —
+// who forced it, when, why — the shape POST /tasks/:id/escalation/approve
+// relies on (src/api/server.ts) since that endpoint overrides an
+// escalation's outstanding objections outright.
+test("recordOverride round-trips actor/reason on the task.override event, and omits them when not given", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+
+  const events: BoardEvent[] = [];
+  board.events.on("event", (e: BoardEvent) => events.push(e));
+
+  await board.recordOverride(task.id, "escalated", "review", "milton", "human review confirmed the fix is fine");
+  await board.recordOverride(task.id, "a", "b");
+
+  const [withAudit, without] = events as Extract<BoardEvent, { type: "task.override" }>[];
+  expect(withAudit!.taskId).toBe(task.id);
+  expect(withAudit!.routerPick).toBe("escalated");
+  expect(withAudit!.humanPick).toBe("review");
+  expect(withAudit!.actor).toBe("milton");
+  expect(withAudit!.reason).toBe("human review confirmed the fix is fine");
+  expect(typeof withAudit!.at).toBe("string");
+  expect(without!.actor).toBeUndefined();
+  expect(without!.reason).toBeUndefined();
 });
 
 test("getResult returns the most recent result, and undefined for a task with none", async () => {
