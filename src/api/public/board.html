@@ -290,6 +290,12 @@
   .drawer-body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 18px; }
   .drawer-section .eyebrow { margin-bottom: 8px; }
   .drawer-desc { font-size: 13px; line-height: 1.5; color: var(--ink-2); white-space: pre-wrap; margin: 0; }
+  /* Escalated tasks' round-by-round reviewer feedback — capped height so
+     a 6-round history never pushes the action buttons below the fold. */
+  .escalation-timeline { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--page); }
+  .escalation-round .er-head { font-size: 11.5px; font-weight: 700; color: var(--ink-1); margin-bottom: 3px; }
+  .escalation-round .er-feedback { font-size: 12.5px; line-height: 1.5; color: var(--ink-2); white-space: pre-wrap; }
+  .pending-review-note { font-size: 13px; color: var(--ink-2); margin: 0; }
   .drawer-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .drawer-actions button {
     appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-1);
@@ -471,6 +477,11 @@
       <p class="drawer-desc" id="tdDescription"></p>
     </section>
 
+    <section class="drawer-section" id="tdEscalationSection" hidden>
+      <p class="eyebrow">Escalation history</p>
+      <div class="escalation-timeline" id="tdEscalation"></div>
+    </section>
+
     <section class="drawer-section">
       <div class="drawer-actions" id="tdActions"></div>
       <p class="field-error" id="tdActionError" hidden></p>
@@ -629,6 +640,48 @@
     meta.appendChild(sep);
     var repoSpan = document.createElement("span"); repoSpan.className = "mono"; repoSpan.textContent = task.repo;
     meta.appendChild(repoSpan);
+
+    renderEscalationTimeline(task);
+  }
+
+  // TaskCard.escalationContext (see orchestrator.ts's buildEscalationContext)
+  // is one plain string, every round joined by a blank line: "Attempt 1:
+  // <feedback>\n\nAttempt 2: <feedback>...". Splits on the "Attempt N: "
+  // marker itself (not on the blank line alone) so multi-paragraph
+  // feedback text that happens to contain its own blank lines can't
+  // fracture a single round into two.
+  function parseEscalationRounds(context) {
+    var marker = /(?:^|\n\n)Attempt (\d+): /g;
+    var starts = [];
+    var m;
+    while ((m = marker.exec(context)) !== null) {
+      starts.push({ attempt: Number(m[1]), matchIndex: m.index, bodyStart: marker.lastIndex });
+    }
+    if (!starts.length) return [{ attempt: null, feedback: context }];
+    return starts.map(function (s, i) {
+      var end = i + 1 < starts.length ? starts[i + 1].matchIndex : context.length;
+      return { attempt: s.attempt, feedback: context.slice(s.bodyStart, end) };
+    });
+  }
+
+  function renderEscalationTimeline(task) {
+    var section = document.getElementById("tdEscalationSection");
+    var body = document.getElementById("tdEscalation");
+    if (task.status !== "escalated" || !task.escalationContext) { section.hidden = true; return; }
+    section.hidden = false;
+    body.textContent = "";
+    parseEscalationRounds(task.escalationContext).forEach(function (round) {
+      var row = document.createElement("div");
+      row.className = "escalation-round";
+      var head = document.createElement("div");
+      head.className = "er-head";
+      head.textContent = round.attempt !== null ? "Attempt " + round.attempt : "Escalation context";
+      var feedback = document.createElement("div");
+      feedback.className = "er-feedback";
+      feedback.textContent = round.feedback;
+      row.appendChild(head); row.appendChild(feedback);
+      body.appendChild(row);
+    });
   }
 
   function drawerAction(label, opts) {
@@ -704,6 +757,48 @@
           onClick: function () { moveTask(task.id, "failed"); },
         }));
       }
+    } else if (task.status === "pending-review") {
+      // No Merge/Discard/Mark-done here — an automated reviewer pass is
+      // still in flight against this exact attempt (see
+      // orchestrator.ts's spawnReviewerTask); those actions only make
+      // sense once a verdict comes back and either resolves it (approve)
+      // or the lineage escalates. attempt is 1-indexed off pushbackCount
+      // (0 on the first try), out of the 6-attempt cap orchestrator.ts's
+      // handleReviewVerdict enforces before escalating.
+      var attempt = (task.pushbackCount || 0) + 1;
+      var note = document.createElement("p");
+      note.className = "pending-review-note muted";
+      note.textContent = "Automated review in progress (attempt " + attempt + " of 6).";
+      wrap.appendChild(note);
+    } else if (task.status === "escalated") {
+      // A reviewer rejected this lineage 6 times running (see
+      // buildEscalationContext/tdEscalationSection above) — a human
+      // takes over from here instead of another automated round.
+      // Contract with Subtask D (orchestrator: escalation-resolution
+      // endpoints, not yet landed as of this commit): POST
+      // /tasks/:id/escalation/<approve|retry|abandon>, each returning
+      // the updated TaskCard as { task }. approve resumes the normal
+      // done/review flow for the current attempt despite the reviewer's
+      // rejections; retry spawns one more pushback attempt in the same
+      // lineage instead of leaving it dead-ended; abandon discards any
+      // worktree and marks the task failed for good.
+      wrap.appendChild(drawerAction("Approve anyway", {
+        className: "primary",
+        onClick: function () {
+          if (!window.confirm("Approve this attempt despite " + ((task.pushbackCount || 0) + 1) + " rejected review round(s)? This resumes the normal done/review flow.")) return;
+          escalationAction(task.id, "approve");
+        },
+      }));
+      wrap.appendChild(drawerAction("Retry", {
+        onClick: function () { escalationAction(task.id, "retry"); },
+      }));
+      wrap.appendChild(drawerAction("Abandon", {
+        className: "danger",
+        onClick: function () {
+          if (!window.confirm("Abandon \"" + task.title + "\" and discard its work? This can't be undone.")) return;
+          escalationAction(task.id, "abandon");
+        },
+      }));
     }
 
     wrap.appendChild(drawerAction("View diff", {
@@ -740,6 +835,16 @@
   function discardTask(taskId) {
     setDrawerActionError(null);
     fetch("/tasks/" + taskId + "/discard", { method: "POST" }).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).catch(function (err) { setDrawerActionError(err.message); });
+  }
+
+  // See renderDrawerActions' escalated branch for the endpoint contract
+  // this depends on.
+  function escalationAction(taskId, action) {
+    setDrawerActionError(null);
+    fetch("/tasks/" + taskId + "/escalation/" + action, { method: "POST" }).then(function (r) {
       if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
       return refetchTasks();
     }).catch(function (err) { setDrawerActionError(err.message); });

@@ -1,4 +1,52 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type APIRequestContext } from "@playwright/test";
+
+/**
+ * Drives one implementer task through 6 straight reviewer rejections to
+ * `escalated`, purely over HTTP — no orchestrator sweep, no real `claude`
+ * process. `POST /tasks/:id/result` runs the exact same `finishResult`/
+ * `handleReviewVerdict` logic a live reviewer's report would (see
+ * src/core/orchestrator.ts), so this reaches the real escalation state,
+ * not a hand-rolled stand-in for it. Mirrors the unit-tested lineage in
+ * test/orchestrator-review-lifecycle.test.ts's "6 consecutive rejections
+ * escalate..." case — same agent ids, same round count, same feedback
+ * shape — so `escalationContext`'s exact wire format ("Attempt N: ...",
+ * joined by blank lines) is guaranteed to match what this UI parses.
+ * `routedTo` on each reviewer task has to be set explicitly via
+ * `POST .../decision` — buildEscalationContext only counts a round whose
+ * card has `routedTo === "reviewer"` recorded, which a live orchestrator
+ * sweep sets automatically but a direct `/result` post does not.
+ */
+async function driveToEscalated(request: APIRequestContext, title: string, repo: string) {
+  const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo } });
+  let implementerId = (await created.json()).id as string;
+
+  for (let round = 1; round <= 6; round++) {
+    await request.post(`/tasks/${implementerId}/result`, { data: { agentId: "implementer", ok: true, summary: `attempt ${round}` } });
+
+    const afterImpl = await (await request.get("/tasks")).json();
+    const reviewer = afterImpl.find((t: { parentTaskId?: string }) => t.parentTaskId === implementerId);
+    await request.post(`/tasks/${reviewer.id}/decision`, {
+      data: {
+        matchedTags: ["review"],
+        candidates: [{ agentId: "reviewer", score: 1, reason: "tag overlap 1/1" }],
+        selected: "reviewer", confident: true, strategy: "rule", reason: "tag overlap 1/1",
+        decidedAt: new Date().toISOString(),
+      },
+    });
+    await request.post(`/tasks/${reviewer.id}/result`, {
+      data: { agentId: "reviewer", ok: true, verdict: "changes_requested", reviewFeedback: `round ${round}: still not right` },
+    });
+
+    if (round < 6) {
+      const afterVerdict = await (await request.get("/tasks")).json();
+      const nextAttempt = afterVerdict.find((t: { title: string; pushbackCount?: number }) => t.title === title && t.pushbackCount === round);
+      implementerId = nextAttempt.id;
+    }
+  }
+
+  const finalTasks = await (await request.get("/tasks")).json();
+  return finalTasks.find((t: { title: string; status: string }) => t.title === title && t.status === "escalated");
+}
 
 test.describe("Board view", () => {
   test("shows a version badge populated from GET /version", async ({ page }) => {
@@ -17,10 +65,12 @@ test.describe("Board view", () => {
     await expect(page.locator("#boardPanel")).toBeVisible();
     await expect(page.locator("#newTaskPanel")).toBeHidden();
 
-    // Status stat strip covers every real status, in order.
+    // Status stat strip covers every real status, in order — including
+    // pending-review/escalated (the automated-reviewer review lifecycle;
+    // see orchestrator.ts's finishResult/handleReviewVerdict).
     const statLabels = page.locator("#stats .l");
     await expect(statLabels).toHaveText([
-      "Inbox", "Ready", "Running", "Dispatched", "Review", "Done", "Failed", "No match",
+      "Inbox", "Ready", "Running", "Dispatched", "Pending review", "Review", "Escalated", "Done", "Failed", "No match",
     ]);
 
     // Task-by-status sits above the fleet boxes.
@@ -217,6 +267,80 @@ test.describe("Board view", () => {
     // The result content must still be there once the dust settles —
     // this is exactly what went permanently blank under the regression.
     await expect(drawer.locator("#tdResult")).toContainText("Spawned 2 subagents", { timeout: 5000 });
+  });
+
+  test("a pending-review task shows a read-only attempt indicator, never Merge/Discard/Mark-done", async ({ page, request }) => {
+    // pushbackCount: 2 set directly at creation (board.create passes it
+    // through untouched — see src/services/board.ts) so this exercises
+    // attempt N for N > 1, not just the trivial first-attempt case.
+    const created = await request.post("/tasks", {
+      data: { title: `Pending review test ${Date.now()}`, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo", pushbackCount: 2 },
+    });
+    const task = await created.json();
+    await request.post(`/tasks/${task.id}/result`, { data: { agentId: "implementer", ok: true, summary: "did the thing" } });
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(task.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer.locator("#tdMeta")).toContainText("Pending review");
+    await expect(drawer.locator("#tdActions")).toContainText("Automated review in progress (attempt 3 of 6).");
+    await expect(drawer.getByRole("button", { name: "Merge" })).toHaveCount(0);
+    await expect(drawer.getByRole("button", { name: "Discard" })).toHaveCount(0);
+    await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
+    await expect(drawer.getByRole("button", { name: "Mark failed" })).toHaveCount(0);
+
+    // Regression: an unrelated SSE event (another task appearing) must
+    // not flicker the indicator or reveal a review-gate button — see the
+    // 1363de5/35ab0a5 drawerLastResult fix this reuses (renderDrawerActions
+    // reads this branch straight off `task`, never off the cached result,
+    // so there's no async window for it to render wrong in).
+    await request.post("/tasks", { data: { title: `Unrelated ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+    await page.waitForTimeout(500);
+    await expect(drawer.locator("#tdActions")).toContainText("Automated review in progress (attempt 3 of 6).");
+    await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
+  });
+
+  test("an escalated task renders its full round-by-round timeline and the three resolution actions", async ({ page, request }) => {
+    const escalated = await driveToEscalated(request, `Escalation test ${Date.now()}`, "/tmp/wissel-e2e-repo");
+    expect(escalated).toBeDefined();
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(escalated.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer.locator("#tdMeta")).toContainText("Escalated");
+
+    // All 6 rounds present, in order, each with its own feedback text —
+    // the "scrollable round-by-round timeline" the card asks for, not
+    // just the raw joined string dumped into one block.
+    const timeline = drawer.locator("#tdEscalation");
+    await expect(timeline).toBeVisible();
+    const rounds = timeline.locator(".escalation-round");
+    await expect(rounds).toHaveCount(6);
+    for (let i = 1; i <= 6; i++) {
+      await expect(rounds.nth(i - 1).locator(".er-head")).toHaveText(`Attempt ${i}`);
+      await expect(rounds.nth(i - 1).locator(".er-feedback")).toHaveText(`round ${i}: still not right`);
+    }
+
+    // The three human-resolution actions, replacing Merge/Discard/Mark-
+    // done for this status — see renderDrawerActions' escalated branch
+    // for the Subtask D endpoint contract these call.
+    await expect(drawer.getByRole("button", { name: "Approve anyway" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Retry" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Abandon" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
+    await expect(drawer.getByRole("button", { name: "Mark failed" })).toHaveCount(0);
+
+    // Regression: unrelated board activity must not disturb the timeline
+    // or the action buttons — same flicker hazard the worktree
+    // Merge/Discard test above guards, for these new states.
+    await request.post("/tasks", { data: { title: `Unrelated ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+    await page.waitForTimeout(500);
+    await expect(rounds).toHaveCount(6);
+    await expect(drawer.getByRole("button", { name: "Approve anyway" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Retry" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Abandon" })).toBeVisible();
   });
 
   test("View diff reports a non-git repo honestly instead of an empty diff", async ({ page, request }) => {
