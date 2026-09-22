@@ -179,6 +179,23 @@ test("POST /tasks then GET /tasks round-trips, defaulting dependsOn to []", asyn
   expect(await single.json()).toEqual(created);
 });
 
+test("GET /tasks?status=escalated finds an escalated task — the human queue for a review-pushback lineage that hit its limit", async () => {
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+
+  const other = (await (
+    await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "not escalated", body: "", labels: [], repo: "r" }) }))
+  ).json()) as TaskCard;
+  const escalatee = await board.create({ title: "escalated one", body: "", labels: ["code"], repo: "r" });
+  await board.escalate(escalatee.id, "Attempt 1: still broken\n\nAttempt 2: still broken");
+
+  const res = await app(req("/tasks?status=escalated"));
+  const tasks = (await res.json()) as TaskCard[];
+  expect(tasks.map((t) => t.id)).toEqual([escalatee.id]);
+  expect(tasks[0]!.escalationContext).toBe("Attempt 1: still broken\n\nAttempt 2: still broken");
+  expect(tasks.some((t) => t.id === other.id)).toBe(false);
+});
+
 test("GET /tasks/:id 404s for unknown id", async () => {
   const app = await makeApp();
   const res = await app(req("/tasks/nope"));
@@ -376,7 +393,7 @@ test("POST /tasks round-trips parentTaskId", async () => {
   expect(((await fetched.json()) as TaskCard).parentTaskId).toBe(parentTask.id);
 });
 
-test("POST /tasks/:id/result routes a write-tier report to review, a readonly one to done", async () => {
+test("POST /tasks/:id/result routes a write-tier report to pending-review (implementer auto-hands-off to reviewer), a readonly one to done", async () => {
   const app = await makeApp();
 
   const writeTask = (await (
@@ -388,7 +405,10 @@ test("POST /tasks/:id/result routes a write-tier report to review, a readonly on
       body: JSON.stringify({ agentId: "implementer", ok: true, summary: "opened a PR" }),
     }),
   );
-  expect((await (await app(req(`/tasks/${writeTask.id}`))).json() as TaskCard).status).toBe("review");
+  // "implementer" declares handoffs: [reviewer] — a plain write-tier
+  // agent with no such handoff still lands on "review" directly, see
+  // orchestrator.test.ts's "no reviewer handoff" regression test.
+  expect((await (await app(req(`/tasks/${writeTask.id}`))).json() as TaskCard).status).toBe("pending-review");
 
   const readonlyTask = (await (
     await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "r", body: "", labels: [], repo: "r" }) }))
@@ -460,7 +480,10 @@ test("POST /tasks/:id/run routes and runs a task on the injected manual executor
     if (status !== "inbox" && status !== "running") break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  expect(status).toBe("review");
+  // "implementer" (routed via the "code" label) declares handoffs:
+  // [reviewer], so a successful run lands on pending-review with an
+  // auto-created reviewer task, not a bare review.
+  expect(status).toBe("pending-review");
   expect(seen.map((t) => t.id)).toEqual([created.id]);
 
   const missing = await app(req("/tasks/nope/run", { method: "POST" }));

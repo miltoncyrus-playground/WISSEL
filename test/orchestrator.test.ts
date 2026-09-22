@@ -139,9 +139,12 @@ test("with executeWriteTier on, a write-tier task runs on a registered write exe
   await orchestrator.sweep();
 
   const updated = await board.get(task.id);
-  // Success still gates on review, not done — running it locally doesn't
-  // relax the human-look-at-the-diff policy.
-  expect(updated!.status).toBe("review");
+  // Success still gates on review — now via an automatic reviewer pass
+  // first (pending-review), since the real "implementer" agent declares
+  // handoffs: [reviewer] (see orchestrator-review-lifecycle.test.ts for
+  // the full auto-handoff flow). Running it locally doesn't relax that
+  // gate.
+  expect(updated!.status).toBe("pending-review");
   expect(updated!.routedTo).toBe("implementer");
   expect(seen.map((t) => t.id)).toEqual([task.id]);
 });
@@ -157,11 +160,32 @@ test("executeWriteTier on with no write executor registered errors out instead o
   expect(updated!.routedTo).toBeUndefined();
 });
 
-test("finishResult moves a successful write-tier report to review, not done", async () => {
-  const { board, registry } = await setup([]);
-  const task = await board.create({ title: "build the thing", body: "", labels: ["code"], repo: "r" });
+// Regression: a write-tier agent that does NOT declare handoffs: [reviewer]
+// (unlike the real "implementer" agent, which now does — see
+// orchestrator-review-lifecycle.test.ts) must keep wissel's original
+// review gate exactly as it always was, with no auto-handoff detour.
+const plainWriteAgent: AgentDef = {
+  id: "plain-write",
+  name: "Plain write",
+  kind: "agent",
+  tier: "write",
+  description: "d",
+  whenToUse: "w",
+  tags: [],
+  executor: "handoff",
+  inputs: [],
+  outputs: [],
+  trustLevel: "medium",
+  toolAccess: [],
+  costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.1 },
+};
 
-  await finishResult(board, registry, { taskId: task.id, agentId: "implementer", ok: true, summary: "opened a PR" });
+test("finishResult moves a successful write-tier report to review, not done, when the agent declares no reviewer handoff", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([plainWriteAgent]);
+  const task = await board.create({ title: "build the thing", body: "", labels: [], repo: "r" });
+
+  await finishResult(board, registry, { taskId: task.id, agentId: "plain-write", ok: true, summary: "opened a PR" });
 
   expect((await board.get(task.id))!.status).toBe("review");
 });
@@ -486,12 +510,14 @@ test("runNow executes a write-tier task immediately even without executeWriteTie
     fakeExecutor("write", async (t, agent) => ({ taskId: t.id, agentId: agent.id, ok: true, summary: "opened a PR" })),
   ]);
   // runNow returns once the run is in flight, not once it's done —
-  // wait for the background process() to land.
-  await waitForStatus(board, task.id, "review");
+  // wait for the background process() to land. "implementer" declares
+  // handoffs: [reviewer], so a successful run lands on pending-review
+  // (with an auto-created reviewer task), not a bare review.
+  await waitForStatus(board, task.id, "pending-review");
 
   const updated = await board.get(task.id);
   expect(updated!.routedTo).toBe("implementer");
-  expect(updated!.status).toBe("review");
+  expect(updated!.status).toBe("pending-review");
 });
 
 test("runNow throws synchronously for an unknown task, before touching anything", async () => {
@@ -514,7 +540,20 @@ test("runNow throws if a run for that task is already in flight", async () => {
 
   await expect(orchestrator.runNow(task.id, [])).rejects.toThrow("already running");
   release();
-  await waitForStatus(board, task.id, "review");
+  await waitForStatus(board, task.id, "pending-review");
+});
+
+test("runNow rejects a click on a superseded task instead of resurrecting its abandoned worktree", async () => {
+  const { board, orchestrator } = await setup([]);
+  const original = await board.create({ title: "build the thing", body: "", labels: ["code"], repo: "r" });
+  const reattempt = await board.create({
+    title: "build the thing", body: "", labels: ["code"], repo: "r", reviewLineageId: original.id, pushbackCount: 1,
+  });
+  await board.setSupersededBy(original.id, reattempt.id);
+
+  await expect(orchestrator.runNow(original.id, [])).rejects.toThrow(
+    `task ${original.id} was superseded by ${reattempt.id} — run that task instead`,
+  );
 });
 
 async function waitForStatus(board: SqliteBoard, taskId: string, status: TaskCard["status"]): Promise<void> {

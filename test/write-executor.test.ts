@@ -226,6 +226,31 @@ test("a spawn failure (e.g. claude not on PATH) becomes a failed TaskResult, not
   }
 });
 
+test("a pushback re-attempt (reviewLineageId set) keys its worktree off the lineage id, not its own task id", async () => {
+  const home = await fakeHome();
+  try {
+    let seenCwd = "";
+    const executor = new WriteExecutor({
+      homeDir: home,
+      runner: async (cmd, opts) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenCwd = opts.cwd;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "shipped" }), stderr: "", exitCode: 0 };
+      },
+    });
+
+    const reattempt: TaskCard = { ...task, id: "t2", reviewLineageId: "t1" };
+    const result = await executor.run(reattempt, agent);
+
+    // Same worktree path/branch as the original attempt (task.id "t1"),
+    // not a fresh one under "t2" — the whole point of lineage reuse.
+    expect(seenCwd).toBe(join(home, ".wissel", "worktrees", "t1"));
+    expect(result.worktree).toEqual({ path: join(home, ".wissel", "worktrees", "t1"), branch: "wissel/t1" });
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("a worktree creation failure becomes a failed TaskResult without ever calling claude", async () => {
   const home = await fakeHome();
   try {

@@ -19,14 +19,14 @@ function worktreesRoot(homeDir?: string): string {
   return join(homeDir ?? homedir(), ".wissel", "worktrees");
 }
 
-function branchName(taskId: string): string {
-  return `wissel/${taskId}`;
+function branchName(worktreeKey: string): string {
+  return `wissel/${worktreeKey}`;
 }
 
 /**
- * Creates an isolated git worktree for a write-tier task, on its own
- * branch off the repo's current HEAD, under `~/.wissel/worktrees/<taskId>`
- * — deliberately outside any repo directory, mirroring the existing
+ * Creates an isolated git worktree on its own branch off the repo's
+ * current HEAD, under `~/.wissel/worktrees/<worktreeKey>` — deliberately
+ * outside any repo directory, mirroring the existing
  * `~/.wissel/board.sqlite` convention. Exists so a write-tier subprocess
  * never edits `task.repo`'s own live working tree directly: when `repo`
  * is wissel's own source (a self-hosted task), that tree is also what
@@ -34,16 +34,26 @@ function branchName(taskId: string): string {
  * was confirmed live to orphan the in-flight subprocess mid-run — see
  * docs/SDD-worktree-isolation.md.
  *
+ * `worktreeKey` is normally just the task id — one worktree per task.
+ * The one deliberate exception: a write-tier task that's a pushback
+ * re-attempt in a review lineage (TaskCard.reviewLineageId set) passes
+ * the *lineage* id instead, so every re-attempt after a
+ * `changes_requested` verdict lands back in the exact same worktree/
+ * branch the reviewer just looked at, instead of a fresh one off HEAD
+ * that would lose the very diff under review. See
+ * WriteExecutor.run/CodexWriteExecutor.run, the only callers.
+ *
  * Idempotent: if the worktree already exists (a retried task via
- * `POST /tasks/:id/run`), reuses it instead of failing — `git worktree
- * add` on an already-existing path/branch would otherwise error on every
- * retry, and a retry is exactly the case that needs this most.
+ * `POST /tasks/:id/run`, or exactly this lineage-reuse case), reuses it
+ * instead of failing — `git worktree add` on an already-existing
+ * path/branch would otherwise error every time, and both a retry and a
+ * pushback re-attempt are exactly the cases that need this most.
  */
-export async function createTaskWorktree(repo: string, taskId: string, opts: WorktreeOptions): Promise<TaskWorktree | { error: string }> {
+export async function createTaskWorktree(repo: string, worktreeKey: string, opts: WorktreeOptions): Promise<TaskWorktree | { error: string }> {
   const root = worktreesRoot(opts.homeDir);
   mkdirSync(root, { recursive: true });
-  const path = join(root, taskId);
-  const branch = branchName(taskId);
+  const path = join(root, worktreeKey);
+  const branch = branchName(worktreeKey);
 
   const existing = await opts.runner(["git", "worktree", "list", "--porcelain"], { cwd: repo });
   if (existing.exitCode === 0 && existing.stdout.includes(`worktree ${path}`)) {
@@ -52,7 +62,7 @@ export async function createTaskWorktree(repo: string, taskId: string, opts: Wor
 
   const result = await opts.runner(["git", "worktree", "add", "-b", branch, path, "HEAD"], { cwd: repo });
   if (result.exitCode !== 0) {
-    return { error: `failed to create worktree for task ${taskId}: ${(result.stderr || result.stdout).trim()}` };
+    return { error: `failed to create worktree for ${worktreeKey}: ${(result.stderr || result.stdout).trim()}` };
   }
   return { path, branch };
 }

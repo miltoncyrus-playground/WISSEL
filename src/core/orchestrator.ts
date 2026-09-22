@@ -13,16 +13,26 @@ import type { Executor, RoutingDecision, TaskCard, TaskResult } from "./types.ts
  * Records a result wherever it came from — an executor wissel ran itself,
  * or an external report for a write-tier task wissel only decided and
  * handed off — and applies the one piece of policy that decides where a
- * finished task lands: a write-tier success needs a human look at the
- * diff before it's "done", read-only work doesn't. The one narrow,
- * explicit exception is an agent that declares both `autoMerge: true`
- * and `trustLevel: "high"` (see AgentDef.autoMerge) — its successful
- * write-tier runs skip the review stop and land on `done` directly, with
- * a worktree result actually merged first (never just a status flip
- * pretending the merge happened).
+ * finished task lands: a write-tier success needs a look at the diff
+ * before it's "done", read-only work doesn't. There are two narrow,
+ * explicit exceptions to "review means a human":
  *
- * `runner` is only used for that auto-merge path — injectable so tests
- * never spawn a real git process; defaults to the real one.
+ * - An agent that declares both `autoMerge: true` and `trustLevel:
+ *   "high"` (see AgentDef.autoMerge) skips the review stop and lands on
+ *   `done` directly, with a worktree result actually merged first (never
+ *   just a status flip pretending the merge happened).
+ * - An agent that declares `reviewer` in its `handoffs` (see
+ *   AgentDef.handoffs) doesn't stop for a human yet either — it queues
+ *   an automated reviewer pass first (`pending-review`, see
+ *   spawnReviewerTask). That reviewer's own verdict, once it comes back
+ *   through this same function (see handleReviewVerdict), is what
+ *   finally resumes this exact done-vs-review decision for the original
+ *   task — approve behaves like a plain write-tier success arriving now,
+ *   changes_requested spawns a pushback re-attempt or escalates.
+ *
+ * `runner` is used for the auto-merge path and passed through to
+ * handleReviewVerdict for the same reason — injectable so tests never
+ * spawn a real git process; defaults to the real one.
  */
 export async function finishResult(
   board: Board,
@@ -41,8 +51,30 @@ export async function finishResult(
     return;
   }
 
+  // A reviewer pass carries a verdict (see TaskResult.verdict) — that
+  // entirely bypasses the tier-based done/review split below, since a
+  // reviewer is readonly-tier and would otherwise land straight on
+  // `done` the same as any other read-only success, silently dropping
+  // the verdict on the floor.
+  if (result.verdict !== undefined) {
+    await handleReviewVerdict(board, registry, result, runner);
+    return;
+  }
+
   if (agent?.tier !== "write") {
     await board.move(result.taskId, "done");
+    return;
+  }
+
+  if (agent.handoffs?.includes("reviewer")) {
+    const task = await board.get(result.taskId);
+    // A vanished task (deleted mid-run) has nothing left to queue a
+    // review for — recordResult above already captured the result for
+    // history; there's no card left to move or spawn a follow-up from.
+    if (task) {
+      await board.move(result.taskId, "pending-review");
+      await spawnReviewerTask(board, task, result);
+    }
     return;
   }
 
@@ -56,6 +88,157 @@ export async function finishResult(
   // gone) — falls back to the same human gate every other write-tier
   // success gets. Never silently drops a failed auto-merge attempt.
   await board.move(result.taskId, "review");
+}
+
+/**
+ * Queues an automated reviewer pass for a write-tier success instead of
+ * stopping for a human yet — see finishResult's `handoffs.includes
+ * ("reviewer")` branch, the only caller. `reviewLineageId` is set to the
+ * implementer task's own id when this is the first pass in a new
+ * lineage, deliberately (not a random id): WriteExecutor/
+ * CodexWriteExecutor key a pushback re-attempt's worktree off
+ * `task.reviewLineageId ?? task.id`, so reusing the original task's own
+ * id as the lineage id is what makes worktree reuse fall out for free,
+ * with no separate id to keep in sync.
+ *
+ * `labels: ["review"]` is deliberate, not decorative: resolveHandoffAllowlist
+ * restricts this follow-up's routing candidates to exactly the
+ * implementer's declared handoffs (here, `["reviewer"]`), but the router
+ * still requires a positive tag-overlap score to route with confidence
+ * (see RuleStrategy) — zero labels or a label reviewer's own tags don't
+ * contain would land this on `no-match` even though `reviewer` is the
+ * only eligible candidate. `"review"` is one of reviewer's declared tags
+ * in agents/manifest.yaml, so it always scores a confident match.
+ *
+ * `repo` points at the implementer's worktree, when it ran in one — the
+ * whole reason the reviewer's own read-only run (ReadOnlyExecutor spawns
+ * `claude` with `cwd: task.repo`) actually sees the diff under review
+ * instead of the original repo's unrelated working tree.
+ */
+async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result: TaskResult): Promise<void> {
+  const reviewLineageId = implementerTask.reviewLineageId ?? implementerTask.id;
+  await board.create({
+    title: `Review: ${implementerTask.title}`,
+    body: implementerTask.body,
+    labels: ["review"],
+    repo: result.worktree?.path ?? implementerTask.repo,
+    parentTaskId: implementerTask.id,
+    reviewLineageId,
+    pushbackCount: 0,
+  });
+}
+
+/**
+ * Everything that happens once an automated reviewer pass reports back
+ * — the only place `TaskResult.verdict` is ever read. Always marks the
+ * reviewer task itself `done` first (its job, unlike the implementer's,
+ * ends the moment it reports a verdict either way), then either resumes
+ * the implementer task's own done-vs-review decision (approve), spawns a
+ * pushback re-attempt (changes_requested, under the limit), or escalates
+ * to a human (changes_requested, at the limit) — see resumeAfterApproval,
+ * spawnPushbackImplementer, and the escalation branch below respectively.
+ */
+async function handleReviewVerdict(board: Board, registry: Registry, result: TaskResult, runner: CommandRunner): Promise<void> {
+  const reviewerTask = await board.get(result.taskId);
+  if (!reviewerTask) return; // vanished mid-run — nothing left to resolve
+
+  await board.move(reviewerTask.id, "done");
+
+  if (!reviewerTask.parentTaskId) return;
+  const implementerTask = await board.get(reviewerTask.parentTaskId);
+  if (!implementerTask) return; // the implementer task it was reviewing is gone
+
+  if (result.verdict === "approve") {
+    await resumeAfterApproval(board, registry, implementerTask, runner);
+    return;
+  }
+
+  const pushbackCount = implementerTask.pushbackCount ?? 0;
+  if (pushbackCount >= 5) {
+    const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
+    const escalationContext = await buildEscalationContext(board, lineageId);
+    await board.escalate(implementerTask.id, escalationContext);
+    return;
+  }
+
+  await spawnPushbackImplementer(board, implementerTask, reviewerTask, result);
+}
+
+/**
+ * An approved review resumes exactly the done-vs-review policy
+ * finishResult would have applied to the implementer's own success, had
+ * it not been deferred into `pending-review` to wait for this — same
+ * autoMerge + trustLevel: "high" fast path, same worktree-merge
+ * mechanics (tryAutoMerge), same fallback to `review` for a human. Reads
+ * the implementer's own recorded result (for its `worktree`, if any) and
+ * its routed agent (for `autoMerge`/`trustLevel`) rather than re-deriving
+ * either from the reviewer's result, which carries neither.
+ */
+async function resumeAfterApproval(board: Board, registry: Registry, implementerTask: TaskCard, runner: CommandRunner): Promise<void> {
+  const agent = implementerTask.routedTo ? registry.get(implementerTask.routedTo) : undefined;
+  const originalResult = await board.getResult(implementerTask.id);
+
+  if (agent?.autoMerge && agent.trustLevel === "high" && originalResult && (await tryAutoMerge(board, originalResult, runner))) {
+    await board.move(implementerTask.id, "done");
+    return;
+  }
+
+  await board.move(implementerTask.id, "review");
+}
+
+/**
+ * A rejected review, under the pushback limit: creates the next
+ * implementer attempt in the same lineage — same title/labels/repo,
+ * `parentTaskId` pointing at the reviewer task (not the superseded
+ * implementer task) so it inherits the reviewer's own declared handoffs
+ * via resolveHandoffAllowlist, `pushbackCount` incremented, and the
+ * reviewer's feedback appended to the body as a clearly delimited,
+ * cumulative section (attempt N's body carries every prior round's
+ * feedback too, not just the latest) — then marks the superseded card
+ * with `supersededBy`, never touching its `status` or repurposing
+ * `failed` (see TaskCard.supersededBy — this isn't a real failure, and
+ * conflating the two would skew failure-rate metrics for something
+ * that's actually the system working as designed).
+ */
+async function spawnPushbackImplementer(board: Board, implementerTask: TaskCard, reviewerTask: TaskCard, result: TaskResult): Promise<void> {
+  const newPushbackCount = (implementerTask.pushbackCount ?? 0) + 1;
+  const reviewLineageId = implementerTask.reviewLineageId ?? implementerTask.id;
+  const feedback = result.reviewFeedback ?? "(reviewer requested changes but gave no feedback text)";
+  const body = `${implementerTask.body}\n\n---\nReviewer feedback (attempt ${newPushbackCount}):\n${feedback}`;
+
+  const nextAttempt = await board.create({
+    title: implementerTask.title,
+    body,
+    labels: implementerTask.labels,
+    repo: implementerTask.repo,
+    parentTaskId: reviewerTask.id,
+    reviewLineageId,
+    pushbackCount: newPushbackCount,
+  });
+
+  await board.setSupersededBy(implementerTask.id, nextAttempt.id);
+}
+
+/**
+ * The full, ordered history of reviewer feedback across a lineage,
+ * each entry labeled with its attempt number — what a human reads
+ * instead of replaying every TaskCard in the chain by hand once a task
+ * escalates. Walks `getLineage` (every card sharing this lineage id, in
+ * creation order) filtered to the reviewer cards specifically, and reads
+ * each one's own recorded result for the feedback text it left behind.
+ */
+async function buildEscalationContext(board: Board, reviewLineageId: string): Promise<string> {
+  const lineage = await board.getLineage(reviewLineageId);
+  const entries: string[] = [];
+  let attempt = 1;
+  for (const card of lineage) {
+    if (card.routedTo !== "reviewer") continue;
+    const result = await board.getResult(card.id);
+    if (result?.reviewFeedback === undefined) continue;
+    entries.push(`Attempt ${attempt}: ${result.reviewFeedback}`);
+    attempt++;
+  }
+  return entries.join("\n\n");
 }
 
 /** True only when the write-tier success is actually safe to land on
@@ -188,13 +371,19 @@ export class Orchestrator {
    * task.result board events, same as the automatic loop; a caller that
    * needs the outcome watches those (or polls the task), it doesn't await
    * this call. Throws synchronously, before anything starts, if the task
-   * doesn't exist or a run is already in flight for it — an immediate,
-   * honest error instead of a silently dropped click or a double-run.
+   * doesn't exist, is already in flight, or has been superseded by a
+   * pushback re-attempt (see TaskCard.supersededBy) — a click on an
+   * abandoned card from a stale board view must never resurrect its
+   * worktree/branch out from under whichever re-attempt is now the live
+   * one in that lineage.
    */
   async runNow(taskId: string, executors: Executor[]): Promise<void> {
     if (this.inFlight.has(taskId)) throw new Error(`task ${taskId} is already running`);
     const task = await this.board.get(taskId);
     if (!task) throw new Error(`task not found: ${taskId}`);
+    if (task.supersededBy) {
+      throw new Error(`task ${taskId} was superseded by ${task.supersededBy} — run that task instead`);
+    }
 
     this.inFlight.add(taskId);
     void this.process(task, { executors, forceExecute: true }).finally(() => this.inFlight.delete(taskId));
