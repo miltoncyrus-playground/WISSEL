@@ -37,6 +37,10 @@ export default defineConfig({
       WISSEL_PORT: String(PORT),
       WISSEL_DB_PATH: ":memory:",
       WISSEL_TELEMETRY_PATH: "/tmp/wissel-e2e-telemetry.jsonl",
+      // Isolated from the real project file — confirmed live the hard
+      // way, twice: an e2e run without this overwrote the real,
+      // git-committed memory/lessons.md with test fixture content.
+      WISSEL_MEMORY_PATH: "/tmp/wissel-e2e-memory-lessons.md",
     },
   },
 });
