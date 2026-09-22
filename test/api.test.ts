@@ -490,6 +490,113 @@ test("POST /tasks/:id/run routes and runs a task on the injected manual executor
   expect(missing.status).toBe(404);
 });
 
+test("POST /tasks/:id/escalation/approve forces an escalated task to review, recording an audited override; 400 when not escalated", async () => {
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+  const escalated = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  await board.escalate(escalated.id, "Attempt 1: still broken\n\nAttempt 2: still broken");
+
+  const sse = await app(req("/events"));
+  const reader = sse.body!.getReader();
+  await reader.read(); // ": connected" preamble
+
+  const missingFields = await app(req(`/tasks/${escalated.id}/escalation/approve`, { method: "POST", body: JSON.stringify({}) }));
+  expect(missingFields.status).toBe(400);
+
+  const res = await app(
+    req(`/tasks/${escalated.id}/escalation/approve`, {
+      method: "POST",
+      body: JSON.stringify({ actor: "milton", reason: "read the diff myself, it's fine" }),
+    }),
+  );
+  expect(res.status).toBe(200);
+  const task = (await res.json()) as TaskCard;
+  expect(task.status).toBe("review");
+  expect((await (await app(req(`/tasks/${escalated.id}`))).json() as TaskCard).status).toBe("review");
+
+  const decoder = new TextDecoder();
+  const chunk = decoder.decode((await reader.read()).value);
+  expect(chunk).toContain("task.override");
+  expect(chunk).toContain("milton");
+  expect(chunk).toContain("read the diff myself, it's fine");
+  await reader.cancel();
+
+  const notEscalated = await board.create({ title: "not escalated", body: "", labels: [], repo: "r" });
+  const rejected = await app(
+    req(`/tasks/${notEscalated.id}/escalation/approve`, {
+      method: "POST",
+      body: JSON.stringify({ actor: "milton", reason: "irrelevant" }),
+    }),
+  );
+  expect(rejected.status).toBe(400);
+  expect((await (await app(req(`/tasks/${notEscalated.id}`))).json() as TaskCard).status).toBe("inbox");
+
+  const missingId = await app(
+    req("/tasks/nope/escalation/approve", { method: "POST", body: JSON.stringify({ actor: "milton", reason: "x" }) }),
+  );
+  expect(missingId.status).toBe(404);
+});
+
+test("POST /tasks/:id/escalation/abandon marks an escalated task failed; 400 when not escalated", async () => {
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+  const escalated = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  await board.escalate(escalated.id, "Attempt 1: still broken");
+
+  const res = await app(req(`/tasks/${escalated.id}/escalation/abandon`, { method: "POST" }));
+  expect(res.status).toBe(200);
+  expect(((await res.json()) as TaskCard).status).toBe("failed");
+  expect((await (await app(req(`/tasks/${escalated.id}`))).json() as TaskCard).status).toBe("failed");
+
+  const notEscalated = await board.create({ title: "not escalated", body: "", labels: [], repo: "r" });
+  const rejected = await app(req(`/tasks/${notEscalated.id}/escalation/abandon`, { method: "POST" }));
+  expect(rejected.status).toBe(400);
+
+  const missingId = await app(req("/tasks/nope/escalation/abandon", { method: "POST" }));
+  expect(missingId.status).toBe(404);
+});
+
+test("POST /tasks/:id/escalation/retry spawns a fresh pushback task with pushbackCount reset and a new reviewLineageId; 400 when not escalated or body missing", async () => {
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+  const escalated = await board.create({ title: "t", body: "original body", labels: ["code"], repo: "r", pushbackCount: 5, reviewLineageId: "exhausted-lineage" });
+  await board.escalate(escalated.id, "Attempt 1..6: same objection every time");
+
+  const noBody = await app(req(`/tasks/${escalated.id}/escalation/retry`, { method: "POST", body: JSON.stringify({}) }));
+  expect(noBody.status).toBe(400);
+
+  const res = await app(
+    req(`/tasks/${escalated.id}/escalation/retry`, { method: "POST", body: JSON.stringify({ body: "human-edited instructions" }) }),
+  );
+  expect(res.status).toBe(201);
+  const nextAttempt = (await res.json()) as TaskCard;
+  expect(nextAttempt.title).toBe("t");
+  expect(nextAttempt.body).toBe("human-edited instructions");
+  expect(nextAttempt.labels).toEqual(["code"]);
+  expect(nextAttempt.repo).toBe("r");
+  expect(nextAttempt.pushbackCount).toBe(0);
+  expect(nextAttempt.status).toBe("inbox");
+  expect(nextAttempt.reviewLineageId).toBeDefined();
+  expect(nextAttempt.reviewLineageId).not.toBe("exhausted-lineage");
+
+  // The old escalated card is superseded, not resurrected — mirrors
+  // TaskCard.supersededBy's contract for a pushback re-attempt.
+  const oldCard = (await (await app(req(`/tasks/${escalated.id}`))).json()) as TaskCard;
+  expect(oldCard.status).toBe("escalated");
+  expect(oldCard.supersededBy).toBe(nextAttempt.id);
+
+  const notEscalated = await board.create({ title: "not escalated", body: "", labels: [], repo: "r" });
+  const rejected = await app(
+    req(`/tasks/${notEscalated.id}/escalation/retry`, { method: "POST", body: JSON.stringify({ body: "x" }) }),
+  );
+  expect(rejected.status).toBe(400);
+
+  const missingId = await app(
+    req("/tasks/nope/escalation/retry", { method: "POST", body: JSON.stringify({ body: "x" }) }),
+  );
+  expect(missingId.status).toBe(404);
+});
+
 test("POST /tasks/:id/run 409s when a run for that task is already in flight", async () => {
   let release!: () => void;
   const blocked = new Promise<void>((resolve) => { release = resolve; });
