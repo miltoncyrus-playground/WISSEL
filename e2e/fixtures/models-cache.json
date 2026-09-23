@@ -1,0 +1,6 @@
+{
+  "e2e-fixture-harness": {
+    "models": ["fixture-model-a", "fixture-model-b"],
+    "fetchedAt": "2026-01-01T00:00:00.000Z"
+  }
+}

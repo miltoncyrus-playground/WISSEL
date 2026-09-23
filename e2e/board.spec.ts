@@ -1,4 +1,12 @@
+import { readFile } from "node:fs/promises";
 import { test, expect, type APIRequestContext } from "@playwright/test";
+
+/** Same disposable tmp path playwright.config.ts's webServer.command
+ *  seeds from e2e/fixtures/harnesses.yaml before every run — read
+ *  directly off disk here (not via any API) so the model-selection
+ *  tests below can assert on the real persisted YAML, not just the
+ *  in-memory pool's view of it. */
+const HARNESSES_FIXTURE_PATH = "/tmp/wissel-e2e-harnesses.yaml";
 
 /**
  * Drives one implementer task through 6 straight reviewer rejections to
@@ -682,6 +690,91 @@ test.describe("Board view", () => {
     await expect(panel).toBeVisible();
     await page.locator("#hmOverlay").click({ position: { x: 5, y: 5 } });
     await expect(panel).toBeHidden();
+  });
+
+  // Unlike the panel-render test above, this one *does* mutate the real
+  // file — safely, because playwright.config.ts points WISSEL_HARNESSES_PATH
+  // at a disposable tmp copy of e2e/fixtures/harnesses.yaml
+  // (e2e-fixture-harness) rather than this repo's own real
+  // harnesses.yaml. Drives the actual <select> the real change listener
+  // is wired to (renderHarnessPanel), not a route-intercepted stand-in,
+  // so this proves the whole client -> POST /harnesses/:id/model ->
+  // harness-manifest.ts round trip, including that the fixture's leading
+  // comment block survives the yaml Document-API rewrite.
+  test("selecting a model for a harness persists it to harnesses.yaml (comments preserved) and reflects after refetch", async ({ page }) => {
+    await page.goto("/board");
+    await page.locator("#hmOpenBtn").click();
+
+    const panel = page.locator("#harnessPanel");
+    await expect(panel).toBeVisible();
+
+    const select = page.locator("#hmModel-e2e-fixture-harness");
+    await expect(select).toBeVisible();
+    await expect(select).toHaveValue("");
+    await expect(select.locator("option")).toHaveText(["Default (agent's own)", "fixture-model-a", "fixture-model-b"]);
+
+    await select.selectOption("fixture-model-a");
+    await expect(select).toHaveValue("fixture-model-a");
+    await expect(panel.locator(".hm-error")).toHaveCount(0);
+
+    const written = await readFile(HARNESSES_FIXTURE_PATH, "utf8");
+    expect(written).toContain("id: e2e-fixture-harness");
+    expect(written).toContain("model: fixture-model-a");
+    // The fixture's own explanatory header comment, byte-preserved by
+    // setHarnessModel's yaml Document-API round trip (see
+    // src/core/harness-manifest.ts) — a plain parse+stringify would have
+    // dropped this.
+    expect(written).toContain("e2e fixture — playwright.config.ts's webServer.command copies this");
+
+    // Reload — a fresh GET /harnesses on page load, not the optimistic
+    // client-side render from the fetch above — still shows the
+    // persisted value.
+    await page.reload();
+    await page.locator("#hmOpenBtn").click();
+    await expect(page.locator("#hmModel-e2e-fixture-harness")).toHaveValue("fixture-model-a");
+  });
+
+  // Real invalid-model rejection, not a route-intercepted stand-in: the
+  // dropdown itself can only ever offer options from the harness's own
+  // cached availableModels, so an actually-invalid attempt has to come
+  // from a stale option outstaying its welcome (e.g. the cache changed
+  // out from under an already-rendered panel) — simulated here by
+  // appending one extra <option> and selecting it, which fires the exact
+  // same real change listener/fetch/server round trip a live race would.
+  test("an invalid model attempt surfaces the inline error and leaves harnesses.yaml untouched", async ({ page }) => {
+    await page.goto("/board");
+    await page.locator("#hmOpenBtn").click();
+
+    const panel = page.locator("#harnessPanel");
+    await expect(panel).toBeVisible();
+
+    const select = page.locator("#hmModel-e2e-fixture-harness");
+    await expect(select).toBeVisible();
+    // Whatever's actually persisted right now (the prior test in this
+    // file already set it to "fixture-model-a") — captured rather than
+    // assumed, since this test's own point is that a rejected attempt
+    // never changes it, not what its starting value happens to be.
+    const originalValue = await select.inputValue();
+
+    const before = await readFile(HARNESSES_FIXTURE_PATH, "utf8");
+
+    await select.evaluate((el: HTMLSelectElement) => {
+      const opt = document.createElement("option");
+      opt.value = "stale-invalid-model";
+      opt.textContent = "stale-invalid-model";
+      el.appendChild(opt);
+    });
+    await select.selectOption("stale-invalid-model");
+
+    await expect(panel.locator(".hm-error")).toContainText(
+      'model "stale-invalid-model" is not in the known model list for harness "e2e-fixture-harness"',
+    );
+    // The select snaps back to whatever's actually persisted (never the
+    // rejected stale value) once the error re-render runs.
+    await expect(select).toHaveValue(originalValue);
+
+    const after = await readFile(HARNESSES_FIXTURE_PATH, "utf8");
+    expect(after).toBe(before);
   });
 
   test("an empty column collapses to just its header instead of reserving full card space", async ({ page }) => {

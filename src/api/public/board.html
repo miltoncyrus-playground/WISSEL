@@ -263,6 +263,11 @@
   .hm-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
   .hm-toggle.is-enabled { border-color: var(--critical); color: var(--critical); }
   .hm-toggle.is-enabled:hover:not(:disabled) { border-color: var(--critical); color: var(--critical); opacity: 0.8; }
+  .hm-model-select {
+    appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-1);
+    font: inherit; font-size: 11.5px; font-weight: 600; padding: 5px 8px; border-radius: 7px; cursor: pointer; flex: none; max-width: 160px;
+  }
+  .hm-model-select:hover { border-color: var(--accent); }
   .hm-error { font-size: 11.5px; color: var(--critical); margin-top: 4px; }
   .hm-empty { font-size: 12.5px; color: var(--ink-muted); padding: 8px 0; }
 
@@ -1386,6 +1391,33 @@
 
       row.appendChild(main);
 
+      // Per-harness default model (Harness.model, see the precedence
+      // order documented beside CostProfile in types.ts) — reuses the
+      // native-<select> idiom #ntParentTask already uses elsewhere in
+      // this file. Options come from this harness's own cached
+      // `availableModels` (see GET /harnesses); a `model` that's
+      // currently set but has since fallen out of that list (a stale
+      // selection from before the last refresh) is added as an extra
+      // option so the select never lies about what's actually persisted.
+      var modelSelect = document.createElement("select");
+      modelSelect.className = "hm-model-select";
+      modelSelect.id = "hmModel-" + h.id;
+      var defaultOpt = document.createElement("option");
+      defaultOpt.value = "";
+      defaultOpt.textContent = "Default (agent's own)";
+      modelSelect.appendChild(defaultOpt);
+      var models = h.availableModels || [];
+      if (h.model && models.indexOf(h.model) === -1) models = models.concat([h.model]);
+      models.forEach(function (m) {
+        var opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = m;
+        modelSelect.appendChild(opt);
+      });
+      modelSelect.value = h.model || "";
+      modelSelect.addEventListener("change", function () { setHarnessModel(h.id, modelSelect.value); });
+      row.appendChild(modelSelect);
+
       var toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "hm-toggle" + (h.enabled ? " is-enabled" : "");
@@ -1408,6 +1440,28 @@
     hmActionError = null;
     var action = enable ? "enable" : "disable";
     fetch("/harnesses/" + id + "/" + action, { method: "POST" }).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).then(function () {
+      renderHarnessPanel();
+    }).catch(function (err) {
+      hmActionError = { id: id, message: err.message };
+      renderHarnessPanel();
+    });
+  }
+
+  // Sets (or, given "", clears) this harness's default model — same
+  // request/refetch/error shape as toggleHarness above, just a different
+  // endpoint and body. An empty string (the "Default (agent's own)"
+  // option) is sent as `model: null`, matching POST /harnesses/:id/model's
+  // own "model: null/omitted clears the override" contract.
+  function setHarnessModel(id, model) {
+    hmActionError = null;
+    fetch("/harnesses/" + id + "/model", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: model || null }),
+    }).then(function (r) {
       if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
       return refetchTasks();
     }).then(function () {
