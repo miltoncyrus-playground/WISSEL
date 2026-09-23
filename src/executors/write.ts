@@ -1,4 +1,5 @@
 import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../core/types.ts";
+import { resolveModel } from "../core/model-resolution.ts";
 import { runClaude, runViaBun, type CommandRunner } from "./claude-cli.ts";
 import { createTaskWorktree } from "../services/worktree.ts";
 
@@ -78,7 +79,7 @@ export class WriteExecutor implements Executor {
       task: { ...task, repo: worktree.path },
       agent,
       permissionMode: "acceptEdits",
-      model: this.model ?? agent.costProfile.model,
+      model: this.model ?? resolveModel(task, agent, harness),
       env: harness?.env,
       // Guarantees the two commands verificationContract (see
       // agents/manifest.yaml's implementer) tells the agent to run

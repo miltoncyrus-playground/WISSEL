@@ -110,6 +110,147 @@ test("with no HarnessPool configured, a locally-run task gets no harness — ide
   expect((await board.get(task.id))!.harness).toBeUndefined();
 });
 
+test("task.harnessOverride forces the exact harness, bypassing the normal least-loaded pick", async () => {
+  const seenHarness: (Harness | undefined)[] = [];
+  const harnesses = HarnessPool.from([
+    { id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true },
+    { id: "claude-work", tool: "claude-cli", label: "Claude — work", enabled: true },
+  ]);
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor("readonly", async (task, agent, harness) => {
+        seenHarness.push(harness);
+        return { taskId: task.id, agentId: agent.id, ok: true, summary: "triaged" };
+      }),
+    ],
+    { harnesses },
+  );
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r", harnessOverride: "claude-work" });
+  await orchestrator.sweep();
+
+  expect(seenHarness.map((h) => h?.id)).toEqual(["claude-work"]);
+  expect((await board.get(task.id))!.status).toBe("done");
+});
+
+test("an unknown task.harnessOverride fails the task with a clear summary, and never calls the executor", async () => {
+  const harnesses = HarnessPool.from([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true }]);
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor("readonly", async () => {
+        throw new Error("should never run — the override can't be honored");
+      }),
+    ],
+    { harnesses },
+  );
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r", harnessOverride: "no-such-harness" });
+  await orchestrator.sweep();
+
+  const updated = await board.get(task.id);
+  expect(updated!.status).toBe("failed");
+  expect(updated!.harness).toBeUndefined();
+  const result = await board.getResult(task.id);
+  expect(result?.summary).toContain("harness override 'no-such-harness' can't be honored");
+});
+
+test("a disabled task.harnessOverride fails the task instead of silently falling back to the normal pick", async () => {
+  const harnesses = HarnessPool.from([
+    { id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true },
+    { id: "claude-work", tool: "claude-cli", label: "Claude — work", enabled: false },
+  ]);
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor("readonly", async () => {
+        throw new Error("should never run — the override can't be honored");
+      }),
+    ],
+    { harnesses },
+  );
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r", harnessOverride: "claude-work" });
+  await orchestrator.sweep();
+
+  const updated = await board.get(task.id);
+  expect(updated!.status).toBe("failed");
+  expect(updated!.harness).toBeUndefined();
+  const result = await board.getResult(task.id);
+  expect(result?.summary).toContain("harness override 'claude-work' can't be honored");
+});
+
+test("a task.harnessOverride whose tool doesn't match the routed agent's own executor tool fails the task, never calling the executor", async () => {
+  const harnesses = HarnessPool.from([{ id: "my-api-key", tool: "anthropic-api", label: "Anthropic API", enabled: true, apiKeyEnv: "ANTHROPIC_API_KEY" }]);
+  const { board, orchestrator } = await setup(
+    [
+      // Routed agent (triager, "intake" tag) runs on claude-cli — the
+      // override below names a real, enabled harness, but for the
+      // wrong tool (anthropic-api).
+      fakeExecutor(
+        "readonly",
+        async () => {
+          throw new Error("should never run — the override targets the wrong tool");
+        },
+        "claude-cli",
+      ),
+    ],
+    { harnesses },
+  );
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r", harnessOverride: "my-api-key" });
+  await orchestrator.sweep();
+
+  const updated = await board.get(task.id);
+  expect(updated!.status).toBe("failed");
+  const result = await board.getResult(task.id);
+  expect(result?.ok).toBe(false);
+  expect(result?.summary).toContain("harness override 'my-api-key' can't be honored");
+});
+
+test("a task.harnessOverride fails the task when the routed executor declares no harnessTool at all, instead of silently dropping the override", async () => {
+  const harnesses = HarnessPool.from([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true }]);
+  // Built directly, not via fakeExecutor(): its harnessTool param defaults
+  // to "claude-cli" on an explicit `undefined` too (default-parameter
+  // semantics), which would silently mask the exact falsy-harnessTool case
+  // this test targets.
+  const noToolExecutor: Executor = {
+    id: "fake-no-tool",
+    harnessTool: undefined,
+    canHandle: (agent: AgentDef) => agent.tier === "readonly",
+    run: async () => {
+      throw new Error("should never run — the override can't be honored without a harnessTool to acquire against");
+    },
+  };
+  const { board, orchestrator } = await setup([noToolExecutor], { harnesses });
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r", harnessOverride: "claude-personal" });
+  await orchestrator.sweep();
+
+  const updated = await board.get(task.id);
+  expect(updated!.status).toBe("failed");
+  expect(updated!.harness).toBeUndefined();
+  const result = await board.getResult(task.id);
+  expect(result?.ok).toBe(false);
+  expect(result?.summary).toContain("harness override 'claude-personal' can't be honored");
+});
+
+test("a task.harnessOverride fails the task when no HarnessPool is configured at all, instead of silently dropping the override", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async () => {
+      throw new Error("should never run — there's no pool to honor the override against");
+    }),
+  ]);
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r", harnessOverride: "claude-personal" });
+  await orchestrator.sweep();
+
+  const updated = await board.get(task.id);
+  expect(updated!.status).toBe("failed");
+  expect(updated!.harness).toBeUndefined();
+  const result = await board.getResult(task.id);
+  expect(result?.ok).toBe(false);
+  expect(result?.summary).toContain("harness override 'claude-personal' can't be honored");
+});
+
 test("a write-tier task is handed off, not run — wissel never spawns execution itself", async () => {
   const { board, orchestrator } = await setup([
     // A write-tier executor here would prove the bug: the orchestrator
