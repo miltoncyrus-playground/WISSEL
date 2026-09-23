@@ -153,8 +153,53 @@ test("regression: a write-tier agent with no reviewer handoff keeps the original
   }
 });
 
-test("approve verdict resumes the implementer to review, and marks the reviewer task done", async () => {
+test("approve verdict, real implementer (autoMerge:true) resumes straight to done with a real git merge, and marks the reviewer task done", async () => {
+  // Uses the real, manifest-loaded implementer (Registry.load(), setup's
+  // default) rather than a synthetic stand-in — confirms the actual
+  // agents/manifest.yaml `autoMerge: true` entry behaves as configured,
+  // not just a hypothetical AgentDef shape. See the synthetic-agent test
+  // directly below for the no-autoMerge fallback path this used to cover.
   const fixture = await setup([{ verdict: "approve", feedback: "looks good" }]);
+  try {
+    const task = await fixture.board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: fixture.repo });
+
+    await driveRounds(fixture.orchestrator, 1);
+
+    expect((await fixture.board.get(task.id))!.status).toBe("done");
+    const reviewerTask = (await fixture.board.list()).find((t) => t.parentTaskId === task.id);
+    expect(reviewerTask!.status).toBe("done");
+
+    // The merge actually happened for real, same evidence the synthetic
+    // autoMerge test below checks: worktree gone, branch gone.
+    const worktreePath = (await fixture.board.getResult(task.id))!.worktree!.path;
+    expect(existsSync(worktreePath)).toBe(false);
+    const branches = Bun.spawnSync(["git", "branch", "--list"], { cwd: fixture.repo, stdout: "pipe" }).stdout.toString("utf8");
+    expect(branches).not.toContain(`wissel/${task.id}`);
+  } finally {
+    await cleanup(fixture);
+  }
+});
+
+test("approve verdict, trustLevel:high but no autoMerge, still resumes the implementer to review (human gate unchanged for an agent that didn't opt in)", async () => {
+  const realReviewer = (await Registry.load()).get("reviewer")!;
+  const noAutoMergeImplementer: AgentDef = {
+    id: "no-automerge-implementer",
+    name: "No-automerge implementer",
+    kind: "agent",
+    tier: "write",
+    description: "d",
+    whenToUse: "w",
+    tags: ["code"],
+    executor: "handoff",
+    handoffs: ["reviewer"],
+    inputs: [],
+    outputs: [],
+    trustLevel: "high",
+    toolAccess: [],
+    costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.5 },
+    // autoMerge deliberately omitted.
+  };
+  const fixture = await setup([{ verdict: "approve", feedback: "looks good" }], [noAutoMergeImplementer, realReviewer]);
   try {
     const task = await fixture.board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: fixture.repo });
 

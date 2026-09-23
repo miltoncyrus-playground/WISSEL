@@ -217,6 +217,14 @@ agents:
     inputs: [task-card]
     outputs: [diff]
     trustLevel: high
+    # Milton: merge automatically once the reviewer approves — no human
+    # click needed for a clean approve. finishResult's autoMerge branch
+    # (src/core/orchestrator.ts) only takes this path after a real
+    # `verdict: "approve"`, and tryAutoMerge falls back to the normal
+    # human "review" gate on any merge conflict — never force-merges.
+    # A changes_requested verdict is unaffected: still pushback/escalate
+    # as before, this only removes the click for an already-clean pass.
+    autoMerge: true
     toolAccess: [read, write, bash]
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.60 }
     # verificationContract — see AgentDef.verificationContract and
