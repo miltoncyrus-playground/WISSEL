@@ -10,6 +10,7 @@ import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
+import { startModelRefreshScheduler } from "../core/model-refresh-scheduler.ts";
 import { readMemoryLessons, DEFAULT_MEMORY_PATH } from "../services/memory.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
@@ -84,6 +85,18 @@ export interface CreateAppOptions {
    *  from the fixed 24h auto-archive threshold itself
    *  (AUTO_ARCHIVE_AFTER_HOURS), which is not configurable. */
   archiveCheckIntervalHours?: number;
+  /** Starts the in-process model-catalog refresh scheduler (see
+   *  src/core/model-refresh-scheduler.ts) — off by default, same gate
+   *  pattern as memoryCurationEnabled/autoArchiveEnabled. A no-op if
+   *  `harnesses` isn't also given anything to resolve. */
+  modelRefreshEnabled?: boolean;
+  /** Passed straight through to startModelRefreshScheduler's option of
+   *  the same name — see its own doc comment. Defaults to 24 there. */
+  modelRefreshIntervalHours?: number;
+  /** Passed straight through to startModelRefreshScheduler's `cachePath`
+   *  option — see its own doc comment. Defaults to
+   *  `DEFAULT_MODELS_CACHE_PATH` (`~/.wissel/models-cache.json`) there. */
+  modelsCachePath?: string;
 }
 
 /**
@@ -174,6 +187,15 @@ export function createApp(
   // read straight off TaskCard.doneAt via board.list().
   if (opts.autoArchiveEnabled) {
     startArchiveScheduler({ board: board as Board, checkIntervalHours: opts.archiveCheckIntervalHours });
+  }
+
+  // Off by default (WISSEL_MODEL_REFRESH) — see
+  // src/core/model-refresh-scheduler.ts and docs/SDD-model-selection.md
+  // §8. Refreshes every harness's known model list into
+  // ~/.wissel/models-cache.json (static re-copy for claude-cli/codex-cli,
+  // a live client.models.list() call for anthropic-api).
+  if (opts.modelRefreshEnabled) {
+    startModelRefreshScheduler({ harnesses, cachePath: opts.modelsCachePath, intervalHours: opts.modelRefreshIntervalHours });
   }
 
   return async function fetch(req: Request): Promise<Response> {
@@ -568,6 +590,14 @@ if (import.meta.main) {
   const autoArchiveEnabled = ["1", "true"].includes(process.env.WISSEL_AUTO_ARCHIVE ?? "");
   const archiveCheckIntervalHours = process.env.WISSEL_ARCHIVE_CHECK_INTERVAL_HOURS ? Number(process.env.WISSEL_ARCHIVE_CHECK_INTERVAL_HOURS) : 1;
 
+  // Off by default: the model catalog (which model ids are valid to pick
+  // per harness) refreshing itself daily into ~/.wissel/models-cache.json
+  // (see docs/SDD-model-selection.md §8). WISSEL_MODEL_REFRESH_INTERVAL_HOURS
+  // and WISSEL_MODELS_CACHE_PATH only matter once this is on.
+  const modelRefreshEnabled = ["1", "true"].includes(process.env.WISSEL_MODEL_REFRESH ?? "");
+  const modelRefreshIntervalHours = process.env.WISSEL_MODEL_REFRESH_INTERVAL_HOURS ? Number(process.env.WISSEL_MODEL_REFRESH_INTERVAL_HOURS) : 24;
+  const modelsCachePath = process.env.WISSEL_MODELS_CACHE_PATH;
+
   Bun.serve({
     port,
     fetch: createApp(board, registry, telemetry, {
@@ -581,6 +611,9 @@ if (import.meta.main) {
       memoryPath,
       autoArchiveEnabled,
       archiveCheckIntervalHours,
+      modelRefreshEnabled,
+      modelRefreshIntervalHours,
+      modelsCachePath,
     }),
   });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
@@ -605,5 +638,10 @@ if (import.meta.main) {
     autoArchiveEnabled
       ? `auto-archive checking every ${archiveCheckIntervalHours}h for done tasks 24h+ past doneAt (WISSEL_AUTO_ARCHIVE=1)`
       : "auto-archive not started — set WISSEL_AUTO_ARCHIVE=1 to archive done tasks automatically after 24h",
+  );
+  console.log(
+    modelRefreshEnabled
+      ? `model catalog refreshing every ${modelRefreshIntervalHours}h into ${modelsCachePath ?? join(homedir(), ".wissel", "models-cache.json")} (WISSEL_MODEL_REFRESH=1)`
+      : "model catalog refresh not started — set WISSEL_MODEL_REFRESH=1 to refresh known model lists daily",
   );
 }
