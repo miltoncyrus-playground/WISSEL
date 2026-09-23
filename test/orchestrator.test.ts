@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
-import { Orchestrator, finishResult, resolveHandoffAllowlist, type OrchestratorOptions } from "../src/core/orchestrator.ts";
+import { Orchestrator, finishResult, resolveHandoffAllowlist, resolveLiveTip, type OrchestratorOptions } from "../src/core/orchestrator.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
 import { TelemetryLog } from "../src/services/telemetry.ts";
 import type { AgentDef, Executor, Harness, TaskCard } from "../src/core/types.ts";
@@ -467,6 +467,41 @@ test("a dangling dependsOn id blocks forever rather than being treated as satisf
   await orchestrator.sweep();
 
   expect((await board.get(task.id))!.status).toBe("inbox");
+});
+
+test("resolveLiveTip returns the id itself when it was never superseded", () => {
+  const a: TaskCard = { id: "a", title: "a", body: "", labels: [], repo: "r", status: "done" };
+  expect(resolveLiveTip(a, new Map([["a", a]]))).toBe(a);
+});
+
+test("resolveLiveTip follows a supersededBy chain to its live tip", () => {
+  const a: TaskCard = { id: "a", title: "a", body: "", labels: [], repo: "r", status: "pending-review", supersededBy: "b" };
+  const b: TaskCard = { id: "b", title: "b", body: "", labels: [], repo: "r", status: "pending-review", supersededBy: "c" };
+  const c: TaskCard = { id: "c", title: "c", body: "", labels: [], repo: "r", status: "done" };
+  const byId = new Map([
+    ["a", a],
+    ["b", b],
+    ["c", c],
+  ]);
+  expect(resolveLiveTip(a, byId)).toBe(c);
+});
+
+test("resolveLiveTip treats a dangling supersededBy pointer as unresolvable, same as a dangling dependsOn id", () => {
+  const a: TaskCard = { id: "a", title: "a", body: "", labels: [], repo: "r", status: "pending-review", supersededBy: "no-such-task" };
+  expect(resolveLiveTip(a, new Map([["a", a]]))).toBeUndefined();
+});
+
+test("resolveLiveTip terminates on a supersededBy cycle instead of hanging, and fails closed (undefined, not a guess)", () => {
+  // Shouldn't occur by construction — spawnPushbackImplementer only ever
+  // points a superseded card forward to a brand-new id — but the cycle
+  // guard must never trust a corrupt chain silently.
+  const a: TaskCard = { id: "a", title: "a", body: "", labels: [], repo: "r", status: "pending-review", supersededBy: "b" };
+  const b: TaskCard = { id: "b", title: "b", body: "", labels: [], repo: "r", status: "pending-review", supersededBy: "a" };
+  const byId = new Map([
+    ["a", a],
+    ["b", b],
+  ]);
+  expect(resolveLiveTip(a, byId)).toBeUndefined();
 });
 
 test("no matching executor leaves the task unrouted instead of stranding it", async () => {
