@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -265,6 +266,105 @@ test("POST /tasks/:id/move updates status, 404s on unknown id", async () => {
 
   const missing = await app(req("/tasks/nope/move", { method: "POST", body: JSON.stringify({ status: "done" }) }));
   expect(missing.status).toBe(404);
+});
+
+test("POST /tasks/:id/archive returns every card touched by the cascade, 404s on unknown id, and fans out one task.archived event over SSE", async () => {
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+  const root = await board.create({ title: "root", body: "", labels: [], repo: "r" });
+  const child = await board.create({ title: "child", body: "", labels: [], repo: "r", parentTaskId: root.id });
+
+  const sse = await app(req("/events"));
+  const reader = sse.body!.getReader();
+  await reader.read(); // ": connected" preamble
+
+  const res = await app(req(`/tasks/${root.id}/archive`, { method: "POST" }));
+  expect(res.status).toBe(200);
+  const touched = (await res.json()) as TaskCard[];
+  expect(touched.map((t) => t.id).sort()).toEqual([root.id, child.id].sort());
+  touched.forEach((t) => expect(t.archivedAt).toBeDefined());
+
+  const decoder = new TextDecoder();
+  const chunk = decoder.decode((await reader.read()).value);
+  expect(chunk).toContain("task.archived");
+  await reader.cancel();
+
+  const missing = await app(req("/tasks/nope/archive", { method: "POST" }));
+  expect(missing.status).toBe(404);
+});
+
+test("POST /tasks/:id/unarchive returns the single restored card, 404s on unknown id, and fans out task.unarchived over SSE", async () => {
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  await board.archive(task.id);
+
+  const sse = await app(req("/events"));
+  const reader = sse.body!.getReader();
+  await reader.read(); // ": connected" preamble
+
+  const res = await app(req(`/tasks/${task.id}/unarchive`, { method: "POST" }));
+  expect(res.status).toBe(200);
+  const restored = (await res.json()) as TaskCard;
+  expect(restored.id).toBe(task.id);
+  expect(restored.archivedAt).toBeUndefined();
+
+  const decoder = new TextDecoder();
+  const chunk = decoder.decode((await reader.read()).value);
+  expect(chunk).toContain("task.unarchived");
+  await reader.cancel();
+
+  const missing = await app(req("/tasks/nope/unarchive", { method: "POST" }));
+  expect(missing.status).toBe(404);
+});
+
+// Off by default, matching every other opt-in scheduler flag
+// (WISSEL_ORCHESTRATOR, WISSEL_MEMORY_CURATION) — createApp must never
+// start the auto-archive scheduler unless autoArchiveEnabled is set, even
+// with a real done-and-old-enough root sitting on the board.
+test("createApp never starts the auto-archive scheduler unless autoArchiveEnabled is set", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-archive-off-test-"));
+  try {
+    const dbPath = join(dir, "board.sqlite");
+    const board = new SqliteBoard(dbPath);
+    const root = await board.create({ title: "root", body: "", labels: [], repo: "r" });
+    await board.move(root.id, "done");
+    const legacyDb = new Database(dbPath);
+    legacyDb.run("UPDATE tasks SET doneAt = ? WHERE id = ?", [new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(), root.id]);
+    legacyDb.close();
+
+    await makeApp(board); // autoArchiveEnabled not set — the scheduler must never start
+    await new Promise((r) => setTimeout(r, 100));
+    expect((await board.get(root.id))!.archivedAt).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("createApp starts the auto-archive scheduler when autoArchiveEnabled is set, and it archives an eligible root", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-archive-on-test-"));
+  try {
+    const dbPath = join(dir, "board.sqlite");
+    const board = new SqliteBoard(dbPath);
+    const root = await board.create({ title: "root", body: "", labels: [], repo: "r" });
+    await board.move(root.id, "done");
+    const legacyDb = new Database(dbPath);
+    legacyDb.run("UPDATE tasks SET doneAt = ? WHERE id = ?", [new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(), root.id]);
+    legacyDb.close();
+
+    await makeApp(board, { autoArchiveEnabled: true }); // ticks immediately, per startArchiveScheduler's own doc comment
+
+    const deadline = Date.now() + 1000;
+    let archivedAt: string | undefined;
+    while (Date.now() < deadline) {
+      archivedAt = (await board.get(root.id))!.archivedAt;
+      if (archivedAt) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(archivedAt).toBeDefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("DELETE /tasks/:id removes the task, 404s on unknown id", async () => {

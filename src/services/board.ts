@@ -40,6 +40,20 @@ export interface Board {
    *  write-tier retry reuses its existing worktree exactly the way a
    *  pushback re-attempt does. */
   scheduleRetry(id: string, retryAfter: string): Promise<TaskCard>;
+  /** Archives `id` and every descendant reachable by walking
+   *  `parentTaskId` downward from it (the mirror image of
+   *  `findLineageRoot`'s upward walk in board.html) — stamps
+   *  `archivedAt` on the whole subtree in one pass and emits exactly one
+   *  `task.archived` event carrying every card touched. `status` is
+   *  never touched (see TaskCard.archivedAt). A task with no descendants
+   *  archives as a 1-element result. Throws on an unknown id, matching
+   *  every other Board method. See docs/SDD-task-archiving.md §3.5. */
+  archive(id: string): Promise<TaskCard[]>;
+  /** Clears `archivedAt` on exactly `id` — never cascades, even when the
+   *  whole subtree it belongs to was archived together in one call (see
+   *  TaskCard.archivedAt, docs/SDD-task-archiving.md §3.6). Throws on an
+   *  unknown id. */
+  unarchive(id: string): Promise<TaskCard>;
   /** Every TaskCard sharing a `reviewLineageId`, oldest first — the full
    *  history of a review-pushback chain across however many separate
    *  rows it spans. See TaskCard.reviewLineageId. */
@@ -75,7 +89,13 @@ export type BoardEvent =
   | { type: "task.decided"; decision: RoutingDecision }
   | { type: "task.result"; result: TaskResult }
   | { type: "task.override"; taskId: string; routerPick: string; humanPick: string; actor?: string; reason?: string; at: string }
-  | { type: "task.deleted"; taskId: string };
+  | { type: "task.deleted"; taskId: string }
+  /** One event per cascade (see Board.archive), not one per card — a
+   *  cascade archiving N rows is one logical action, and board.html's
+   *  refetchTasks just re-pulls the full task list on any event anyway,
+   *  so there's nothing an N-event version would buy a listener. */
+  | { type: "task.archived"; tasks: TaskCard[] }
+  | { type: "task.unarchived"; task: TaskCard };
 
 interface TaskRow {
   id: string;
@@ -93,6 +113,8 @@ interface TaskRow {
   supersededBy: string | null;
   escalationContext: string | null;
   retryAfter: string | null;
+  doneAt: string | null;
+  archivedAt: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -112,6 +134,8 @@ function rowToCard(row: TaskRow): TaskCard {
     supersededBy: row.supersededBy ?? undefined,
     escalationContext: row.escalationContext ?? undefined,
     retryAfter: row.retryAfter ?? undefined,
+    doneAt: row.doneAt ?? undefined,
+    archivedAt: row.archivedAt ?? undefined,
   };
 }
 
@@ -144,7 +168,9 @@ export class SqliteBoard implements Board {
         reviewLineageId TEXT,
         supersededBy TEXT,
         escalationContext TEXT,
-        retryAfter TEXT
+        retryAfter TEXT,
+        doneAt TEXT,
+        archivedAt TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -164,6 +190,8 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN supersededBy TEXT;",
       "ALTER TABLE tasks ADD COLUMN escalationContext TEXT;",
       "ALTER TABLE tasks ADD COLUMN retryAfter TEXT;",
+      "ALTER TABLE tasks ADD COLUMN doneAt TEXT;",
+      "ALTER TABLE tasks ADD COLUMN archivedAt TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -333,8 +361,15 @@ export class SqliteBoard implements Board {
   async move(id: string, status: TaskCard["status"]): Promise<TaskCard> {
     const existing = await this.get(id);
     if (!existing) throw new Error(`task not found: ${id}`);
-    this.db.run("UPDATE tasks SET status = ? WHERE id = ?", [status, id]);
-    const updated: TaskCard = { ...existing, status };
+    // Stamps doneAt on every transition to "done" — including
+    // re-entering it a second time, which just refreshes it (last time
+    // in wins, no special-casing for a hypothetical re-open). This is
+    // the one reliable "became done" marker findArchivableRoots measures
+    // the 24h auto-archive threshold against — see TaskCard.doneAt,
+    // docs/SDD-task-archiving.md §3.2.
+    const doneAt = status === "done" ? new Date().toISOString() : existing.doneAt;
+    this.db.run("UPDATE tasks SET status = ?, doneAt = ? WHERE id = ?", [status, doneAt ?? null, id]);
+    const updated: TaskCard = { ...existing, status, doneAt };
     this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
     return updated;
   }
@@ -381,6 +416,54 @@ export class SqliteBoard implements Board {
     this.db.run("UPDATE tasks SET status = ?, routedTo = NULL, retryAfter = ? WHERE id = ?", ["inbox", retryAfter, id]);
     const updated: TaskCard = { ...existing, status: "inbox", routedTo: undefined, retryAfter };
     this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async archive(id: string): Promise<TaskCard[]> {
+    const root = await this.get(id);
+    if (!root) throw new Error(`task not found: ${id}`);
+
+    // Downward parent->children traversal — the mirror image of
+    // findLineageRoot's upward walk in board.html. Built from list()'s
+    // full result rather than a recursive query since `tasks` has no
+    // native tree support and boards are small enough this is cheap.
+    const all = await this.list();
+    const childrenByParent = new Map<string, TaskCard[]>();
+    for (const t of all) {
+      if (!t.parentTaskId) continue;
+      const siblings = childrenByParent.get(t.parentTaskId) ?? [];
+      siblings.push(t);
+      childrenByParent.set(t.parentTaskId, siblings);
+    }
+
+    const subtree: TaskCard[] = [];
+    const stack = [root];
+    const seen = new Set<string>();
+    while (stack.length) {
+      const current = stack.pop()!;
+      if (seen.has(current.id)) continue;
+      seen.add(current.id);
+      subtree.push(current);
+      stack.push(...(childrenByParent.get(current.id) ?? []));
+    }
+
+    const archivedAt = new Date().toISOString();
+    const touched: TaskCard[] = [];
+    for (const task of subtree) {
+      this.db.run("UPDATE tasks SET archivedAt = ? WHERE id = ?", [archivedAt, task.id]);
+      touched.push({ ...task, archivedAt });
+    }
+
+    this.events.emit("event", { type: "task.archived", tasks: touched } satisfies BoardEvent);
+    return touched;
+  }
+
+  async unarchive(id: string): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET archivedAt = NULL WHERE id = ?", [id]);
+    const updated: TaskCard = { ...existing, archivedAt: undefined };
+    this.events.emit("event", { type: "task.unarchived", task: updated } satisfies BoardEvent);
     return updated;
   }
 

@@ -559,6 +559,151 @@ test("recordDecision clears a previously-set retryAfter — a task that's actual
   expect(after!.retryAfter).toBeUndefined();
 });
 
+// doneAt: the one reliable "became done" marker every auto-archive
+// decision is measured against (docs/SDD-task-archiving.md §3.2).
+test("move stamps doneAt on every transition to done, refreshes it on re-entry, and leaves it untouched for any other status", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  expect(task.doneAt).toBeUndefined();
+
+  const moved = await board.move(task.id, "done");
+  expect(moved.doneAt).toBeDefined();
+  const firstDoneAt = moved.doneAt!;
+  expect((await board.get(task.id))!.doneAt).toBe(firstDoneAt);
+
+  // Moving to any other status leaves doneAt untouched — it's a "was
+  // ever done, when" marker, not a "currently done" flag.
+  const failed = await board.move(task.id, "failed");
+  expect(failed.doneAt).toBe(firstDoneAt);
+  expect((await board.get(task.id))!.doneAt).toBe(firstDoneAt);
+
+  // Re-entering done a second time refreshes it — last time in wins,
+  // no special-casing for a hypothetical re-open.
+  await new Promise((r) => setTimeout(r, 5));
+  const doneAgain = await board.move(task.id, "done");
+  expect(doneAgain.doneAt).toBeDefined();
+  expect(doneAgain.doneAt).not.toBe(firstDoneAt);
+});
+
+test("opens and heals a real pre-existing on-disk DB from before doneAt/archivedAt existed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-board-legacy-donearchived-"));
+  const dbPath = join(dir, "board.sqlite");
+  try {
+    const legacy = new Database(dbPath, { create: true });
+    legacy.run(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        labels TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        status TEXT NOT NULL,
+        routedTo TEXT,
+        dependsOn TEXT NOT NULL DEFAULT '[]',
+        parentTaskId TEXT,
+        harness TEXT,
+        pushbackCount INTEGER,
+        reviewLineageId TEXT,
+        supersededBy TEXT,
+        escalationContext TEXT,
+        retryAfter TEXT
+      );
+    `);
+    legacy.close();
+
+    const board = new SqliteBoard(dbPath);
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+    const moved = await board.move(task.id, "done");
+    expect(moved.doneAt).toBeDefined();
+
+    const archived = await board.archive(task.id);
+    expect(archived).toHaveLength(1);
+    expect(archived[0]!.archivedAt).toBeDefined();
+    expect((await board.get(task.id))!.archivedAt).toBe(archived[0]!.archivedAt);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// --- Board.archive/unarchive: downward cascade + single-row restore ---
+// (docs/SDD-task-archiving.md §3.5/§3.6)
+
+test("archive cascades down a multi-generation lineage in one call, stamping archivedAt on every row and firing one task.archived event", async () => {
+  const board = new SqliteBoard();
+  const events: BoardEvent[] = [];
+
+  // implementer -> reviewer -> pushback re-attempt -> its own reviewer
+  const implementer = await board.create({ title: "implementer", body: "", labels: [], repo: "r" });
+  const reviewer = await board.create({ title: "reviewer", body: "", labels: [], repo: "r", parentTaskId: implementer.id });
+  const reattempt = await board.create({ title: "reattempt", body: "", labels: [], repo: "r", parentTaskId: implementer.id });
+  const reattemptReviewer = await board.create({ title: "reattempt reviewer", body: "", labels: [], repo: "r", parentTaskId: reattempt.id });
+
+  board.events.on("event", (e: BoardEvent) => events.push(e));
+
+  const touched = await board.archive(implementer.id);
+  expect(touched.map((t) => t.id).sort()).toEqual([implementer.id, reviewer.id, reattempt.id, reattemptReviewer.id].sort());
+  touched.forEach((t) => expect(t.archivedAt).toBeDefined());
+
+  for (const id of [implementer.id, reviewer.id, reattempt.id, reattemptReviewer.id]) {
+    expect((await board.get(id))!.archivedAt).toBeDefined();
+  }
+
+  const archivedEvents = events.filter((e) => e.type === "task.archived");
+  expect(archivedEvents).toHaveLength(1);
+  expect((archivedEvents[0] as Extract<BoardEvent, { type: "task.archived" }>).tasks).toHaveLength(4);
+});
+
+test("archiving a non-root subtask only touches its own subtree — siblings and the root stay untouched", async () => {
+  const board = new SqliteBoard();
+  const root = await board.create({ title: "root", body: "", labels: [], repo: "r" });
+  const subtaskA = await board.create({ title: "subtask a", body: "", labels: [], repo: "r", parentTaskId: root.id });
+  const subtaskAChild = await board.create({ title: "subtask a child", body: "", labels: [], repo: "r", parentTaskId: subtaskA.id });
+  const subtaskB = await board.create({ title: "subtask b", body: "", labels: [], repo: "r", parentTaskId: root.id });
+
+  const touched = await board.archive(subtaskA.id);
+  expect(touched.map((t) => t.id).sort()).toEqual([subtaskA.id, subtaskAChild.id].sort());
+
+  expect((await board.get(root.id))!.archivedAt).toBeUndefined();
+  expect((await board.get(subtaskB.id))!.archivedAt).toBeUndefined();
+  expect((await board.get(subtaskA.id))!.archivedAt).toBeDefined();
+  expect((await board.get(subtaskAChild.id))!.archivedAt).toBeDefined();
+});
+
+test("archive on a task with no descendants archives as a 1-element result — no special-casing for the common case", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  const touched = await board.archive(task.id);
+  expect(touched).toHaveLength(1);
+  expect(touched[0]!.id).toBe(task.id);
+});
+
+test("unarchive clears exactly one row, even when called on a task whose whole tree was previously archived together, and emits task.unarchived", async () => {
+  const board = new SqliteBoard();
+  const root = await board.create({ title: "root", body: "", labels: [], repo: "r" });
+  const child = await board.create({ title: "child", body: "", labels: [], repo: "r", parentTaskId: root.id });
+  await board.archive(root.id);
+  expect((await board.get(root.id))!.archivedAt).toBeDefined();
+  expect((await board.get(child.id))!.archivedAt).toBeDefined();
+
+  const events: BoardEvent[] = [];
+  board.events.on("event", (e: BoardEvent) => events.push(e));
+
+  const restored = await board.unarchive(root.id);
+  expect(restored.archivedAt).toBeUndefined();
+  expect((await board.get(root.id))!.archivedAt).toBeUndefined();
+  // The child, archived in the same original cascade, is untouched —
+  // unarchive never cascades (§3.6).
+  expect((await board.get(child.id))!.archivedAt).toBeDefined();
+
+  expect(events).toEqual([{ type: "task.unarchived", task: restored }]);
+});
+
+test("archive and unarchive reject unknown ids, matching every other Board method's contract", async () => {
+  const board = new SqliteBoard();
+  await expect(board.archive("nope")).rejects.toThrow("task not found");
+  await expect(board.unarchive("nope")).rejects.toThrow("task not found");
+});
+
 test("opens and heals a real pre-existing on-disk DB from before retryAfter existed", async () => {
   const dir = await mkdtemp(join(tmpdir(), "wissel-board-legacy-retryafter-"));
   const dbPath = join(dir, "board.sqlite");

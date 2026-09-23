@@ -178,6 +178,19 @@
   .slcard .sl-relations { display: flex; flex-wrap: wrap; gap: 4px; }
   .slcard.superseded { opacity: 0.55; border-left-style: dashed; }
   .slcard.superseded .kt { text-decoration: line-through; text-decoration-color: var(--ink-muted); }
+  /* "Archive this lane" (Swimlanes header) / "Unarchive" (Archive tab
+     card) — small text-button affordances, same shape as the kanban
+     column's own .col-clear, just placed in two different contexts. */
+  .swimlane-head .lane-action {
+    appearance: none; border: none; background: transparent; color: var(--ink-muted); font: inherit;
+    font-size: 10px; font-weight: 700; cursor: pointer; margin-left: auto; padding: 2px 6px; border-radius: 4px;
+  }
+  .swimlane-head .lane-action:hover { color: var(--critical); background: rgba(0,0,0,0.06); }
+  .slcard .card-action {
+    appearance: none; border: 1px solid var(--border); background: var(--page); color: var(--ink-2); font: inherit;
+    font-size: 10px; font-weight: 600; cursor: pointer; padding: 3px 8px; border-radius: 999px; margin-top: 6px;
+  }
+  .slcard .card-action:hover { border-color: var(--accent); color: var(--accent); }
 
   /* "Actively working" glyph — a pulsing green dot, reused identically
      on a running task's box and on a fleet row currently doing work, so
@@ -420,6 +433,7 @@
     <div class="segmented" id="viewToggle" role="group" aria-label="View">
       <button type="button" data-view="board" aria-pressed="true">Board</button>
       <button type="button" data-view="swimlanes" aria-pressed="false">Swimlanes</button>
+      <button type="button" data-view="archive" aria-pressed="false">Archive</button>
       <button type="button" data-view="newtask" aria-pressed="false">New task</button>
       <button type="button" data-view="memory" aria-pressed="false">Memory</button>
     </div>
@@ -459,6 +473,15 @@
     <section class="panel-flush section-gap">
       <div class="panel-head"><h2>Tasks by feature</h2><span class="count" id="swimlanesCount"></span></div>
       <div style="padding: 16px;" id="swimlanesBody"></div>
+    </section>
+  </section>
+
+  <section id="archivePanel" hidden>
+    <p class="eyebrow">Archive</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Archived tasks, grouped the same lineage-root way Swimlanes groups live ones — a whole archived feature still reads as one lane. Unarchive a card to bring exactly it back to Board/Swimlanes.</p>
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Archived tasks</h2><span class="count" id="archiveCount"></span></div>
+      <div style="padding: 16px;" id="archiveBody"></div>
     </section>
   </section>
 
@@ -720,6 +743,17 @@
     meta.textContent = "";
     meta.appendChild(statusPill(task.status));
     if (task.status === "running" || task.status === "dispatched") meta.appendChild(activeDot("actively working"));
+    // Visible regardless of which tab the drawer was opened from — a
+    // card opened straight from the Archive tab still shows its real
+    // status pill above (archiving never touches status, see
+    // TaskCard.archivedAt), so this is the only place that makes the
+    // archived-ness itself legible in the drawer.
+    if (task.archivedAt) {
+      var archivedTag = document.createElement("span");
+      archivedTag.className = "sl-tag";
+      archivedTag.textContent = "archived";
+      meta.appendChild(archivedTag);
+    }
     var agentSpan = document.createElement("span");
     agentSpan.textContent = task.routedTo || "unrouted";
     meta.appendChild(agentSpan);
@@ -903,6 +937,23 @@
       }));
     }
 
+    // Available regardless of status (docs/SDD-task-archiving.md §3.5) —
+    // same confirm-dialog pattern Discard/Abandon above already use,
+    // since archiving cascades to the task's own subtree. An already-
+    // archived task shows Unarchive instead (never both at once).
+    if (task.archivedAt) {
+      wrap.appendChild(drawerAction("Unarchive", {
+        onClick: function () { unarchiveTask(task.id); },
+      }));
+    } else {
+      wrap.appendChild(drawerAction("Archive", {
+        onClick: function () {
+          if (!window.confirm("Archive \"" + task.title + "\" and every subtask under it? This moves them to the Archive tab; unarchive individually later if needed.")) return;
+          archiveTask(task.id);
+        },
+      }));
+    }
+
     wrap.appendChild(drawerAction("View diff", {
       onClick: function () { toggleDiff(task.id); },
     }));
@@ -937,6 +988,26 @@
   function discardTask(taskId) {
     setDrawerActionError(null);
     fetch("/tasks/" + taskId + "/discard", { method: "POST" }).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).catch(function (err) { setDrawerActionError(err.message); });
+  }
+
+  // Archives id's own subtree (see Board.archive/docs/SDD-task-archiving.md
+  // §3.5) — used by both the drawer's "Archive" action and a Swimlanes
+  // lane header's "Archive this lane" action (called on the lane's root).
+  function archiveTask(taskId) {
+    setDrawerActionError(null);
+    return fetch("/tasks/" + taskId + "/archive", { method: "POST" }).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).catch(function (err) { setDrawerActionError(err.message); });
+  }
+
+  // Never cascades — restores exactly one card (§3.6).
+  function unarchiveTask(taskId) {
+    setDrawerActionError(null);
+    return fetch("/tasks/" + taskId + "/unarchive", { method: "POST" }).then(function (r) {
       if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
       return refetchTasks();
     }).catch(function (err) { setDrawerActionError(err.message); });
@@ -1381,7 +1452,11 @@
       // from every real status column. It isn't hidden, though — see the
       // dedicated "Superseded" bucket appended after this loop, which is
       // the one place it does show up.
-      var inCol = tasks.filter(function (t) { return t.status === status && !t.supersededBy; });
+      // Archived cards (TaskCard.archivedAt) are excluded the same way
+      // superseded ones are — a real, deliberate visibility filter, not
+      // hidden data. See the Archive tab (renderArchiveTab) for where
+      // they actually show up.
+      var inCol = tasks.filter(function (t) { return t.status === status && !t.supersededBy && !t.archivedAt; });
 
       var col = document.createElement("div");
       // Collapses to just its header when empty — a board with many
@@ -1416,8 +1491,10 @@
     });
 
     // The dedicated home for every superseded card, regardless of its
-    // own underlying status — see the exclusion above.
-    var superseded = tasks.filter(function (t) { return !!t.supersededBy; });
+    // own underlying status — see the exclusion above. Still excludes
+    // archived ones (an archived+superseded card only shows in the
+    // Archive tab), same as every other bucket in this view.
+    var superseded = tasks.filter(function (t) { return !!t.supersededBy && !t.archivedAt; });
     var supCol = document.createElement("div");
     supCol.className = "kcol" + (superseded.length === 0 ? " kcol-empty" : "");
     var supH3 = document.createElement("h3");
@@ -1434,11 +1511,11 @@
     var wrap = document.getElementById("stats");
     var counts = {};
     COLUMNS.forEach(function (s) { counts[s] = 0; });
-    // Excludes superseded cards from the count too — see renderKanban's
-    // own comment on the same filter. Otherwise the stat strip and the
-    // kanban columns below it would disagree on how many tasks are
-    // actually in a given status.
-    tasks.forEach(function (t) { if (!t.supersededBy) counts[t.status] = (counts[t.status] || 0) + 1; });
+    // Excludes superseded and archived cards from the count too — see
+    // renderKanban's own comment on the same filters. Otherwise the stat
+    // strip and the kanban columns below it would disagree on how many
+    // tasks are actually in a given status.
+    tasks.forEach(function (t) { if (!t.supersededBy && !t.archivedAt) counts[t.status] = (counts[t.status] || 0) + 1; });
     wrap.textContent = "";
     COLUMNS.forEach(function (status) {
       var tile = document.createElement("div");
@@ -1455,7 +1532,7 @@
 
     // Matches the kanban's own dedicated "Superseded" bucket — same
     // count, same neutral color, appended after the real status tiles.
-    var supCount = tasks.filter(function (t) { return !!t.supersededBy; }).length;
+    var supCount = tasks.filter(function (t) { return !!t.supersededBy && !t.archivedAt; }).length;
     var supTile = document.createElement("div");
     supTile.className = "stat";
     supTile.style.setProperty("--stat-color", "var(--ink-muted)");
@@ -1551,120 +1628,203 @@
     return current;
   }
 
-  function renderSwimlanes() {
-    var wrap = document.getElementById("swimlanesBody");
-    var countEl = document.getElementById("swimlanesCount");
-    wrap.textContent = "";
-    if (tasks.length === 0) {
-      countEl.textContent = "";
-      var empty = document.createElement("p");
-      empty.className = "muted";
-      empty.textContent = "No tasks yet.";
-      wrap.appendChild(empty);
-      return;
-    }
-
-    var byId = {};
-    tasks.forEach(function (t) { byId[t.id] = t; });
-
-    // Groups every task by its lineage root — a whole feature's subtask
-    // fan-out, review passes, and pushback re-attempts all trace back to
-    // the same root and land in the same lane, however many separate
-    // TaskCards that ends up being. A standalone task with no parent and
-    // no descendants is the root of its own single-card lane. Insertion
-    // order (an object's own string keys, in first-seen order — every
-    // supported browser guarantees this for non-numeric keys) mirrors
-    // `tasks`' own creation order, so lanes appear oldest-root-first
-    // with no extra sort needed.
+  // Groups `members` by lineage root, using the FULL board (`byId`, not
+  // just `members`) to walk parentTaskId — so a live descendant of an
+  // archived ancestor, or an archived descendant of a live root, still
+  // resolves to its real root rather than rooting its own lane just
+  // because a filter excluded an ancestor. Insertion order (an object's
+  // own string keys, in first-seen order — every supported browser
+  // guarantees this for non-numeric keys) mirrors `tasks`' own creation
+  // order, so lanes appear oldest-root-first with no extra sort needed.
+  function computeLanes(members, byId) {
     var laneOrder = [];
     var lanes = {};
-    tasks.forEach(function (t) {
+    members.forEach(function (t) {
       var root = findLineageRoot(t, byId);
       if (!lanes[root.id]) { lanes[root.id] = []; laneOrder.push(root.id); }
       lanes[root.id].push(t);
     });
+    return { laneOrder: laneOrder, lanes: lanes };
+  }
 
-    countEl.textContent = laneOrder.length === 1 ? "1 lane" : laneOrder.length + " lanes";
+  // One lane-body card — shared by Swimlanes (live tasks) and the
+  // Archive tab (archived tasks). `opts.cardAction`, when given, builds
+  // one extra action button appended to the card (Archive tab's
+  // "Unarchive"); Swimlanes passes none, since a per-card archive action
+  // already exists in the task drawer.
+  function buildLaneCard(t, byId, opts) {
+    var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
+    var card = document.createElement("div");
+    card.className = "slcard" + (t.supersededBy ? " superseded" : "");
+    card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[t.status] + (t.supersededBy ? ", superseded" : "") + ", show task details");
 
-    laneOrder.forEach(function (rootId) {
-      var members = lanes[rootId];
-      var root = byId[rootId];
+    var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
+    card.appendChild(kt);
 
-      var lane = document.createElement("div");
-      lane.className = "swimlane";
+    var statusRow = document.createElement("div"); statusRow.className = "sl-status";
+    var sdot = document.createElement("span"); sdot.className = "swatch";
+    sdot.style.background = "var(" + STATUS_COLOR[t.status] + ")";
+    statusRow.appendChild(sdot);
+    statusRow.appendChild(document.createTextNode(STATUS_LABEL[t.status]));
+    card.appendChild(statusRow);
 
-      var head = document.createElement("div");
-      head.className = "swimlane-head";
-      var dot = document.createElement("span"); dot.className = "swatch";
-      dot.style.background = "var(" + (STATUS_COLOR[root.status] || "--ink-muted") + ")";
-      head.appendChild(dot);
-      var title = document.createElement("span"); title.textContent = root.title;
-      head.appendChild(title);
-      var count = document.createElement("span"); count.className = "sl-count";
-      count.textContent = members.length === 1 ? "1 card" : members.length + " cards";
-      head.appendChild(count);
-      lane.appendChild(head);
-
-      var laneBody = document.createElement("div");
-      laneBody.className = "swimlane-body";
-      members.forEach(function (t) {
-        var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
-        var card = document.createElement("div");
-        card.className = "slcard" + (t.supersededBy ? " superseded" : "");
-        card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
-        card.tabIndex = 0;
-        card.setAttribute("role", "button");
-        card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[t.status] + (t.supersededBy ? ", superseded" : "") + ", show task details");
-
-        var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
-        card.appendChild(kt);
-
-        var statusRow = document.createElement("div"); statusRow.className = "sl-status";
-        var sdot = document.createElement("span"); sdot.className = "swatch";
-        sdot.style.background = "var(" + STATUS_COLOR[t.status] + ")";
-        statusRow.appendChild(sdot);
-        statusRow.appendChild(document.createTextNode(STATUS_LABEL[t.status]));
-        card.appendChild(statusRow);
-
-        var relations = document.createElement("div"); relations.className = "sl-relations";
-        // Follow-up relationship (review pass, pushback re-attempt, or a
-        // planner-decomposed subtask) — what actually put this card in
-        // this lane, made explicit rather than left implicit in the
-        // grouping alone. Shown for every non-root card, including one
-        // whose direct parent happens to be the lane's own root — that's
-        // the single most common shape (implementer → its own reviewer)
-        // and the tag is exactly as informative there as anywhere else.
-        if (t.parentTaskId && byId[t.parentTaskId]) {
-          var upTag = document.createElement("span"); upTag.className = "sl-tag";
-          upTag.textContent = "↳ " + byId[t.parentTaskId].title;
-          upTag.title = "Follow-up of: " + byId[t.parentTaskId].title;
-          relations.appendChild(upTag);
-        }
-        // dependsOn is a different relationship from parentTaskId (a
-        // blocking order, not a lineage) — surfaced the same way so both
-        // kinds of dependency are visible without opening the drawer.
-        (t.dependsOn || []).forEach(function (depId) {
-          var dep = byId[depId];
-          var depTag = document.createElement("span"); depTag.className = "sl-tag";
-          depTag.textContent = "⛔ " + (dep ? dep.title : depId);
-          depTag.title = "Depends on: " + (dep ? dep.title + " (" + STATUS_LABEL[dep.status] + ")" : depId + " (not found)");
-          relations.appendChild(depTag);
-        });
-        if (relations.childNodes.length) card.appendChild(relations);
-
-        card.addEventListener("click", function () { openTaskDrawer(t.id); });
-        card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openTaskDrawer(t.id); } });
-        laneBody.appendChild(card);
-      });
-      lane.appendChild(laneBody);
-      wrap.appendChild(lane);
+    var relations = document.createElement("div"); relations.className = "sl-relations";
+    // Follow-up relationship (review pass, pushback re-attempt, or a
+    // planner-decomposed subtask) — what actually put this card in
+    // this lane, made explicit rather than left implicit in the
+    // grouping alone. Shown for every non-root card, including one
+    // whose direct parent happens to be the lane's own root — that's
+    // the single most common shape (implementer → its own reviewer)
+    // and the tag is exactly as informative there as anywhere else.
+    if (t.parentTaskId && byId[t.parentTaskId]) {
+      var upTag = document.createElement("span"); upTag.className = "sl-tag";
+      upTag.textContent = "↳ " + byId[t.parentTaskId].title;
+      upTag.title = "Follow-up of: " + byId[t.parentTaskId].title;
+      relations.appendChild(upTag);
+    }
+    // dependsOn is a different relationship from parentTaskId (a
+    // blocking order, not a lineage) — surfaced the same way so both
+    // kinds of dependency are visible without opening the drawer.
+    (t.dependsOn || []).forEach(function (depId) {
+      var dep = byId[depId];
+      var depTag = document.createElement("span"); depTag.className = "sl-tag";
+      depTag.textContent = "⛔ " + (dep ? dep.title : depId);
+      depTag.title = "Depends on: " + (dep ? dep.title + " (" + STATUS_LABEL[dep.status] + ")" : depId + " (not found)");
+      relations.appendChild(depTag);
     });
+    if (relations.childNodes.length) card.appendChild(relations);
+
+    if (opts && opts.cardAction) {
+      var actionBtn = opts.cardAction(t);
+      // stopPropagation so clicking the action button doesn't also
+      // trigger the card's own click-to-open-drawer listener below.
+      actionBtn.addEventListener("click", function (ev) { ev.stopPropagation(); });
+      card.appendChild(actionBtn);
+    }
+
+    card.addEventListener("click", function () { openTaskDrawer(t.id); });
+    card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openTaskDrawer(t.id); } });
+    return card;
+  }
+
+  // One full lane (head + body) — shared the same way buildLaneCard is.
+  // `opts.headAction`, when given, builds one extra action button
+  // appended to the lane header (Swimlanes' "Archive this lane"); the
+  // Archive tab passes none — unarchiving a whole lane isn't a thing
+  // (docs/SDD-task-archiving.md §3.6), so its lanes only expose the
+  // per-card Unarchive action.
+  function buildLane(rootId, members, byId, opts) {
+    var root = byId[rootId];
+    var lane = document.createElement("div");
+    lane.className = "swimlane";
+
+    var head = document.createElement("div");
+    head.className = "swimlane-head";
+    var dot = document.createElement("span"); dot.className = "swatch";
+    dot.style.background = "var(" + (STATUS_COLOR[root.status] || "--ink-muted") + ")";
+    head.appendChild(dot);
+    var title = document.createElement("span"); title.textContent = root.title;
+    head.appendChild(title);
+    var count = document.createElement("span"); count.className = "sl-count";
+    count.textContent = members.length === 1 ? "1 card" : members.length + " cards";
+    head.appendChild(count);
+    if (opts && opts.headAction) head.appendChild(opts.headAction(root, members));
+    lane.appendChild(head);
+
+    var laneBody = document.createElement("div");
+    laneBody.className = "swimlane-body";
+    members.forEach(function (t) { laneBody.appendChild(buildLaneCard(t, byId, opts)); });
+    lane.appendChild(laneBody);
+    return lane;
+  }
+
+  // Renders every lane for `members` (already filtered to whichever
+  // predicate the caller wants — live vs archived) into `wrap`/`countEl`.
+  // `byId` is always the FULL, unfiltered task map — see computeLanes.
+  function renderLanes(wrap, countEl, members, byId, opts, emptyMessage) {
+    wrap.textContent = "";
+    if (members.length === 0) {
+      countEl.textContent = "";
+      var empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = emptyMessage;
+      wrap.appendChild(empty);
+      return;
+    }
+    var laneData = computeLanes(members, byId);
+    countEl.textContent = laneData.laneOrder.length === 1 ? "1 lane" : laneData.laneOrder.length + " lanes";
+    laneData.laneOrder.forEach(function (rootId) {
+      wrap.appendChild(buildLane(rootId, laneData.lanes[rootId], byId, opts));
+    });
+  }
+
+  function laneActionButton(label, onClick) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lane-action";
+    btn.textContent = label;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  function cardActionButton(label, onClick) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "card-action";
+    btn.textContent = label;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  function renderSwimlanes() {
+    var byId = {};
+    tasks.forEach(function (t) { byId[t.id] = t; });
+    // Excludes archived cards, same as renderKanban/renderStats — see
+    // TaskCard.archivedAt. They show up in the Archive tab instead.
+    var members = tasks.filter(function (t) { return !t.archivedAt; });
+    renderLanes(
+      document.getElementById("swimlanesBody"),
+      document.getElementById("swimlanesCount"),
+      members,
+      byId,
+      {
+        headAction: function (root, laneMembers) {
+          return laneActionButton("Archive this lane", function () {
+            if (!window.confirm("Archive \"" + root.title + "\" and all " + laneMembers.length + " card(s) in this lane? They move to the Archive tab; unarchive them individually later if needed.")) return;
+            archiveTask(root.id);
+          });
+        },
+      },
+      "No tasks yet.",
+    );
+  }
+
+  function renderArchiveTab() {
+    var byId = {};
+    tasks.forEach(function (t) { byId[t.id] = t; });
+    var members = tasks.filter(function (t) { return !!t.archivedAt; });
+    renderLanes(
+      document.getElementById("archiveBody"),
+      document.getElementById("archiveCount"),
+      members,
+      byId,
+      {
+        cardAction: function (t) {
+          return cardActionButton("Unarchive", function () { unarchiveTask(t.id); });
+        },
+      },
+      "No archived tasks yet.",
+    );
   }
 
   function render() {
     renderStats();
     renderKanban();
     renderSwimlanes();
+    renderArchiveTab();
     renderFleetBoxes();
     renderHarnessStrip();
     if (harnessPanelOpen) renderHarnessPanel();
@@ -2101,6 +2261,7 @@
 
   var boardPanel = document.getElementById("boardPanel");
   var swimlanesPanel = document.getElementById("swimlanesPanel");
+  var archivePanel = document.getElementById("archivePanel");
   var newTaskPanel = document.getElementById("newTaskPanel");
   var memoryPanel = document.getElementById("memoryPanel");
   document.querySelectorAll("#viewToggle button").forEach(function (btn) {
@@ -2110,6 +2271,7 @@
       var view = btn.getAttribute("data-view");
       boardPanel.hidden = view !== "board";
       swimlanesPanel.hidden = view !== "swimlanes";
+      archivePanel.hidden = view !== "archive";
       newTaskPanel.hidden = view !== "newtask";
       memoryPanel.hidden = view !== "memory";
       // Refetched on every visit, not cached — a curation run since the
