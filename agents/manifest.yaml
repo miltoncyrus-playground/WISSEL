@@ -30,20 +30,76 @@ agents:
     whenToUse: Card describes an outcome but not the steps to get there.
     tags: [planning, decomposition]
     executor: readonly
-    # integrator added alongside the auto-integrator feature
-    # (wireAutoIntegrator/maybeSpawnIntegrator, src/core/orchestrator.ts):
-    # its auto-created follow-up card carries parentTaskId = the planner
-    # task, so without integrator in this allowlist,
-    # resolveHandoffAllowlist would restrict that card's routing
-    # candidates to exactly [implementer, reviewer] and it would always
-    # land on no-match regardless of tag overlap. See
-    # docs/SDD-pipeline-automation.md §3.5.
-    handoffs: [implementer, reviewer, integrator]
+    # No `handoffs` list here on purpose. A subtask-plan agent's children
+    # (spawnSubtasksFromPlan, src/core/orchestrator.ts) and any
+    # auto-integrator follow-up spawned under them carry `parentTaskId`
+    # for grouping/dependency tracking only, not a real handoff
+    # relationship — resolveHandoffAllowlist exempts any parent whose
+    # `outputContractFormat` is "subtask-plan" from the handoffs
+    # restriction entirely, since a subtask's `labels` can legitimately
+    # route it to any agent in the registry (fixer, integrator,
+    # pr-description-writer, ...), not a fixed graph declared in advance.
     inputs: [task-card]
     outputs: [subtask-cards, acceptance-criteria]
     trustLevel: low
     toolAccess: [read]
     costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.08 }
+    # Same mechanism as reviewer's own outputContractFormat below —
+    # declaring this is what makes a run's final message get parsed by
+    # parseSubtaskPlan (src/executors/parse-subtask-plan.ts) instead of
+    # trusted as prose (see src/executors/claude-cli.ts). The planner
+    # stays readonly/plan-mode — it never gets Bash, write tier, or a
+    # "create task" tool of its own — so this is the ONLY way its
+    # decomposition ever becomes real cards: the orchestrator
+    # (spawnSubtasksFromPlan, src/core/orchestrator.ts) deterministically
+    # parses the block and calls board.create() itself, the same way a
+    # human used to read the planner's prose and hand-create each
+    # subtask.
+    outputContractFormat: subtask-plan
+    outputContract: |
+      Output contract — mandatory, machine-parsed, no exceptions:
+
+      You are running in plan mode. You cannot create cards, run
+      commands, or edit files yourself — the fenced block below is your
+      entire deliverable. If it's missing or malformed, your decomposition
+      is silently discarded and nothing gets built.
+
+      Your final message MUST end with a fenced code block of exactly
+      this form, and nothing may follow it:
+
+      ```subtask-plan
+      [
+        {"title": "...", "body": "...", "labels": ["..."]},
+        {"title": "...", "body": "...", "labels": ["..."], "dependsOnIndex": 0}
+      ]
+      ```
+
+      Rules:
+      - The block must be valid JSON on its own: a top-level array, no
+        trailing commas, no comments, no code fences nested inside it.
+      - Every item needs a non-empty string `title`, a string `body`, and
+        a `labels` array of strings.
+      - `body` must be fully self-contained. A fresh implementer session
+        sees ONLY its own card — not this plan, not sibling cards, not
+        your reasoning above. Restate every acceptance criterion,
+        file/function reference, and constraint that subtask needs,
+        rather than referring back to "the plan" or "subtask 3".
+      - Order items so dependencies only ever point backward: `dependsOnIndex`,
+        when present, is the array index (0-based) of another item that
+        must land first, and it must be strictly less than this item's
+        own index. A forward or self-referencing index is invalid and
+        fails the whole plan — reorder the array instead.
+      - Choose `labels` to route each subtask to the right agent, using
+        this repo's existing tag conventions (see the `tags:` on other
+        agents in this file) — e.g. `["code"]` for implementer-bound
+        work, `["ci", "tests", "bugfix"]` for fixer-bound work,
+        `["docs", "pr"]` for a PR-description subtask. A subtask with no
+        matching tag lands on `no-match` and never runs.
+      - Write your normal decomposition prose first if you want, but the
+        ```subtask-plan``` block must be the last thing in your message.
+        A missing, malformed, or extra block after it is treated as a
+        failed run, not a partial plan — never omit it or leave it
+        ambiguous "to be safe."
 
   - id: reviewer
     name: Reviewer

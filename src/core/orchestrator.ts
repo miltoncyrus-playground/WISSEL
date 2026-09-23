@@ -8,7 +8,7 @@ import type { CommandRunner } from "../executors/claude-cli.ts";
 import { runViaBun } from "../executors/claude-cli.ts";
 import { mergeTaskWorktree } from "../services/worktree.ts";
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
-import type { Executor, RoutingDecision, TaskCard, TaskResult } from "./types.ts";
+import type { Executor, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
 
 /**
  * Follows a chain of `TaskCard.supersededBy` pointers forward from `task`
@@ -61,6 +61,13 @@ export function resolveLiveTip(task: TaskCard | undefined, byId: Map<string, Tas
  *   task — approve behaves like a plain write-tier success arriving now,
  *   changes_requested spawns a pushback re-attempt or escalates.
  *
+ * Separately (not a write-tier review-gate exception — the planner is
+ * readonly-tier and would otherwise land straight on the plain
+ * `agent.tier !== "write"` done branch below), a result carrying
+ * `TaskResult.subtaskPlan` is a planner's own decomposition: it's routed
+ * to `spawnSubtasksFromPlan` instead, which is what turns the plan into
+ * real child cards.
+ *
  * `runner` is used for the auto-merge path and passed through to
  * handleReviewVerdict for the same reason — injectable so tests never
  * spawn a real git process; defaults to the real one. `memoryPath` is
@@ -103,6 +110,20 @@ export async function finishResult(
   // the verdict on the floor.
   if (result.verdict !== undefined) {
     await handleReviewVerdict(board, registry, result, runner);
+    return;
+  }
+
+  // A planner pass carries a subtask plan (see TaskResult.subtaskPlan) —
+  // same reasoning as the verdict branch above: the planner is
+  // readonly-tier and would otherwise land straight on `done` the same
+  // as any other read-only success, silently dropping the decomposition
+  // on the floor instead of turning it into real cards.
+  if (result.subtaskPlan !== undefined) {
+    const task = await board.get(result.taskId);
+    // A vanished task (deleted mid-run) has nothing left to spawn
+    // subtasks under — recordResult above already captured the plan for
+    // history; there's no card left to move or attach children to.
+    if (task) await spawnSubtasksFromPlan(board, task, result.subtaskPlan);
     return;
   }
 
@@ -183,6 +204,48 @@ async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result
     reviewLineageId,
     pushbackCount: 0,
   });
+}
+
+/**
+ * Turns a planner's own decomposition (see TaskResult.subtaskPlan) into
+ * real cards — the whole point of the structured-output contract: the
+ * planner stays readonly/plan-mode with zero write access, and this
+ * deterministic code (not the LLM) is what actually calls
+ * `board.create()`, mirroring by hand what used to require a human
+ * reading the planner's prose and creating each card themselves.
+ *
+ * Moves the planner task to `done` first — its job ends the moment it
+ * reports a plan, same as a reviewer task's job ends the moment it
+ * reports a verdict (see handleReviewVerdict). Then walks `plan` in
+ * array order, creating each item via `board.create()` with
+ * `parentTaskId` pointing at the planner task (so a later
+ * `wireAutoIntegrator` pass, and any human browsing the board, can see
+ * the whole decomposition as one group) and `dependsOn` resolved against
+ * the ids actually generated for earlier items *in this same call* — the
+ * `createdIds[item.dependsOnIndex]` lookup is safe unguarded because
+ * parseSubtaskPlan already rejected any `dependsOnIndex` that isn't a
+ * valid earlier index before this ever runs. No further event/log beyond
+ * `board.create()`'s own `task.created` event is needed — the same as
+ * spawnReviewerTask/spawnPushbackImplementer above, neither of which logs
+ * separately either; the board event is what already surfaces every
+ * creation to SSE listeners and the board UI.
+ */
+async function spawnSubtasksFromPlan(board: Board, plannerTask: TaskCard, plan: SubtaskPlanItem[]): Promise<void> {
+  await board.move(plannerTask.id, "done");
+
+  const createdIds: string[] = [];
+  for (const item of plan) {
+    const dependsOn = item.dependsOnIndex !== undefined ? [createdIds[item.dependsOnIndex]!] : undefined;
+    const created = await board.create({
+      title: item.title,
+      body: item.body,
+      labels: item.labels,
+      repo: plannerTask.repo,
+      parentTaskId: plannerTask.id,
+      dependsOn,
+    });
+    createdIds.push(created.id);
+  }
 }
 
 /**
@@ -319,6 +382,20 @@ async function tryAutoMerge(board: Board, result: TaskResult, runner: CommandRun
  * graph at all all mean "the whole registry is eligible." A parent
  * agent that declared `handoffs: []` returns that empty array as-is —
  * a deliberate "hands off to no one," not the same as no restriction.
+ *
+ * A parent whose `outputContractFormat` is `"subtask-plan"` (today, only
+ * the planner) is a separate, deliberate exception: its children (see
+ * spawnSubtasksFromPlan) and any auto-integrator follow-up spawned under
+ * them (see maybeSpawnIntegrator) carry `parentTaskId` purely for
+ * grouping/dependency tracking — visibility and `dependsOn` chaining, not
+ * a real handoff relationship. The planner's own decomposition can, by
+ * design, route a subtask's `labels` to *any* agent in the registry
+ * (fixer, integrator, pr-description-writer, ...), not just a fixed
+ * graph declared in advance — restricting to a `handoffs` list here would
+ * silently strand any subtask whose labels target an agent the planner
+ * never happened to list, exactly the bug caught live against the real
+ * registry/router (see test/orchestrator.test.ts's sweep()-driven
+ * planner test).
  */
 export async function resolveHandoffAllowlist(
   board: Board,
@@ -329,7 +406,9 @@ export async function resolveHandoffAllowlist(
   const parent = await board.get(parentTaskId);
   if (!parent?.routedTo) return undefined;
   const parentAgent = registry.get(parent.routedTo);
-  if (!parentAgent || parentAgent.handoffs === undefined) return undefined;
+  if (!parentAgent) return undefined;
+  if (parentAgent.outputContractFormat === "subtask-plan") return undefined;
+  if (parentAgent.handoffs === undefined) return undefined;
   return parentAgent.handoffs;
 }
 

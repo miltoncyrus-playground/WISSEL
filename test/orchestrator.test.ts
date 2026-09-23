@@ -312,6 +312,176 @@ test("trustLevel: high alone, without autoMerge, does NOT skip review either", a
   expect((await board.get(task.id))!.status).toBe("review");
 });
 
+// --- planner subtask-plan -> real cards (structured-output contract) ---
+// The planner stays readonly/plan-mode with zero write access; a result
+// carrying `subtaskPlan` (see TaskResult.subtaskPlan) is turned into real
+// child cards by finishResult's own deterministic code
+// (spawnSubtasksFromPlan), never by the LLM acting on its own plan.
+
+const plannerAgent: AgentDef = {
+  id: "planner",
+  name: "Planner",
+  kind: "agent",
+  tier: "readonly",
+  description: "Decomposes a vague card into subtasks with acceptance criteria.",
+  whenToUse: "Card describes an outcome but not the steps to get there.",
+  tags: ["planning", "decomposition"],
+  executor: "readonly",
+  inputs: ["task-card"],
+  outputs: ["subtask-cards", "acceptance-criteria"],
+  trustLevel: "low",
+  toolAccess: ["read"],
+  costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.08 },
+  outputContractFormat: "subtask-plan",
+  outputContract: "Your final message must end with a ```subtask-plan``` block.",
+};
+
+test("the real manifest's planner entry declares the subtask-plan output contract (agents/manifest.yaml)", async () => {
+  const realPlanner = (await Registry.load()).get("planner")!;
+  expect(realPlanner.outputContractFormat).toBe("subtask-plan");
+  expect(realPlanner.outputContract).toBeDefined();
+  expect(realPlanner.outputContract).toContain("```subtask-plan");
+  expect(realPlanner.tier).toBe("readonly"); // must stay plan-mode/zero-write — the whole point of this contract
+});
+
+test("a planner's subtaskPlan spawns real child cards with correct parentTaskId/dependsOn/labels/body, and the planner lands on done", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([plannerAgent]);
+  const plannerTask = await board.create({ title: "Add feature X", body: "Vague outcome.", labels: ["planning"], repo: "r" });
+
+  await finishResult(board, registry, {
+    taskId: plannerTask.id,
+    agentId: "planner",
+    ok: true,
+    summary: "decomposed",
+    subtaskPlan: [
+      { title: "Add types", body: "Add the interface to types.ts.", labels: ["code"] },
+      { title: "Add parser", body: "Add the parser module.", labels: ["code"], dependsOnIndex: 0 },
+      { title: "Write docs", body: "Update the changelog.", labels: ["docs", "changelog", "release"] },
+    ],
+  });
+
+  expect((await board.get(plannerTask.id))!.status).toBe("done");
+
+  const children = (await board.list()).filter((t) => t.parentTaskId === plannerTask.id);
+  expect(children).toHaveLength(3);
+
+  const byTitle = new Map(children.map((c) => [c.title, c]));
+  const addTypes = byTitle.get("Add types")!;
+  const addParser = byTitle.get("Add parser")!;
+  const writeDocs = byTitle.get("Write docs")!;
+
+  expect(addTypes.body).toBe("Add the interface to types.ts.");
+  expect(addTypes.labels).toEqual(["code"]);
+  expect(addTypes.repo).toBe("r");
+  expect(addTypes.dependsOn).toEqual([]);
+
+  expect(addParser.dependsOn).toEqual([addTypes.id]);
+  expect(writeDocs.labels).toEqual(["docs", "changelog", "release"]);
+  expect(writeDocs.dependsOn).toEqual([]);
+});
+
+test("a planner-spawned child with dependsOnIndex on an undone predecessor is not eligible for sweep dispatch", async () => {
+  const { board, registry, orchestrator } = await setup([
+    fakeExecutor("readonly", async () => {
+      throw new Error("should never run — the blocked child depends on an undone sibling");
+    }),
+  ]);
+  const plannerTask = await board.create({ title: "Add feature X", body: "Vague outcome.", labels: ["planning"], repo: "r" });
+
+  await finishResult(board, registry, {
+    taskId: plannerTask.id,
+    agentId: "planner",
+    ok: true,
+    summary: "decomposed",
+    subtaskPlan: [
+      { title: "First step", body: "Do this first.", labels: ["ci", "tests", "bugfix"] },
+      { title: "Second step", body: "Then this.", labels: ["ci", "tests", "bugfix"], dependsOnIndex: 0 },
+    ],
+  });
+
+  const children = (await board.list()).filter((t) => t.parentTaskId === plannerTask.id);
+  const first = children.find((t) => t.title === "First step")!;
+  const second = children.find((t) => t.title === "Second step")!;
+  expect(second.dependsOn).toEqual([first.id]);
+
+  await orchestrator.sweep();
+
+  // "First step"'s tags route it (write-tier) to "fixer" in the real
+  // manifest, which sweep() hands off rather than runs — it never
+  // reaches "done" in this fixture regardless, which is exactly what
+  // keeps "Second step" blocked: the assertion that matters is that the
+  // blocked child was never dispatched.
+  expect((await board.get(first.id))!.status).not.toBe("done");
+  expect((await board.get(second.id))!.status).toBe("inbox");
+  expect((await board.get(second.id))!.routedTo).toBeUndefined();
+});
+
+test("a planner routed through a real sweep() spawns subtasks that route to fixer and pr-description-writer, not no-match — resolveHandoffAllowlist must not restrict a subtask-plan agent's children to its own declared handoffs", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => {
+      if (agent.id !== "planner") return { taskId: task.id, agentId: agent.id, ok: true, summary: "ran" };
+      return {
+        taskId: task.id,
+        agentId: agent.id,
+        ok: true,
+        summary: "decomposed",
+        subtaskPlan: [
+          { title: "Fix the failing test", body: "Make CI green again.", labels: ["ci", "tests", "bugfix"] },
+          { title: "Write the PR description", body: "Draft the PR body.", labels: ["docs", "pr"] },
+        ],
+      };
+    }),
+  ]);
+
+  const plannerTask = await board.create({ title: "Add feature X", body: "Vague outcome.", labels: ["planning", "decomposition"], repo: "r" });
+
+  // Routes AND runs the planner for real — unlike calling finishResult
+  // directly, this is what actually stamps `routedTo: "planner"` on the
+  // parent, the precondition resolveHandoffAllowlist's restriction needs
+  // to even engage (see its `!parent?.routedTo` early return).
+  await orchestrator.sweep();
+  expect((await board.get(plannerTask.id))!.routedTo).toBe("planner");
+  expect((await board.get(plannerTask.id))!.status).toBe("done");
+
+  // A second sweep() is required — the subtasks spawned by the first
+  // sweep's finishResult call didn't exist when that sweep's task list
+  // was snapshotted, so they're only eligible starting next round.
+  await orchestrator.sweep();
+
+  const children = (await board.list()).filter((t) => t.parentTaskId === plannerTask.id);
+  expect(children).toHaveLength(2);
+
+  const fixerChild = children.find((t) => t.title === "Fix the failing test")!;
+  const prChild = children.find((t) => t.title === "Write the PR description")!;
+
+  // Before the fix, resolveHandoffAllowlist restricted both of these to
+  // planner's own declared `handoffs` (which never listed fixer or
+  // pr-description-writer), so registry.candidatesFor filtered them out
+  // entirely and both landed on "no-match" regardless of tag overlap.
+  expect(fixerChild.routedTo).toBe("fixer");
+  expect(fixerChild.status).toBe("dispatched"); // write-tier, handed off rather than run in this fixture
+  expect(prChild.routedTo).toBe("pr-description-writer");
+  expect(prChild.status).not.toBe("no-match");
+});
+
+test("finishResult never falls through to the plain readonly done-move for a planner result — spawnSubtasksFromPlan owns it", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([plannerAgent]);
+  const plannerTask = await board.create({ title: "Add feature X", body: "Vague outcome.", labels: ["planning"], repo: "r" });
+
+  await finishResult(board, registry, {
+    taskId: plannerTask.id,
+    agentId: "planner",
+    ok: true,
+    summary: "decomposed",
+    subtaskPlan: [],
+  });
+
+  expect((await board.get(plannerTask.id))!.status).toBe("done");
+  expect((await board.list()).filter((t) => t.parentTaskId === plannerTask.id)).toHaveLength(0);
+});
+
 // --- memory persistence hook (docs/SDD-memory-curator.md §9) ---
 // finishResult writes result.summary to memory/lessons.md wholesale,
 // but only for an agent whose declared `outputs` includes
