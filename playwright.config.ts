@@ -30,7 +30,17 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "bun run src/api/server.ts",
+    // Seeds the two disposable tmp fixtures the model-selection tests in
+    // e2e/board.spec.ts mutate for real (WISSEL_HARNESSES_PATH,
+    // WISSEL_MODELS_CACHE_PATH below) *before* the server boots — both
+    // are read once at startup (HarnessPool.autoload/readModelsCache),
+    // so they have to exist on disk before `bun run src/api/server.ts`
+    // starts, not just before the tests that use them run. Copied fresh
+    // from e2e/fixtures/ on every run rather than pointed at the fixture
+    // files directly, so a mutating test never touches the checked-in
+    // originals — same "never touch the real file" discipline
+    // WISSEL_MEMORY_PATH below already established.
+    command: "cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && bun run src/api/server.ts",
     url: `http://localhost:${PORT}/health`,
     reuseExistingServer: false,
     env: {
@@ -41,6 +51,13 @@ export default defineConfig({
       // way, twice: an e2e run without this overwrote the real,
       // git-committed memory/lessons.md with test fixture content.
       WISSEL_MEMORY_PATH: "/tmp/wissel-e2e-memory-lessons.md",
+      // The first harness-*mutating* endpoint (POST
+      // /harnesses/:id/model) the e2e suite exercises for real, unlike
+      // the enable/disable test's deliberate abstention — see
+      // e2e/fixtures/harnesses.yaml/models-cache.json's own comments for
+      // why "e2e-fixture-harness" is deterministic across every machine.
+      WISSEL_HARNESSES_PATH: "/tmp/wissel-e2e-harnesses.yaml",
+      WISSEL_MODELS_CACHE_PATH: "/tmp/wissel-e2e-models-cache.json",
     },
   },
 });

@@ -1,0 +1,18 @@
+# e2e fixture — playwright.config.ts's webServer.command copies this to
+# a disposable tmp path (/tmp/wissel-e2e-harnesses.yaml) before every
+# test run; nothing here is ever read or written in place, so a test
+# that mutates it (e.g. board.spec.ts's model-selection tests) can never
+# touch this checked-in file.
+#
+# `e2e-fixture-harness` is `anthropic-api` with no `apiKeyEnv` on
+# purpose: `checkHarnessAuth`/`validateHarness` (see
+# src/core/harness-discovery.ts) always trust that combination ("no
+# override configured" trusts ambient resolution), so this harness comes
+# back `enabled: true` deterministically on every machine and in CI —
+# unlike a claude-cli/codex-cli entry, which would depend on real local
+# auth this fixture can't guarantee.
+harnesses:
+  - id: e2e-fixture-harness
+    tool: anthropic-api
+    label: "E2E Fixture Harness"
+    enabled: true
