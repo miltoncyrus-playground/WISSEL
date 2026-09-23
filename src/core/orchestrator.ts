@@ -1,14 +1,14 @@
 import type { EventEmitter } from "node:events";
 import type { Board, BoardEvent } from "../services/board.ts";
 import type { TelemetryLog } from "../services/telemetry.ts";
-import type { HarnessPool } from "./harness-pool.ts";
+import { HarnessOverrideError, type HarnessPool } from "./harness-pool.ts";
 import type { Registry } from "./registry.ts";
 import type { Router } from "./router.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import { runViaBun } from "../executors/claude-cli.ts";
 import { mergeTaskWorktree } from "../services/worktree.ts";
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
-import type { Executor, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
+import type { Executor, Harness, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
 
 /**
  * Follows a chain of `TaskCard.supersededBy` pointers forward from `task`
@@ -756,8 +756,45 @@ export class Orchestrator {
       // executor that's about to run actually needs, not a fixed
       // "claude-cli" — an executor with no declared harnessTool (or no
       // pool configured) simply runs without one, unchanged from
-      // wissel's behavior before harnesses existed.
-      const harness = executor!.harnessTool ? this.opts.harnesses?.acquire(executor!.harnessTool) : undefined;
+      // wissel's behavior before harnesses existed. Passing
+      // task.harnessOverride through as the forced pick means a mismatch
+      // between the override and the agent's own routed executor tool
+      // (executor!.harnessTool) surfaces as the same tool-mismatch
+      // HarnessOverrideError acquire() throws for any other bad override.
+      // That path only fires when executor!.harnessTool and
+      // this.opts.harnesses are both truthy, though — harnessTool is
+      // optional on Executor and a pool isn't guaranteed configured, so
+      // an explicit override with either one missing is checked here
+      // instead of falling through to a silent `undefined` harness,
+      // which would contradict "fail loud on an unresolvable override."
+      if (task.harnessOverride && (!executor!.harnessTool || !this.opts.harnesses)) {
+        const reason = !executor!.harnessTool
+          ? `agent "${agent.id}" runs on an executor with no harness tool`
+          : "no harness pool is configured";
+        const result: TaskResult = {
+          taskId: task.id,
+          agentId: agent.id,
+          ok: false,
+          summary: `harness override '${task.harnessOverride}' can't be honored: ${reason}`,
+        };
+        await finishResult(this.board, this.registry, result, this.telemetry, undefined, this.opts.memoryPath);
+        return;
+      }
+
+      let harness: Harness | undefined;
+      try {
+        harness = executor!.harnessTool ? this.opts.harnesses?.acquire(executor!.harnessTool, task.harnessOverride) : undefined;
+      } catch (e) {
+        if (!(e instanceof HarnessOverrideError)) throw e;
+        const result: TaskResult = {
+          taskId: task.id,
+          agentId: agent.id,
+          ok: false,
+          summary: `harness override '${task.harnessOverride}' can't be honored: ${e.message}`,
+        };
+        await finishResult(this.board, this.registry, result, this.telemetry, undefined, this.opts.memoryPath);
+        return;
+      }
       if (harness) await this.board.setHarness(task.id, harness.id);
 
       await this.board.move(task.id, "running");

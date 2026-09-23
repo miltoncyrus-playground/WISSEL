@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HarnessPool } from "../src/core/harness-pool.ts";
+import { HarnessOverrideError, HarnessPool } from "../src/core/harness-pool.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
 import type { Harness } from "../src/core/types.ts";
 
@@ -119,6 +119,34 @@ test("disabling an already-acquired harness doesn't interrupt what's already run
   expect(pool.activeCount(acquired.id)).toBe(1);
   pool.release(acquired.id);
   expect(pool.activeCount(acquired.id)).toBe(0);
+});
+
+test("acquire() with a harnessId forces that exact harness, bypassing least-loaded selection", () => {
+  const pool = HarnessPool.from([harness({ id: "a" }), harness({ id: "b" })]);
+  // "a" would lose to "b" under the normal balancing rule once loaded —
+  // proves the forced pick really is forced, not just "happens to win."
+  pool.acquire("claude-cli");
+  const picked = pool.acquire("claude-cli", "a");
+  expect(picked?.id).toBe("a");
+  expect(pool.activeCount("a")).toBe(2);
+});
+
+test("acquire() with an unknown harnessId throws HarnessOverrideError, never falling back to the automatic pick", () => {
+  const pool = HarnessPool.from([harness({ id: "a" })]);
+  expect(() => pool.acquire("claude-cli", "missing")).toThrow(HarnessOverrideError);
+  expect(() => pool.acquire("claude-cli", "missing")).toThrow(/unknown harness id "missing"/);
+});
+
+test("acquire() with a disabled harnessId throws HarnessOverrideError", () => {
+  const pool = HarnessPool.from([harness({ id: "a", enabled: false })]);
+  expect(() => pool.acquire("claude-cli", "a")).toThrow(HarnessOverrideError);
+  expect(() => pool.acquire("claude-cli", "a")).toThrow(/harness "a" is disabled/);
+});
+
+test("acquire() with a harnessId belonging to a different tool throws HarnessOverrideError", () => {
+  const pool = HarnessPool.from([harness({ id: "a", tool: "anthropic-api" })]);
+  expect(() => pool.acquire("claude-cli", "a")).toThrow(HarnessOverrideError);
+  expect(() => pool.acquire("claude-cli", "a")).toThrow(/harness "a" is a anthropic-api harness, not claude-cli/);
 });
 
 function loggedInRunner(email: string): CommandRunner {

@@ -1,4 +1,5 @@
 import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../core/types.ts";
+import { resolveModel } from "../core/model-resolution.ts";
 import { runViaBun } from "./claude-cli.ts";
 import { runCodex, type CommandRunner } from "./codex-cli.ts";
 import { createTaskWorktree } from "../services/worktree.ts";
@@ -72,7 +73,7 @@ export class CodexWriteExecutor implements Executor {
       task: { ...task, repo: worktree.path },
       agent,
       sandbox: "workspace-write",
-      model: this.model ?? agent.costProfile.model,
+      model: this.model ?? resolveModel(task, agent, harness),
       env: harness?.env,
       memoryPath: this.memoryPath,
     });

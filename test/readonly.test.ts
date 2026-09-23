@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ReadOnlyExecutor, type CommandResult } from "../src/executors/readonly.ts";
-import type { AgentDef, TaskCard } from "../src/core/types.ts";
+import type { AgentDef, Harness, TaskCard } from "../src/core/types.ts";
 
 const agent: AgentDef = {
   id: "triager",
@@ -192,6 +192,53 @@ test("an explicit constructor model overrides the agent's own costProfile.model"
   });
   await executor.run(task, agent);
   expect(seenCmd[seenCmd.indexOf("--model") + 1]).toBe("claude-haiku-4-5-20251001");
+});
+
+// The full model-resolution precedence order (see the doc comment next
+// to CostProfile/Harness in types.ts): TaskCard.model beats Harness.model
+// beats AgentDef.costProfile.model, and a constructor override (tests/
+// evals only) beats all three of those.
+async function seenModel(opts: { task: TaskCard; harness?: Harness; ctorModel?: string }): Promise<string | undefined> {
+  let seenCmd: string[] = [];
+  const executor = new ReadOnlyExecutor({
+    model: opts.ctorModel,
+    runner: async (cmd) => {
+      seenCmd = cmd;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+  });
+  await executor.run(opts.task, agent, opts.harness);
+  return seenCmd[seenCmd.indexOf("--model") + 1];
+}
+
+test("model precedence: task.model beats harness.model and the agent's costProfile.model", async () => {
+  const model = await seenModel({
+    task: { ...task, model: "task-level-model" },
+    harness: { id: "h", tool: "claude-cli", label: "H", enabled: true, model: "harness-level-model" },
+  });
+  expect(model).toBe("task-level-model");
+});
+
+test("model precedence: harness.model beats the agent's costProfile.model when task.model is absent", async () => {
+  const model = await seenModel({
+    task,
+    harness: { id: "h", tool: "claude-cli", label: "H", enabled: true, model: "harness-level-model" },
+  });
+  expect(model).toBe("harness-level-model");
+});
+
+test("model precedence: falls through to the agent's costProfile.model when neither task nor harness sets one", async () => {
+  const model = await seenModel({ task });
+  expect(model).toBe(agent.costProfile.model);
+});
+
+test("model precedence: a constructor override wins over task.model, harness.model, and costProfile.model all at once", async () => {
+  const model = await seenModel({
+    task: { ...task, model: "task-level-model" },
+    harness: { id: "h", tool: "claude-cli", label: "H", enabled: true, model: "harness-level-model" },
+    ctorModel: "ctor-level-model",
+  });
+  expect(model).toBe("ctor-level-model");
 });
 
 test("surfaces is_error from claude as ok: false", async () => {

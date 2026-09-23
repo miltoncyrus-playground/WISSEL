@@ -162,6 +162,67 @@ test("reads the API key from the harness's apiKeyEnv and reports harnessId on th
   }
 });
 
+// The full model-resolution precedence order (see the doc comment next
+// to CostProfile/Harness in types.ts): TaskCard.model beats
+// Harness.model beats AgentDef.costProfile.model, and a constructor
+// override (tests/evals only, and the new hook this subtask adds to
+// ApiExecutor) beats all three of those. Mirrors readonly.test.ts's own
+// precedence tests, the other executor of the pair this card's
+// acceptance criteria calls out by name.
+async function seenModel(opts: { task: TaskCard; harness?: Harness; ctorModel?: string }): Promise<string | undefined> {
+  let seenParams: Anthropic.MessageCreateParamsNonStreaming | undefined;
+  const executor = new ApiExecutor({
+    model: opts.ctorModel,
+    clientFactory: fakeClient(async (params) => {
+      seenParams = params;
+      return textMessage("ok");
+    }),
+  });
+  await executor.run(opts.task, agent, opts.harness);
+  return seenParams?.model;
+}
+
+test("model precedence: task.model beats harness.model and the agent's costProfile.model", async () => {
+  const model = await seenModel({
+    task: { ...task, model: "task-level-model" },
+    harness: { id: "h", tool: "anthropic-api", label: "H", enabled: true, model: "harness-level-model" },
+  });
+  expect(model).toBe("task-level-model");
+});
+
+test("model precedence: harness.model beats the agent's costProfile.model when task.model is absent", async () => {
+  const model = await seenModel({
+    task,
+    harness: { id: "h", tool: "anthropic-api", label: "H", enabled: true, model: "harness-level-model" },
+  });
+  expect(model).toBe("harness-level-model");
+});
+
+test("model precedence: falls through to the agent's costProfile.model when neither task nor harness sets one", async () => {
+  const model = await seenModel({ task });
+  expect(model).toBe(agent.costProfile.model);
+});
+
+test("model precedence: a constructor override wins over task.model, harness.model, and costProfile.model all at once", async () => {
+  const model = await seenModel({
+    task: { ...task, model: "task-level-model" },
+    harness: { id: "h", tool: "anthropic-api", label: "H", enabled: true, model: "harness-level-model" },
+    ctorModel: "ctor-level-model",
+  });
+  expect(model).toBe("ctor-level-model");
+});
+
+// computeCost reads the same resolved model, not the agent's raw
+// costProfile.model — a task-level override must price against what
+// actually ran, not the manifest default.
+test("actualCost is computed against the resolved model, not the agent's raw costProfile.model", async () => {
+  const executor = new ApiExecutor({
+    clientFactory: fakeClient(async () => textMessage("hi")),
+  });
+  const result = await executor.run({ ...task, model: "claude-haiku-4-5" }, agent);
+  expect(result.actualCost).toBe((100 * 1.0 + 20 * 5.0) / 1_000_000);
+});
+
 test("a harness naming an unset apiKeyEnv fails clearly instead of falling back to ambient", async () => {
   const executor = new ApiExecutor({ clientFactory: fakeClient(async () => textMessage("should not be called")) });
   const harness: Harness = { id: "broken", tool: "anthropic-api", label: "Broken", enabled: true, apiKeyEnv: "WISSEL_DEFINITELY_UNSET_VAR" };

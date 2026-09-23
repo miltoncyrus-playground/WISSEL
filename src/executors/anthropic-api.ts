@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../core/types.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
+import { resolveModel } from "../core/model-resolution.ts";
 
 /** $/1M tokens, current-generation models (see the claude-api skill's
  *  cached pricing table). Undefined for anything not listed here — an
@@ -41,6 +42,14 @@ export interface ApiExecutorOptions {
    *  falls back to when no harness is picked. */
   clientFactory?: (apiKey?: string) => AnthropicMessagesClient;
   maxTokens?: number;
+  /** Explicit override, mainly for tests/evals that want to pin a
+   *  specific model regardless of the manifest or a Harness/TaskCard
+   *  override — the same constructor-override tier every other
+   *  executor already has, added here to close the gap: this was the
+   *  one executor with no override hook at all. Omitted (the normal
+   *  case) falls through to resolveModel's own precedence
+   *  (TaskCard.model / Harness.model / AgentDef.costProfile.model). */
+  model?: string;
 }
 
 /**
@@ -60,10 +69,12 @@ export class ApiExecutor implements Executor {
   readonly harnessTool = "anthropic-api" as const;
   private clientFactory: (apiKey?: string) => AnthropicMessagesClient;
   private maxTokens: number;
+  private model?: string;
 
   constructor(opts: ApiExecutorOptions = {}) {
     this.clientFactory = opts.clientFactory ?? ((apiKey) => new Anthropic(apiKey ? { apiKey } : {}));
     this.maxTokens = opts.maxTokens ?? 16_000;
+    this.model = opts.model;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -79,11 +90,12 @@ export class ApiExecutor implements Executor {
       }
     }
 
+    const model = this.model ?? resolveModel(task, agent, harness);
     const client = this.clientFactory(apiKey);
     let response: Anthropic.Message;
     try {
       response = await client.messages.create({
-        model: agent.costProfile.model,
+        model,
         max_tokens: this.maxTokens,
         messages: [{ role: "user", content: buildAgentPrompt(task, agent) }],
       });
@@ -107,7 +119,7 @@ export class ApiExecutor implements Executor {
       agentId: agent.id,
       ok: true,
       summary: text || "(no text in response)",
-      actualCost: computeCost(agent.costProfile.model, response.usage),
+      actualCost: computeCost(model, response.usage),
     };
     return harness ? { ...result, harnessId: harness.id } : result;
   }

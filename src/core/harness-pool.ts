@@ -3,6 +3,21 @@ import { parse } from "yaml";
 import { discoverApiKeyHarnesses, discoverCodexHarnesses, discoverHarnesses, validateHarness, type DiscoverHarnessesOptions } from "./harness-discovery.ts";
 import type { Harness, HarnessTool } from "./types.ts";
 
+/** Thrown by `HarnessPool.acquire` when a caller passes an explicit
+ *  `harnessId` (a `TaskCard.harnessOverride`, not the normal automatic
+ *  pick) that can't actually be honored — unknown id, disabled, or a
+ *  tool mismatch. Distinct on purpose from `acquire()`'s existing
+ *  `undefined` return for "no enabled harness for this tool at all,"
+ *  which stays silently-tolerant by design (see the doc comment next to
+ *  CostProfile in types.ts): an explicit override failing is a loud
+ *  error, an empty pool with no override is not. */
+export class HarnessOverrideError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "HarnessOverrideError";
+  }
+}
+
 /**
  * Loads and selects from the harness manifest — mirrors Registry's shape
  * deliberately (load/from/all/get), since it's the same kind of static,
@@ -92,8 +107,24 @@ export class HarnessPool {
    *  Returns undefined when no enabled harness exists for the tool —
    *  callers fall back to running with no harness at all, identical to
    *  wissel's behavior before harnesses existed (whatever `claude` is on
-   *  PATH, under the ambient environment). */
-  acquire(tool: HarnessTool): Harness | undefined {
+   *  PATH, under the ambient environment).
+   *
+   *  `harnessId`, when given, is a forced pick (`TaskCard.harnessOverride`)
+   *  rather than the automatic least-loaded selection above: looks the id
+   *  up directly and **throws** `HarnessOverrideError` if it's unknown,
+   *  disabled, or belongs to a different tool than `tool` — never falls
+   *  back to the automatic pick, since a human/API asked for this exact
+   *  harness by name. Omitted entirely (the normal case), behavior is
+   *  byte-identical to before this parameter existed. */
+  acquire(tool: HarnessTool, harnessId?: string): Harness | undefined {
+    if (harnessId !== undefined) {
+      const harness = this.harnesses.get(harnessId);
+      if (!harness) throw new HarnessOverrideError(`unknown harness id "${harnessId}"`);
+      if (!harness.enabled) throw new HarnessOverrideError(`harness "${harnessId}" is disabled`);
+      if (harness.tool !== tool) throw new HarnessOverrideError(`harness "${harnessId}" is a ${harness.tool} harness, not ${tool}`);
+      this.inFlight.set(harness.id, this.activeCount(harness.id) + 1);
+      return harness;
+    }
     const candidates = this.all().filter((h) => h.enabled && h.tool === tool);
     if (candidates.length === 0) return undefined;
     const picked = candidates.reduce((best, h) => (this.activeCount(h.id) < this.activeCount(best.id) ? h : best));
