@@ -11,6 +11,36 @@ import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "./types.ts";
 
 /**
+ * Follows a chain of `TaskCard.supersededBy` pointers forward from `task`
+ * until it reaches a card with none set — the "live tip" a `dependsOn` id
+ * should actually be evaluated against. A superseded card's own `status`
+ * is frozen forever the moment a pushback re-attempt exists for it (see
+ * TaskCard.supersededBy) — checking that frozen status directly, as
+ * `sweep()`'s blocked-check used to, means any dependent task blocks on
+ * it forever even once the real re-attempt reaches `done`.
+ *
+ * `task` undefined (a dangling dependency id) reads the same as every
+ * other unresolvable case here: returns `undefined`, which callers must
+ * treat as "blocked," never as "satisfied."
+ *
+ * Guards against a cycle with a visited-set — shouldn't occur by
+ * construction (spawnPushbackImplementer only ever points a superseded
+ * card forward to a brand-new id it just created), but a broken chain is
+ * treated as blocked rather than trusted silently. Returns `undefined` on
+ * a detected cycle, same fail-closed contract as the dangling-id case.
+ */
+export function resolveLiveTip(task: TaskCard | undefined, byId: Map<string, TaskCard>): TaskCard | undefined {
+  const seen = new Set<string>();
+  let current = task;
+  while (current?.supersededBy) {
+    if (seen.has(current.id)) return undefined;
+    seen.add(current.id);
+    current = byId.get(current.supersededBy);
+  }
+  return current;
+}
+
+/**
  * Records a result wherever it came from — an executor wissel ran itself,
  * or an external report for a write-tier task wissel only decided and
  * handed off — and applies the one piece of policy that decides where a
@@ -528,9 +558,12 @@ export class Orchestrator {
       if (task.retryAfter && new Date(task.retryAfter).getTime() > Date.now()) continue;
 
       const deps = task.dependsOn ?? [];
-      // A dangling or not-yet-done dependency both read as "blocked" — never
-      // guess a dependency is satisfied just because we can't find it.
-      const blocked = deps.some((depId) => byId.get(depId)?.status !== "done");
+      // A dangling dependency, a not-yet-done one, and one whose id was
+      // superseded by a pushback re-attempt that isn't done yet all read
+      // as "blocked" — resolveLiveTip follows a supersededBy chain to
+      // whatever's actually alive, so a dep id frozen at pending-review
+      // forever doesn't block its dependents forever too.
+      const blocked = deps.some((depId) => resolveLiveTip(byId.get(depId), byId)?.status !== "done");
       if (blocked) continue;
 
       if (this.opts.maxConcurrentTasks !== undefined && this.inFlight.size >= this.opts.maxConcurrentTasks) continue;

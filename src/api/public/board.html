@@ -1659,6 +1659,22 @@
     return current;
   }
 
+  // Mirrors resolveLiveTip (src/core/orchestrator.ts) so a "Depends on"
+  // tag shows the same live card the dispatcher actually blocks on, not
+  // a superseded original permanently frozen at pending-review. `dep`
+  // undefined (not on the board, or a detected supersededBy cycle) is
+  // handled by the caller exactly like any other missing dependency.
+  function resolveLiveTip(dep, byId) {
+    var current = dep;
+    var seen = {};
+    while (current && current.supersededBy) {
+      if (seen[current.id]) return undefined;
+      seen[current.id] = true;
+      current = byId[current.supersededBy];
+    }
+    return current;
+  }
+
   // Groups `members` by lineage root, using the FULL board (`byId`, not
   // just `members`) to walk parentTaskId — so a live descendant of an
   // archived ancestor, or an archived descendant of a live root, still
@@ -1720,8 +1736,12 @@
     // dependsOn is a different relationship from parentTaskId (a
     // blocking order, not a lineage) — surfaced the same way so both
     // kinds of dependency are visible without opening the drawer.
+    // Resolved through resolveLiveTip: the dispatcher blocks on the live
+    // tip of a supersededBy chain, not the literal dep id, so the tag
+    // shows that same live card's title/status instead of a superseded
+    // original stuck at "Pending review" forever.
     (t.dependsOn || []).forEach(function (depId) {
-      var dep = byId[depId];
+      var dep = resolveLiveTip(byId[depId], byId);
       var depTag = document.createElement("span"); depTag.className = "sl-tag";
       depTag.textContent = "⛔ " + (dep ? dep.title : depId);
       depTag.title = "Depends on: " + (dep ? dep.title + " (" + STATUS_LABEL[dep.status] + ")" : depId + " (not found)");

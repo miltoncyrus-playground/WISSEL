@@ -320,6 +320,48 @@ test("6 consecutive rejections escalate instead of spawning a 7th implementer ta
   }
 });
 
+test("a dependent task's dependsOn follows a pushback's supersededBy chain to the live re-attempt, not the permanently-stuck original", async () => {
+  const fixture = await setup([{ verdict: "changes_requested", feedback: "missing error handling" }]);
+  try {
+    const original = await fixture.board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: fixture.repo });
+    const dependent = await fixture.board.create({
+      title: "Build on top of it",
+      body: "",
+      labels: ["code"],
+      repo: fixture.repo,
+      dependsOn: [original.id],
+    });
+
+    await driveRounds(fixture.orchestrator, 1);
+
+    const supersededOriginal = await fixture.board.get(original.id);
+    // Frozen forever by design (TaskCard.supersededBy) — the dependent
+    // must never be evaluated against this status again.
+    expect(supersededOriginal!.status).toBe("pending-review");
+    const reattemptId = supersededOriginal!.supersededBy!;
+
+    // The dependent stays blocked — the re-attempt exists but isn't done
+    // yet. Before the fix, this dep would have blocked forever even once
+    // the re-attempt finished, since the old check only ever looked at
+    // original's own (now permanently pending-review) status.
+    await fixture.orchestrator.sweep();
+    expect((await fixture.board.get(dependent.id))!.status).toBe("inbox");
+    expect((await fixture.board.get(dependent.id))!.routedTo).toBeUndefined();
+
+    // The re-attempt reaches "done" for real — same path a human's
+    // POST /tasks/:id/merge takes (Board.move, per its own doc comment:
+    // every "became done" transition goes through it).
+    await fixture.board.move(reattemptId, "done");
+
+    await fixture.orchestrator.sweep();
+    const dependentAfter = await fixture.board.get(dependent.id);
+    expect(dependentAfter!.status).not.toBe("inbox");
+    expect(dependentAfter!.routedTo).toBeDefined();
+  } finally {
+    await cleanup(fixture);
+  }
+});
+
 test("runNow rejects a click on a superseded task instead of resurrecting its abandoned worktree", async () => {
   const fixture = await setup([{ verdict: "changes_requested", feedback: "not quite" }]);
   try {
