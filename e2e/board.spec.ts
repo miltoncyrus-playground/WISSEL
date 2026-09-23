@@ -759,3 +759,111 @@ test.describe("Swimlanes view", () => {
     await expect(blockedLane.locator(".slcard .sl-tag")).toHaveAttribute("title", new RegExp(depTitle));
   });
 });
+
+test.describe("Archive tab", () => {
+  test("archiving a task from its drawer removes it from Board and Swimlanes, and it shows up in the Archive tab", async ({ page, request }) => {
+    const title = `Drawer archive test ${Date.now()}`;
+    await request.post("/tasks", { data: { title, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer.getByRole("button", { name: "Archive", exact: true })).toBeVisible();
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await drawer.getByRole("button", { name: "Archive", exact: true }).click();
+
+    // The drawer stays open on the same task (archiving never closes
+    // it) and now offers Unarchive instead, tagged "archived" in the
+    // meta row.
+    await expect(drawer.getByRole("button", { name: "Unarchive", exact: true })).toBeVisible();
+    await expect(drawer.locator("#tdMeta")).toContainText("archived");
+    await page.locator("#tdClose").click();
+
+    // Gone from Board (kanban card count), the stat tile agrees, and
+    // it's gone from Swimlanes membership too.
+    await expect(page.locator("#kanbanBody").getByText(title, { exact: true })).toHaveCount(0);
+
+    const allTasks = await (await request.get("/tasks")).json();
+    const realInboxCount = allTasks.filter(
+      (t: { status: string; supersededBy?: string; archivedAt?: string }) => t.status === "inbox" && !t.supersededBy && !t.archivedAt,
+    ).length;
+    const inboxStatTile = page.locator("#stats .stat", { has: page.locator(".l", { hasText: "Inbox" }) });
+    await expect(inboxStatTile.locator(".n")).toHaveText(String(realInboxCount));
+
+    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+    await expect(page.locator("#swimlanesBody").getByText(title, { exact: true })).toHaveCount(0);
+
+    // Present in the Archive tab, grouped into its own lane.
+    await page.getByRole("button", { name: "Archive", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Archive", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("#archivePanel")).toBeVisible();
+    const archiveLane = page.locator("#archiveBody .swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
+    await expect(archiveLane).toBeVisible();
+    await expect(archiveLane.locator(".slcard")).toHaveCount(1);
+    await expect(archiveLane.locator(".slcard .card-action")).toHaveText("Unarchive");
+  });
+
+  test("archiving a lane from its Swimlanes header cascades to every card in that lane, confirmed via the Archive tab afterward", async ({ page, request }) => {
+    const title = `Lane archive test ${Date.now()}`;
+    const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo" } });
+    const originalId = (await created.json()).id as string;
+    // Auto-creates a "Review: <title>" follow-up — a real 2-card lineage,
+    // same setup the plain Swimlanes lineage test above uses.
+    await request.post(`/tasks/${originalId}/result`, { data: { agentId: "implementer", ok: true, summary: "did the thing" } });
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+
+    const lane = page.locator(".swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
+    await expect(lane.locator(".slcard")).toHaveCount(2);
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await lane.locator(".lane-action", { hasText: "Archive this lane" }).click();
+
+    // The whole lane disappears from the live Swimlanes view — scoped to
+    // #swimlanesBody specifically, since the same-titled lane now exists
+    // (hidden) in the Archive tab's own #archiveBody.
+    await expect(page.locator("#swimlanesBody .swimlane", { has: page.locator(".swimlane-head", { hasText: title }) })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Archive", exact: true }).click();
+    const archiveLane = page.locator("#archiveBody .swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
+    await expect(archiveLane).toBeVisible();
+    await expect(archiveLane.locator(".slcard")).toHaveCount(2);
+    // The Archive tab's own lanes never get a lane-wide action — only
+    // the per-card Unarchive (§3.6: unarchiving a whole lane isn't a
+    // thing).
+    await expect(archiveLane.locator(".lane-action")).toHaveCount(0);
+  });
+
+  test("unarchiving one card from the Archive tab restores exactly that card to Swimlanes, not its former lane-mate", async ({ page, request }) => {
+    const title = `Partial unarchive test ${Date.now()}`;
+    const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo" } });
+    const originalId = (await created.json()).id as string;
+    await request.post(`/tasks/${originalId}/result`, { data: { agentId: "implementer", ok: true, summary: "did the thing" } });
+
+    // Archive the whole lineage via the API directly (equivalent to the
+    // lane-header action already covered above) — this test is about
+    // unarchive's single-row behavior, not re-proving the cascade.
+    await request.post(`/tasks/${originalId}/archive`);
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "Archive", exact: true }).click();
+    const archiveLane = page.locator("#archiveBody .swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
+    await expect(archiveLane.locator(".slcard")).toHaveCount(2);
+
+    const reviewerCard = archiveLane.locator(".slcard", { hasText: `Review: ${title}` });
+    await reviewerCard.locator(".card-action").click(); // Unarchive — no confirm dialog for this one (§3.6)
+
+    // Exactly one card left behind in the Archive tab — the implementer,
+    // never the reviewer that was just restored.
+    await expect(archiveLane.locator(".slcard")).toHaveCount(1);
+    await expect(archiveLane.locator(".slcard", { hasText: `Review: ${title}` })).toHaveCount(0);
+
+    // The restored reviewer card is live again in Swimlanes — its own
+    // lane, since its lineage root (the implementer) is still archived.
+    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+    await expect(page.locator("#swimlanesBody").getByText(`Review: ${title}`, { exact: true })).toBeVisible();
+  });
+});

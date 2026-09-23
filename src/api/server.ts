@@ -9,6 +9,7 @@ import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
+import { startArchiveScheduler } from "../core/archive-scheduler.ts";
 import { readMemoryLessons, DEFAULT_MEMORY_PATH } from "../services/memory.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
@@ -73,6 +74,16 @@ export interface CreateAppOptions {
    *  src/services/memory.ts's DEFAULT_MEMORY_PATH. Overridable so tests
    *  never touch this repo's own real memory/lessons.md. */
   memoryPath?: string;
+  /** Starts the in-process auto-archive scheduler (see
+   *  src/core/archive-scheduler.ts) — off by default, same gate pattern
+   *  as memoryCurationEnabled. Unlike memory curation, needs no
+   *  telemetry: due-ness is read straight off TaskCard.doneAt. */
+  autoArchiveEnabled?: boolean;
+  /** Passed straight through to startArchiveScheduler's option of the
+   *  same name — see its own doc comment. Defaults to 1 there. Distinct
+   *  from the fixed 24h auto-archive threshold itself
+   *  (AUTO_ARCHIVE_AFTER_HOURS), which is not configurable. */
+  archiveCheckIntervalHours?: number;
 }
 
 /**
@@ -155,6 +166,14 @@ export function createApp(
       intervalHours: opts.memoryIntervalHours,
       memoryPath: opts.memoryPath,
     });
+  }
+
+  // Off by default (WISSEL_AUTO_ARCHIVE) — see
+  // src/core/archive-scheduler.ts and docs/SDD-task-archiving.md §3.3.
+  // No telemetry dependency, unlike memory curation above: due-ness is
+  // read straight off TaskCard.doneAt via board.list().
+  if (opts.autoArchiveEnabled) {
+    startArchiveScheduler({ board: board as Board, checkIntervalHours: opts.archiveCheckIntervalHours });
   }
 
   return async function fetch(req: Request): Promise<Response> {
@@ -432,6 +451,22 @@ export function createApp(
           }
         }
 
+        // Manual archive — any task, any status (docs/SDD-task-archiving.md
+        // §3.5). Cascades to id's own subtree (not necessarily the whole
+        // lineage root's tree — see Board.archive) and returns every card
+        // actually touched, so the board UI can update all of them at
+        // once instead of waiting on the SSE refetch alone.
+        if (parts.length === 3 && parts[2] === "archive" && req.method === "POST") {
+          const archived = await board.archive(parts[1]!);
+          return json(archived);
+        }
+
+        // Never cascades — restores exactly one card (§3.6).
+        if (parts.length === 3 && parts[2] === "unarchive" && req.method === "POST") {
+          const task = await board.unarchive(parts[1]!);
+          return json(task);
+        }
+
         if (parts.length === 2 && req.method === "DELETE") {
           await board.delete(parts[1]!);
           return new Response(null, { status: 204 });
@@ -526,6 +561,13 @@ if (import.meta.main) {
   // fixture content.
   const memoryPath = process.env.WISSEL_MEMORY_PATH;
 
+  // Off by default: task cards auto-archiving 24h after they land on
+  // `done` (see docs/SDD-task-archiving.md). WISSEL_ARCHIVE_CHECK_INTERVAL_HOURS
+  // only matters once this is on — the 24h threshold itself is fixed,
+  // not configurable (§3.3).
+  const autoArchiveEnabled = ["1", "true"].includes(process.env.WISSEL_AUTO_ARCHIVE ?? "");
+  const archiveCheckIntervalHours = process.env.WISSEL_ARCHIVE_CHECK_INTERVAL_HOURS ? Number(process.env.WISSEL_ARCHIVE_CHECK_INTERVAL_HOURS) : 1;
+
   Bun.serve({
     port,
     fetch: createApp(board, registry, telemetry, {
@@ -537,6 +579,8 @@ if (import.meta.main) {
       memoryCurationEnabled,
       memoryIntervalHours,
       memoryPath,
+      autoArchiveEnabled,
+      archiveCheckIntervalHours,
     }),
   });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
@@ -556,5 +600,10 @@ if (import.meta.main) {
     memoryCurationEnabled
       ? `memory curation scheduled every ${memoryIntervalHours}h (WISSEL_MEMORY_CURATION=1)`
       : "memory curation not started — set WISSEL_MEMORY_CURATION=1 to let wissel learn from its own session history",
+  );
+  console.log(
+    autoArchiveEnabled
+      ? `auto-archive checking every ${archiveCheckIntervalHours}h for done tasks 24h+ past doneAt (WISSEL_AUTO_ARCHIVE=1)`
+      : "auto-archive not started — set WISSEL_AUTO_ARCHIVE=1 to archive done tasks automatically after 24h",
   );
 }

@@ -168,6 +168,27 @@ export interface TaskCard {
    *  way a blocked `dependsOn` is. ISO timestamp; undefined means no
    *  pending retry. */
   retryAfter?: string;
+  /** Stamped by Board.move every time this task's status transitions to
+   *  `"done"` — the one reliable "became done" marker, since every path
+   *  that can produce `done` (finishResult's several branches,
+   *  resumeAfterApproval, a human's `POST /tasks/:id/merge`) goes
+   *  through `move()`. Re-entering `done` refreshes it — last time in
+   *  wins, no special-casing for a hypothetical re-open. What
+   *  `findArchivableRoots` (src/core/archive-scheduler.ts) measures the
+   *  24h auto-archive threshold against. ISO timestamp; undefined means
+   *  this task has never been `done`. See docs/SDD-task-archiving.md
+   *  §3.2. */
+  doneAt?: string;
+  /** Set by Board.archive — a visibility concern layered on top of
+   *  `status`, exactly like `supersededBy`: an archived task keeps
+   *  whatever status it had, is never deleted, and stays queryable by
+   *  id. Only the default board/swimlane views stop showing it (UI-layer
+   *  filtering, not a `Board.list()` behavior change — see
+   *  docs/SDD-task-archiving.md §3.1). Archiving cascades down the
+   *  `parentTaskId` tree from whatever id was archived; `Board.unarchive`
+   *  clears this on exactly one row and never cascades (§3.6). ISO
+   *  timestamp; undefined means not archived. */
+  archivedAt?: string;
 }
 
 /** A named execution backend wissel can run work under — a tool (which
