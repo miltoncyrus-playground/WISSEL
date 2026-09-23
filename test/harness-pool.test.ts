@@ -89,6 +89,26 @@ test("setEnabled() clears disabledReason when a human enables a harness — thei
   expect(updated?.disabledReason).toBeUndefined();
 });
 
+test("setModel() mutates the live copy, visible to a subsequent get()", () => {
+  const pool = HarnessPool.from([harness({ id: "a" })]);
+  const updated = pool.setModel("a", "claude-opus-5-5");
+  expect(updated?.model).toBe("claude-opus-5-5");
+  expect(pool.get("a")?.model).toBe("claude-opus-5-5");
+});
+
+test("setModel() returns undefined and changes nothing for an unknown id", () => {
+  const pool = HarnessPool.from([harness({ id: "a" })]);
+  expect(pool.setModel("missing", "claude-opus-5-5")).toBeUndefined();
+  expect(pool.get("a")?.model).toBeUndefined();
+});
+
+test("setModel() with undefined clears a previously-set model", () => {
+  const pool = HarnessPool.from([harness({ id: "a", model: "claude-opus-5-5" })]);
+  const updated = pool.setModel("a", undefined);
+  expect(updated?.model).toBeUndefined();
+  expect(pool.get("a")?.model).toBeUndefined();
+});
+
 test("disabling an already-acquired harness doesn't interrupt what's already running under it", () => {
   const pool = HarnessPool.from([harness({ id: "a" })]);
   const acquired = pool.acquire("claude-cli")!;

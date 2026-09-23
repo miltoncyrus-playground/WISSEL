@@ -7,7 +7,21 @@ export type TrustLevel = "low" | "medium" | "high";
 export type FleetKind = "agent" | "skill";
 
 /** What running this agent is expected to cost. Estimates are fine —
- *  the spec only requires that a dispatch always carries a number. */
+ *  the spec only requires that a dispatch always carries a number.
+ *
+ *  `model` here is only the last-resort default in the model-resolution
+ *  precedence order, most specific wins:
+ *    executor constructor override (tests/evals only)
+ *    > TaskCard.model
+ *    > Harness.model
+ *    > AgentDef.costProfile.model
+ *  An explicit override at any level that can't actually be resolved
+ *  (unknown model id, harness that doesn't support it) fails loud —
+ *  never silently falls through to the next level. This is distinct
+ *  from the pre-existing "harness pool has zero enabled candidates for
+ *  this tool" case (HarnessPool.acquire returning undefined), which
+ *  stays silently-tolerant by existing design — that's "no harness
+ *  available," not "an explicit override couldn't be honored." */
 export interface CostProfile {
   model: string;
   estUsdPerTask: number;
@@ -154,6 +168,21 @@ export interface TaskCard {
    *  Never set for a `dispatched` task: wissel hands those to agetor and
    *  has no visibility into which harness agetor runs them under. */
   harness?: string;
+  /** Per-task model override — see the precedence order documented next
+   *  to CostProfile. Undefined means "no task-level override," falling
+   *  through to Harness.model / AgentDef.costProfile.model. An
+   *  unresolvable explicit value here fails the run loud, never
+   *  silently falls back to a lower-precedence model. */
+  model?: string;
+  /** A human/API request for which Harness this task should run under —
+   *  distinct from `harness` above: `harnessOverride` is a request set
+   *  before the task runs, `harness` is a fact stamped once it actually
+   *  starts running and is never read back for dispatch. Undefined
+   *  means "no request," so routing/dispatch picks a harness the normal
+   *  way (HarnessPool.acquire). An id that doesn't resolve to a real,
+   *  enabled harness fails the run loud rather than silently falling
+   *  back to the normal pick. */
+  harnessOverride?: string;
   /** How many times a reviewer has sent this task's lineage back with
    *  `changes_requested`. Incremented each pushback round; distinct from
    *  a plain retry count because it's scoped to the review loop, not to
@@ -252,6 +281,12 @@ export interface Harness {
    *  because it can't work right now" without guessing from context.
    *  See docs/SDD-harness-enable-disable.md §4. */
   disabledReason?: string;
+  /** Per-harness default model — only meaningful once resolved through
+   *  the precedence order documented next to CostProfile (it sits below
+   *  TaskCard.model and above AgentDef.costProfile.model). Undefined
+   *  means "no harness-level default," falling through to
+   *  costProfile.model. */
+  model?: string;
 }
 
 export interface Candidate {

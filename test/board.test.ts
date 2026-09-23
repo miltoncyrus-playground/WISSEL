@@ -34,6 +34,19 @@ test("create round-trips parentTaskId, and leaves it undefined when omitted", as
   expect((await board.get(parent.id))!.parentTaskId).toBeUndefined();
 });
 
+test("create round-trips model and harnessOverride, and leaves them undefined when omitted", async () => {
+  const board = new SqliteBoard();
+  const withOverrides = await board.create({ title: "t", body: "", labels: [], repo: "r", model: "claude-opus-5-5", harnessOverride: "codex-personal" });
+  expect(withOverrides.model).toBe("claude-opus-5-5");
+  expect(withOverrides.harnessOverride).toBe("codex-personal");
+  expect((await board.get(withOverrides.id))!.model).toBe("claude-opus-5-5");
+  expect((await board.get(withOverrides.id))!.harnessOverride).toBe("codex-personal");
+
+  const bare = await board.create({ title: "b", body: "", labels: [], repo: "r" });
+  expect(bare.model).toBeUndefined();
+  expect(bare.harnessOverride).toBeUndefined();
+});
+
 // Reproduces a real bug found live against a real pre-existing
 // ~/.wissel/board.sqlite: `parentTaskId` was added to the tasks table
 // in CREATE TABLE IF NOT EXISTS, which only ever applies to a brand
@@ -620,6 +633,45 @@ test("opens and heals a real pre-existing on-disk DB from before doneAt/archived
     expect(archived).toHaveLength(1);
     expect(archived[0]!.archivedAt).toBeDefined();
     expect((await board.get(task.id))!.archivedAt).toBe(archived[0]!.archivedAt);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("opens and heals a real pre-existing on-disk DB from before model/harnessOverride existed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-board-legacy-model-"));
+  const dbPath = join(dir, "board.sqlite");
+  try {
+    const legacy = new Database(dbPath, { create: true });
+    legacy.run(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        labels TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        status TEXT NOT NULL,
+        routedTo TEXT,
+        dependsOn TEXT NOT NULL DEFAULT '[]',
+        parentTaskId TEXT,
+        harness TEXT,
+        pushbackCount INTEGER,
+        reviewLineageId TEXT,
+        supersededBy TEXT,
+        escalationContext TEXT,
+        retryAfter TEXT,
+        doneAt TEXT,
+        archivedAt TEXT
+      );
+    `);
+    legacy.close();
+
+    const board = new SqliteBoard(dbPath);
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r", model: "claude-opus-5-5", harnessOverride: "codex-personal" });
+    expect(task.model).toBe("claude-opus-5-5");
+    expect(task.harnessOverride).toBe("codex-personal");
+    expect((await board.get(task.id))!.model).toBe("claude-opus-5-5");
+    expect((await board.get(task.id))!.harnessOverride).toBe("codex-personal");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
