@@ -154,20 +154,18 @@ test("no integrator agent registered — spawns nothing, doesn't throw", async (
   expect(all.filter((t) => t.labels.includes("integration")).length).toBe(0);
 });
 
-test("the auto-created integrator card actually routes to the integrator agent with confidence, honoring planner's handoffs restriction", async () => {
+test("the auto-created integrator card actually routes to the integrator agent with confidence, exempt from any handoffs restriction", async () => {
   const board = new SqliteBoard();
   const registry = await Registry.load();
   const router = new Router(registry);
   wireAutoIntegrator(board, registry);
 
   const parent = await board.create({ title: "Feature X", body: "", labels: ["planning"], repo: "/repo" });
-  // parentTaskId restriction only kicks in once the parent is actually
-  // routed (see resolveHandoffAllowlist) — real pipelines always have
-  // this by the time subtasks exist, so this reproduces that exactly:
-  // without planner listed in `integrator`'s own... no — without
-  // "integrator" in *planner's* declared handoffs, this would land on
-  // no-match regardless of tag overlap (see agents/manifest.yaml's
-  // planner.handoffs comment).
+  // The parent here is routed to "planner", whose outputContractFormat
+  // is "subtask-plan" — resolveHandoffAllowlist exempts any follow-up
+  // parented under a subtask-plan agent from the handoffs restriction
+  // entirely (see its own doc comment, src/core/orchestrator.ts), so
+  // this integrator follow-up routes on tag overlap alone, unrestricted.
   await board.recordDecision({
     taskId: parent.id, matchedTags: [], candidates: [], selected: "planner", confident: true,
     reason: "r", strategy: "manual", decidedAt: new Date().toISOString(),

@@ -1,7 +1,8 @@
-import type { AgentDef, ReviewVerdict, TaskCard, TaskResult } from "../core/types.ts";
+import type { AgentDef, ReviewVerdict, SubtaskPlanItem, TaskCard, TaskResult } from "../core/types.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
+import { parseSubtaskPlan } from "./parse-subtask-plan.ts";
 import { parseSessionLimitReset } from "./parse-session-limit-reset.ts";
 
 /** A retriable 429's reset time must be within this window of "now" —
@@ -204,6 +205,17 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     }
   }
 
+  // Same idea as the review-verdict branch above, for the planner's own
+  // contract — see AgentDef.outputContractFormat's doc comment.
+  let plan: SubtaskPlanItem[] | null = null;
+  if (ok && agent.outputContract && agent.outputContractFormat === "subtask-plan") {
+    plan = parseSubtaskPlan(parsed.result ?? "");
+    if (plan === null) {
+      ok = false;
+      summary = `${agent.name} violated its output contract — expected a trailing \`\`\`subtask-plan fenced block with a JSON array of {title, body, labels, dependsOnIndex?}, got: ${parsed.result ?? "(no result)"}`;
+    }
+  }
+
   // Undefined (not a zero-valued object) when nothing was spawned — "no
   // field" and "definitely spawned nothing" read the same way the rest
   // of TaskResult already treats absence (see SDD §3).
@@ -222,6 +234,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     // lookup — undefined for every non-review run, same as `verdict`
     // being null above.
     ...(verdict ? { verdict: verdict.verdict, reviewFeedback: verdict.feedback } : {}),
+    ...(plan ? { subtaskPlan: plan } : {}),
   };
 }
 

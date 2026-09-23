@@ -8,6 +8,7 @@ wall-clock time. Run explicitly before ship, and nightly.
 |---|---|---|
 | `eval/readonly.eval.ts` | `bun run eval:readonly` | ReadOnlyExecutor's plan-mode enforcement actually holds against a subprocess that tries to write. |
 | `eval/implementer-reviewer.eval.ts` | `bun run eval:implementer-reviewer` | The automatic implementer→reviewer loop (`src/core/orchestrator.ts`'s `finishResult`/`handleReviewVerdict`) converges correctly against a *real* reviewer, not a scripted one. |
+| `eval/planner-subtask-plan.eval.ts` | `bun run eval:planner-subtask-plan` | The real planner agent reliably produces a well-formed ```subtask-plan``` block against a vague card, and `finishResult`'s `spawnSubtasksFromPlan` turns it into real child cards with correct `dependsOn` chaining. |
 
 ## implementer-reviewer eval
 
@@ -99,3 +100,33 @@ other write-tier harness does (see `docs/SDD-execution-harnesses.md`) —
 this is real local-Claude-Code usage per the house LLM-access rule, not
 a hosted API call, so it needs a real authenticated `claude` CLI
 session available to the runner, not just an API key.
+
+## planner-subtask-plan eval
+
+`test/parse-subtask-plan.test.ts` and `test/orchestrator.test.ts` (gate
+lane) already prove the parsing and card-spawning logic is correct
+against a scripted plan fed in by hand. What that can't prove is whether
+the real planner — running in real plan mode, with zero write access —
+actually respects the `outputContractFormat: subtask-plan` contract
+(`agents/manifest.yaml`) often enough to be useful: does it reliably end
+its message with a well-formed `\`\`\`subtask-plan` block, and does its
+`dependsOnIndex` chaining hold up against real model output rather than
+a hand-written fixture. This eval runs two vague, `whenToUse`-shaped
+cards through the real planner and confirms `finishResult` turns the
+real response into real child cards on a real board.
+
+### Pass bar
+
+Every fixture must: come back `ok: true` (which already implies
+`parseSubtaskPlan` accepted the block), produce at least 2 subtask
+items, and — once `finishResult` spawns them — leave the planner task
+`done` with exactly that many real child cards, every declared
+`dependsOnIndex` resolved to the right sibling's real id. 100% of
+fixtures, every run — same "no silently discarded decomposition" bar
+this feature exists to guarantee, never loosened to make the eval green.
+
+### Scheduling
+
+Same pattern as `eval:implementer-reviewer` above — add a nightly cron
+line and a required CI step for `bun run eval:planner-subtask-plan`,
+same `timeout 1800`, same real-authenticated-`claude` requirement.

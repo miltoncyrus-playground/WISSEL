@@ -69,18 +69,21 @@ export interface AgentDef {
    *  — the prior behavior. */
   outputContract?: string;
   /** Discriminates *how* outputContract (above) is enforced, not just
-   *  displayed. `"review-verdict"` is the only value today: it's what
-   *  makes runClaude (src/executors/claude-cli.ts) route the raw final
-   *  message through parseReviewVerdict and fail the run outright on a
-   *  missing/malformed block, instead of trusting it as plain prose.
-   *  Deliberately a separate field from outputContract itself — an
-   *  agent can have prose-only formatting instructions (memory-curator)
-   *  without being forced through review-verdict parsing, which would
-   *  reject every one of its runs for lacking a block it was never
-   *  asked to produce. Undefined means "no machine parsing beyond the
-   *  is_error the harness itself reports" — outputContract text still
-   *  reaches the prompt, its content just isn't validated downstream. */
-  outputContractFormat?: "review-verdict";
+   *  displayed. `"review-verdict"` is what makes runClaude
+   *  (src/executors/claude-cli.ts) route the raw final message through
+   *  parseReviewVerdict and fail the run outright on a missing/malformed
+   *  block, instead of trusting it as plain prose. `"subtask-plan"` is
+   *  the same idea for the planner: routes the raw final message through
+   *  parseSubtaskPlan (src/executors/parse-subtask-plan.ts) and fails
+   *  the run on a missing/malformed block. Deliberately a separate field
+   *  from outputContract itself — an agent can have prose-only
+   *  formatting instructions (memory-curator) without being forced
+   *  through either parser, which would reject every one of its runs for
+   *  lacking a block it was never asked to produce. Undefined means "no
+   *  machine parsing beyond the is_error the harness itself reports" —
+   *  outputContract text still reaches the prompt, its content just
+   *  isn't validated downstream. */
+  outputContractFormat?: "review-verdict" | "subtask-plan";
   /** Agent-specific self-verification instructions, appended verbatim to
    *  the prompt by buildAgentPrompt when present — same mechanism as
    *  outputContract, different purpose: tells the agent to actually run
@@ -104,6 +107,21 @@ export interface AgentDef {
 export interface ReviewVerdict {
   verdict: "approve" | "changes_requested";
   feedback: string;
+}
+
+/** The planner agent's mandated final-message contract: a
+ *  ```subtask-plan``` fenced block containing a JSON array of exactly
+ *  this shape, nothing more permissive. See parseSubtaskPlan, which is
+ *  the only code allowed to construct one from raw text — never
+ *  hand-roll a fallback plan elsewhere. `dependsOnIndex`, when present,
+ *  is the index of another item earlier in the same array (never forward,
+ *  never self) — how the orchestrator chains a spawned subtask's
+ *  `dependsOn` against the sibling ids it just created in this same call. */
+export interface SubtaskPlanItem {
+  title: string;
+  body: string;
+  labels: string[];
+  dependsOnIndex?: number;
 }
 
 export interface TaskCard {
@@ -291,6 +309,11 @@ export interface TaskResult {
   /** The reviewer's feedback text, paired with `verdict`. Undefined
    *  whenever `verdict` is. */
   reviewFeedback?: string;
+  /** Set when this result came from a planner pass that produced a
+   *  decomposition — same shape as SubtaskPlanItem[], flattened onto
+   *  TaskResult so the orchestrator can spawn the real subtask cards
+   *  without a second lookup. Undefined for every other run. */
+  subtaskPlan?: SubtaskPlanItem[];
   /** Set by runClaude when a failure was specifically a detected
    *  claude-cli session-limit (429) error with a parseable reset time —
    *  see parseSessionLimitReset. `ok` is still `false` alongside this;

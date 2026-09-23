@@ -27,6 +27,14 @@ const plainAgent: AgentDef = {
   outputContract: undefined,
 };
 
+const plannerAgent: AgentDef = {
+  ...reviewerAgent,
+  id: "planner",
+  name: "Planner",
+  outputContract: "Your final message must end with a ```subtask-plan``` block.",
+  outputContractFormat: "subtask-plan",
+};
+
 const task: TaskCard = {
   id: "t1",
   title: "Review this diff",
@@ -218,4 +226,60 @@ test("an agent without outputContract is never contract-checked, even with prose
   });
   expect(result.ok).toBe(true);
   expect(result.summary).toBe("Just plain prose, no fenced block anywhere.");
+});
+
+test("a planner run with a valid subtask-plan block stays ok: true and carries subtaskPlan", async () => {
+  const raw = [
+    "Here's the decomposition.",
+    "",
+    "```subtask-plan",
+    '[{"title": "Add types", "body": "Add the interface.", "labels": ["code"]}]',
+    "```",
+  ].join("\n");
+  const result = await runClaude({
+    runner: stub({
+      stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: raw }),
+      stderr: "",
+      exitCode: 0,
+    }),
+    task,
+    agent: plannerAgent,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(true);
+  expect(result.subtaskPlan).toEqual([{ title: "Add types", body: "Add the interface.", labels: ["code"] }]);
+});
+
+test("a planner run missing the subtask-plan block becomes ok: false with a contract-violation summary", async () => {
+  const result = await runClaude({
+    runner: stub({
+      stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Here's my plan in prose, no block." }),
+      stderr: "",
+      exitCode: 0,
+    }),
+    task,
+    agent: plannerAgent,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(false);
+  expect(result.summary).toContain("violated its output contract");
+  expect(result.summary).toContain("Here's my plan in prose, no block.");
+  expect(result.subtaskPlan).toBeUndefined();
+});
+
+test("a planner run with a malformed subtask-plan block becomes ok: false, never silently spawns a partial plan", async () => {
+  const raw = ["```subtask-plan", '[{"title": "x", "body": "y"', "```"].join("\n");
+  const result = await runClaude({
+    runner: stub({
+      stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: raw }),
+      stderr: "",
+      exitCode: 0,
+    }),
+    task,
+    agent: plannerAgent,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(false);
+  expect(result.summary).toContain("violated its output contract");
+  expect(result.subtaskPlan).toBeUndefined();
 });
