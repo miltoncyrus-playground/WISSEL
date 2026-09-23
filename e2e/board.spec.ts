@@ -156,7 +156,7 @@ test.describe("Board view", () => {
     // see orchestrator.ts's finishResult/handleReviewVerdict).
     const statLabels = page.locator("#stats .l");
     await expect(statLabels).toHaveText([
-      "Inbox", "Ready", "Running", "Dispatched", "Pending review", "Review", "Escalated", "Done", "Failed", "No match", "Superseded",
+      "Inbox", "Ready", "Running", "Dispatched", "Pending review", "Reviewing", "Review", "Escalated", "Done", "Failed", "No match", "Superseded",
     ]);
 
     // Task-by-status sits above the fleet boxes.
@@ -699,6 +699,38 @@ test.describe("Board view", () => {
     const doneCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: /^Done/ }) });
     await expect(doneCol).not.toHaveClass(/kcol-empty/);
   });
+
+  test("a reviewer task actually running lands in its own Reviewing column, not the generic Running one", async ({ page, request }) => {
+    const title = `Reviewing column test ${Date.now()}`;
+    const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo" } });
+    const implementerId = (await created.json()).id as string;
+    await request.post(`/tasks/${implementerId}/result`, { data: { agentId: "implementer", ok: true, summary: "did the thing" } });
+
+    const afterImpl = await (await request.get("/tasks")).json();
+    const reviewer = afterImpl.find((t: { parentTaskId?: string }) => t.parentTaskId === implementerId);
+    await request.post(`/tasks/${reviewer.id}/decision`, {
+      data: {
+        matchedTags: ["review"], candidates: [{ agentId: "reviewer", score: 1, reason: "tag overlap 1/1" }],
+        selected: "reviewer", confident: true, strategy: "rule", reason: "tag overlap 1/1", decidedAt: new Date().toISOString(),
+      },
+    });
+    // Its raw status is "running" the whole time it's actually being
+    // worked — same as any other agent's in-flight task. The Reviewing
+    // column exists purely to tell this apart from those at a glance.
+    await request.post(`/tasks/${reviewer.id}/move`, { data: { status: "running" } });
+
+    await page.goto("/board");
+
+    const reviewingCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: "Reviewing" }) });
+    await expect(reviewingCol.locator(".kcard", { hasText: `Review: ${title}` })).toHaveCount(1);
+
+    // Not double-counted in the generic Running column.
+    const runningCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: /^Running/ }) });
+    await expect(runningCol.locator(".kcard", { hasText: `Review: ${title}` })).toHaveCount(0);
+
+    const statTile = page.locator("#stats .stat", { has: page.locator(".l", { hasText: "Reviewing" }) });
+    await expect(statTile.locator(".n")).toHaveText("1");
+  });
 });
 
 test.describe("Swimlanes view", () => {
@@ -757,6 +789,39 @@ test.describe("Swimlanes view", () => {
     const blockedLane = page.locator(".swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
     await expect(blockedLane.locator(".slcard .sl-tag")).toContainText(depTitle);
     await expect(blockedLane.locator(".slcard .sl-tag")).toHaveAttribute("title", new RegExp(depTitle));
+  });
+
+  test("a lane with an actively-running card sorts above an all-idle lane", async ({ page, request }) => {
+    // Created first, so without active-first sorting it would naturally
+    // render above the active one below (insertion/creation order).
+    const idleTitle = `Idle lane ${Date.now()}`;
+    await request.post("/tasks", { data: { title: idleTitle, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+
+    const activeTitle = `Active lane ${Date.now()}`;
+    const created = await request.post("/tasks", { data: { title: activeTitle, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo" } });
+    const implementerId = (await created.json()).id as string;
+    await request.post(`/tasks/${implementerId}/result`, { data: { agentId: "implementer", ok: true, summary: "did the thing" } });
+    const afterImpl = await (await request.get("/tasks")).json();
+    const reviewer = afterImpl.find((t: { parentTaskId?: string }) => t.parentTaskId === implementerId);
+    await request.post(`/tasks/${reviewer.id}/decision`, {
+      data: {
+        matchedTags: ["review"], candidates: [{ agentId: "reviewer", score: 1, reason: "tag overlap 1/1" }],
+        selected: "reviewer", confident: true, strategy: "rule", reason: "tag overlap 1/1", decidedAt: new Date().toISOString(),
+      },
+    });
+    await request.post(`/tasks/${reviewer.id}/move`, { data: { status: "running" } });
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+
+    const laneHeads = page.locator("#swimlanesBody .swimlane-head");
+    const idleIndex = await laneHeads.filter({ hasText: idleTitle }).evaluate((el) =>
+      Array.prototype.indexOf.call(el.closest("#swimlanesBody")!.querySelectorAll(".swimlane-head"), el),
+    );
+    const activeIndex = await laneHeads.filter({ hasText: activeTitle }).evaluate((el) =>
+      Array.prototype.indexOf.call(el.closest("#swimlanesBody")!.querySelectorAll(".swimlane-head"), el),
+    );
+    expect(activeIndex).toBeLessThan(idleIndex);
   });
 });
 

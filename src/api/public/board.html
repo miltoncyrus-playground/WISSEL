@@ -643,13 +643,44 @@
     dispatched: "--accent", review: "--no-match", done: "--sig-done",
     failed: "--critical", "no-match": "--no-match",
     "pending-review": "--sig-running", escalated: "--no-match",
+    // Same family as "dispatched" (--accent) — both mean "a specific
+    // process actually has hands on this right now," distinct from the
+    // generic blue "running" a memory-curator or implementer also uses.
+    reviewing: "--accent",
   };
   var STATUS_LABEL = {
     inbox: "Inbox", ready: "Ready", running: "Running", dispatched: "Dispatched",
     review: "Review", done: "Done", failed: "Failed", "no-match": "No match",
     "pending-review": "Pending review", escalated: "Escalated",
+    reviewing: "Reviewing",
   };
-  var COLUMNS = ["inbox", "ready", "running", "dispatched", "pending-review", "review", "escalated", "done", "failed", "no-match"];
+  // "reviewing" sits next to "pending-review" — the two read together as
+  // one sequence (implementer's own card waits at pending-review while
+  // the reviewer's own card, here, is what's actually running).
+  var COLUMNS = ["inbox", "ready", "running", "dispatched", "pending-review", "reviewing", "review", "escalated", "done", "failed", "no-match"];
+
+  // The one place raw TaskCard.status gets reinterpreted for display —
+  // never for routing/business logic, which always reads t.status
+  // directly. A reviewer agent's own task sits at status "running" the
+  // entire time it's actively working, indistinguishable at a glance
+  // from an implementer or memory-curator doing the same; this is what
+  // makes "a job being reviewed" land in its own column instead of a
+  // generic "Running" bucket. See COLUMNS/STATUS_COLOR/STATUS_LABEL's
+  // "reviewing" entries, the only display column with no matching
+  // TaskCard.status value.
+  function taskDisplayColumn(t) {
+    if (t.status === "running" && t.routedTo === "reviewer") return "reviewing";
+    return t.status;
+  }
+
+  // Which display columns mean "something is actually in flight right
+  // now" — used to sort Swimlanes' active lanes to the top. Excludes
+  // "review"/"escalated" (waiting on a human, not moving on its own)
+  // and every terminal status on purpose.
+  var ACTIVE_DISPLAY_COLUMNS = { running: true, reviewing: true, dispatched: true, "pending-review": true };
+  function laneIsActive(members) {
+    return members.some(function (t) { return ACTIVE_DISPLAY_COLUMNS[taskDisplayColumn(t)]; });
+  }
   var tasks = [];
   var agentsById = {};
 
@@ -1456,7 +1487,7 @@
       // superseded ones are — a real, deliberate visibility filter, not
       // hidden data. See the Archive tab (renderArchiveTab) for where
       // they actually show up.
-      var inCol = tasks.filter(function (t) { return t.status === status && !t.supersededBy && !t.archivedAt; });
+      var inCol = tasks.filter(function (t) { return taskDisplayColumn(t) === status && !t.supersededBy && !t.archivedAt; });
 
       var col = document.createElement("div");
       // Collapses to just its header when empty — a board with many
@@ -1515,7 +1546,7 @@
     // renderKanban's own comment on the same filters. Otherwise the stat
     // strip and the kanban columns below it would disagree on how many
     // tasks are actually in a given status.
-    tasks.forEach(function (t) { if (!t.supersededBy && !t.archivedAt) counts[t.status] = (counts[t.status] || 0) + 1; });
+    tasks.forEach(function (t) { if (!t.supersededBy && !t.archivedAt) { var c = taskDisplayColumn(t); counts[c] = (counts[c] || 0) + 1; } });
     wrap.textContent = "";
     COLUMNS.forEach(function (status) {
       var tile = document.createElement("div");
@@ -1654,21 +1685,22 @@
   // already exists in the task drawer.
   function buildLaneCard(t, byId, opts) {
     var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
+    var displayStatus = taskDisplayColumn(t);
     var card = document.createElement("div");
     card.className = "slcard" + (t.supersededBy ? " superseded" : "");
     card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
     card.tabIndex = 0;
     card.setAttribute("role", "button");
-    card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[t.status] + (t.supersededBy ? ", superseded" : "") + ", show task details");
+    card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[displayStatus] + (t.supersededBy ? ", superseded" : "") + ", show task details");
 
     var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
     card.appendChild(kt);
 
     var statusRow = document.createElement("div"); statusRow.className = "sl-status";
     var sdot = document.createElement("span"); sdot.className = "swatch";
-    sdot.style.background = "var(" + STATUS_COLOR[t.status] + ")";
+    sdot.style.background = "var(" + STATUS_COLOR[displayStatus] + ")";
     statusRow.appendChild(sdot);
-    statusRow.appendChild(document.createTextNode(STATUS_LABEL[t.status]));
+    statusRow.appendChild(document.createTextNode(STATUS_LABEL[displayStatus]));
     card.appendChild(statusRow);
 
     var relations = document.createElement("div"); relations.className = "sl-relations";
@@ -1755,8 +1787,23 @@
       return;
     }
     var laneData = computeLanes(members, byId);
-    countEl.textContent = laneData.laneOrder.length === 1 ? "1 lane" : laneData.laneOrder.length + " lanes";
-    laneData.laneOrder.forEach(function (rootId) {
+    var order = laneData.laneOrder;
+    // Opt-in (Swimlanes passes it, the Archive tab doesn't — an archived
+    // lane is never "active," so sorting there would be a no-op anyway,
+    // but staying explicit keeps this from silently changing behavior
+    // for a caller that never asked for it). Array#sort is a stable
+    // sort in every browser this app supports, so each group (active,
+    // then not) keeps computeLanes' own oldest-root-first order within
+    // itself — this only moves groups relative to each other.
+    if (opts && opts.activeFirst) {
+      order = order.slice().sort(function (a, b) {
+        var aActive = laneIsActive(laneData.lanes[a]) ? 0 : 1;
+        var bActive = laneIsActive(laneData.lanes[b]) ? 0 : 1;
+        return aActive - bActive;
+      });
+    }
+    countEl.textContent = order.length === 1 ? "1 lane" : order.length + " lanes";
+    order.forEach(function (rootId) {
       wrap.appendChild(buildLane(rootId, laneData.lanes[rootId], byId, opts));
     });
   }
@@ -1791,6 +1838,7 @@
       members,
       byId,
       {
+        activeFirst: true,
         headAction: function (root, laneMembers) {
           return laneActionButton("Archive this lane", function () {
             if (!window.confirm("Archive \"" + root.title + "\" and all " + laneMembers.length + " card(s) in this lane? They move to the Archive tab; unarchive them individually later if needed.")) return;
