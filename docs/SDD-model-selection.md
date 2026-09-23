@@ -288,50 +288,84 @@ harness's refresh in the same tick. This refresh function is subtask
 
 ## 9. Endpoints
 
-- **`GET /models`** — returns the full cache contents (every harness,
-  keyed by id per §8), reading from disk and triggering a refresh (§8)
-  if any entry is missing or stale. Used by both the Manage Harnesses
-  panel and the New Task form to populate model pickers. (subtask 5)
-- **`PATCH /harnesses/:id`** (or a narrower `POST /harnesses/:id/model`
-  — subtask 4 decides the exact verb, following the existing
-  paired-action convention `POST /harnesses/:id/enable`/`/disable`
-  already established in `docs/SDD-harness-enable-disable.md` §8)
-  — sets `Harness.model`, persisted via the `harness-manifest.ts`
-  read-modify-write pattern. `404` unknown id; `409` (per §5) if the
-  named model isn't in that harness's tool's known list.
-- Task creation/update (`POST /tasks`, and wherever a task's fields can
-  be edited post-creation) accepts `model`/`harnessOverride` in the
-  request body — validated against §5's fail-loud rule at the point
-  the task is actually dispatched/run, not at creation time (a model
-  that's valid today and removed from the static list tomorrow
-  shouldn't retroactively invalidate an already-created task before it
-  runs — but a task that reaches execution with an unresolvable
-  override fails immediately per §5, since a stale field is exactly one
-  of the reasons blind fallback is worse than an error here).
+**Revises this section's own first draft, named here per §2/§8's own
+precedent-callout discipline**: subtask 5's implementation does not add
+a standalone `GET /models` endpoint, and the invalid-model rejection
+below is `400`, not `409`. Both are deliberate departures from this
+section's original text, caught in subtask 5's own review:
+
+- No separate `GET /models`. `GET /harnesses` (already existing, per
+  `docs/SDD-harness-enable-disable.md`) is enriched instead: each
+  harness in the response gains an `availableModels: string[]` field,
+  read from the cache (§8) for that harness's own id. A cache-miss for
+  a given harness reports `[]`, never an error — "not yet refreshed" is
+  an ambient, expected state (same "cache-miss is not an error"
+  discipline the cache module itself uses), not a broken one. This
+  folds the model-picker data into an endpoint both the Manage
+  Harnesses panel and the New Task form already call, rather than
+  standing up a second endpoint whose only job is to expose the same
+  cache file under a different path. `GET /harnesses` does not itself
+  trigger a refresh (unlike this section's original `GET /models`
+  draft) — refreshing stays the scheduler's job (§8); the endpoint only
+  reads whatever is currently on disk.
+- **`POST /harnesses/:id/model`** — body `{ model: string | null }`.
+  `null`/omitted clears `Harness.model` back to the agent default.
+  Persists via the `harness-manifest.ts` read-modify-write pattern
+  (`setHarnessModel`), then updates the in-memory pool
+  (`harnesses.setModel`) — same before-persist-then-memory ordering
+  `/enable`/`/disable` already use. `404` unknown id. Rejects an invalid
+  model with **`400`**, not the `409` originally drafted here: `409`
+  models a *conflict with current state* (e.g. `/enable`'s "still not
+  authenticated" case, which really is a state conflict); a model name
+  that was never valid input in the first place is a plain bad request,
+  the same reasoning already applied to a malformed body anywhere else
+  in this API. The rejection only fires when that harness's cached
+  `availableModels` (§8) is non-empty — an empty list means nothing has
+  been refreshed yet, so there's nothing to validate against, and the
+  value is accepted rather than rejecting everything until a refresh
+  has run once.
+- `POST /tasks` accepts optional `model`/`harnessOverride` in the
+  request body. When `harnessOverride` is given, it's validated eagerly
+  at creation time (`400` if the harness id doesn't exist; `400` if
+  `model` is also given and isn't in that harness's cached
+  `availableModels`, when that list is non-empty) — unlike this
+  section's original draft, this is not deferred to dispatch time,
+  because the harness is already fully known at creation. When no
+  `harnessOverride` is given, `model` is accepted **unvalidated** — the
+  harness/tool that will actually run the task isn't known until
+  routing happens, so there's nothing yet to check it against. This
+  asymmetry is deliberate, not an oversight: it fails loud (§5) for
+  real at dispatch time instead (subtask 7), so a stale or synthetic
+  `model` with no harness pinned down doesn't retroactively invalidate
+  an already-created task before it runs — but a task that reaches
+  execution with an unresolvable override still fails immediately per
+  §5.
 
 ## 10. UI plan
 
 **Manage Harnesses panel** (`board.html`, `#harnessPanel`/`#hmList`,
 existing drawer from `docs/SDD-harness-enable-disable.md` §9, lines
-618–629): each harness row gets a model `<select>` populated from
-`GET /models`' entry for that harness's own id (§8), defaulting to "use
-agent default" (i.e. `Harness.model` unset) plus every known model name
-for that harness. Changing it calls the new endpoint from §9 and
-re-fetches the harness list, same pattern the existing enable/disable
-toggle already uses.
+618–629): each harness row gets a model `<select>` populated from that
+same harness's own `availableModels` field on `GET /harnesses` (§8, §9
+— not a separate `GET /models` call, per §9's revision), defaulting to
+"use agent default" (i.e. `Harness.model` unset) plus every known model
+name for that harness. Changing it calls `POST /harnesses/:id/model`
+(§9) and re-fetches the harness list, same pattern the existing
+enable/disable toggle already uses.
 
 **New Task form** (`board.html`, `#newTaskPanel`/`#newTaskForm`, lines
 488–547): the existing `<details id="ntAdvanced">` "Advanced: override
 the router" section (lines 533–539) gains two more fields alongside the
 agent-override button grid — a harness `<select>` (populated from
 `GET /harnesses`, defaulting to "auto-select") and a model `<select>`
-(populated from `GET /models`, scoped to whichever harness id is
-selected, or the union of every harness's list if no harness is picked
-yet; defaulting to "use default"). Both submit as `harnessOverride`/
-`model` on the `POST /tasks` body (§9). This is the field this SDD's §2
-explicitly reopens from `SDD-new-task-tab.md` §4/§7 — everything else
-in that form (Title/Description/Repo/Labels/Depends-on/live routing
-preview) is untouched.
+(populated from the selected harness's `availableModels` on that same
+`GET /harnesses` response, or the union of every harness's
+`availableModels` if no harness is picked yet; defaulting to "use
+default"). Both submit as `harnessOverride`/`model` on the `POST
+/tasks` body (§9). This is the field this SDD's §2 explicitly reopens
+from `SDD-new-task-tab.md` §4/§7 — everything else in that form
+(Title/Description/Repo/Labels/Depends-on/live routing preview) is
+untouched.
 
 ## 11. Subtask breakdown (7 total)
 
@@ -342,9 +376,12 @@ preview) is untouched.
    `this.model ?? agent.costProfile.model` it has today.
 3. `anthropic-api` live model listing via `client.models.list()`, plus
    the cache read/write module (`~/.wissel/models-cache.json`, §8).
-4. `Harness.model` storage + the harness-manifest.ts write path +
-   the model-setting endpoint (§9).
-5. `GET /models` endpoint + the daily refresh scheduler (§8).
+4. `Harness.model` storage + the harness-manifest.ts write path
+   (`setHarnessModel`, §6).
+5. `GET /harnesses`'s `availableModels` enrichment, `POST
+   /harnesses/:id/model`, and `POST /tasks`'s `model`/`harnessOverride`
+   validation (§9) — the daily refresh scheduler itself shipped earlier,
+   folded into subtask 2's own work.
 6. `TaskCard.model`/`harnessOverride` storage + New Task form UI (§10)
    + Manage Harnesses panel UI (§10) — the `SDD-new-task-tab.md` §2
    revision lands here.
@@ -373,12 +410,15 @@ plan below.
   `anthropic-api.ts:30-34` already establishes), stale-cache-keeps-old-
   data-on-fetch-failure case.
 - **Subtask 4**: `test/harness-pool.test.ts` additions for
-  `Harness.model` round-tripping through `harnesses.yaml`;
-  `test/api.test.ts` additions for the model-setting endpoint (404/409
-  cases per §5).
-- **Subtask 5**: `test/api.test.ts` — `GET /models` returns all three
-  tools' entries, triggers refresh on stale/missing data (fake clock or
-  injectable "now").
+  `Harness.model` round-tripping through `harnesses.yaml`.
+- **Subtask 5**: `test/api.test.ts` — `GET /harnesses` reports
+  `availableModels` from an injected fake cache (including the
+  cache-miss-is-`[]` case); `POST /harnesses/:id/model` success, `400`
+  on an invalid model (per §5, not `409` — see §9's revision), `404` on
+  an unknown id, clears on `null`; `POST /tasks` with a valid
+  `harnessOverride`+`model`, an invalid `model` against a known
+  harness (`400`), an unknown `harnessOverride` (`400`), and a `model`
+  with no `harnessOverride` (accepted, unvalidated, persisted).
 - **Subtask 6**: `test/api.test.ts` — `POST /tasks` accepts and
   persists `model`/`harnessOverride`; `e2e/new-task.spec.ts` (real
   Playwright, existing `playwright.config.ts` infra — `bun run

@@ -30,7 +30,12 @@ export interface ModelCacheEntry {
  *  shared per-tool entry. */
 export type ModelsCache = Record<string, ModelCacheEntry>;
 
-async function readCache(path: string): Promise<ModelsCache> {
+/** Reads the models cache from disk — `{}` when the file doesn't exist
+ *  yet or isn't valid JSON, same "cache-miss is not an error" contract
+ *  as every entry lookup inside it. Exported so `src/api/server.ts` can
+ *  read the same file `GET /harnesses`/`POST /harnesses/:id/model`/
+ *  `POST /tasks` validate against, without a second cache format. */
+export async function readModelsCache(path: string): Promise<ModelsCache> {
   try {
     const raw = await readFile(path, "utf8");
     return JSON.parse(raw) as ModelsCache;
@@ -83,7 +88,7 @@ export async function runModelRefreshTick(
   clientFactory?: (apiKey?: string) => AnthropicModelsClient,
   now: Date = new Date(),
 ): Promise<ModelsCache> {
-  const cache = await readCache(cachePath);
+  const cache = await readModelsCache(cachePath);
   const fetchedAt = now.toISOString();
 
   for (const harness of harnesses.all()) {

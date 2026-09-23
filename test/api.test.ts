@@ -69,15 +69,42 @@ test("GET /agents returns the fleet from the manifest", async () => {
   expect(agents.some((a) => a.id === "triager")).toBe(true);
 });
 
-test("GET /harnesses defaults to empty, and returns configured harnesses with a live activeCount", async () => {
+test("GET /harnesses defaults to empty, and returns configured harnesses with a live activeCount and availableModels", async () => {
   const empty = await makeApp();
   expect(await (await empty(req("/harnesses"))).json()).toEqual([]);
 
   const harnesses = HarnessPool.from([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true }]);
   const withHarness = await makeApp(new SqliteBoard(), { harnesses });
   const res = await withHarness(req("/harnesses"));
-  const body = (await res.json()) as { id: string; tool: string; label: string; enabled: boolean; activeCount: number }[];
-  expect(body).toEqual([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true, activeCount: 0 }]);
+  const body = (await res.json()) as { id: string; tool: string; label: string; enabled: boolean; activeCount: number; availableModels: string[] }[];
+  // No cache configured/found for this harness id yet — a cache-miss
+  // reports [], never an error.
+  expect(body).toEqual([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true, activeCount: 0, availableModels: [] }]);
+});
+
+test("GET /harnesses reports availableModels from an injected fake cache, keyed by harness id", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-models-cache-test-"));
+  try {
+    const modelsCachePath = join(dir, "models-cache.json");
+    await writeFile(
+      modelsCachePath,
+      JSON.stringify({
+        "claude-personal": { models: ["claude-sonnet-5", "claude-opus-5"], fetchedAt: new Date().toISOString() },
+      }),
+    );
+    const harnesses = HarnessPool.from([
+      { id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true },
+      { id: "codex-personal", tool: "codex-cli", label: "Codex — personal", enabled: true },
+    ]);
+    const app = await makeApp(new SqliteBoard(), { harnesses, modelsCachePath });
+
+    const body = (await (await app(req("/harnesses"))).json()) as { id: string; availableModels: string[] }[];
+    expect(body.find((h) => h.id === "claude-personal")?.availableModels).toEqual(["claude-sonnet-5", "claude-opus-5"]);
+    // codex-personal has no cache entry at all — a miss, not an error.
+    expect(body.find((h) => h.id === "codex-personal")?.availableModels).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("GET /memory returns undefined content when nothing has been curated yet, and the real content once it has", async () => {
@@ -211,6 +238,62 @@ test("POST /harnesses/:id/enable and /disable 404 for an unknown id", async () =
   expect((await app(req("/harnesses/missing/disable", { method: "POST" }))).status).toBe(404);
 });
 
+test("POST /harnesses/:id/model sets, rejects an invalid model with 400, clears with null, and 404s on unknown id", async () => {
+  const { dir, path: harnessesPath } = await harnessesFixture("harnesses:\n  - id: a\n    tool: claude-cli\n    label: A\n    enabled: true\n");
+  try {
+    const modelsCachePath = join(dir, "models-cache.json");
+    await writeFile(
+      modelsCachePath,
+      JSON.stringify({ a: { models: ["claude-sonnet-5", "claude-opus-5"], fetchedAt: new Date().toISOString() } }),
+    );
+    const harnesses = HarnessPool.from([{ id: "a", tool: "claude-cli", label: "A", enabled: true }]);
+    const app = await makeApp(new SqliteBoard(), { harnesses, harnessesPath, modelsCachePath });
+
+    // Invalid model against a harness with a non-empty known list: 400,
+    // never persisted.
+    const invalid = await app(req("/harnesses/a/model", { method: "POST", body: JSON.stringify({ model: "not-a-real-model" }) }));
+    expect(invalid.status).toBe(400);
+    expect(harnesses.get("a")?.model).toBeUndefined();
+
+    // Valid model: 200, persisted to disk and in memory.
+    const res = await app(req("/harnesses/a/model", { method: "POST", body: JSON.stringify({ model: "claude-opus-5" }) }));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Harness).model).toBe("claude-opus-5");
+    expect(harnesses.get("a")?.model).toBe("claude-opus-5");
+    const onDisk = parse(await readFile(harnessesPath, "utf8")) as { harnesses: Harness[] };
+    expect(onDisk.harnesses.find((h) => h.id === "a")?.model).toBe("claude-opus-5");
+
+    // null clears the override back to the agent default.
+    const cleared = await app(req("/harnesses/a/model", { method: "POST", body: JSON.stringify({ model: null }) }));
+    expect(cleared.status).toBe(200);
+    expect(((await cleared.json()) as Harness).model).toBeUndefined();
+    expect(harnesses.get("a")?.model).toBeUndefined();
+    const onDiskAfterClear = parse(await readFile(harnessesPath, "utf8")) as { harnesses: Harness[] };
+    expect(onDiskAfterClear.harnesses.find((h) => h.id === "a")?.model).toBeUndefined();
+
+    const missing = await app(req("/harnesses/missing/model", { method: "POST", body: JSON.stringify({ model: "claude-opus-5" }) }));
+    expect(missing.status).toBe(404);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /harnesses/:id/model accepts any model unvalidated when the harness has no cached availableModels yet", async () => {
+  const { dir, path: harnessesPath } = await harnessesFixture("harnesses:\n  - id: a\n    tool: claude-cli\n    label: A\n    enabled: true\n");
+  try {
+    const harnesses = HarnessPool.from([{ id: "a", tool: "claude-cli", label: "A", enabled: true }]);
+    // modelsCachePath deliberately points at a file that doesn't exist —
+    // a cache-miss, never refreshed yet.
+    const app = await makeApp(new SqliteBoard(), { harnesses, harnessesPath, modelsCachePath: join(dir, "no-such-cache.json") });
+
+    const res = await app(req("/harnesses/a/model", { method: "POST", body: JSON.stringify({ model: "anything-goes" }) }));
+    expect(res.status).toBe(200);
+    expect(harnesses.get("a")?.model).toBe("anything-goes");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("POST /tasks then GET /tasks round-trips, defaulting dependsOn to []", async () => {
   const app = await makeApp();
   const create = await app(
@@ -229,6 +312,64 @@ test("POST /tasks then GET /tasks round-trips, defaulting dependsOn to []", asyn
 
   const single = await app(req(`/tasks/${created.id}`));
   expect(await single.json()).toEqual(created);
+});
+
+test("POST /tasks accepts a valid harnessOverride+model, 400s on an invalid model against a known harness, 400s on an unknown harnessOverride, and accepts an unvalidated model with no harnessOverride", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-tasks-model-test-"));
+  try {
+    const modelsCachePath = join(dir, "models-cache.json");
+    await writeFile(
+      modelsCachePath,
+      JSON.stringify({ a: { models: ["claude-sonnet-5", "claude-opus-5"], fetchedAt: new Date().toISOString() } }),
+    );
+    const harnesses = HarnessPool.from([{ id: "a", tool: "claude-cli", label: "A", enabled: true }]);
+    const app = await makeApp(new SqliteBoard(), { harnesses, modelsCachePath });
+
+    // Valid harnessOverride + a model that's in that harness's cached list.
+    const ok = await app(
+      req("/tasks", {
+        method: "POST",
+        body: JSON.stringify({ title: "t", body: "", labels: [], repo: "r", harnessOverride: "a", model: "claude-opus-5" }),
+      }),
+    );
+    expect(ok.status).toBe(201);
+    const okTask = (await ok.json()) as TaskCard;
+    expect(okTask.harnessOverride).toBe("a");
+    expect(okTask.model).toBe("claude-opus-5");
+
+    // Invalid model against a known harness: 400, never created.
+    const invalidModel = await app(
+      req("/tasks", {
+        method: "POST",
+        body: JSON.stringify({ title: "t2", body: "", labels: [], repo: "r", harnessOverride: "a", model: "not-a-real-model" }),
+      }),
+    );
+    expect(invalidModel.status).toBe(400);
+
+    // Unknown harnessOverride id: 400, never created.
+    const unknownHarness = await app(
+      req("/tasks", {
+        method: "POST",
+        body: JSON.stringify({ title: "t3", body: "", labels: [], repo: "r", harnessOverride: "does-not-exist" }),
+      }),
+    );
+    expect(unknownHarness.status).toBe(400);
+
+    // A model with no harnessOverride is accepted unvalidated — the
+    // harness/tool isn't known until routing runs.
+    const modelOnly = await app(
+      req("/tasks", {
+        method: "POST",
+        body: JSON.stringify({ title: "t4", body: "", labels: [], repo: "r", model: "totally-made-up-model" }),
+      }),
+    );
+    expect(modelOnly.status).toBe(201);
+    const modelOnlyTask = (await modelOnly.json()) as TaskCard;
+    expect(modelOnlyTask.model).toBe("totally-made-up-model");
+    expect(modelOnlyTask.harnessOverride).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("GET /tasks?status=escalated finds an escalated task — the human queue for a review-pushback lineage that hit its limit", async () => {

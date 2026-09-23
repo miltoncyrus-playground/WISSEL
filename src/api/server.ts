@@ -10,7 +10,7 @@ import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
-import { startModelRefreshScheduler } from "../core/model-refresh-scheduler.ts";
+import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH } from "../core/model-refresh-scheduler.ts";
 import { readMemoryLessons, DEFAULT_MEMORY_PATH } from "../services/memory.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
@@ -21,7 +21,7 @@ import { getRepoDiff } from "../services/repo-diff.ts";
 import { mergeTaskWorktree, removeTaskWorktree } from "../services/worktree.ts";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
 import { checkHarnessAuth } from "../core/harness-discovery.ts";
-import { setHarnessEnabled } from "../core/harness-manifest.ts";
+import { setHarnessEnabled, setHarnessModel } from "../core/harness-manifest.ts";
 import { getVersionInfo } from "../core/version.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -53,10 +53,14 @@ export interface CreateAppOptions {
    *  harnesses existed. */
   harnesses?: HarnessPool;
   /** Path to the harnesses.yaml manifest — where `POST
-   *  /harnesses/:id/enable`/`/disable` persist a human's decision (see
-   *  docs/SDD-harness-enable-disable.md). Defaults to the same
-   *  "harnesses.yaml" relative path HarnessPool.load()/autoload()
-   *  already default to. */
+   *  /harnesses/:id/enable`/`/disable`/`/model` persist a human's
+   *  decision (see docs/SDD-harness-enable-disable.md and
+   *  docs/SDD-model-selection.md). Defaults to the same "harnesses.yaml"
+   *  relative path HarnessPool.load()/autoload() already default to.
+   *  The `WISSEL_HARNESSES_PATH` env override is read once at the
+   *  `src/api/server.ts` bootstrap entrypoint (same convention as every
+   *  other `WISSEL_*_PATH` var) and passed straight through here — this
+   *  option itself never reads `process.env`. */
   harnessesPath?: string;
   /** Used only by `POST /harnesses/:id/enable`'s re-validation check —
    *  injectable so tests never spawn a real `claude`/`codex` process.
@@ -121,6 +125,11 @@ export function createApp(
   const harnesses = opts.harnesses ?? HarnessPool.from([]);
   const harnessesPath = opts.harnessesPath ?? "harnesses.yaml";
   const harnessRunner = opts.harnessRunner ?? runViaBun;
+  // Same default the refresh scheduler itself falls back to — read here
+  // too so `GET /harnesses`/`POST /harnesses/:id/model`/`POST /tasks`
+  // validate against exactly the file the scheduler (or a real refresh
+  // run) actually wrote, whether or not `modelRefreshEnabled` is on.
+  const modelsCachePath = opts.modelsCachePath ?? DEFAULT_MODELS_CACHE_PATH;
 
   const executeWriteTier = opts.executeWriteTier ?? false;
   // ApiExecutor and CodexReadOnlyExecutor are unconditional, like
@@ -195,7 +204,7 @@ export function createApp(
   // ~/.wissel/models-cache.json (static re-copy for claude-cli/codex-cli,
   // a live client.models.list() call for anthropic-api).
   if (opts.modelRefreshEnabled) {
-    startModelRefreshScheduler({ harnesses, cachePath: opts.modelsCachePath, intervalHours: opts.modelRefreshIntervalHours });
+    startModelRefreshScheduler({ harnesses, cachePath: modelsCachePath, intervalHours: opts.modelRefreshIntervalHours });
   }
 
   return async function fetch(req: Request): Promise<Response> {
@@ -217,7 +226,19 @@ export function createApp(
       }
 
       if (url.pathname === "/harnesses" && req.method === "GET") {
-        return json(harnesses.all().map((h) => ({ ...h, activeCount: harnesses.activeCount(h.id) })));
+        // A cache-miss for a given harness id is not an error — it just
+        // hasn't been refreshed yet (e.g. WISSEL_MODEL_REFRESH never
+        // ran) — reported as [], same "empty, not broken" contract the
+        // model-setting endpoint below relies on to decide whether it
+        // has anything to validate against.
+        const cache = await readModelsCache(modelsCachePath);
+        return json(
+          harnesses.all().map((h) => ({
+            ...h,
+            activeCount: harnesses.activeCount(h.id),
+            availableModels: cache[h.id]?.models ?? [],
+          })),
+        );
       }
 
       // Current curated memory — what's actually injected into every
@@ -271,6 +292,30 @@ export function createApp(
           await setHarnessEnabled(harnessesPath, harness, false);
           return json(harnesses.setEnabled(harness.id, false));
         }
+
+        // Sets/clears this harness's default model (Harness.model, see
+        // the precedence order documented beside CostProfile in
+        // types.ts). `model: null`/omitted clears the override back to
+        // the agent default. Refuses (400) a `model` that isn't in this
+        // harness's own cached `availableModels` — same "refuse, don't
+        // silently accept" discipline `/enable`'s 409 already applies,
+        // but only when the cache actually has an opinion: an empty
+        // `availableModels` (never refreshed yet) means there's nothing
+        // to validate against, so any string is accepted rather than
+        // rejecting everything until a refresh has run once.
+        if (parts[2] === "model" && req.method === "POST") {
+          const { model } = (await req.json()) as { model?: string | null };
+          const resolved = model ?? undefined;
+          if (resolved !== undefined) {
+            const cache = await readModelsCache(modelsCachePath);
+            const availableModels = cache[harness.id]?.models ?? [];
+            if (availableModels.length > 0 && !availableModels.includes(resolved)) {
+              return json({ error: `model "${resolved}" is not in the known model list for harness "${harness.id}"` }, 400);
+            }
+          }
+          await setHarnessModel(harnessesPath, harness, resolved);
+          return json(harnesses.setModel(harness.id, resolved));
+        }
       }
 
       if (url.pathname === "/events" && req.method === "GET") {
@@ -298,6 +343,26 @@ export function createApp(
 
         if (parts.length === 1 && req.method === "POST") {
           const body = (await req.json()) as Omit<TaskCard, "id" | "status">;
+          // `harnessOverride` is validated eagerly, at creation time,
+          // because we already know exactly which harness it names.
+          // `model` with no `harnessOverride` is deliberately NOT
+          // validated here — which harness/tool will actually run this
+          // task isn't known until routing happens, so there's nothing
+          // yet to check it against (see docs/SDD-model-selection.md §9,
+          // and the fail-loud precedence resolution in
+          // src/core/model-resolution.ts, which validates it for real at
+          // dispatch time).
+          if (body.harnessOverride) {
+            const harness = harnesses.get(body.harnessOverride);
+            if (!harness) return json({ error: `unknown harnessOverride "${body.harnessOverride}"` }, 400);
+            if (body.model) {
+              const cache = await readModelsCache(modelsCachePath);
+              const availableModels = cache[harness.id]?.models ?? [];
+              if (availableModels.length > 0 && !availableModels.includes(body.model)) {
+                return json({ error: `model "${body.model}" is not in the known model list for harness "${harness.id}"` }, 400);
+              }
+            }
+          }
           const task = await board.create(body);
           return json(task, 201);
         }
@@ -548,11 +613,19 @@ if (import.meta.main) {
   const board = new SqliteBoard(dbPath);
   const registry = await Registry.load();
   const telemetry = new TelemetryLog(telemetryPath);
+  // Same "harnesses.yaml" relative-path default HarnessPool.load()/
+  // autoload() always had — this override is new (see
+  // docs/SDD-model-selection.md), needed so a test/e2e run can point
+  // the whole harness manifest (both the initial autoload read below
+  // AND every enable/disable/model-set persist through createApp) at a
+  // disposable fixture file instead of this repo's own real,
+  // git-committed harnesses.yaml.
+  const harnessesPath = process.env.WISSEL_HARNESSES_PATH ?? "harnesses.yaml";
   // Auto-detects every already-authenticated account on this machine
-  // (see harness-discovery.ts) and layers harnesses.yaml on top as
+  // (see harness-discovery.ts) and layers harnessesPath on top as
   // overrides — the file is optional either way; zero configured or
   // detected harnesses is a valid, common state, not a startup error.
-  const harnesses = await HarnessPool.autoload();
+  const harnesses = await HarnessPool.autoload(harnessesPath);
 
   // Off by default: this loop routes eligible tasks automatically the
   // moment they appear. Read-only agents run in-process; write-tier
@@ -604,6 +677,7 @@ if (import.meta.main) {
       orchestratorEnabled,
       executeWriteTier,
       harnesses,
+      harnessesPath,
       maxConcurrentTasks,
       spendCeilingUsd,
       memoryCurationEnabled,
