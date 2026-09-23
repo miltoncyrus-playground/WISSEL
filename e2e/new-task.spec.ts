@@ -169,4 +169,60 @@ test.describe("New Task tab", () => {
     const task = await taskRes.json();
     expect(task.routedTo).toBe("reviewer");
   });
+
+  // e2e-fixture-harness is the deterministic anthropic-api fixture
+  // harness (see e2e/fixtures/harnesses.yaml/models-cache.json) —
+  // always enabled: true and always has two known models on every
+  // machine, unlike a claude-cli/codex-cli entry that would depend on
+  // real local auth. Drives the real GET /harnesses response, not a
+  // mock, so the model select's options prove the real harness ->
+  // availableModels wiring, not a hardcoded list.
+  test("picking a harness repopulates the model select, and both submit as harnessOverride/model", async ({ page }) => {
+    const title = unique("Harness+model override task");
+
+    await page.locator("#ntTitle").fill(title);
+    await page.locator("#ntBody").fill("Exercises the harness/model override path.");
+    await page.locator("#ntRepo").fill("/tmp/wissel-e2e-repo");
+
+    await page.locator("#ntAdvanced summary").click();
+
+    const harnessSelect = page.locator("#ntHarness");
+    const modelSelect = page.locator("#ntModel");
+    await expect(modelSelect).toBeDisabled();
+
+    await harnessSelect.selectOption("e2e-fixture-harness");
+    await expect(modelSelect).toBeEnabled();
+    await expect(modelSelect.locator("option")).toHaveText(["Use default", "fixture-model-a", "fixture-model-b"]);
+
+    await modelSelect.selectOption("fixture-model-a");
+
+    const [createResponse] = await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith("/tasks") && r.request().method() === "POST"),
+      page.locator("#newTaskForm button[type=submit]").click(),
+    ]);
+    expect(createResponse.request().postDataJSON()).toMatchObject({
+      harnessOverride: "e2e-fixture-harness",
+      model: "fixture-model-a",
+    });
+
+    // Sticky-field reset clears both back to their defaults.
+    await expect(harnessSelect).toHaveValue("");
+    await expect(modelSelect).toBeDisabled();
+  });
+
+  test("submitting with harness and model left at their defaults omits both fields entirely", async ({ page }) => {
+    const title = unique("Default harness/model task");
+
+    await page.locator("#ntTitle").fill(title);
+    await page.locator("#ntBody").fill("Exercises the no-override default path.");
+    await page.locator("#ntRepo").fill("/tmp/wissel-e2e-repo");
+
+    const [createResponse] = await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith("/tasks") && r.request().method() === "POST"),
+      page.locator("#newTaskForm button[type=submit]").click(),
+    ]);
+    const body = createResponse.request().postDataJSON();
+    expect(body).not.toHaveProperty("harnessOverride");
+    expect(body).not.toHaveProperty("model");
+  });
 });

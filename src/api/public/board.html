@@ -541,6 +541,20 @@
         <div class="override-grid" id="ntOverrideGrid">
           <button type="button" data-override="" aria-pressed="true">Auto-route</button>
         </div>
+
+        <div class="field">
+          <label for="ntHarness">Harness</label>
+          <select id="ntHarness">
+            <option value="">Auto-pick</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="ntModel">Model</label>
+          <select id="ntModel" disabled>
+            <option value="">Use default</option>
+          </select>
+        </div>
       </details>
 
       <div class="form-actions">
@@ -1953,6 +1967,7 @@
     renderRepoOptions();
     renderDependsOnOptions();
     renderParentTaskOptions();
+    renderNtHarnessOptions();
     refreshOpenDrawer();
     document.getElementById("taskCount").innerHTML = '<span class="live-dot"></span>' + tasks.length + " tasks";
   }
@@ -2212,6 +2227,60 @@
     select.value = routed.some(function (t) { return t.id === current; }) ? current : "";
   }
 
+  // Enabled harnesses only — matches renderHarnessStrip's own filter: a
+  // harness nothing is authenticated for isn't a real destination for a
+  // new task. Preserves the current selection across rerenders the same
+  // way renderParentTaskOptions preserves its own, then always
+  // repopulates the dependent model select below.
+  function renderNtHarnessOptions() {
+    var select = document.getElementById("ntHarness");
+    if (!select) return;
+    var current = select.value;
+    var available = harnesses.filter(function (h) { return h.enabled; });
+
+    select.textContent = "";
+    var auto = document.createElement("option");
+    auto.value = ""; auto.textContent = "Auto-pick";
+    select.appendChild(auto);
+    available.forEach(function (h) {
+      var opt = document.createElement("option");
+      opt.value = h.id;
+      opt.textContent = h.label || h.id;
+      select.appendChild(opt);
+    });
+    select.value = available.some(function (h) { return h.id === current; }) ? current : "";
+    renderNtModelOptions();
+  }
+
+  // Options are the selected harness's own cached `availableModels` (see
+  // GET /harnesses) — disabled and empty until a harness is actually
+  // picked, since "Auto-pick" doesn't know yet which harness's model
+  // list would even apply. Preserves the current model selection across
+  // rerenders when it's still valid for the (possibly unchanged)
+  // harness, same "preserve if still valid" idiom used elsewhere on this
+  // form.
+  function renderNtModelOptions() {
+    var modelSelect = document.getElementById("ntModel");
+    if (!modelSelect) return;
+    var current = modelSelect.value;
+    var harnessId = document.getElementById("ntHarness").value;
+    var harness = harnesses.filter(function (h) { return h.id === harnessId; })[0];
+    var models = (harness && harness.availableModels) || [];
+
+    modelSelect.textContent = "";
+    var def = document.createElement("option");
+    def.value = ""; def.textContent = "Use default";
+    modelSelect.appendChild(def);
+    models.forEach(function (m) {
+      var opt = document.createElement("option");
+      opt.value = m;
+      opt.textContent = m;
+      modelSelect.appendChild(opt);
+    });
+    modelSelect.value = models.indexOf(current) !== -1 ? current : "";
+    modelSelect.disabled = !harness || models.length === 0;
+  }
+
   function renderRepoOptions() {
     var list = document.getElementById("ntRepoList");
     if (!list) return;
@@ -2237,6 +2306,8 @@
     document.getElementById("ntParentTask").value = "";
     ntOverride = "";
     renderOverrideGrid();
+    document.getElementById("ntHarness").value = "";
+    renderNtModelOptions();
     scheduleNtPreview();
     renderDependsOnOptions();
     updateSubmitEnabled();
@@ -2302,6 +2373,7 @@
   });
 
   document.getElementById("ntParentTask").addEventListener("change", scheduleNtPreview);
+  document.getElementById("ntHarness").addEventListener("change", renderNtModelOptions);
 
   document.getElementById("newTaskForm").addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -2330,9 +2402,13 @@
     statusEl.textContent = "creating…";
 
     var parentTaskId = document.getElementById("ntParentTask").value;
+    var harnessOverride = document.getElementById("ntHarness").value;
+    var model = document.getElementById("ntModel").value;
     var payload = {
       title: title, body: taskBody, labels: ntLabels.slice(), repo: repo, dependsOn: selectedDependsOn(),
       parentTaskId: parentTaskId || undefined,
+      harnessOverride: harnessOverride || undefined,
+      model: model || undefined,
     };
 
     fetch("/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) })
