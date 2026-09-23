@@ -225,6 +225,27 @@ call); for `anthropic-api` it's a real cache with a real TTL (§8).
 
 ## 8. Cache — file-based, same convention as every other wissel state file
 
+**Revises this section's own first draft, named here per §2's own
+precedent-callout discipline**: the JSON shape below is keyed by
+`Harness.id`, not by `HarnessTool` as this section originally
+documented (a 3-key `anthropic-api`/`claude-cli`/`codex-cli` example).
+Reason: `Harness.apiKeyEnv` (`types.ts:220-227`) is set per harness, not
+per tool — two `anthropic-api` harnesses pointing at different API keys
+(e.g. `api-key-1`/`api-key-2`) can legitimately see different model
+lists from `client.models.list()`, and a tool-keyed cache would
+silently collapse both into one shared, last-write-wins entry.
+Subtask 2's implementation (`src/core/model-refresh-scheduler.ts:26-31`)
+caught this during its own review and keys by harness id instead; this
+section, §9, and §10 below are updated to match. **Superseded**: every
+`HarnessTool`-keyed JSON example and "one entry per tool" prose
+originally in this doc's §8/§9/§10 no longer holds — read "harness id"
+everywhere those said "tool name". This changes nothing observable when
+every harness has a distinct tool (the common case today); it only
+matters once two harnesses share a tool, e.g. two `anthropic-api`
+harnesses on different keys, or (once subtask 6 adds harness-level
+model overrides) two `claude-cli` harnesses that still get the same
+static list either way (§7).
+
 New file, `~/.wissel/models-cache.json`, override
 `WISSEL_MODELS_CACHE_PATH` — matching the existing
 `WISSEL_DB_PATH`/`WISSEL_TELEMETRY_PATH` convention
@@ -235,40 +256,42 @@ Format:
 
 ```json
 {
-  "anthropic-api": {
+  "api-key-1": {
     "fetchedAt": "2026-09-23T00:00:00.000Z",
     "models": ["claude-sonnet-5", "claude-opus-5-5", "claude-haiku-4-5-20251001", "..."]
   },
-  "claude-cli": {
+  "claude-personal": {
     "fetchedAt": "2026-09-23T00:00:00.000Z",
-    "models": ["claude-sonnet-5", "claude-opus-5-5", "claude-haiku-4-5-20251001"]
+    "models": ["claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "..."]
   },
-  "codex-cli": {
+  "codex-personal": {
     "fetchedAt": "2026-09-23T00:00:00.000Z",
-    "models": ["..."]
+    "models": ["gpt-5.1-codex"]
   }
 }
 ```
 
-One entry per `HarnessTool`. `claude-cli`/`codex-cli` entries are
-populated from the static list (§7) every time the cache is written —
-"refreshed daily" for these two just means the cache file's `fetchedAt`
-rolls forward and re-copies the current static list, so all three tools
-share one refresh mechanism and one file format even though only
-`anthropic-api` does a real network call. `anthropic-api`'s entry is
-refreshed by calling `client.models.list()` when `fetchedAt` is more
-than 24h old; a fetch failure keeps the existing cached entry rather
-than clearing it (stale-but-present beats empty). This refresh function
-is subtask 3's deliverable; subtask 5 wires it to run daily (a
+One entry per `Harness.id`. `claude-cli`/`codex-cli` harnesses' entries
+are populated from the static list (§7) every time the cache is
+written — "refreshed daily" for these just means the cache file's
+`fetchedAt` rolls forward and re-copies the current static list, so
+every harness shares one refresh mechanism and one file format even
+though only `anthropic-api` harnesses do a real network call.
+`anthropic-api` harnesses' entries are refreshed by calling
+`client.models.list()` when `fetchedAt` is more than 24h old; a fetch
+failure keeps that harness's existing cached entry rather than clearing
+it (stale-but-present beats empty), and never blocks any other
+harness's refresh in the same tick. This refresh function is subtask
+2's deliverable; subtask 5 wires it to run daily (a
 `setInterval`-based scheduler, same shape as
 `src/core/memory-scheduler.ts`/`src/core/archive-scheduler.ts`).
 
 ## 9. Endpoints
 
-- **`GET /models`** — returns the full cache contents (all three tools),
-  reading from disk and triggering a refresh (§8) if any entry is
-  missing or stale. Used by both the Manage Harnesses panel and the New
-  Task form to populate model pickers. (subtask 5)
+- **`GET /models`** — returns the full cache contents (every harness,
+  keyed by id per §8), reading from disk and triggering a refresh (§8)
+  if any entry is missing or stale. Used by both the Manage Harnesses
+  panel and the New Task form to populate model pickers. (subtask 5)
 - **`PATCH /harnesses/:id`** (or a narrower `POST /harnesses/:id/model`
   — subtask 4 decides the exact verb, following the existing
   paired-action convention `POST /harnesses/:id/enable`/`/disable`
@@ -291,21 +314,21 @@ is subtask 3's deliverable; subtask 5 wires it to run daily (a
 **Manage Harnesses panel** (`board.html`, `#harnessPanel`/`#hmList`,
 existing drawer from `docs/SDD-harness-enable-disable.md` §9, lines
 618–629): each harness row gets a model `<select>` populated from
-`GET /models`' entry for that harness's `tool`, defaulting to "use
+`GET /models`' entry for that harness's own id (§8), defaulting to "use
 agent default" (i.e. `Harness.model` unset) plus every known model name
-for that tool. Changing it calls the new endpoint from §9 and re-fetches
-the harness list, same pattern the existing enable/disable toggle
-already uses.
+for that harness. Changing it calls the new endpoint from §9 and
+re-fetches the harness list, same pattern the existing enable/disable
+toggle already uses.
 
 **New Task form** (`board.html`, `#newTaskPanel`/`#newTaskForm`, lines
 488–547): the existing `<details id="ntAdvanced">` "Advanced: override
 the router" section (lines 533–539) gains two more fields alongside the
 agent-override button grid — a harness `<select>` (populated from
 `GET /harnesses`, defaulting to "auto-select") and a model `<select>`
-(populated from `GET /models`, scoped to whichever harness's tool is
-selected, or the union of all tools' lists if no harness is picked yet;
-defaulting to "use default"). Both submit as `harnessOverride`/`model`
-on the `POST /tasks` body (§9). This is the field this SDD's §2
+(populated from `GET /models`, scoped to whichever harness id is
+selected, or the union of every harness's list if no harness is picked
+yet; defaulting to "use default"). Both submit as `harnessOverride`/
+`model` on the `POST /tasks` body (§9). This is the field this SDD's §2
 explicitly reopens from `SDD-new-task-tab.md` §4/§7 — everything else
 in that form (Title/Description/Repo/Labels/Depends-on/live routing
 preview) is untouched.
