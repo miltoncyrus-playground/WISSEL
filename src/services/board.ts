@@ -115,6 +115,8 @@ interface TaskRow {
   retryAfter: string | null;
   doneAt: string | null;
   archivedAt: string | null;
+  model: string | null;
+  harnessOverride: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -136,6 +138,8 @@ function rowToCard(row: TaskRow): TaskCard {
     retryAfter: row.retryAfter ?? undefined,
     doneAt: row.doneAt ?? undefined,
     archivedAt: row.archivedAt ?? undefined,
+    model: row.model ?? undefined,
+    harnessOverride: row.harnessOverride ?? undefined,
   };
 }
 
@@ -170,7 +174,9 @@ export class SqliteBoard implements Board {
         escalationContext TEXT,
         retryAfter TEXT,
         doneAt TEXT,
-        archivedAt TEXT
+        archivedAt TEXT,
+        model TEXT,
+        harnessOverride TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -192,6 +198,8 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN retryAfter TEXT;",
       "ALTER TABLE tasks ADD COLUMN doneAt TEXT;",
       "ALTER TABLE tasks ADD COLUMN archivedAt TEXT;",
+      "ALTER TABLE tasks ADD COLUMN model TEXT;",
+      "ALTER TABLE tasks ADD COLUMN harnessOverride TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -336,7 +344,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -352,6 +360,8 @@ export class SqliteBoard implements Board {
         full.reviewLineageId ?? null,
         full.supersededBy ?? null,
         full.escalationContext ?? null,
+        full.model ?? null,
+        full.harnessOverride ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);

@@ -77,3 +77,52 @@ export async function setHarnessEnabled(path: string, harness: Harness, enabled:
 
   await writeFile(path, doc.toString());
 }
+
+/**
+ * Persists a per-harness default model back to `harnesses.yaml` — same
+ * "file is the single source of truth" contract as `setHarnessEnabled`
+ * above, and deliberately copies its exact shape (Document API, not a
+ * parse+stringify round-trip, so comments/formatting survive; the same
+ * empty-flow-seq guard; the same discovery-only-harness promotion path).
+ *
+ * `model: undefined` clears a previously-set override (`.delete`)
+ * instead of persisting a literal `null`/empty string — "no override"
+ * and "override cleared" are the same state on disk.
+ */
+export async function setHarnessModel(path: string, harness: Harness, model: string | undefined): Promise<void> {
+  const raw = await readFile(path, "utf8").catch((e) => {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "harnesses: []\n";
+    throw e;
+  });
+
+  const doc = parseDocument(raw);
+  let seq = doc.getIn(["harnesses"]) as YAMLSeq | undefined;
+  if (!seq) {
+    doc.setIn(["harnesses"], []);
+    seq = doc.getIn(["harnesses"]) as YAMLSeq;
+  }
+  if (seq.items.length === 0) seq.flow = false;
+
+  const existing = seq.items.find((item) => {
+    const map = item as { get?: (key: string) => unknown };
+    return typeof map.get === "function" && map.get("id") === harness.id;
+  }) as { set: (key: string, value: unknown) => void; delete: (key: string) => void } | undefined;
+
+  if (existing) {
+    if (model === undefined) existing.delete("model");
+    else existing.set("model", model);
+  } else {
+    const toStore: Omit<Harness, "disabledReason" | "model"> & { model?: string } = {
+      id: harness.id,
+      tool: harness.tool,
+      label: harness.label,
+      enabled: harness.enabled,
+      ...(harness.env ? { env: harness.env } : {}),
+      ...(harness.apiKeyEnv ? { apiKeyEnv: harness.apiKeyEnv } : {}),
+      ...(model !== undefined ? { model } : {}),
+    };
+    seq.add(doc.createNode(toStore));
+  }
+
+  await writeFile(path, doc.toString());
+}

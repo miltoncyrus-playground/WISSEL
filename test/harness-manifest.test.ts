@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { setHarnessEnabled } from "../src/core/harness-manifest.ts";
+import { setHarnessEnabled, setHarnessModel } from "../src/core/harness-manifest.ts";
 import type { Harness } from "../src/core/types.ts";
 
 async function fixture(content: string): Promise<{ dir: string; path: string }> {
@@ -132,6 +132,115 @@ test("an id with no env or apiKeyEnv promotes cleanly without either key present
     await setHarnessEnabled(path, bare, true);
     const parsed = parse(await readFile(path, "utf8")) as { harnesses: Harness[] };
     expect(parsed.harnesses).toEqual([{ id: "bare", tool: "claude-cli", label: "Bare", enabled: true }]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// --- setHarnessModel: per-harness default model persistence ---
+
+test("setHarnessModel sets model on an existing entry, preserving every comment and every other entry byte-for-byte", async () => {
+  const { dir, path } = await fixture(`# header comment, explaining the whole file
+harnesses:
+  - id: claude-personal
+    tool: claude-cli
+    label: "Claude — personal"
+    enabled: true
+    env:
+      # why this path
+      CLAUDE_CONFIG_DIR: "/x"
+  - id: untouched
+    tool: claude-cli
+    label: "Untouched"
+    enabled: true
+`);
+  try {
+    await setHarnessModel(path, claudePersonal, "claude-opus-5-5");
+    const out = await readFile(path, "utf8");
+
+    expect(out).toContain("# header comment, explaining the whole file");
+    expect(out).toContain("# why this path");
+    expect(out).toContain("id: untouched");
+
+    const parsed = parse(out) as { harnesses: Harness[] };
+    const updated = parsed.harnesses.find((h) => h.id === "claude-personal")!;
+    expect(updated.model).toBe("claude-opus-5-5");
+    const other = parsed.harnesses.find((h) => h.id === "untouched")!;
+    expect(other.model).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("setHarnessModel with undefined clears a previously-set model", async () => {
+  const { dir, path } = await fixture(`harnesses:
+  - id: claude-personal
+    tool: claude-cli
+    label: "Claude — personal"
+    enabled: true
+    model: claude-opus-5-5
+`);
+  try {
+    await setHarnessModel(path, { ...claudePersonal, model: "claude-opus-5-5" }, undefined);
+    const raw = await readFile(path, "utf8");
+    expect(raw).not.toContain("model:");
+    const parsed = parse(raw) as { harnesses: Harness[] };
+    expect(parsed.harnesses.find((h) => h.id === "claude-personal")!.model).toBeUndefined();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("setHarnessModel on a discovery-only harness (never in the file) promotes it into a new entry with model set", async () => {
+  const { dir, path } = await fixture(`# header
+harnesses:
+  - id: claude-personal
+    tool: claude-cli
+    label: "Claude — personal"
+    enabled: true
+`);
+  try {
+    const discovered: Harness = { id: "codex-adevinta", tool: "codex-cli", label: "Codex — adevinta", enabled: true, env: { CODEX_HOME: "/home/x/.codex-adevinta" } };
+    await setHarnessModel(path, discovered, "gpt-5-codex");
+    const out = await readFile(path, "utf8");
+
+    expect(out).toContain("# header");
+    const parsed = parse(out) as { harnesses: Harness[] };
+    expect(parsed.harnesses).toHaveLength(2);
+    const promoted = parsed.harnesses.find((h) => h.id === "codex-adevinta")!;
+    expect(promoted).toEqual({
+      id: "codex-adevinta",
+      tool: "codex-cli",
+      label: "Codex — adevinta",
+      enabled: true,
+      env: { CODEX_HOME: "/home/x/.codex-adevinta" },
+      model: "gpt-5-codex",
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("setHarnessModel promoting with model undefined never writes a model key", async () => {
+  const { dir, path } = await fixture("harnesses: []\n");
+  try {
+    const bare: Harness = { id: "bare", tool: "claude-cli", label: "Bare", enabled: true };
+    await setHarnessModel(path, bare, undefined);
+    const raw = await readFile(path, "utf8");
+    expect(raw).not.toContain("model:");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("setHarnessModel on a missing file starts from an empty harnesses: [] document", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-harness-manifest-test-"));
+  const path = join(dir, "does-not-exist.yaml");
+  try {
+    const solo: Harness = { id: "solo", tool: "anthropic-api", label: "Solo", enabled: true, apiKeyEnv: "MY_KEY" };
+    await setHarnessModel(path, solo, "claude-sonnet-5");
+    const parsed = parse(await readFile(path, "utf8")) as { harnesses: Harness[] };
+    expect(parsed.harnesses).toEqual([{ id: "solo", tool: "anthropic-api", label: "Solo", enabled: true, apiKeyEnv: "MY_KEY", model: "claude-sonnet-5" }]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

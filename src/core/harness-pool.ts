@@ -124,4 +124,19 @@ export class HarnessPool {
     this.harnesses.set(id, updated);
     return updated;
   }
+
+  /** Mutates the live pool's copy of a harness's default model in place
+   *  — the in-memory half of a human's model-selection decision, same
+   *  shape as `setEnabled` above (the disk half is `setHarnessModel` in
+   *  harness-manifest.ts, always done first by the caller). Returns
+   *  undefined, changing nothing, for an unknown id. `model: undefined`
+   *  clears a previously-set override, matching Harness.model's own
+   *  "undefined means no override" contract. */
+  setModel(id: string, model: string | undefined): Harness | undefined {
+    const existing = this.harnesses.get(id);
+    if (!existing) return undefined;
+    const updated: Harness = { ...existing, model };
+    this.harnesses.set(id, updated);
+    return updated;
+  }
 }
