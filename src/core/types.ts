@@ -97,7 +97,7 @@ export interface AgentDef {
    *  machine parsing beyond the is_error the harness itself reports" —
    *  outputContract text still reaches the prompt, its content just
    *  isn't validated downstream. */
-  outputContractFormat?: "review-verdict" | "subtask-plan";
+  outputContractFormat?: "review-verdict" | "subtask-plan" | "pipeline-handoff";
   /** Agent-specific self-verification instructions, appended verbatim to
    *  the prompt by buildAgentPrompt when present — same mechanism as
    *  outputContract, different purpose: tells the agent to actually run
@@ -136,6 +136,72 @@ export interface SubtaskPlanItem {
   body: string;
   labels: string[];
   dependsOnIndex?: number;
+}
+
+/** A single step in a `PipelineGraph` — bound to exactly one agent
+ *  (chosen by the canvas editor's agent picker), never resolved by the
+ *  fuzzy router: pipeline-runner.ts looks the agent up directly by id,
+ *  since the whole point of authoring a pipeline is naming exactly which
+ *  agent runs each step. See docs/SDD-pipelines.md §3.4/§3.6. */
+export interface PipelineStepDef {
+  id: string;
+  name: string;
+  agentId: string;
+  /** "choose": this step's own pipeline-handoff `next` field picks
+   *  exactly one outgoing edge. "all": every outgoing edge activates
+   *  regardless of what `next` says (fan-out) — `next` isn't required
+   *  at all for an "all" step. */
+  transition: "choose" | "all";
+  /** Only meaningful for a step with more than one incoming edge. "any"
+   *  fires the moment the first predecessor completes; "all" waits for
+   *  every predecessor under the same pipelineRunId to reach a terminal
+   *  state first. Undefined defaults to "any". */
+  joinMode?: "any" | "all";
+}
+
+/** A labelled connection between two steps. `label` is the last-resort
+ *  match a "choose" step's `next` field resolves against — name, then
+ *  id, then this label, first match wins (see resolveNext,
+ *  pipeline-runner.ts). */
+export interface PipelineEdgeDef {
+  id: string;
+  from: string;
+  to: string;
+  label?: string;
+}
+
+/** The full step/edge graph a pipeline definition's `graph` column
+ *  stores — opaque to everything except the canvas editor and
+ *  pipeline-runner.ts (see docs/SDD-pipelines.md §3.7). */
+export interface PipelineGraph {
+  steps: PipelineStepDef[];
+  edges: PipelineEdgeDef[];
+}
+
+/** A stored, reusable pipeline definition — see src/services/pipelines.ts
+ *  (storage) and src/core/pipeline-runner.ts (execution). */
+export interface PipelineDef {
+  id: string;
+  name: string;
+  description: string;
+  graph: PipelineGraph;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A pipeline step's mandated final-message contract: a
+ *  ```pipeline-handoff``` fenced block containing this shape. See
+ *  parsePipelineHandoff, the only code allowed to construct one from raw
+ *  text. `next` is required for a "choose" step, optional (and ignored)
+ *  for an "all" (fan-out) step — the parser doesn't know which kind of
+ *  step produced this, so it accepts either shape; pipeline-runner.ts is
+ *  what enforces the per-step requirement. `data` is a free-form object
+ *  the next step's composed prompt is built from — see
+ *  docs/SDD-pipelines.md §3.4/§3.5. */
+export interface PipelineHandoff {
+  next?: string;
+  data?: Record<string, unknown>;
+  note?: string;
 }
 
 export interface TaskCard {
@@ -236,6 +302,21 @@ export interface TaskCard {
    *  clears this on exactly one row and never cascades (§3.6). ISO
    *  timestamp; undefined means not archived. */
   archivedAt?: string;
+  /** Which stored PipelineDef this task belongs to — set on the root
+   *  pipeline task and every one of its step tasks, undefined for every
+   *  non-pipeline task. See docs/SDD-pipelines.md §3.7. */
+  pipelineId?: string;
+  /** Groups every task under one pipeline run — the root task and every
+   *  step task it spawned. Undefined on the root task itself (its own id
+   *  IS the run id, the same "reuse the originating id" pattern
+   *  `reviewLineageId` already established — see resolveRunId,
+   *  src/core/pipeline-runner.ts); always explicitly set on every step
+   *  task. */
+  pipelineRunId?: string;
+  /** Which step in the pipeline definition's graph this task is a live
+   *  instance of. Undefined on the root task (which isn't a step
+   *  instance itself). */
+  pipelineStepId?: string;
 }
 
 /** A named execution backend wissel can run work under — a tool (which
@@ -357,6 +438,16 @@ export interface TaskResult {
    *  timestamp; undefined for every other kind of failure (or a
    *  success). */
   retryAfter?: string;
+  /** Set when this result came from a pipeline step's own
+   *  pipeline-handoff contract — see PipelineHandoff, parsePipelineHandoff.
+   *  Nested (unlike verdict/reviewFeedback's flat fields) because every
+   *  one of its own fields is independently optional (an "all"/fan-out
+   *  step's handoff has no `next` at all) — a single nested field is
+   *  what lets finishResult/pipeline-runner.ts tell "this is a genuine,
+   *  parsed pipeline-handoff result" apart from "not a pipeline result at
+   *  all" unambiguously, which no combination of optional flat fields
+   *  could. Undefined for every non-pipeline-step run. */
+  pipelineHandoff?: PipelineHandoff;
 }
 
 export interface Executor {

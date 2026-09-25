@@ -790,3 +790,82 @@ test("opens and heals a real pre-existing on-disk DB from before retryAfter exis
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("create round-trips pipelineId/pipelineRunId/pipelineStepId, and leaves them undefined when omitted", async () => {
+  const board = new SqliteBoard();
+  const pipelineTask = await board.create({
+    title: "step",
+    body: "",
+    labels: [],
+    repo: "r",
+    pipelineId: "pipe-1",
+    pipelineRunId: "run-1",
+    pipelineStepId: "step-a",
+  });
+  expect(pipelineTask.pipelineId).toBe("pipe-1");
+  expect(pipelineTask.pipelineRunId).toBe("run-1");
+  expect(pipelineTask.pipelineStepId).toBe("step-a");
+  const fetched = await board.get(pipelineTask.id);
+  expect(fetched!.pipelineId).toBe("pipe-1");
+  expect(fetched!.pipelineRunId).toBe("run-1");
+  expect(fetched!.pipelineStepId).toBe("step-a");
+
+  const bare = await board.create({ title: "b", body: "", labels: [], repo: "r" });
+  expect(bare.pipelineId).toBeUndefined();
+  expect(bare.pipelineRunId).toBeUndefined();
+  expect(bare.pipelineStepId).toBeUndefined();
+});
+
+// Same class of bug as parentTaskId/harnessOverride before it: a
+// pre-existing on-disk DB from before pipelineId/pipelineRunId/
+// pipelineStepId existed must heal on open, not throw "table tasks has
+// no column named pipelineId" the first time a pipeline task is created
+// against it.
+test("opens and heals a real pre-existing on-disk DB from before the pipeline* columns existed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-board-legacy-"));
+  const dbPath = join(dir, "board.sqlite");
+  try {
+    const legacy = new Database(dbPath, { create: true });
+    legacy.run(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        labels TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        status TEXT NOT NULL,
+        routedTo TEXT,
+        dependsOn TEXT NOT NULL DEFAULT '[]',
+        parentTaskId TEXT,
+        harness TEXT,
+        pushbackCount INTEGER,
+        reviewLineageId TEXT,
+        supersededBy TEXT,
+        escalationContext TEXT,
+        retryAfter TEXT,
+        doneAt TEXT,
+        archivedAt TEXT,
+        model TEXT,
+        harnessOverride TEXT
+      );
+    `);
+    legacy.close();
+
+    const board = new SqliteBoard(dbPath);
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r", pipelineId: "pipe-1", pipelineRunId: "run-1", pipelineStepId: "step-a" });
+    expect(task.pipelineId).toBe("pipe-1");
+    expect((await board.get(task.id))!.pipelineRunId).toBe("run-1");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// The pipelines table itself is a fresh addition (never existed on any
+// pre-existing DB) — CREATE TABLE IF NOT EXISTS is sufficient, no
+// ALTER TABLE heal needed. Round-trip CRUD lives in test/pipelines.test.ts
+// (SqlitePipelineStore, sharing this exact connection) — this just
+// confirms SqliteBoard actually creates the table on open.
+test("opens a fresh DB with the pipelines table already present", async () => {
+  const board = new SqliteBoard();
+  expect(() => board.db.query("SELECT * FROM pipelines").all()).not.toThrow();
+});

@@ -912,3 +912,148 @@ test("POST /tasks/:id/run 409s when a run for that task is already in flight", a
   expect(second.status).toBe(409);
   release();
 });
+
+function pipelineHandoffAgent(id: string): AgentDef {
+  return {
+    id,
+    name: id,
+    kind: "agent",
+    tier: "readonly",
+    description: "test pipeline step agent",
+    whenToUse: "test only",
+    tags: ["test"],
+    executor: "readonly",
+    inputs: [],
+    outputs: [],
+    trustLevel: "low",
+    toolAccess: ["read"],
+    costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.01 },
+    outputContract: "Your final message must end with a ```pipeline-handoff``` block.",
+    outputContractFormat: "pipeline-handoff",
+  };
+}
+
+/** A fake executor for pipeline-run API tests — matches any agent with
+ *  the pipeline-handoff contract, never spawns a real `claude` process. */
+function fakePipelineExecutor(run: Executor["run"]): Executor {
+  return { id: "fake-pipeline", canHandle: (agent: AgentDef) => agent.outputContractFormat === "pipeline-handoff", run };
+}
+
+const pipelineGraph = {
+  steps: [
+    { id: "a", name: "A", agentId: "step-a", transition: "choose" as const },
+    { id: "b", name: "B", agentId: "step-b", transition: "choose" as const },
+  ],
+  edges: [{ id: "e1", from: "a", to: "b" }],
+};
+
+test("POST /pipelines creates a definition, GET /pipelines lists it, GET /pipelines/:id fetches it, 404s on an unknown id", async () => {
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  const app = createApp(board, registry);
+
+  const createRes = await app(req("/pipelines", { method: "POST", body: JSON.stringify({ name: "My pipeline", description: "d", graph: pipelineGraph }) }));
+  expect(createRes.status).toBe(201);
+  const created = (await createRes.json()) as { id: string; name: string; graph: unknown };
+  expect(created.name).toBe("My pipeline");
+  expect(created.graph).toEqual(pipelineGraph);
+
+  const listRes = await app(req("/pipelines"));
+  expect(await listRes.json()).toEqual([created]);
+
+  const getRes = await app(req(`/pipelines/${created.id}`));
+  expect(await getRes.json()).toEqual(created);
+
+  const missing = await app(req("/pipelines/nope"));
+  expect(missing.status).toBe(404);
+});
+
+test("POST /pipelines 400s when name or graph is missing", async () => {
+  const app = createApp(new SqliteBoard(), await Registry.load());
+  const noName = await app(req("/pipelines", { method: "POST", body: JSON.stringify({ description: "d", graph: pipelineGraph }) }));
+  expect(noName.status).toBe(400);
+  const noGraph = await app(req("/pipelines", { method: "POST", body: JSON.stringify({ name: "n" }) }));
+  expect(noGraph.status).toBe(400);
+});
+
+test("PUT /pipelines/:id updates in place, 404s on an unknown id", async () => {
+  const board = new SqliteBoard();
+  const app = createApp(board, await Registry.load());
+  const created = (await (
+    await app(req("/pipelines", { method: "POST", body: JSON.stringify({ name: "Original", description: "", graph: pipelineGraph }) }))
+  ).json()) as { id: string };
+
+  const newGraph = { steps: [{ id: "a", name: "Only", agentId: "step-a", transition: "all" }], edges: [] };
+  const updateRes = await app(
+    req(`/pipelines/${created.id}`, { method: "PUT", body: JSON.stringify({ name: "Renamed", description: "new", graph: newGraph }) }),
+  );
+  expect(updateRes.status).toBe(200);
+  const updated = (await updateRes.json()) as { name: string; graph: unknown };
+  expect(updated.name).toBe("Renamed");
+  expect(updated.graph).toEqual(newGraph);
+
+  const missing = await app(req("/pipelines/nope", { method: "PUT", body: JSON.stringify({ name: "n", description: "", graph: newGraph }) }));
+  expect(missing.status).toBe(404);
+});
+
+test("DELETE /pipelines/:id removes it, 404s on an unknown id, and a second delete also 404s", async () => {
+  const board = new SqliteBoard();
+  const app = createApp(board, await Registry.load());
+  const created = (await (
+    await app(req("/pipelines", { method: "POST", body: JSON.stringify({ name: "Temp", description: "", graph: pipelineGraph }) }))
+  ).json()) as { id: string };
+
+  const del = await app(req(`/pipelines/${created.id}`, { method: "DELETE" }));
+  expect(del.status).toBe(204);
+  expect((await app(req(`/pipelines/${created.id}`))).status).toBe(404);
+  expect((await app(req(`/pipelines/${created.id}`, { method: "DELETE" }))).status).toBe(404);
+});
+
+test("POST /pipelines/:id/run drives the run end-to-end and emits real BoardEvents, GET /pipelines/:id/runs lists it most-recent-first", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([pipelineHandoffAgent("step-a"), pipelineHandoffAgent("step-b")]);
+  let calls = 0;
+  const app = createApp(board, registry, undefined, {
+    manualExecutors: [
+      fakePipelineExecutor(async (task, agent) => {
+        calls++;
+        const body = calls === 1 ? { next: "b", note: "handed off" } : {};
+        return { taskId: task.id, agentId: agent.id, ok: true, summary: "ok", pipelineHandoff: body };
+      }),
+    ],
+  });
+
+  const events: unknown[] = [];
+  board.events.on("event", (e) => events.push(e));
+
+  const created = (await (
+    await app(req("/pipelines", { method: "POST", body: JSON.stringify({ name: "Run me", description: "", graph: pipelineGraph }) }))
+  ).json()) as { id: string };
+
+  const runRes = await app(req(`/pipelines/${created.id}/run`, { method: "POST", body: JSON.stringify({ repo: "/tmp/repo", input: "go" }) }));
+  expect(runRes.status).toBe(201);
+  const root = (await runRes.json()) as TaskCard;
+  expect(root.status).toBe("done");
+  expect(root.pipelineId).toBe(created.id);
+  expect(events.some((e) => (e as { type: string }).type === "task.created")).toBe(true);
+
+  const missingPipeline = await app(req("/pipelines/nope/run", { method: "POST", body: JSON.stringify({ repo: "r", input: "i" }) }));
+  expect(missingPipeline.status).toBe(404);
+
+  const badBody = await app(req(`/pipelines/${created.id}/run`, { method: "POST", body: JSON.stringify({}) }));
+  expect(badBody.status).toBe(400);
+
+  const secondRoot = (await (
+    await app(req(`/pipelines/${created.id}/run`, { method: "POST", body: JSON.stringify({ repo: "/tmp/repo", input: "go again" }) }))
+  ).json()) as TaskCard;
+
+  const runsRes = await app(req(`/pipelines/${created.id}/runs`));
+  const runs = (await runsRes.json()) as TaskCard[];
+  expect(runs.map((r) => r.id)).toEqual([secondRoot.id, root.id]); // most recent first
+  expect(runs.every((r) => r.pipelineId === created.id)).toBe(true);
+
+  // Consistent with every sibling /pipelines/:id* endpoint: an unknown
+  // id 404s, it doesn't silently report "no runs" (which would be
+  // indistinguishable from a real pipeline with zero runs yet).
+  expect((await app(req("/pipelines/nope/runs"))).status).toBe(404);
+});

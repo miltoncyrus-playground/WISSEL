@@ -117,6 +117,9 @@ interface TaskRow {
   archivedAt: string | null;
   model: string | null;
   harnessOverride: string | null;
+  pipelineId: string | null;
+  pipelineRunId: string | null;
+  pipelineStepId: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -140,6 +143,9 @@ function rowToCard(row: TaskRow): TaskCard {
     archivedAt: row.archivedAt ?? undefined,
     model: row.model ?? undefined,
     harnessOverride: row.harnessOverride ?? undefined,
+    pipelineId: row.pipelineId ?? undefined,
+    pipelineRunId: row.pipelineRunId ?? undefined,
+    pipelineStepId: row.pipelineStepId ?? undefined,
   };
 }
 
@@ -149,7 +155,14 @@ function rowToCard(row: TaskRow): TaskCard {
  * `bun:sqlite` ships with the runtime.
  */
 export class SqliteBoard implements Board {
-  private db: Database;
+  /** Public (not merely private) so src/services/pipelines.ts's
+   *  SqlitePipelineStore can share this exact connection instead of
+   *  opening a second one — the only way two classes can both talk to
+   *  the same on-disk file (or, for tests, the same ":memory:" database:
+   *  two separate `new Database(":memory:")` calls are two independent,
+   *  unrelated in-memory databases, not the same one). See
+   *  docs/SDD-pipelines.md §4. */
+  readonly db: Database;
   readonly events = new EventEmitter();
 
   constructor(dbPath = ":memory:") {
@@ -176,7 +189,10 @@ export class SqliteBoard implements Board {
         doneAt TEXT,
         archivedAt TEXT,
         model TEXT,
-        harnessOverride TEXT
+        harnessOverride TEXT,
+        pipelineId TEXT,
+        pipelineRunId TEXT,
+        pipelineStepId TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -200,6 +216,9 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN archivedAt TEXT;",
       "ALTER TABLE tasks ADD COLUMN model TEXT;",
       "ALTER TABLE tasks ADD COLUMN harnessOverride TEXT;",
+      "ALTER TABLE tasks ADD COLUMN pipelineId TEXT;",
+      "ALTER TABLE tasks ADD COLUMN pipelineRunId TEXT;",
+      "ALTER TABLE tasks ADD COLUMN pipelineStepId TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -212,6 +231,26 @@ export class SqliteBoard implements Board {
     // try/catch dance. Every escalation walks a whole lineage
     // (getLineage below); without this a growing board scans every row.
     this.db.run("CREATE INDEX IF NOT EXISTS idx_tasks_reviewLineageId ON tasks(reviewLineageId);");
+    // Every join-satisfaction check and run-settlement scan
+    // (src/core/pipeline-runner.ts) filters `tasks` by pipelineRunId —
+    // same reasoning as the reviewLineageId index above.
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_tasks_pipelineRunId ON tasks(pipelineRunId);");
+    // Pipeline definitions — schema owned here (the single file that
+    // owns this DB's connection/migrations), CRUD owned by
+    // src/services/pipelines.ts's SqlitePipelineStore, which shares this
+    // exact `db` instance (see its own constructor doc comment). `graph`
+    // is opaque JSON (PipelineGraph) — nothing outside the canvas editor
+    // and pipeline-runner.ts reads its shape. See docs/SDD-pipelines.md §3.7.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS pipelines (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        graph TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+    `);
     this.db.run(`
       CREATE TABLE IF NOT EXISTS routing_decisions (
         taskId TEXT NOT NULL,
@@ -344,7 +383,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -362,6 +401,9 @@ export class SqliteBoard implements Board {
         full.escalationContext ?? null,
         full.model ?? null,
         full.harnessOverride ?? null,
+        full.pipelineId ?? null,
+        full.pipelineRunId ?? null,
+        full.pipelineStepId ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);

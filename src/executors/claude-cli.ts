@@ -1,8 +1,9 @@
-import type { AgentDef, ReviewVerdict, SubtaskPlanItem, TaskCard, TaskResult } from "../core/types.ts";
+import type { AgentDef, PipelineHandoff, ReviewVerdict, SubtaskPlanItem, TaskCard, TaskResult } from "../core/types.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
 import { parseSubtaskPlan } from "./parse-subtask-plan.ts";
+import { parsePipelineHandoff } from "./parse-pipeline-handoff.ts";
 import { parseSessionLimitReset } from "./parse-session-limit-reset.ts";
 
 /** A retriable 429's reset time must be within this window of "now" —
@@ -216,6 +217,22 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     }
   }
 
+  // Same idea again, for a pipeline step's contract — see
+  // AgentDef.outputContractFormat's doc comment and
+  // docs/SDD-pipelines.md §3.4. Unlike verdict/plan, a valid handoff can
+  // be an "empty" shape ({} — no next/data/note at all) for a fan-out
+  // step with nothing to say; parsePipelineHandoff already accepts
+  // that, so `ok` only flips false here on a genuinely missing or
+  // malformed block, never on an empty-but-well-formed one.
+  let handoff: PipelineHandoff | null = null;
+  if (ok && agent.outputContract && agent.outputContractFormat === "pipeline-handoff") {
+    handoff = parsePipelineHandoff(parsed.result ?? "");
+    if (handoff === null) {
+      ok = false;
+      summary = `${agent.name} violated its output contract — expected a trailing \`\`\`pipeline-handoff fenced block with {"next"?:"...","data"?:{...},"note"?:"..."}, got: ${parsed.result ?? "(no result)"}`;
+    }
+  }
+
   // Undefined (not a zero-valued object) when nothing was spawned — "no
   // field" and "definitely spawned nothing" read the same way the rest
   // of TaskResult already treats absence (see SDD §3).
@@ -235,6 +252,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     // being null above.
     ...(verdict ? { verdict: verdict.verdict, reviewFeedback: verdict.feedback } : {}),
     ...(plan ? { subtaskPlan: plan } : {}),
+    ...(handoff ? { pipelineHandoff: handoff } : {}),
   };
 }
 
