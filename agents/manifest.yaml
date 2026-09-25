@@ -168,6 +168,104 @@ agents:
         treated as a failed review, not an approval — never omit it or
         leave it ambiguous "to be safe."
 
+  - id: pipeline-reviewer
+    name: Pipeline reviewer
+    kind: agent
+    tier: readonly
+    description: Reviews a diff against repo conventions and prior decisions — the pipeline-engine counterpart to `reviewer`,
+      for a review step running inside a PipelineDef (src/core/pipeline-runner.ts) instead of the hardcoded review-handoff
+      loop.
+    whenToUse: A review step inside a pipeline run — never the hardcoded loop, which uses `reviewer`
+      (outputContractFormat -- review-verdict) instead.
+    # Deliberately NOT tagged [review, quality, security] like `reviewer`
+    # — pipeline-runner.ts never routes a step through the fuzzy Router at
+    # all (it looks the agent up directly by `step.agentId`, and every
+    # step task it creates carries `labels: []`, see runStepAndSuccessors/
+    # startPipelineRun in src/core/pipeline-runner.ts), so this agent's
+    # tags do nothing for pipeline execution. They DO still feed the real
+    # Router for anything else on the board — confirmed live, the hard
+    # way: giving this agent `reviewer`'s own tags broke
+    # spawnReviewerTask's follow-up routing (a plain `labels: ["review"]`
+    # task, used by the completely untouched hardcoded loop), turning a
+    # previously-unique tag match into a tie that routed to neither agent
+    # (test/orchestrator.test.ts's "a follow-up under a parent whose agent
+    # never declared handoffs routes unrestricted" caught this). One
+    # unique tag, not shared with any other agent in this file, is what
+    # keeps this addition from ever touching that unrelated routing path.
+    tags: [pipeline-review-step]
+    executor: readonly
+    inputs: [diff, pull-request]
+    outputs: [review-comments, approval-decision]
+    trustLevel: medium
+    toolAccess: [read]
+    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.12 }
+    # A separate agent id from `reviewer` on purpose — not an oversight,
+    # not an accidental duplicate. outputContractFormat is a static,
+    # per-agent field (see AgentDef.outputContractFormat,
+    # src/core/types.ts): `reviewer` must keep emitting review-verdict
+    # forever, because the hardcoded loop (finishResult's
+    # `handoffs.includes("reviewer")` branch -> handleReviewVerdict,
+    # src/core/orchestrator.ts) parses it with parseReviewVerdict and
+    # nothing else. A pipeline "choose" step instead needs the generic
+    # pipeline-handoff contract (docs/SDD-pipelines.md §3.4) so
+    # pipeline-runner.ts can resolve `next` against the step's own
+    # outgoing edges. Reusing `reviewer`'s id here would force every
+    # ordinary (non-pipeline) reviewer run through pipeline-handoff
+    # parsing too, or vice versa — either way breaking one of the two
+    # callers. See docs/SDD-pipelines.md's Subtask 5 comparison section.
+    outputContractFormat: pipeline-handoff
+    outputContract: |
+      Output contract — mandatory, machine-parsed, no exceptions:
+
+      Your final message MUST end with a fenced code block of exactly
+      this form, and nothing may follow it:
+
+      ```pipeline-handoff
+      {"next": "approve", "note": "..."}
+      ```
+
+      or
+
+      ```pipeline-handoff
+      {"next": "retry", "note": "..."}
+      ```
+
+      or
+
+      ```pipeline-handoff
+      {"next": "escalate", "note": "..."}
+      ```
+
+      Rules:
+      - `next` must be exactly one of "approve", "retry", or "escalate" —
+        no other value, no synonyms, no omission. These match this
+        pipeline's own edge labels for your step — the only values that
+        are actually valid to pick right now. Picking one that isn't a
+        real outgoing edge from this exact step fails the whole run
+        closed; it does not fall back to a guess.
+      - "approve": the diff is acceptable as-is.
+      - "retry": the diff needs changes, AND this task's own title says a
+        retry step is available ("retry is available if you request
+        changes"). Read the task title above carefully — it always tells
+        you which attempt number this is and whether retry is an option.
+      - "escalate": the diff needs changes, AND this task's own title
+        says this is the FINAL attempt with no retry step left. Do not
+        pick "retry" on the final attempt — there is no further
+        implementer step to route to, and doing so fails the run instead
+        of escalating it the way it should.
+      - `note` is a plain string carrying your review feedback — for
+        "retry", this is what the next implementer attempt will read
+        (nonce-fenced as untrusted data, see docs/SDD-pipelines.md §3.5),
+        so make it specific and actionable, exactly like `reviewer`'s own
+        feedback field.
+      - The block must be valid JSON on its own: no trailing commas, no
+        comments, no code fences nested inside it.
+      - Write your normal prose review first if you want, but the
+        ```pipeline-handoff``` block must be the last thing in your
+        message. A missing, malformed, or extra block after it is
+        treated as a failed run, not an approval — never omit it or
+        leave it ambiguous "to be safe."
+
   - id: repo-briefer
     name: Repo briefer
     kind: agent
