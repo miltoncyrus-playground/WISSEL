@@ -350,3 +350,97 @@ that's the one claiming behavioral equivalence with existing production
 code, e2e/manual-browser verification for the canvas editor, and
 independent verification (`bun run typecheck` + `bun test test/` green,
 the editor's own build succeeding) before any of this is called done.
+
+## 9. Subtask 5 — built, and compared point-by-point against `handleReviewVerdict`
+
+**Built.** `src/core/review-handoff-pipeline.ts` (`buildReviewHandoffPipelineGraph`)
+constructs the recreated `PipelineDef`'s graph: `REVIEW_HANDOFF_PUSHBACK_LIMIT
++ 1` (6) `implementer` step / `pipeline-reviewer` step pairs, chained
+`retry` edges between consecutive pairs, an `approve` edge from every
+reviewer step to a shared `approved` terminal, and an `escalate` edge
+from only the final (6th) reviewer step to a shared `escalated` terminal.
+`agents/manifest.yaml` gained one new agent, `pipeline-reviewer`
+(`outputContractFormat: pipeline-handoff`) — deliberately a *separate* id
+from `reviewer`, not a modification of it (see the agent's own manifest
+comment for why: `outputContractFormat` is static per agent, so the same
+id can't emit both `review-verdict` for the hardcoded loop and
+`pipeline-handoff` for a pipeline step). The two terminal "notice" steps
+reuse the existing `quick-answer` skill as-is — no new agent needed for a
+step whose own output is never read. `implementer` (the real, existing
+write-tier agent) is reused completely unchanged for every implementer
+step, with `transition: "all"` so it never needs a `pipeline-handoff`
+contract at all — see the graph builder's own doc comment for why giving
+`implementer` one would have broken the hardcoded loop's own, unrelated
+implementer runs. `test/review-handoff-pipeline.test.ts` (gate lane, real
+manifest via `Registry.load()`, scripted `claude`/Anthropic responses)
+proves: the graph's shape, an approve-on-first-try run reaching `done` via
+`approved` after exactly 1 implementer attempt, a reject-every-time run
+reaching `done` via `escalated` after exactly 6 implementer attempts, and
+—concretely, not just asserted — that a literal retry cycle has no valid
+entry step at all and fails before a single step runs, which is why this
+graph unrolls the bounded loop into 6 distinct step-id pairs instead of a
+real cycle. `eval/pipeline-review-handoff.eval.ts` is the live smoke test
+(real `claude`, real git worktrees, real tiny Anthropic calls for the
+terminal steps) — see its own doc comment and `eval/README.md`'s matching
+section for the two fixtures and pass bar; **not yet empirically run**,
+for the same reason `eval:implementer-reviewer` originally wasn't (no
+subprocess-spawn access in the session that wrote it — see that eval's
+own "Status" note) — run it before relying on this pipeline for anything
+real.
+
+**Point-by-point comparison against `handleReviewVerdict` and its
+neighbors (`spawnReviewerTask`/`spawnPushbackImplementer`/
+`buildEscalationContext`, all in `src/core/orchestrator.ts`, none touched
+by this subtask):**
+
+| Behavior | Legacy hardcoded loop | Recreated `PipelineDef` | Match? |
+|---|---|---|---|
+| Pushback cap | `pushbackCount >= 5` checked in code (`handleReviewVerdict`) — 1 initial attempt + up to 5 re-attempts, escalate on the 6th rejection | 6 static implementer/reviewer step-id pairs, escalate edge only from the 6th reviewer | **Yes** — same effective cap, same trigger point |
+| Who decides retry-vs-escalate | Deterministic code, off `pushbackCount` — the reviewer agent never sees or reasons about the cap, it only ever says `approve`/`changes_requested` | The `pipeline-reviewer` LLM itself, informed only by its own step's title text ("FINAL attempt... you MUST respond next: escalate") | **No** — a real, load-bearing behavior change: a step that mis-reads its own title and answers "retry" on the final attempt fails the run (closed, not silently), where the legacy loop can't ever make this mistake because code decides, not the model |
+| Worktree reuse across pushback rounds | `WriteExecutor`/`CodexWriteExecutor` key the worktree off `task.reviewLineageId ?? task.id` (`src/services/worktree.ts`'s `createTaskWorktree`) — every re-attempt in a lineage reuses the exact same worktree/branch, so a fix lands on top of the previous attempt's own (possibly uncommitted) edits | `pipeline-runner.ts`'s `runStepAndSuccessors` never sets `reviewLineageId` on a step's `TaskCard` — each `impl-N` step gets its own fresh worktree keyed by its own task id, cloned off whatever commit `impl-(N-1)`'s worktree was at (its own edits, if uncommitted, are simply not there) | **No** — confirmed by tracing `createTaskWorktree`/`WriteExecutor.run`, not assumed: an uncommitted implementer edit from attempt N is invisible to attempt N+1, unlike the legacy loop where it's still sitting in the working tree waiting to be revised |
+| Auto-merge on approval | `resumeAfterApproval` calls `tryAutoMerge` for an `autoMerge: true` + `trustLevel: "high"` agent — a real `git merge --no-ff` lands the diff | `finishResult`'s pipeline branch (`task.pipelineId !== undefined`) returns before ever reaching the `autoMerge`/`handoffs` code — no merge is ever attempted for a pipeline step, approved or not | **No** — an approved pipeline run leaves its final diff sitting uncommitted in its own worktree; landing it is a manual step outside this pipeline in Phase 1 |
+| Feedback carried to the next attempt | `spawnPushbackImplementer` appends **every** prior round's feedback, cumulatively, to the next attempt's body | `handlePipelineStepResult`'s `buildNextStepBody` composes the next step's body from `root.body` plus only the **immediately preceding** step's own `note` — this is `pipeline-runner.ts`'s own existing (already-shipped, subtask 3) behavior, not something this subtask changed | **No** — a pre-existing engine limitation, not introduced here: multi-round review history isn't threaded forward the way the legacy loop's body-accumulation does |
+| Escalation's final state | `board.escalate(id, escalationContext)` — a dedicated `"escalated"` `TaskCard.status`, with `escalationContext` set | The `escalated` terminal step's own `TaskCard` (and the root) land on the engine's ordinary `"done"` — there's no bespoke terminal status for the generic engine to move a run to | **No** — functionally similar (a human still finds a clearly-labelled card to act on) but not the same status value; a human/tool that filters on `status === "escalated"` specifically won't find a pipeline run's escalation this way |
+| Untrusted prior-step text reaching the next prompt | `spawnPushbackImplementer` embeds the reviewer's raw `reviewFeedback` unsanitized — the real, named gap in §3.5 | `buildNextStepBody` nonce-fences the reviewer's `note` before it reaches the next implementer's prompt, exactly per §3.5 | **Better, not just matching** — this is the one place the recreation improves on the legacy loop's own real, still-open gap |
+| Reviewer sees the right diff | `spawnReviewerTask` sets the reviewer's `repo` to `result.worktree?.path ?? implementerTask.repo` | `handlePipelineStepResult` sets `repoForNext` the same way, off `result.worktree?.path ?? task.repo` | **Yes** |
+
+**Worth reconsidering in §3, now that this is built:**
+
+- **§3.3's framing ("proves it by defining the review-handoff pattern as
+  a real pipeline template") needs a caveat.** This subtask proves the
+  engine can reproduce the loop's *routing shape* — the attempt cap, the
+  choose/retry/escalate branching, the escalate-only-at-the-cap trigger —
+  convincingly. It does **not** yet prove behavioral equivalence on the
+  four items marked "No" above. Anyone reading §3.3 as "the engine is a
+  drop-in replacement, Phase 2 is just flipping a switch" would be wrong;
+  Phase 2 needs to actually decide what to do about worktree continuity,
+  auto-merge, and cumulative feedback before it can retire the hardcoded
+  path without a real regression.
+- **A bounded retry loop only works unrolled, and that doesn't scale to a
+  runtime-decided bound.** `startPipelineRun`'s entry-step rule (a step
+  with zero incoming edges) means a literal cycle has no entry point at
+  all and fails immediately — see this doc's own Subtask 5 test coverage.
+  A fixed cap of 5 unrolls fine; a cap that needs to change per-run (not
+  just per-graph-edit) has no expression in this engine today. If bounded
+  retry loops turn out to be a common pipeline pattern, the engine may
+  need a first-class "loop with a counter" primitive rather than making
+  every author hand-unroll their own cap.
+- **Moving the retry-vs-escalate decision from code into the reviewing
+  agent's own prompt-reading is a real trust shift**, worth a deliberate
+  callout, not a side effect users discover by reading this doc closely.
+  The legacy loop can never escalate one round early or retry one round
+  late; the recreated pipeline can, if the model misreads its own step's
+  title. The gate test suite proves the *fail-closed* behavior when this
+  happens (an invalid `next` fails the run rather than guessing), but
+  "the run fails" is a worse outcome than "the loop makes the right call
+  because code enforces it," which is what the legacy loop guarantees
+  today.
+- **Worktree-reuse-via-lineage and auto-merge are real, missing pieces of
+  parity**, not stylistic differences — a future Phase 2 that just
+  "routes implementer through the pipeline engine instead" without first
+  adding some equivalent of `reviewLineageId`-keyed worktree reuse and an
+  auto-merge hook would silently make every real pushback round redo work
+  from scratch instead of revising it, and leave every approved diff
+  sitting unmerged. Both are pipeline-runner.ts/finishResult concerns,
+  deliberately untouched by this subtask (see the card's own hard
+  constraint) — flagged here for whoever picks up Phase 2.

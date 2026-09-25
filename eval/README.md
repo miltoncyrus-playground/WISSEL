@@ -9,6 +9,7 @@ wall-clock time. Run explicitly before ship, and nightly.
 | `eval/readonly.eval.ts` | `bun run eval:readonly` | ReadOnlyExecutor's plan-mode enforcement actually holds against a subprocess that tries to write. |
 | `eval/implementer-reviewer.eval.ts` | `bun run eval:implementer-reviewer` | The automatic implementer→reviewer loop (`src/core/orchestrator.ts`'s `finishResult`/`handleReviewVerdict`) converges correctly against a *real* reviewer, not a scripted one. |
 | `eval/planner-subtask-plan.eval.ts` | `bun run eval:planner-subtask-plan` | The real planner agent reliably produces a well-formed ```subtask-plan``` block against a vague card, and `finishResult`'s `spawnSubtasksFromPlan` turns it into real child cards with correct `dependsOn` chaining. |
+| `eval/pipeline-review-handoff.eval.ts` | `bun run eval:pipeline-review-handoff` | The review-handoff loop recreated as a real `PipelineDef` (`src/core/review-handoff-pipeline.ts`) actually converges through `startPipelineRun` end to end against real `implementer`/`pipeline-reviewer` agents — see docs/SDD-pipelines.md §6 Subtask 5. |
 
 ## implementer-reviewer eval
 
@@ -130,3 +131,62 @@ this feature exists to guarantee, never loosened to make the eval green.
 Same pattern as `eval:implementer-reviewer` above — add a nightly cron
 line and a required CI step for `bun run eval:planner-subtask-plan`,
 same `timeout 1800`, same real-authenticated-`claude` requirement.
+
+## pipeline-review-handoff eval
+
+`test/review-handoff-pipeline.test.ts` (gate lane) already proves the
+recreated `PipelineDef`'s *shape* is correct — the right number of
+implementer/reviewer step pairs, the escalate-only-on-the-6th-rejection
+cap, fail-closed on an unresolvable `next` — against a scripted
+claude/Anthropic stand-in. What that can't prove is whether the real
+`implementer` and `pipeline-reviewer` agents (`agents/manifest.yaml`)
+actually converge through `startPipelineRun` end to end: does the
+reviewer reliably emit a well-formed `\`\`\`pipeline-handoff` block, does
+it correctly read its own step's title to know whether "retry" or
+"escalate" is the right choice on the final attempt, and does the whole
+graph reach the same terminal outcome the legacy hardcoded loop would for
+equivalent input. Two fixtures, reused from `eval:implementer-reviewer`'s
+own roster so the two systems are compared against literally the same
+inputs:
+
+- **trivial-sum** (fixable) — expected to reach `done` via the
+  "approved" terminal step after exactly 1 implementer attempt.
+- **contradictory-parity** (unfixable) — expected to reach `done` via the
+  "escalated" terminal step after exactly `REVIEW_HANDOFF_PUSHBACK_LIMIT + 1`
+  (6) implementer attempts, the same cap `handleReviewVerdict` enforces
+  in the legacy loop.
+
+### Pass bar
+
+Both fixtures must land on `done`, each via its own expected terminal
+step (`approved`/`escalated`) with the exact expected implementer-attempt
+count. Either fixture landing on `failed` instead — a violated
+pipeline-handoff contract, an unresolvable `next`, a missing agent — is a
+real finding about the recreated pipeline, not something to paper over by
+loosening the bar.
+
+### Status — not yet empirically run
+
+Same situation as `eval:implementer-reviewer` when it was first written
+(see that eval's own "Status" note above): this script was written
+without subprocess-spawn access in this session (the implementer task
+that produced it was scoped to file reads/writes and `bun test`/`bun run
+typecheck` only — real `claude`/git-worktree calls require approval this
+session's sandbox doesn't grant), so **it has not yet actually been run
+against real `claude` calls**. The graph and fixtures were traced by hand
+against `pipeline-runner.ts`'s real code (see docs/SDD-pipelines.md §6
+Subtask 5's comparison section for the full trace), and the gate test
+(`test/review-handoff-pipeline.test.ts`) proves the shape end to end with
+a scripted stand-in — but the first real run of this eval is also the
+first empirical check that `pipeline-reviewer` reliably produces a
+well-formed `\`\`\`pipeline-handoff` block against real model output, and
+correctly reads its own step's title to choose "retry" vs "escalate" on
+the final attempt. Run it (`bun run eval:pipeline-review-handoff`) before
+relying on this pipeline for anything real, and update this note with the
+actual result once it's been observed.
+
+### Scheduling
+
+Same pattern as the other evals above — add a nightly cron line and a
+required CI step for `bun run eval:pipeline-review-handoff`, same
+`timeout 1800`, same real-authenticated-`claude` requirement.
