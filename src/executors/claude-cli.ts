@@ -112,7 +112,8 @@ export interface RunClaudeOptions {
 export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath } = opts;
   const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
-  const cmd = ["claude", "-p", buildAgentPrompt(task, agent, memory), "--output-format", "json", "--permission-mode", permissionMode];
+  const prompt = buildAgentPrompt(task, agent, memory, { planMode: permissionMode === "plan" });
+  const cmd = ["claude", "-p", prompt, "--output-format", "json", "--permission-mode", permissionMode];
   if (model) cmd.push("--model", model);
   if (allowedTools && allowedTools.length > 0) cmd.push("--allowedTools", ...allowedTools);
 
