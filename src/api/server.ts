@@ -3,11 +3,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Board, BoardEvent } from "../services/board.ts";
 import { SqliteBoard } from "../services/board.ts";
+import type { PipelineStore } from "../services/pipelines.ts";
+import { SqlitePipelineStore } from "../services/pipelines.ts";
 import { TelemetryLog } from "../services/telemetry.ts";
 import { HarnessPool } from "../core/harness-pool.ts";
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
+import { startPipelineRun } from "../core/pipeline-runner.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
 import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH } from "../core/model-refresh-scheduler.ts";
@@ -23,7 +26,7 @@ import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
 import { checkHarnessAuth } from "../core/harness-discovery.ts";
 import { setHarnessEnabled, setHarnessModel } from "../core/harness-manifest.ts";
 import { getVersionInfo } from "../core/version.ts";
-import type { Executor, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
+import type { Executor, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
 
@@ -101,6 +104,12 @@ export interface CreateAppOptions {
    *  option — see its own doc comment. Defaults to
    *  `DEFAULT_MODELS_CACHE_PATH` (`~/.wissel/models-cache.json`) there. */
   modelsCachePath?: string;
+  /** Storage for pipeline definitions (see docs/SDD-pipelines.md §3.7) —
+   *  injectable so tests never share a real on-disk pipelines table.
+   *  Defaults to a SqlitePipelineStore sharing `board`'s own connection
+   *  (see SqliteBoard.db's doc comment for why it has to be the *same*
+   *  connection, not a second one opened against the same path). */
+  pipelines?: PipelineStore;
 }
 
 /**
@@ -149,6 +158,13 @@ export function createApp(
     new WriteExecutor({ memoryPath: opts.memoryPath }),
     new CodexWriteExecutor({ memoryPath: opts.memoryPath }),
   ];
+
+  // A pipeline run always executes every step in-process, the same way
+  // a human's manual "Run" click does — a pipeline never hands a step
+  // off to agetor in this phase (see docs/SDD-pipelines.md §3.3), so it
+  // reuses this exact pool rather than the automatic loop's
+  // executeWriteTier-gated one.
+  const pipelines: PipelineStore = opts.pipelines ?? new SqlitePipelineStore((board as SqliteBoard).db);
 
   // One Orchestrator instance regardless of whether the automatic loop is
   // started, so its `inFlight` guard covers both paths — a human clicking
@@ -328,6 +344,73 @@ export function createApp(
         const allowIds = await resolveHandoffAllowlist(board as Board, registry, body.parentTaskId);
         const decision = await router.route({ id: "preview", title: "", body: "", labels, repo: "", status: "inbox" }, allowIds);
         return json(decision);
+      }
+
+      if (parts[0] === "pipelines") {
+        if (parts.length === 1 && req.method === "GET") {
+          return json(await pipelines.list());
+        }
+
+        if (parts.length === 1 && req.method === "POST") {
+          const body = (await req.json()) as { name?: string; description?: string; graph?: PipelineGraph };
+          if (!body.name || !body.graph) return json({ error: "name and graph are required" }, 400);
+          const created = await pipelines.create({ name: body.name, description: body.description ?? "", graph: body.graph });
+          return json(created, 201);
+        }
+
+        if (parts.length === 2 && req.method === "GET") {
+          const pipeline = await pipelines.get(parts[1]!);
+          return pipeline ? json(pipeline) : notFound();
+        }
+
+        if (parts.length === 2 && req.method === "PUT") {
+          const existing = await pipelines.get(parts[1]!);
+          if (!existing) return notFound();
+          const body = (await req.json()) as { name?: string; description?: string; graph?: PipelineGraph };
+          if (!body.name || !body.graph) return json({ error: "name and graph are required" }, 400);
+          const updated = await pipelines.update(parts[1]!, { name: body.name, description: body.description ?? "", graph: body.graph });
+          return json(updated);
+        }
+
+        if (parts.length === 2 && req.method === "DELETE") {
+          const existing = await pipelines.get(parts[1]!);
+          if (!existing) return notFound();
+          await pipelines.delete(parts[1]!);
+          return new Response(null, { status: 204 });
+        }
+
+        // Runs a pipeline right now — creates the root task and drives
+        // every step (recursively, via pipeline-runner.ts) to
+        // settlement before responding, unlike POST /tasks/:id/run
+        // (which returns immediately and lets the caller watch SSE
+        // events). A pipeline run in this phase has no "dispatched,
+        // check back later" state — see docs/SDD-pipelines.md §5.
+        if (parts.length === 3 && parts[2] === "run" && req.method === "POST") {
+          const pipeline = await pipelines.get(parts[1]!);
+          if (!pipeline) return notFound();
+          const body = (await req.json()) as { repo?: string; input?: string };
+          if (!body.repo || !body.input) return json({ error: "repo and input are required" }, 400);
+          const root = await startPipelineRun(board as Board, registry, pipeline, body.repo, body.input, {
+            executors: manualExecutors,
+            pipelines,
+            harnesses,
+            telemetry,
+            memoryPath: opts.memoryPath,
+          });
+          return json(root, 201);
+        }
+
+        // Every root task with this pipelineId, most recent first —
+        // mirrors GET /memory/history's own shape. Filters to root tasks
+        // specifically (no parentTaskId) so a run's own step cards don't
+        // show up as if each were a separate run.
+        if (parts.length === 3 && parts[2] === "runs" && req.method === "GET") {
+          const pipeline = await pipelines.get(parts[1]!);
+          if (!pipeline) return notFound();
+          const tasks = await board.list();
+          const runs = tasks.filter((t) => t.pipelineId === parts[1] && t.parentTaskId === undefined).reverse();
+          return json(runs);
+        }
       }
 
       if (parts[0] === "tasks") {

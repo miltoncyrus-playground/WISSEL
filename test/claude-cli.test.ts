@@ -35,6 +35,14 @@ const plannerAgent: AgentDef = {
   outputContractFormat: "subtask-plan",
 };
 
+const pipelineStepAgent: AgentDef = {
+  ...reviewerAgent,
+  id: "implementer",
+  name: "Implementer",
+  outputContract: "Your final message must end with a ```pipeline-handoff``` block.",
+  outputContractFormat: "pipeline-handoff",
+};
+
 const task: TaskCard = {
   id: "t1",
   title: "Review this diff",
@@ -282,4 +290,66 @@ test("a planner run with a malformed subtask-plan block becomes ok: false, never
   expect(result.ok).toBe(false);
   expect(result.summary).toContain("violated its output contract");
   expect(result.subtaskPlan).toBeUndefined();
+});
+
+test("a pipeline step run with a valid choose-shaped pipeline-handoff block stays ok: true and carries pipelineHandoff", async () => {
+  const raw = ["Implemented the change.", "", "```pipeline-handoff", '{"next": "reviewer", "data": {"files": ["a.ts"]}, "note": "done"}', "```"].join("\n");
+  const result = await runClaude({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: raw }), stderr: "", exitCode: 0 }),
+    task,
+    agent: pipelineStepAgent,
+    permissionMode: "acceptEdits",
+  });
+  expect(result.ok).toBe(true);
+  expect(result.pipelineHandoff).toEqual({ next: "reviewer", data: { files: ["a.ts"] }, note: "done" });
+});
+
+test("a pipeline step run with a valid all/fan-out-shaped pipeline-handoff block (no next) stays ok: true", async () => {
+  const raw = ["```pipeline-handoff", '{"note": "fanning out"}', "```"].join("\n");
+  const result = await runClaude({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: raw }), stderr: "", exitCode: 0 }),
+    task,
+    agent: pipelineStepAgent,
+    permissionMode: "acceptEdits",
+  });
+  expect(result.ok).toBe(true);
+  expect(result.pipelineHandoff).toEqual({ note: "fanning out" });
+});
+
+test("a pipeline step run missing the pipeline-handoff block becomes ok: false with a contract-violation summary", async () => {
+  const result = await runClaude({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Just did the work, no block." }), stderr: "", exitCode: 0 }),
+    task,
+    agent: pipelineStepAgent,
+    permissionMode: "acceptEdits",
+  });
+  expect(result.ok).toBe(false);
+  expect(result.summary).toContain("violated its output contract");
+  expect(result.pipelineHandoff).toBeUndefined();
+});
+
+test("a pipeline step run with a malformed pipeline-handoff block becomes ok: false, never a guessed handoff", async () => {
+  const raw = ["```pipeline-handoff", '{"next": "reviewer"', "```"].join("\n");
+  const result = await runClaude({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: raw }), stderr: "", exitCode: 0 }),
+    task,
+    agent: pipelineStepAgent,
+    permissionMode: "acceptEdits",
+  });
+  expect(result.ok).toBe(false);
+  expect(result.summary).toContain("violated its output contract");
+  expect(result.pipelineHandoff).toBeUndefined();
+});
+
+test("an agent with outputContractFormat: review-verdict is completely unaffected by the pipeline-handoff addition", async () => {
+  const raw = ['```review-verdict', '{"verdict": "approve", "feedback": "fine"}', '```'].join("\n");
+  const result = await runClaude({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: raw }), stderr: "", exitCode: 0 }),
+    task,
+    agent: reviewerAgent,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(true);
+  expect(result.verdict).toBe("approve");
+  expect(result.pipelineHandoff).toBeUndefined();
 });

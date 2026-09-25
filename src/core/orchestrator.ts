@@ -1,5 +1,6 @@
 import type { EventEmitter } from "node:events";
 import type { Board, BoardEvent } from "../services/board.ts";
+import type { PipelineStore } from "../services/pipelines.ts";
 import type { TelemetryLog } from "../services/telemetry.ts";
 import { HarnessOverrideError, type HarnessPool } from "./harness-pool.ts";
 import type { Registry } from "./registry.ts";
@@ -8,7 +9,26 @@ import type { CommandRunner } from "../executors/claude-cli.ts";
 import { runViaBun } from "../executors/claude-cli.ts";
 import { mergeTaskWorktree } from "../services/worktree.ts";
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
+import { handlePipelineStepResult } from "./pipeline-runner.ts";
 import type { Executor, Harness, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
+
+/** What finishResult needs to drive a pipeline step's own follow-up work
+ *  (see the `task.pipelineId !== undefined` branch below) — passed
+ *  through as the last, optional argument by the only caller that ever
+ *  produces a pipeline-step TaskResult (pipeline-runner.ts itself; see
+ *  its own PipelineRunnerContext, which this is a subset of). Every
+ *  other caller of finishResult (Orchestrator.process(), the
+ *  POST /tasks/:id/result endpoint) never dispatches a pipeline step in
+ *  this phase, so they never need to pass this — see
+ *  docs/SDD-pipelines.md §3.3. `harnesses` is threaded through so the
+ *  *next* step a pipeline run activates (via handlePipelineStepResult ->
+ *  runStepAndSuccessors) still acquires/releases a real Harness, the
+ *  same as the entry step(s) startPipelineRun kicked off directly. */
+export interface PipelineFinishContext {
+  executors: Executor[];
+  pipelines: PipelineStore;
+  harnesses?: HarnessPool;
+}
 
 /**
  * Follows a chain of `TaskCard.supersededBy` pointers forward from `task`
@@ -72,7 +92,12 @@ export function resolveLiveTip(task: TaskCard | undefined, byId: Map<string, Tas
  * handleReviewVerdict for the same reason — injectable so tests never
  * spawn a real git process; defaults to the real one. `memoryPath` is
  * the same kind of injection point for the memory-persistence hook
- * below — defaults to the real repo-root memory/lessons.md.
+ * below — defaults to the real repo-root memory/lessons.md. `pipelineCtx`
+ * is only ever passed by pipeline-runner.ts's own recursive calls (see
+ * PipelineFinishContext above) — every other caller leaves it undefined,
+ * which is correct as long as they never hand this a result for a task
+ * with `pipelineId` set (see the branch below, which throws rather than
+ * silently stranding such a task if that invariant is ever violated).
  */
 export async function finishResult(
   board: Board,
@@ -81,6 +106,7 @@ export async function finishResult(
   telemetry?: TelemetryLog,
   runner: CommandRunner = runViaBun,
   memoryPath: string = DEFAULT_MEMORY_PATH,
+  pipelineCtx?: PipelineFinishContext,
 ): Promise<void> {
   await board.recordResult(result);
   await telemetry?.record({ type: "result", taskId: result.taskId, agentId: result.agentId, actualCost: result.actualCost, harnessId: result.harnessId });
@@ -92,9 +118,30 @@ export async function finishResult(
   // result also carries `ok: false`) so it reschedules instead of
   // stranding the task on `failed` for a human to notice and manually
   // re-run — see runClaude/parseSessionLimitReset and
-  // docs/SDD-pipeline-automation.md §3.2.
+  // docs/SDD-pipeline-automation.md §3.2. Known, named gap: a pipeline
+  // step that hits this never gets picked up again automatically in
+  // this phase (see docs/SDD-pipelines.md's own retry-scope note) —
+  // sweep() never touches a pipeline step task (see
+  // pipeline-runner.ts's own doc comments on why), so nothing revisits
+  // it once rescheduled.
   if (result.retryAfter) {
     await board.scheduleRetry(result.taskId, result.retryAfter);
+    return;
+  }
+
+  // A pipeline step's own done-vs-review decision — and, on failure,
+  // whether the run it belongs to has now settled — is owned by the
+  // pipeline definition, not this function's default tier-based policy
+  // below. Detected off the *task*, not the result shape, so both a
+  // clean pipeline-handoff success and a plain failure (no handoff
+  // parsed at all) are caught here — see docs/SDD-pipelines.md §3.3/§4.
+  const task = await board.get(result.taskId);
+  if (task?.pipelineId !== undefined) {
+    if (!pipelineCtx) {
+      throw new Error(`finishResult: task ${task.id} is a pipeline step but no pipelineCtx was provided — only pipeline-runner.ts should ever produce a result for one`);
+    }
+    await board.move(task.id, result.ok ? "done" : "failed");
+    await handlePipelineStepResult(board, registry, task, result, { ...pipelineCtx, telemetry, memoryPath });
     return;
   }
 
@@ -119,7 +166,6 @@ export async function finishResult(
   // as any other read-only success, silently dropping the decomposition
   // on the floor instead of turning it into real cards.
   if (result.subtaskPlan !== undefined) {
-    const task = await board.get(result.taskId);
     // A vanished task (deleted mid-run) has nothing left to spawn
     // subtasks under — recordResult above already captured the plan for
     // history; there's no card left to move or attach children to.
@@ -145,7 +191,6 @@ export async function finishResult(
   }
 
   if (agent.handoffs?.includes("reviewer")) {
-    const task = await board.get(result.taskId);
     // A vanished task (deleted mid-run) has nothing left to queue a
     // review for — recordResult above already captured the result for
     // history; there's no card left to move or spawn a follow-up from.

@@ -114,7 +114,7 @@ is a free-form object the next step's prompt is built from. A step
 declaring `transitions: "all"` (fan-out) doesn't need `next` at all — the
 engine activates every outgoing edge regardless of what the block says;
 `next` only matters for a `"choose"` step (agetor's term, kept as-is).
-Recreating `review-verdict` behavior inside this system (§3's Subtask 7)
+Recreating `review-verdict` behavior inside this system (§6's Subtask 5)
 means the reviewer step's own prompt instructs it to emit `next: "retry"`
 or `next: "escalate"` or `next: "approve"` — `review-verdict`'s
 `{verdict, feedback}` shape isn't reused or extended; it's superseded by
