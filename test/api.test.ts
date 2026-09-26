@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { createApp, type CreateAppOptions } from "../src/api/server.ts";
+import { createApp, servePipelineEditorAsset, type CreateAppOptions } from "../src/api/server.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
@@ -1146,4 +1146,99 @@ test("POST /pipelines/:id/run drives the run end-to-end and emits real BoardEven
   // id 404s, it doesn't silently report "no runs" (which would be
   // indistinguishable from a real pipeline with zero runs yet).
   expect((await app(req("/pipelines/nope/runs"))).status).toBe(404);
+});
+
+test("GET /pipelines/edit serves the pipeline-editor SPA's index.html, not the /pipelines/:id 404 path", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-pipeline-editor-test-"));
+  try {
+    await writeFile(join(dir, "index.html"), "<html>pipeline editor</html>");
+    const app = await makeApp(new SqliteBoard(), { pipelineEditorDist: new URL(`file://${dir}/`) });
+
+    const bare = await app(req("/pipelines/edit"));
+    expect(bare.status).toBe(200);
+    expect(await bare.text()).toBe("<html>pipeline editor</html>");
+
+    // A client-side "edit an existing pipeline" route, e.g.
+    // /pipelines/edit/<pipeline-id> — no matching file on disk, so it
+    // falls back to the same SPA entry point rather than 404ing or
+    // being swallowed by GET /pipelines/:id (which would otherwise
+    // treat "edit" as a pipeline id).
+    const withId = await app(req("/pipelines/edit/some-pipeline-id"));
+    expect(withId.status).toBe(200);
+    expect(await withId.text()).toBe("<html>pipeline editor</html>");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /pipelines/edit serves a real on-disk asset file as-is, by content", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-pipeline-editor-asset-test-"));
+  try {
+    await writeFile(join(dir, "index.html"), "<html>entry</html>");
+    await mkdir(join(dir, "assets"), { recursive: true });
+    await writeFile(join(dir, "assets", "index-abc123.js"), "console.log('hi');");
+    const app = await makeApp(new SqliteBoard(), { pipelineEditorDist: new URL(`file://${dir}/`) });
+
+    const asset = await app(req("/pipelines/edit/assets/index-abc123.js"));
+    expect(asset.status).toBe(200);
+    expect(await asset.text()).toBe("console.log('hi');");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /pipelines/edit never resolves a traversal path through the real HTTP entry point (WHATWG URL normalizes it away first)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-pipeline-editor-traversal-test-"));
+  try {
+    await writeFile(join(dir, "index.html"), "<html>entry</html>");
+    const app = await makeApp(new SqliteBoard(), { pipelineEditorDist: new URL(`file://${dir}/`) });
+
+    // Neither a literal ".." nor a percent-encoded "%2e%2e" segment ever
+    // reaches servePipelineEditorAsset itself: standard URL path
+    // normalization (WHATWG URL — applied when `new URL(req.url)`
+    // builds `url.pathname` in the fetch handler, and the spec treats
+    // "..", "%2e.", ".%2e", and "%2e%2e" as equivalent "double-dot path
+    // segments") already collapses both down to "/etc/passwd" before
+    // any route matching happens, so both 404 as an unmatched route —
+    // not via this function's own guard. See the direct unit test below
+    // for what actually exercises that guard.
+    expect((await app(req("/pipelines/edit/../../../../etc/passwd"))).status).toBe(404);
+    expect((await app(req("/pipelines/edit/%2e%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd"))).status).toBe(404);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("servePipelineEditorAsset's own distDir guard refuses a path that resolves outside distDir", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-pipeline-editor-guard-test-"));
+  try {
+    await writeFile(join(dir, "index.html"), "<html>entry</html>");
+    // Bypasses the HTTP layer's own URL normalization entirely, calling
+    // the function directly with a literal ".." pathname the same way a
+    // caller that skipped `new URL(req.url)` normalization could —
+    // proves the function's own guard is real, not just redundant with
+    // the normalization every real request already gets for free.
+    const res = await servePipelineEditorAsset("/pipelines/edit/../../../../../../../../../../../../etc/passwd", new URL(`file://${dir}/`));
+    expect(res.status).toBe(404);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /pipelines/edit 503s with a helpful message when pipeline-editor hasn't been built", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-pipeline-editor-unbuilt-test-"));
+  try {
+    const app = await makeApp(new SqliteBoard(), { pipelineEditorDist: new URL(`file://${dir}/`) });
+    const res = await app(req("/pipelines/edit"));
+    expect(res.status).toBe(503);
+    expect(await res.text()).toContain("pipeline-editor not built");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /pipelines/edit is not found (the SPA route only serves GET)", async () => {
+  const app = await makeApp();
+  const res = await app(req("/pipelines/edit", { method: "POST" }));
+  expect(res.status).toBe(404);
 });

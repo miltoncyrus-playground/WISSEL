@@ -118,3 +118,32 @@ Known gaps:
 Design decisions and build order: `docs/HANDOVER.md` — but read
 `docs/HANDOVER-2026-09-17.md` first, it's the current spec and supersedes
 the older doc on the router/execution boundary.
+
+## Pipelines
+
+A **Pipeline** is a stored, reusable step graph — author it once on the
+canvas, run it as many times as wanted (`POST /pipelines/:id/run`, or the
+board's own hardcoded implementer→reviewer loop reproduced as a real
+pipeline definition). CRUD lives at `/pipelines`; see
+`docs/SDD-pipelines.md` for the full design.
+
+The canvas editor (`pipeline-editor/`) is wissel's first frontend
+framework/build step — a separate React + `@xyflow/react` + Vite app,
+deliberately isolated from `board.html`'s zero-build-tooling convention
+(see the SDD's §3.2). Build it once, then the running server picks up
+its static output automatically:
+
+```bash
+cd pipeline-editor
+bun install
+bun run build      # writes pipeline-editor/dist/
+cd ..
+bun run dev         # or serve — now serving /pipelines/edit too
+```
+
+`bun run dev` inside `pipeline-editor/` also works standalone for local
+iteration (hot reload, proxies `/agents`/`/pipelines`/`/board` to the
+real wissel server at `:8787` — see `pipeline-editor/vite.config.ts`).
+Until `pipeline-editor/dist/` exists, `GET /pipelines/edit` responds
+`503` with a message telling you to build it — never a silent blank
+page.

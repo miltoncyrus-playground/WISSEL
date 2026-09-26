@@ -83,6 +83,22 @@ existing tab (Board/Swimlanes/New task/Memory/Archive) completely
 untouched; the new build tooling is isolated to exactly the one place
 that needs it.
 
+**Revision (post-Subtask 6 review) — `pipeline-editor/src/types.ts`
+hand-duplicates `PipelineStepDef`/`PipelineEdgeDef`/`PipelineGraph`/
+`PipelineDef` from `src/core/types.ts` field-for-field, rather than
+importing a shared contract.** This SDD's own "contracts at the
+boundary" framing (and CLAUDE.md's general rule of the same name) would
+suggest a shared `contracts/`-style type package instead. In practice
+the isolation is deliberate and matches §3.2's own reasoning: keeping
+`pipeline-editor/`'s `package.json`/build graph fully independent of the
+root Bun/TS project (no cross-package `tsconfig` path mapping, no risk
+of the editor's Vite build accidentally pulling in server-only code)
+was judged worth more than de-duplicating four small interfaces. The
+trade-off is accepted, but there's no drift-prevention mechanism named
+yet — a future subtask should add one (e.g. a gate test that diffs the
+two type files' shapes, or a codegen step) rather than relying on
+manual vigilance to keep them in sync.
+
 **3.3 — New engine ships additively; migrating existing `handoffs:
 [reviewer]` agents onto it is a separate, later phase, not bundled here.**
 The current review-handoff loop is Wissel's most exercised, most
