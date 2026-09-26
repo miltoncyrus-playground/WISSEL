@@ -29,6 +29,8 @@ import { getVersionInfo } from "../core/version.ts";
 import type { Executor, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
+// src/api/server.ts -> ../../pipeline-editor/dist/ = <repo root>/pipeline-editor/dist/
+const DEFAULT_PIPELINE_EDITOR_DIST = new URL("../../pipeline-editor/dist/", import.meta.url);
 
 export interface CreateAppOptions {
   /** Starts the automatic sweep-on-every-event loop. Off by default —
@@ -110,6 +112,13 @@ export interface CreateAppOptions {
    *  (see SqliteBoard.db's doc comment for why it has to be the *same*
    *  connection, not a second one opened against the same path). */
   pipelines?: PipelineStore;
+  /** Directory pipeline-editor's built static output is served from at
+   *  `GET /pipelines/edit` — see docs/SDD-pipelines.md §3.2/§4. Defaults
+   *  to `pipeline-editor/dist/` at the repo root, resolved the same way
+   *  PUBLIC_DIR resolves board.html (relative to this file, not cwd).
+   *  Overridable so tests point it at a fixture directory instead of
+   *  requiring a real `vite build` to exist on disk. */
+  pipelineEditorDist?: URL;
 }
 
 /**
@@ -165,6 +174,7 @@ export function createApp(
   // reuses this exact pool rather than the automatic loop's
   // executeWriteTier-gated one.
   const pipelines: PipelineStore = opts.pipelines ?? new SqlitePipelineStore((board as SqliteBoard).db);
+  const pipelineEditorDist = opts.pipelineEditorDist ?? DEFAULT_PIPELINE_EDITOR_DIST;
 
   // One Orchestrator instance regardless of whether the automatic loop is
   // started, so its `inFlight` guard covers both paths — a human clicking
@@ -344,6 +354,17 @@ export function createApp(
         const allowIds = await resolveHandoffAllowlist(board as Board, registry, body.parentTaskId);
         const decision = await router.route({ id: "preview", title: "", body: "", labels, repo: "", status: "inbox" }, allowIds);
         return json(decision);
+      }
+
+      // The pipeline-editor SPA (pipeline-editor/, its own Vite build —
+      // see docs/SDD-pipelines.md §3.2) — checked before the `/pipelines`
+      // API block below so a request for `/pipelines/edit` (or
+      // `/pipelines/edit/<id>`, the editor's own client-side "edit an
+      // existing pipeline" route) is never mistaken for `GET
+      // /pipelines/:id` treating "edit" as a pipeline id.
+      if (url.pathname === "/pipelines/edit" || url.pathname.startsWith("/pipelines/edit/")) {
+        if (req.method !== "GET") return notFound();
+        return servePipelineEditorAsset(url.pathname, pipelineEditorDist);
       }
 
       if (parts[0] === "pipelines") {
@@ -661,6 +682,30 @@ function json(value: unknown, status = 200): Response {
 
 function notFound(): Response {
   return new Response("not found", { status: 404 });
+}
+
+/** Serves pipeline-editor's built SPA output for any `/pipelines/edit*`
+ *  request. A real on-disk file under `distDir` (a JS/CSS/asset chunk)
+ *  is served as-is; anything else — the bare `/pipelines/edit` entry
+ *  point, or a client-side route like `/pipelines/edit/<pipeline-id>`
+ *  that has no matching file on disk — falls back to `index.html`, the
+ *  standard single-entry-point SPA shape. Guards against a `..`-laden
+ *  path escaping `distDir` the same way any static file server has to. */
+export async function servePipelineEditorAsset(pathname: string, distDir: URL): Promise<Response> {
+  const sub = pathname.slice("/pipelines/edit".length).replace(/^\/+/, "");
+  const candidate = sub ? new URL(sub, distDir) : distDir;
+  if (!candidate.pathname.startsWith(distDir.pathname)) return notFound();
+
+  if (sub) {
+    const file = Bun.file(candidate);
+    if (await file.exists()) return new Response(file);
+  }
+
+  const index = Bun.file(new URL("index.html", distDir));
+  if (!(await index.exists())) {
+    return new Response("pipeline-editor not built — run `bun install && bun run build` inside pipeline-editor/", { status: 503 });
+  }
+  return new Response(index);
 }
 
 function sseStream(board: { events?: import("node:events").EventEmitter }): Response {
