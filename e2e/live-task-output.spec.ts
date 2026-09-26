@@ -12,11 +12,35 @@ import { test, expect } from "@playwright/test";
  * disclosed as not run by this session).
  */
 
+// The task drawer (board.html's openTaskDrawer) unconditionally fetches
+// /tasks/:id/decision and /tasks/:id/result on open, and both already
+// treat a 404 as a legitimate, expected "not recorded yet" state (see
+// loadDrawerDecision/loadDrawerResult's own `if (r.status === 404)`
+// handling) -- correct REST semantics for a task that hasn't been
+// routed or hasn't finished yet, which every test below deliberately
+// exercises. The browser still logs the network-level 404 to console
+// regardless of how gracefully the JS response handler deals with it
+// afterward. Chromium's own console message for this has no URL in its
+// text (confirmed live -- it's the generic "Failed to load resource:
+// the server responded with a status of 404" with nothing identifying
+// which request), so distinguishing "expected /decision or /result
+// 404" from "a genuinely new, unexpected 404" has to happen at the
+// network layer via page.on("response"), not by pattern-matching the
+// console text (which would just as easily hide a real regression).
 function collectPageErrors(page: import("@playwright/test").Page): string[] {
   const errors: string[] = [];
   page.on("pageerror", (err) => errors.push(String(err)));
   page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
+    // Real app-level console.error calls (not the browser's own generic
+    // resource-load notice) always have specific, identifiable text --
+    // exactly the kind of thing this assertion should still catch.
+    if (msg.type() === "error" && !/^Failed to load resource/.test(msg.text())) errors.push(msg.text());
+  });
+  page.on("response", (res) => {
+    if (res.ok()) return;
+    const url = res.url();
+    const isExpectedNotFound = res.status() === 404 && (url.endsWith("/decision") || url.endsWith("/result"));
+    if (!isExpectedNotFound) errors.push(`unexpected ${res.status()} response: ${url}`);
   });
   return errors;
 }
