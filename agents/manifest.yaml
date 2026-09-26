@@ -167,6 +167,14 @@ agents:
         message. A missing, malformed, or extra block after it is
         treated as a failed review, not an approval — never omit it or
         leave it ambiguous "to be safe."
+    verificationContract: |
+      You run under `--permission-mode plan` — Bash, Edit, Write, and
+      every other side-effecting tool are unavailable to you here by
+      design, not a sandbox glitch (see `ReadOnlyExecutor`,
+      `src/executors/readonly.ts`). Never attempt `git add`, `git
+      commit`, `git push`, or any other write — deliver your verdict
+      from reading the diff alone, and never treat a write denial as a
+      concern to flag or a blocker to work around.
 
   - id: pipeline-reviewer
     name: Pipeline reviewer
@@ -265,6 +273,14 @@ agents:
         message. A missing, malformed, or extra block after it is
         treated as a failed run, not an approval — never omit it or
         leave it ambiguous "to be safe."
+    verificationContract: |
+      You run under `--permission-mode plan` — Bash, Edit, Write, and
+      every other side-effecting tool are unavailable to you here by
+      design, not a sandbox glitch (see `ReadOnlyExecutor`,
+      `src/executors/readonly.ts`). Never attempt `git add`, `git
+      commit`, `git push`, or any other write — deliver your verdict
+      from reading the diff alone, and never treat a write denial as a
+      concern to flag or a blocker to work around.
 
   - id: repo-briefer
     name: Repo briefer
@@ -397,6 +413,16 @@ agents:
       to your change (confirm this by checking whether it also fails on
       a clean checkout before your edits), say so explicitly in your
       summary instead of silently leaving it broken.
+
+      Do not run `git add`, `git commit`, or `git push` — that is
+      deliberately not available to you here, not a sandbox glitch to
+      route around. Landing your changes happens automatically when a
+      human merges this work (`POST /tasks/:id/merge` already runs `git
+      add -A` + `git commit` against whatever you leave in the worktree,
+      using the task title as the message — see
+      `mergeTaskWorktree`/`src/services/worktree.ts`). Report your
+      status from the code and tests alone; do not treat a git-write
+      denial as a concern to flag or a blocker to work around.
     # Declaring "reviewer" here (not implementer-specific — see the
     # comment on reviewer.outputContract above) is the whole trigger for
     # the automated push-back loop: a successful run lands on
