@@ -395,6 +395,96 @@ test("GET /tasks/:id 404s for unknown id", async () => {
   expect(res.status).toBe(404);
 });
 
+test("GET /render-task-output.js serves the pure render function as a static script", async () => {
+  const app = await makeApp();
+  const res = await app(req("/render-task-output.js"));
+  expect(res.status).toBe(200);
+  const body = await res.text();
+  expect(body).toContain("function renderTaskOutputRows");
+});
+
+test("GET /tasks/:id/output 404s for an unknown task, and returns accumulated lines for a known one", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-task-output-api-test-"));
+  try {
+    const board = new SqliteBoard();
+    const app = await makeApp(board, { taskOutputDir: dir });
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+
+    const missing = await app(req("/tasks/nope/output"));
+    expect(missing.status).toBe(404);
+
+    const empty = await app(req(`/tasks/${task.id}/output`));
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ taskId: task.id, lines: [] });
+
+    const { appendTaskOutput } = await import("../src/services/task-output.ts");
+    await appendTaskOutput(task.id, { type: "system", subtype: "init" }, dir);
+    await appendTaskOutput(task.id, { type: "result", subtype: "success", is_error: false, result: "done" }, dir);
+
+    const populated = await app(req(`/tasks/${task.id}/output`));
+    expect(populated.status).toBe(200);
+    const body = (await populated.json()) as { taskId: string; lines: string[] };
+    expect(body.taskId).toBe(task.id);
+    expect(body.lines.map((l) => JSON.parse(l))).toEqual([
+      { type: "system", subtype: "init" },
+      { type: "result", subtype: "success", is_error: false, result: "done" },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /tasks/:id/output/stream 404s for an unknown task", async () => {
+  const app = await makeApp();
+  const res = await app(req("/tasks/nope/output/stream"));
+  expect(res.status).toBe(404);
+});
+
+test("GET /tasks/:id/output/stream delivers chunks live as they're appended, sends the ring-buffer backlog on connect, and ends with event: done when the task's TaskResult lands", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-task-output-api-test-"));
+  try {
+    const board = new SqliteBoard();
+    const app = await makeApp(board, { taskOutputDir: dir });
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+
+    const { appendTaskOutput } = await import("../src/services/task-output.ts");
+    // Written before the stream connects — must still arrive as backlog.
+    await appendTaskOutput(task.id, { type: "system", subtype: "init" }, dir);
+
+    const sse = await app(req(`/tasks/${task.id}/output/stream`));
+    expect(sse.status).toBe(200);
+    expect(sse.headers.get("content-type")).toContain("text/event-stream");
+    const reader = sse.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+
+    async function readUntil(marker: string): Promise<void> {
+      while (!buffered.includes(marker)) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`stream ended before seeing ${JSON.stringify(marker)}`);
+        buffered += decoder.decode(value);
+      }
+    }
+
+    await readUntil(JSON.stringify({ type: "system", subtype: "init" }));
+
+    // A chunk appended after the connection is already open must also
+    // arrive live, not just the pre-connect backlog.
+    await appendTaskOutput(task.id, { type: "stream_event", event: { type: "message_start" } }, dir);
+    await readUntil(JSON.stringify({ type: "stream_event", event: { type: "message_start" } }));
+
+    // The task's own result landing is the signal the stream is over —
+    // not any particular JSONL line's content.
+    await board.recordResult({ taskId: task.id, agentId: "implementer", ok: true, summary: "done" });
+    await readUntil("event: done");
+
+    const done = await reader.read();
+    expect(done.done).toBe(true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("POST /tasks/:id/move updates status, 404s on unknown id", async () => {
   const app = await makeApp();
   const create = await app(

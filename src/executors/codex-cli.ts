@@ -100,6 +100,15 @@ export interface RunCodexOptions {
   /** Path to the global memory/lessons.md file — see
    *  RunClaudeOptions.memoryPath's own doc comment, identical contract. */
   memoryPath?: string;
+  /** Fires once per parsed JSONL line, in order, as codex's stdout
+   *  streams in — see docs/SDD-live-task-output.md §3.1. Unlike
+   *  runClaude, no command-line flags change here: `codex exec --json`
+   *  already emits JSONL natively, so this is purely a read-strategy
+   *  change (incremental instead of buffered), not a format switch. The
+   *  final `TaskResult` this function returns is unaffected either way —
+   *  parseJsonl below still reads the full accumulated stdout, exactly
+   *  as before. */
+  onChunk?: (line: unknown) => void;
 }
 
 /**
@@ -113,7 +122,7 @@ export interface RunCodexOptions {
  * this parses.
  */
 export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
-  const { runner, task, agent, sandbox, model, env, memoryPath } = opts;
+  const { runner, task, agent, sandbox, model, env, memoryPath, onChunk } = opts;
   const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
   const cmd = ["codex", "exec", "--json", "-s", sandbox];
   if (model) cmd.push("-m", model);
@@ -121,7 +130,7 @@ export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
 
   let cmdResult: CommandResult;
   try {
-    cmdResult = await runner(cmd, { cwd: task.repo, env });
+    cmdResult = await runner(cmd, { cwd: task.repo, env, onChunk });
   } catch (e) {
     return fail(task, agent, `failed to spawn codex: ${(e as Error).message}`);
   }

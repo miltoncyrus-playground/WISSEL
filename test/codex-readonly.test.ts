@@ -57,6 +57,27 @@ test("runs codex with the read-only sandbox and parses a successful result", asy
   expect(result).toEqual({ taskId: "t1", agentId: "triager", ok: true, summary: "triaged" });
 });
 
+// docs/SDD-live-task-output.md §3.2/§4 — the executor closes over
+// task.id so runCodex's own onChunk (line-only) becomes the store's
+// (taskId, line) shape without the store needing to know about tasks.
+test("onChunk, when given, fires with (task.id, line) for every parsed JSONL line runCodex sees, in order", async () => {
+  const seen: Array<[string, unknown]> = [];
+  const chunks = [{ type: "item.completed", item: { id: "i", type: "agent_message", text: "triaged" } }, { type: "turn.completed" }];
+  const executor = new CodexReadOnlyExecutor({
+    runner: async (_cmd, opts) => {
+      for (const c of chunks) opts.onChunk?.(c);
+      return { stdout: chunks.map((c) => JSON.stringify(c)).join("\n"), stderr: "", exitCode: 0 };
+    },
+    onChunk: (taskId, line) => seen.push([taskId, line]),
+  });
+  const result = await executor.run(task, agent);
+  expect(seen).toEqual([
+    ["t1", chunks[0]],
+    ["t1", chunks[1]],
+  ]);
+  expect(result.ok).toBe(true);
+});
+
 test("reports harnessId on the result when a harness was picked", async () => {
   const executor = new CodexReadOnlyExecutor({
     runner: async () => ({

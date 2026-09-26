@@ -192,6 +192,37 @@
   }
   .slcard .card-action:hover { border-color: var(--accent); color: var(--accent); }
 
+  /* "Live output" card action — same pill shape as .card-action, but
+     usable inside .kcard's own .ka meta row too, not just .slcard.
+     See docs/SDD-live-task-output.md §3.6. */
+  .live-output-btn {
+    appearance: none; border: 1px solid var(--border); background: var(--page); color: var(--ink-2); font: inherit;
+    font-size: 9.5px; font-weight: 600; cursor: pointer; padding: 2px 7px; border-radius: 999px; flex: none;
+  }
+  .live-output-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .kcard .ka .live-output-btn { margin-left: 4px; }
+  .slcard .live-output-btn { margin-top: 6px; }
+
+  /* ---- Live output panel — reuses the task drawer's own overlay/
+     slide-in mechanism and CSS verbatim, same second-instance pattern
+     harnessPanel already uses. ---- */
+  .lo-rows {
+    display: flex; flex-direction: column; gap: 3px; font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11.5px; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+    max-height: calc(100vh - 120px); overflow-y: auto; padding-right: 2px;
+  }
+  .lo-row { padding: 2px 0; border-bottom: 1px dashed var(--line); }
+  .lo-row:last-child { border-bottom: none; }
+  .lo-row.lo-thinking { color: var(--ink-muted); font-style: italic; }
+  .lo-row.lo-text { color: var(--ink-1); }
+  .lo-row.lo-tool-use { color: var(--accent); }
+  .lo-row.lo-tool-result { color: var(--ink-2); }
+  .lo-row.lo-tool-result.lo-fail { color: var(--critical); }
+  .lo-row.lo-result { color: var(--ink-1); font-weight: 700; margin-top: 4px; }
+  .lo-row.lo-result.lo-fail { color: var(--critical); }
+  .lo-row.lo-raw { color: var(--ink-muted); }
+  .lo-empty { color: var(--ink-muted); font-size: 12.5px; padding: 8px 0; }
+
   /* "Actively working" glyph — a pulsing green dot, reused identically
      on a running task's box and on a fleet row currently doing work, so
      the one signal reads the same everywhere it appears. */
@@ -647,6 +678,18 @@
   </div>
 </aside>
 
+<div class="drawer-overlay" id="loOverlay" hidden></div>
+<aside class="drawer" id="liveOutputPanel" role="dialog" aria-modal="true" aria-labelledby="loTitle" hidden>
+  <div class="drawer-head">
+    <h2 id="loTitle">Live output</h2>
+    <button type="button" class="drawer-close" id="loClose" aria-label="Close">×</button>
+  </div>
+  <div class="drawer-body">
+    <div id="loRows" class="lo-rows"></div>
+  </div>
+</aside>
+
+<script src="/render-task-output.js"></script>
 <script>
 (function () {
   "use strict";
@@ -1004,6 +1047,14 @@
       }));
     }
 
+    // Reachable from any task's drawer regardless of status — live via
+    // SSE while in flight, a snapshot fetch of the durable JSONL file
+    // once it's finished (see docs/SDD-live-task-output.md §3.6). Label
+    // reflects which of the two openLiveOutput will actually use.
+    wrap.appendChild(drawerAction(taskOutputIsLive(task) ? "Live output" : "View output", {
+      onClick: function () { openLiveOutput(task.id); },
+    }));
+
     wrap.appendChild(drawerAction("View diff", {
       onClick: function () { toggleDiff(task.id); },
     }));
@@ -1328,6 +1379,7 @@
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && drawerTaskId) closeTaskDrawer();
     if (ev.key === "Escape" && harnessPanelOpen) closeHarnessPanel();
+    if (ev.key === "Escape" && liveOutputTaskId) closeLiveOutput();
   });
 
   // "Manage harnesses" — a separate panel from the glance strip on
@@ -1490,6 +1542,138 @@
   document.getElementById("hmClose").addEventListener("click", closeHarnessPanel);
   document.getElementById("hmOverlay").addEventListener("click", closeHarnessPanel);
 
+  // --- Live output panel ----------------------------------------------
+  //
+  // Reuses the drawer's own overlay/slide-in mechanism (see
+  // openHarnessPanel's own comment on the same pattern). Live via SSE
+  // for a task whose display column is running/reviewing/dispatched —
+  // matching exactly the three statuses docs/SDD-live-task-output.md
+  // §3.6/§6 names — snapshot fetch (one-shot, no live connection) for
+  // every other status, including a task that hasn't run at all yet
+  // (which simply renders an empty pane, not an error).
+
+  var liveOutputTaskId = null;
+  var liveOutputSource = null;
+  var liveOutputLines = [];
+
+  // "running"/"reviewing"/"dispatched" are the three statuses
+  // docs/SDD-live-task-output.md §3.6/§6 names by name for the card
+  // button; "pending-review" is added here on top of that literal list
+  // — it's a real reviewer agent still running against a pushback
+  // attempt (see renderDrawerActions' own comment on that status), just
+  // as "live" as dispatched, and ACTIVE_DISPLAY_COLUMNS already treats
+  // it that way for the same reason. Without this, a pending-review
+  // task's own in-flight output would be invisible until its reviewer's
+  // result lands, then only reachable as a stale snapshot.
+  function taskOutputIsLive(t) {
+    var col = taskDisplayColumn(t);
+    return col === "running" || col === "reviewing" || col === "dispatched" || col === "pending-review";
+  }
+
+  function closeLiveOutputSSE() {
+    if (liveOutputSource) { liveOutputSource.close(); liveOutputSource = null; }
+  }
+
+  function renderLiveOutputRows() {
+    var rows = renderTaskOutputRows(liveOutputLines);
+    var wrap = document.getElementById("loRows");
+    wrap.textContent = "";
+    if (!rows.length) {
+      var empty = document.createElement("p");
+      empty.className = "lo-empty";
+      empty.textContent = "No output yet.";
+      wrap.appendChild(empty);
+      return;
+    }
+    rows.forEach(function (row) {
+      var div = document.createElement("div");
+      div.className = "lo-row lo-" + row.kind + (row.ok === false ? " lo-fail" : "");
+      div.textContent = row.text;
+      wrap.appendChild(div);
+    });
+    wrap.scrollTop = wrap.scrollHeight;
+  }
+
+  function openLiveOutput(taskId) {
+    var task = findTask(taskId);
+    if (!task) return;
+    liveOutputTaskId = taskId;
+    liveOutputLines = [];
+    closeLiveOutputSSE();
+    document.getElementById("loTitle").textContent = "Live output — " + task.title;
+    document.getElementById("loOverlay").hidden = false;
+    document.getElementById("liveOutputPanel").hidden = false;
+    // Renders the empty state immediately — the SSE path below only
+    // re-renders reactively as messages arrive, so without this a
+    // running task with genuinely nothing output yet would leave the
+    // pane blank instead of showing "No output yet." until its first
+    // real chunk (which may be a while, or may never come before the
+    // task finishes with no streamed output at all).
+    renderLiveOutputRows();
+    requestAnimationFrame(function () {
+      document.getElementById("loOverlay").classList.add("open");
+      document.getElementById("liveOutputPanel").classList.add("open");
+    });
+
+    if (taskOutputIsLive(task)) {
+      var source = new EventSource("/tasks/" + taskId + "/output/stream");
+      liveOutputSource = source;
+      source.onmessage = function (ev) {
+        liveOutputLines.push(ev.data);
+        renderLiveOutputRows();
+      };
+      source.addEventListener("done", function () { closeLiveOutputSSE(); });
+      // EventSource auto-retries on a transient drop while the task is
+      // still in flight — only the "done" listener above (the task's
+      // own result landing) or closeLiveOutput() ever explicitly closes
+      // this connection.
+    } else {
+      fetch("/tasks/" + taskId + "/output").then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      }).then(function (data) {
+        if (liveOutputTaskId !== taskId) return; // panel closed/reopened before this resolved
+        liveOutputLines = data.lines || [];
+        renderLiveOutputRows();
+      }).catch(function (err) {
+        if (liveOutputTaskId !== taskId) return;
+        var wrap = document.getElementById("loRows");
+        wrap.textContent = "";
+        var failEl = document.createElement("p");
+        failEl.className = "lo-empty";
+        failEl.textContent = "Failed to load output: " + err.message;
+        wrap.appendChild(failEl);
+      });
+    }
+  }
+
+  function closeLiveOutput() {
+    liveOutputTaskId = null;
+    closeLiveOutputSSE();
+    document.getElementById("loOverlay").classList.remove("open");
+    document.getElementById("liveOutputPanel").classList.remove("open");
+    setTimeout(function () {
+      document.getElementById("loOverlay").hidden = true;
+      document.getElementById("liveOutputPanel").hidden = true;
+    }, 180);
+  }
+
+  function liveOutputButton(t) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "live-output-btn";
+    btn.textContent = "Live output";
+    btn.setAttribute("aria-label", "View live output for " + t.title);
+    btn.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      openLiveOutput(t.id);
+    });
+    return btn;
+  }
+
+  document.getElementById("loClose").addEventListener("click", closeLiveOutput);
+  document.getElementById("loOverlay").addEventListener("click", closeLiveOutput);
+
   // Pulsing green dot — "actively working," reused verbatim on a running
   // task's box and on a fleet row currently doing work.
   function activeDot(title) {
@@ -1533,6 +1717,10 @@
     ka.appendChild(sep);
     var repoSpan = document.createElement("span"); repoSpan.className = "repo"; repoSpan.textContent = t.repo;
     ka.appendChild(repoSpan);
+    // "Live output" — only while there's something actually live to
+    // watch (see docs/SDD-live-task-output.md §3.6); a finished task's
+    // output is still reachable from its drawer regardless of status.
+    if (!t.supersededBy && taskOutputIsLive(t)) ka.appendChild(liveOutputButton(t));
 
     card.appendChild(kt); card.appendChild(ka);
     card.addEventListener("click", function () { openTaskDrawer(t.id); });
@@ -1816,6 +2004,11 @@
       relations.appendChild(depTag);
     });
     if (relations.childNodes.length) card.appendChild(relations);
+
+    // "Live output" — same visibility rule as the kanban card's own
+    // (taskOutputIsLive), independent of opts.cardAction (Unarchive on
+    // the Archive tab, which never overlaps with a live task anyway).
+    if (!t.supersededBy && taskOutputIsLive(t)) card.appendChild(liveOutputButton(t));
 
     if (opts && opts.cardAction) {
       var actionBtn = opts.cardAction(t);

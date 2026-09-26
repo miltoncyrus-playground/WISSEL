@@ -78,6 +78,39 @@ test("runs codex with the workspace-write sandbox inside an isolated worktree an
   }
 });
 
+// docs/SDD-live-task-output.md §3.2/§4 — the executor closes over
+// task.id so runCodex's own onChunk (line-only) becomes the store's
+// (taskId, line) shape without the store needing to know about tasks.
+// Wired for consistency with CodexReadOnlyExecutor even though the SDD's
+// subtask 3 text names only ReadOnlyExecutor/WriteExecutor/
+// CodexReadOnlyExecutor explicitly — leaving write-tier codex tasks with
+// no live output while every other executor has it would be a visible,
+// avoidable gap given subtask 1 already covers codex-cli.ts cleanly.
+test("onChunk, when given, fires with (task.id, line) for every parsed JSONL line runCodex sees, in order", async () => {
+  const home = await fakeHome();
+  try {
+    const seen: Array<[string, unknown]> = [];
+    const chunks = [{ type: "item.completed", item: { id: "i", type: "agent_message", text: "shipped" } }, { type: "turn.completed" }];
+    const executor = new CodexWriteExecutor({
+      homeDir: home,
+      runner: async (cmd: string[], opts: { onChunk?: (line: unknown) => void }) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        for (const c of chunks) opts.onChunk?.(c);
+        return { stdout: chunks.map((c) => JSON.stringify(c)).join("\n"), stderr: "", exitCode: 0 };
+      },
+      onChunk: (taskId, line) => seen.push([taskId, line]),
+    });
+    const result = await executor.run(task, agent);
+    expect(seen).toEqual([
+      ["t1", chunks[0]],
+      ["t1", chunks[1]],
+    ]);
+    expect(result.ok).toBe(true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 // Real risk this executor's ok computation exists to catch (SDD §6.1/§7.2):
 // a sandbox-denied write can leave exit 0 with no turn.failed, visible only
 // as a failed file_change item — confirmed live, not hypothetical.

@@ -15,6 +15,7 @@ import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-s
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
 import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH } from "../core/model-refresh-scheduler.ts";
 import { readMemoryLessons, DEFAULT_MEMORY_PATH } from "../services/memory.ts";
+import { appendTaskOutput, getBufferedOutput, getTaskOutput, TASK_OUTPUT_EVENTS } from "../services/task-output.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
 import { ApiExecutor } from "../executors/anthropic-api.ts";
@@ -110,6 +111,12 @@ export interface CreateAppOptions {
    *  (see SqliteBoard.db's doc comment for why it has to be the *same*
    *  connection, not a second one opened against the same path). */
   pipelines?: PipelineStore;
+  /** Where a task's durable raw-output JSONL lives (see
+   *  src/services/task-output.ts's own DEFAULT_TASK_OUTPUT_DIR). Defaults
+   *  to `~/.wissel/task-output`; overridable so tests never touch that
+   *  real directory — same "injectable so a fixture run can't pollute
+   *  the real thing" convention memoryPath/modelsCachePath already use. */
+  taskOutputDir?: string;
 }
 
 /**
@@ -141,22 +148,34 @@ export function createApp(
   const modelsCachePath = opts.modelsCachePath ?? DEFAULT_MODELS_CACHE_PATH;
 
   const executeWriteTier = opts.executeWriteTier ?? false;
+  // Every claude-cli/codex-cli executor streams its subprocess's raw
+  // JSONL straight into the durable task-output store as it runs — see
+  // docs/SDD-live-task-output.md §3.2/§4. ApiExecutor is excluded: it
+  // calls the Messages API directly, not a CLI subprocess, so there's
+  // nothing to stream (§5's explicit non-goal).
+  const onTaskOutputChunk = (taskId: string, line: unknown) => {
+    appendTaskOutput(taskId, line, opts.taskOutputDir);
+  };
   // ApiExecutor and CodexReadOnlyExecutor are unconditional, like
   // ReadOnlyExecutor — all three are tier-gated to "readonly" agents
   // (see their canHandle), so there's no write risk to gate behind
   // executeWriteTier the way WriteExecutor/CodexWriteExecutor are.
   const autoExecutors: Executor[] = [
-    new ReadOnlyExecutor({ memoryPath: opts.memoryPath }),
+    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
     new ApiExecutor(),
-    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath }),
+    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
   ];
-  if (executeWriteTier) autoExecutors.push(new WriteExecutor({ memoryPath: opts.memoryPath }), new CodexWriteExecutor({ memoryPath: opts.memoryPath }));
+  if (executeWriteTier)
+    autoExecutors.push(
+      new WriteExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
+      new CodexWriteExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
+    );
   const manualExecutors: Executor[] = opts.manualExecutors ?? [
-    new ReadOnlyExecutor({ memoryPath: opts.memoryPath }),
+    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
     new ApiExecutor(),
-    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath }),
-    new WriteExecutor({ memoryPath: opts.memoryPath }),
-    new CodexWriteExecutor({ memoryPath: opts.memoryPath }),
+    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
+    new WriteExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
+    new CodexWriteExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
   ];
 
   // A pipeline run always executes every step in-process, the same way
@@ -235,6 +254,14 @@ export function createApp(
 
       if ((url.pathname === "/" || url.pathname === "/board") && req.method === "GET") {
         return new Response(Bun.file(new URL("board.html", PUBLIC_DIR)));
+      }
+
+      // The task-output row renderer (docs/SDD-live-task-output.md §3.5)
+      // — a plain browser script, served as a static sibling file the
+      // same way board.html itself is, so it's also directly `import`-able
+      // by bun test with zero build step (see test/render-task-output.test.ts).
+      if (url.pathname === "/render-task-output.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("render-task-output.js", PUBLIC_DIR)));
       }
 
       if (url.pathname === "/agents" && req.method === "GET") {
@@ -506,6 +533,35 @@ export function createApp(
           return json(await getRepoDiff(result?.worktree?.path ?? task.repo));
         }
 
+        // Point-in-time snapshot of a task's raw agent output — every
+        // JSONL line recorded so far, from the durable file (not the
+        // capped in-memory ring buffer — see getTaskOutput's own doc
+        // comment), oldest first. Useful for a task that already
+        // finished, or a client that just wants to load-then-poll. See
+        // docs/SDD-live-task-output.md §3.4.
+        if (parts.length === 3 && parts[2] === "output" && req.method === "GET") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          const lines = await getTaskOutput(parts[1]!, opts.taskOutputDir);
+          return json({ taskId: parts[1]!, lines });
+        }
+
+        // Live tail of a task's raw agent output — SSE, scoped
+        // server-side to this one taskId (unlike /events' single global
+        // board stream), mirroring sseStream's own shape below. Sends
+        // the current ring-buffer backlog immediately on connect (so a
+        // client never opens to a blank pane), then forwards every new
+        // line as appendTaskOutput records it. Sends `event: done` and
+        // closes once the task's own TaskResult lands (board.recordResult's
+        // "task.result" BoardEvent) — the clean, board-level signal that
+        // nothing more will ever be appended, rather than guessing from
+        // the raw JSONL content itself. See docs/SDD-live-task-output.md §3.4.
+        if (parts.length === 4 && parts[2] === "output" && parts[3] === "stream" && req.method === "GET") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          return taskOutputStream(parts[1]!, board);
+        }
+
         // The board UI's "Run" button — an explicit, per-task human
         // decision to execute right now, distinct from the automatic
         // loop's blanket executeWriteTier gate (see Orchestrator.runNow).
@@ -661,6 +717,71 @@ function json(value: unknown, status = 200): Response {
 
 function notFound(): Response {
   return new Response("not found", { status: 404 });
+}
+
+/**
+ * SSE stream of one task's raw agent output — see the
+ * `GET /tasks/:id/output/stream` route's own doc comment for the full
+ * contract. `board` is passed in (rather than read from a module-level
+ * singleton) so tests can drive it against a fixture board's own event
+ * emitter, the same way sseStream already takes `board` as a parameter.
+ */
+function taskOutputStream(taskId: string, board: { events?: import("node:events").EventEmitter }): Response {
+  const encoder = new TextEncoder();
+  const chunkEvent = `chunk:${taskId}`;
+  let chunkListener: ((line: string) => void) | undefined;
+  let resultListener: ((event: BoardEvent) => void) | undefined;
+
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(": connected\n\n"));
+      // Backlog first, then subscribe — both happen synchronously with
+      // no `await` between them, so there's no window for a chunk to
+      // land in neither (or both) of the backlog snapshot and the live
+      // listener below.
+      for (const line of getBufferedOutput(taskId)) {
+        controller.enqueue(encoder.encode(`data: ${line}\n\n`));
+      }
+      chunkListener = (line: string) => {
+        controller.enqueue(encoder.encode(`data: ${line}\n\n`));
+      };
+      TASK_OUTPUT_EVENTS.on(chunkEvent, chunkListener);
+
+      resultListener = (event: BoardEvent) => {
+        if (event.type !== "task.result" || event.result.taskId !== taskId) return;
+        controller.enqueue(encoder.encode("event: done\ndata: {}\n\n"));
+        // Unsubscribe explicitly before closing — controller.close()
+        // (producer-initiated) never fires the stream's own cancel()
+        // callback (that's only for consumer-initiated cancellation), so
+        // without this both listeners would stay registered forever.
+        cleanup();
+        controller.close();
+      };
+      board.events?.on("event", resultListener);
+    },
+    cancel() {
+      cleanup();
+    },
+  });
+
+  function cleanup(): void {
+    if (chunkListener) {
+      TASK_OUTPUT_EVENTS.off(chunkEvent, chunkListener);
+      chunkListener = undefined;
+    }
+    if (resultListener) {
+      board.events?.off("event", resultListener);
+      resultListener = undefined;
+    }
+  }
+
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    },
+  });
 }
 
 function sseStream(board: { events?: import("node:events").EventEmitter }): Response {

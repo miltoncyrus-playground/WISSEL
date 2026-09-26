@@ -16,6 +16,12 @@ export interface ReadOnlyExecutorOptions {
    *  see its own doc comment. Overridable so tests never fall back to
    *  this repo's real memory/lessons.md. */
   memoryPath?: string;
+  /** Fires once per parsed JSONL line for the given task, in order, as
+   *  claude's stdout streams in — wired to appendTaskOutput(taskId, ...)
+   *  by src/api/server.ts (see docs/SDD-live-task-output.md §3.2/§4).
+   *  Undefined (the default) keeps runClaude's non-streaming
+   *  `--output-format json` behavior entirely unchanged. */
+  onChunk?: (taskId: string, line: unknown) => void;
 }
 
 /**
@@ -36,11 +42,13 @@ export class ReadOnlyExecutor implements Executor {
   private runner: CommandRunner;
   private model?: string;
   private memoryPath?: string;
+  private onChunk?: (taskId: string, line: unknown) => void;
 
   constructor(opts: ReadOnlyExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
     this.memoryPath = opts.memoryPath;
+    this.onChunk = opts.onChunk;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -60,6 +68,7 @@ export class ReadOnlyExecutor implements Executor {
       model: this.model ?? resolveModel(task, agent, harness),
       env: harness?.env,
       memoryPath: this.memoryPath,
+      onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
     });
     return harness ? { ...result, harnessId: harness.id } : result;
   }
