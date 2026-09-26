@@ -19,6 +19,12 @@ export interface WriteExecutorOptions {
    *  see its own doc comment. Overridable so tests never fall back to
    *  this repo's real memory/lessons.md. */
   memoryPath?: string;
+  /** Fires once per parsed JSONL line for the given task, in order, as
+   *  claude's stdout streams in — wired to appendTaskOutput(taskId, ...)
+   *  by src/api/server.ts (see docs/SDD-live-task-output.md §3.2/§4).
+   *  Undefined (the default) keeps runClaude's non-streaming
+   *  `--output-format json` behavior entirely unchanged. */
+  onChunk?: (taskId: string, line: unknown) => void;
 }
 
 /**
@@ -51,12 +57,14 @@ export class WriteExecutor implements Executor {
   private model?: string;
   private homeDir?: string;
   private memoryPath?: string;
+  private onChunk?: (taskId: string, line: unknown) => void;
 
   constructor(opts: WriteExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
     this.homeDir = opts.homeDir;
     this.memoryPath = opts.memoryPath;
+    this.onChunk = opts.onChunk;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -90,6 +98,7 @@ export class WriteExecutor implements Executor {
       // See docs/SDD-pipeline-automation.md §3.4.
       allowedTools: ["Bash(bun test:*)", "Bash(bun run typecheck:*)"],
       memoryPath: this.memoryPath,
+      onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
     });
 
     const withHarness = harness ? { ...result, harnessId: harness.id } : result;

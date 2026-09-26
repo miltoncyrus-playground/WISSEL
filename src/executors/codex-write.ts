@@ -18,6 +18,10 @@ export interface CodexWriteExecutorOptions {
    *  see its own doc comment. Overridable so tests never fall back to
    *  this repo's real memory/lessons.md. */
   memoryPath?: string;
+  /** Fires once per parsed JSONL line for the given task, in order, as
+   *  codex's stdout streams in — wired to appendTaskOutput(taskId, ...)
+   *  by src/api/server.ts (see docs/SDD-live-task-output.md §3.2/§4). */
+  onChunk?: (taskId: string, line: unknown) => void;
 }
 
 /**
@@ -48,12 +52,14 @@ export class CodexWriteExecutor implements Executor {
   private model?: string;
   private homeDir?: string;
   private memoryPath?: string;
+  private onChunk?: (taskId: string, line: unknown) => void;
 
   constructor(opts: CodexWriteExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
     this.homeDir = opts.homeDir;
     this.memoryPath = opts.memoryPath;
+    this.onChunk = opts.onChunk;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -76,6 +82,7 @@ export class CodexWriteExecutor implements Executor {
       model: this.model ?? resolveModel(task, agent, harness),
       env: harness?.env,
       memoryPath: this.memoryPath,
+      onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
     });
 
     const withHarness = harness ? { ...result, harnessId: harness.id } : result;

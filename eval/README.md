@@ -10,6 +10,7 @@ wall-clock time. Run explicitly before ship, and nightly.
 | `eval/implementer-reviewer.eval.ts` | `bun run eval:implementer-reviewer` | The automatic implementer→reviewer loop (`src/core/orchestrator.ts`'s `finishResult`/`handleReviewVerdict`) converges correctly against a *real* reviewer, not a scripted one. |
 | `eval/planner-subtask-plan.eval.ts` | `bun run eval:planner-subtask-plan` | The real planner agent reliably produces a well-formed ```subtask-plan``` block against a vague card, and `finishResult`'s `spawnSubtasksFromPlan` turns it into real child cards with correct `dependsOn` chaining. |
 | `eval/pipeline-review-handoff.eval.ts` | `bun run eval:pipeline-review-handoff` | The review-handoff loop recreated as a real `PipelineDef` (`src/core/review-handoff-pipeline.ts`) actually converges through `startPipelineRun` end to end against real `implementer`/`pipeline-reviewer` agents — see docs/SDD-pipelines.md §6 Subtask 5. |
+| `eval/live-task-output.eval.ts` | `bun run eval:live-task-output` | A real `claude -p` call's streamed stdout actually lands in the durable task-output store and is deliverable live over a real HTTP SSE connection, end to end — spawn -> stream -> store -> SSE -> render — see docs/SDD-live-task-output.md §6 Subtask 5. |
 
 ## implementer-reviewer eval
 
@@ -190,3 +191,67 @@ actual result once it's been observed.
 Same pattern as the other evals above — add a nightly cron line and a
 required CI step for `bun run eval:pipeline-review-handoff`, same
 `timeout 1800`, same real-authenticated-`claude` requirement.
+
+## live-task-output eval
+
+`test/task-output.test.ts`, `test/claude-cli.test.ts`, `test/codex-cli.test.ts`,
+`test/render-task-output.test.ts`, and `test/api.test.ts` (all gate lane)
+already prove every stage of the pipeline correct in isolation against
+scripted/fake stand-ins: incremental stdout reads firing `onChunk` per
+line, the ring buffer + durable file store, the pure JSONL-to-rows
+render function, and the SSE endpoint's backlog/live-delivery/`event:
+done` contract driven by a synthetic `board.recordResult` call. What
+none of those can prove is whether a *real* `claude -p --output-format
+stream-json --include-partial-messages --verbose` process's actual
+stdout timing and shape flow correctly through the whole chain at once:
+does streaming really happen incrementally (not just get buffered and
+flushed as one write at process exit), does the real HTTP SSE endpoint
+actually deliver lines live over a real socket while the subprocess is
+still running, and does the terminal `type: "result"` line still parse
+into the exact same `TaskResult` today's non-streaming callers get.
+
+This eval spins up a real `Bun.serve` HTTP server backed by `createApp`
+(the same construction `src/api/server.ts`'s own entrypoint uses, with
+`taskOutputDir` pointed at a disposable tmp dir), creates one task with
+the trivial "Reply with exactly the single word: pong" instruction
+(same fixture `eval/readonly.eval.ts`'s first case uses, chosen for the
+same reason — cheap and not gameable by a wording variation), opens the
+SSE stream *before* triggering the run so it's guaranteed subscribed
+before the first chunk can land, triggers `POST /tasks/:id/run`, and
+waits on the SSE connection's own `event: done` as the completion
+signal (no polling loop).
+
+### Pass bar
+
+All four checks must pass, every run: the run was accepted (202), the
+SSE connection delivered at least one live JSONL line before closing,
+it closed with `event: done`, at least one line landed in the durable
+store, and `renderTaskOutputRows` over the snapshot endpoint's lines
+produces exactly one `result` row with `ok: true` whose text contains
+"pong". Any single check failing is a real finding about the pipeline,
+not something to loosen the bar over.
+
+### Status — not yet empirically run
+
+Same situation as `eval:pipeline-review-handoff` when it was first
+written (see that eval's own "Status" note above): this script was
+written without subprocess-spawn/network-bind access in this
+implementer session (real `claude` calls and a real listening HTTP
+server both require approval this session's sandbox doesn't grant), so
+**it has not yet actually been run against a real `claude` process**.
+The full request/response/SSE-framing logic was traced by hand against
+the real `src/api/server.ts` code it exercises (see
+docs/SDD-live-task-output.md §9 for the implementation notes from the
+same session), and every stage it touches has its own passing gate test
+in isolation — but the first real run of this eval is also the first
+empirical check that streaming actually happens incrementally against a
+real subprocess, not just correct in the synthetic-timing tests. Run it
+(`bun run eval:live-task-output`) before relying on the live-output
+feature for anything real, and update this note with the actual result
+once it's been observed.
+
+### Scheduling
+
+Same pattern as the other evals above — add a nightly cron line and a
+required CI step for `bun run eval:live-task-output`, same `timeout
+1800`, same real-authenticated-`claude` requirement.

@@ -169,3 +169,30 @@ test("computeCost returns undefined for an unknown/unpriced model rather than gu
   expect(computeCost(undefined, { input_tokens: 1, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 1 })).toBeUndefined();
   expect(computeCost("test-model", undefined, { "test-model": { input: 1, cachedInput: 1, cacheWrite: 1, output: 1 } })).toBeUndefined();
 });
+
+// --- Live task output streaming (docs/SDD-live-task-output.md §3.1) ------
+// codex-cli.ts adds no new CLI flags for streaming (codex exec --json
+// already emits JSONL natively) — just a read-strategy change, so these
+// tests only need to cover onChunk firing correctly, not a command shape.
+
+test("onChunk fires per parsed JSONL line, in order, as a streaming runner delivers them, without changing the final parsed TaskResult", async () => {
+  const lines = CLEAN_RUN_STDOUT.split("\n").map((l) => JSON.parse(l));
+  const seen: unknown[] = [];
+  const streamingRunner = async (_cmd: string[], opts: { onChunk?: (line: unknown) => void }) => {
+    for (const l of lines) {
+      await Promise.resolve();
+      opts.onChunk?.(l);
+    }
+    return { stdout: CLEAN_RUN_STDOUT, stderr: "", exitCode: 0 };
+  };
+
+  const result = await runCodex({ runner: streamingRunner, task, agent, sandbox: "read-only", onChunk: (line) => seen.push(line) });
+
+  expect(seen).toEqual(lines);
+  expect(result).toEqual({ taskId: "t1", agentId: "implementer", ok: true, summary: "spike ok", actualCost: undefined });
+});
+
+test("onChunk omitted never calls the runner's onChunk-dependent path — identical to today's behavior", async () => {
+  const result = await runCodex({ runner: stub({ stdout: CLEAN_RUN_STDOUT, stderr: "", exitCode: 0 }), task, agent, sandbox: "read-only" });
+  expect(result.summary).toBe("spike ok");
+});

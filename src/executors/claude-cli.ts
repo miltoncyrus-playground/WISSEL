@@ -23,10 +23,22 @@ export interface CommandResult {
 /** Injectable so tests never spawn a real process or spend a real token.
  *  `env`, when given, is a harness's account/config overrides — merged
  *  over the ambient environment by the runner, never a full replacement
- *  (dropping PATH etc. would break the spawn entirely). */
-export type CommandRunner = (cmd: string[], opts: { cwd: string; env?: Record<string, string> }) => Promise<CommandResult>;
+ *  (dropping PATH etc. would break the spawn entirely). `onChunk`, when
+ *  given, fires synchronously once per parsed JSONL line as stdout
+ *  streams in (in order) — see docs/SDD-live-task-output.md §3.1. It's
+ *  purely an observability tap: `stdout` on the resolved CommandResult
+ *  is still the full accumulated text either way, so a caller that
+ *  never passes onChunk sees byte-for-byte the same behavior as before
+ *  streaming existed. */
+export type CommandRunner = (
+  cmd: string[],
+  opts: { cwd: string; env?: Record<string, string>; onChunk?: (line: unknown) => void },
+) => Promise<CommandResult>;
 
-export async function runViaBun(cmd: string[], opts: { cwd: string; env?: Record<string, string> }): Promise<CommandResult> {
+export async function runViaBun(
+  cmd: string[],
+  opts: { cwd: string; env?: Record<string, string>; onChunk?: (line: unknown) => void },
+): Promise<CommandResult> {
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
     env: opts.env ? { ...process.env, ...opts.env } : undefined,
@@ -34,11 +46,76 @@ export async function runViaBun(cmd: string[], opts: { cwd: string; env?: Record
     stderr: "pipe",
   });
   const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
+    opts.onChunk ? readStreamingText(proc.stdout, opts.onChunk) : new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
   return { stdout, stderr, exitCode };
+}
+
+/**
+ * Reads a subprocess's stdout incrementally, splitting on newlines as
+ * chunks arrive and JSON-parsing each complete line — firing `onChunk`
+ * for each one, in order, as soon as it's available, rather than
+ * waiting for the process to exit. Still returns the exact same full
+ * text a buffered `new Response(stream).text()` read would have
+ * returned (see runViaBun's own doc comment), so the caller's existing
+ * end-of-run parsing is unaffected by *how* the bytes were read.
+ *
+ * A line that fails to JSON.parse is skipped, not thrown — same
+ * tolerant-of-a-bad-line discipline codex-cli.ts's parseJsonl already
+ * uses, since a partial/garbled line from a still-writing subprocess is
+ * expected, not exceptional.
+ */
+async function readStreamingText(stream: ReadableStream<Uint8Array>, onChunk: (line: unknown) => void): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+  let buffer = "";
+
+  function consumeLine(line: string): void {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      onChunk(JSON.parse(trimmed));
+    } catch {
+      // tolerated — see doc comment above.
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value, { stream: true });
+    full += text;
+    buffer += text;
+    let idx: number;
+    while ((idx = buffer.indexOf("\n")) !== -1) {
+      consumeLine(buffer.slice(0, idx));
+      buffer = buffer.slice(idx + 1);
+    }
+  }
+  full += decoder.decode();
+  consumeLine(buffer);
+  return full;
+}
+
+/**
+ * Isolates the final non-blank line of a (possibly multi-line, streamed
+ * JSONL) stdout blob — the one carrying the terminal `type: "result"`
+ * object. Under today's non-streaming `--output-format json`, stdout is
+ * already exactly one line, so this returns the whole string unchanged
+ * (see docs/SDD-live-task-output.md §3.1's "the exact same input"
+ * claim). Returns `text` itself, untrimmed, when there's no non-blank
+ * line at all (empty/whitespace-only stdout) — preserves the exact
+ * JSON.parse error today's callers already see for that case.
+ */
+function lastNonBlankLine(text: string): string {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.trim() !== "") return lines[i]!;
+  }
+  return text;
 }
 
 interface ClaudeResultJson {
@@ -102,6 +179,17 @@ export interface RunClaudeOptions {
    *  "memory/lessons.md" path; overridable so tests never depend on
    *  whatever's actually on disk. */
   memoryPath?: string;
+  /** Fires once per parsed JSONL line, in order, as claude's stdout
+   *  streams in — see docs/SDD-live-task-output.md §3.1/§3.2. When
+   *  given, the spawned command switches from `--output-format json` to
+   *  `--output-format stream-json --include-partial-messages --verbose`
+   *  (live-confirmed: `--verbose` is required for `--print
+   *  --output-format stream-json` to actually emit the intermediate
+   *  `stream_event` lines rather than just the final result). The final
+   *  `TaskResult` this function returns is unaffected either way — see
+   *  lastNonBlankLine's own doc comment. Omitted (the default) keeps
+   *  today's exact buffered-json behavior, byte for byte. */
+  onChunk?: (line: unknown) => void;
 }
 
 /**
@@ -111,10 +199,11 @@ export interface RunClaudeOptions {
  * tiers is `--permission-mode`, which the caller picks.
  */
 export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
-  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath } = opts;
+  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath, onChunk } = opts;
   const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
   const prompt = buildAgentPrompt(task, agent, memory, { planMode: permissionMode === "plan" });
-  const cmd = ["claude", "-p", prompt, "--output-format", "json", "--permission-mode", permissionMode];
+  const cmd = ["claude", "-p", prompt, "--output-format", onChunk ? "stream-json" : "json", "--permission-mode", permissionMode];
+  if (onChunk) cmd.push("--include-partial-messages", "--verbose");
   if (model) cmd.push("--model", model);
   if (allowedTools && allowedTools.length > 0) cmd.push("--allowedTools", ...allowedTools);
 
@@ -132,7 +221,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
 
   let cmdResult: CommandResult;
   try {
-    cmdResult = await runner(cmd, { cwd: task.repo, env: scopedEnv });
+    cmdResult = await runner(cmd, { cwd: task.repo, env: scopedEnv, onChunk });
   } catch (e) {
     return fail(task, agent, `failed to spawn claude: ${(e as Error).message}`);
   }
@@ -147,10 +236,19 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // parse stdout. A parse failure here is tolerated, not thrown — the
   // exitCode branch below falls back to raw stderr/stdout exactly like
   // before when there's nothing to parse.
+  //
+  // Parses only the LAST non-blank line, not the whole stdout blob —
+  // under non-streaming `--output-format json`, stdout is already
+  // exactly one line, so this is a no-op change there (see
+  // lastNonBlankLine's own doc comment); under streaming
+  // (`stream-json`), stdout is many JSONL lines and the terminal
+  // `type: "result"` object (byte-identical in shape to the
+  // non-streaming response — see docs/SDD-live-task-output.md §2) is
+  // always the last one.
   let parsed: ClaudeResultJson | undefined;
   let parseError: Error | undefined;
   try {
-    parsed = JSON.parse(stdout) as ClaudeResultJson;
+    parsed = JSON.parse(lastNonBlankLine(stdout)) as ClaudeResultJson;
   } catch (e) {
     parseError = e as Error;
   }

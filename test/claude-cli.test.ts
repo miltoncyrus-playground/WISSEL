@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { runClaude, type CommandResult } from "../src/executors/claude-cli.ts";
+import { runClaude, runViaBun, type CommandResult, type CommandRunner } from "../src/executors/claude-cli.ts";
 import type { AgentDef, TaskCard } from "../src/core/types.ts";
 
 const reviewerAgent: AgentDef = {
@@ -352,4 +352,111 @@ test("an agent with outputContractFormat: review-verdict is completely unaffecte
   expect(result.ok).toBe(true);
   expect(result.verdict).toBe("approve");
   expect(result.pipelineHandoff).toBeUndefined();
+});
+
+// --- Live task output streaming (docs/SDD-live-task-output.md §3.1) ------
+
+test("omits stream-json/--include-partial-messages/--verbose entirely when onChunk isn't given — the default path is untouched", async () => {
+  let seenCmd: string[] = [];
+  await runClaude({
+    runner: async (cmd) => {
+      seenCmd = cmd;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+    task,
+    agent: plainAgent,
+    permissionMode: "plan",
+  });
+  expect(seenCmd[seenCmd.indexOf("--output-format") + 1]).toBe("json");
+  expect(seenCmd).not.toContain("--include-partial-messages");
+  expect(seenCmd).not.toContain("--verbose");
+  expect(seenCmd).not.toContain("stream-json");
+});
+
+test("onChunk switches --output-format to stream-json and adds --include-partial-messages --verbose", async () => {
+  let seenCmd: string[] = [];
+  await runClaude({
+    runner: async (cmd) => {
+      seenCmd = cmd;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+    task,
+    agent: plainAgent,
+    permissionMode: "plan",
+    onChunk: () => {},
+  });
+  expect(seenCmd[seenCmd.indexOf("--output-format") + 1]).toBe("stream-json");
+  expect(seenCmd).toContain("--include-partial-messages");
+  expect(seenCmd).toContain("--verbose");
+});
+
+test("onChunk fires per parsed JSONL line, in order, as a streaming runner delivers them across ticks, and the final TaskResult matches the equivalent non-streaming call", async () => {
+  const chunks = [
+    { type: "system", subtype: "init" },
+    { type: "stream_event", event: { type: "message_start" } },
+    { type: "result", subtype: "success", is_error: false, result: "pong", total_cost_usd: 0.05 },
+  ];
+  const seen: unknown[] = [];
+  const streamingRunner: CommandRunner = async (_cmd, opts) => {
+    for (const c of chunks) {
+      await Promise.resolve(); // simulates a real chunk arriving on its own tick
+      opts.onChunk?.(c);
+    }
+    return { stdout: chunks.map((c) => JSON.stringify(c)).join("\n") + "\n", stderr: "", exitCode: 0 };
+  };
+
+  const result = await runClaude({
+    runner: streamingRunner,
+    task,
+    agent: plainAgent,
+    permissionMode: "plan",
+    onChunk: (line) => seen.push(line),
+  });
+
+  expect(seen).toEqual(chunks);
+  expect(result.ok).toBe(true);
+  expect(result.summary).toBe("pong");
+  expect(result.actualCost).toBe(0.05);
+
+  const nonStreaming = await runClaude({
+    runner: stub({ stdout: JSON.stringify(chunks[2]), stderr: "", exitCode: 0 }),
+    task,
+    agent: plainAgent,
+    permissionMode: "plan",
+  });
+  expect(result).toEqual(nonStreaming);
+});
+
+test("parses only the final JSONL line as the TaskResult when stdout is multi-line streamed output — earlier lines are never mistaken for the result", async () => {
+  const raw =
+    [
+      JSON.stringify({ type: "system", subtype: "init" }),
+      JSON.stringify({ type: "stream_event", event: { type: "message_start" } }),
+      JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "streamed pong" }),
+    ].join("\n") + "\n";
+  const result = await runClaude({
+    runner: stub({ stdout: raw, stderr: "", exitCode: 0 }),
+    task,
+    agent: plainAgent,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(true);
+  expect(result.summary).toBe("streamed pong");
+});
+
+test("runViaBun streams onChunk per JSONL line, in order, across multiple real reads, while stdout still accumulates the exact full text", async () => {
+  const seen: unknown[] = [];
+  const result = await runViaBun(
+    ["sh", "-c", "printf '%s\\n' '{\"n\":1}'; sleep 0.05; printf '%s\\n' '{\"n\":2}'; printf '%s\\n' 'not json'; printf '%s\\n' '{\"n\":3}'"],
+    { cwd: "/tmp", onChunk: (line) => seen.push(line) },
+  );
+  expect(seen).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }]);
+  expect(result.stdout).toBe('{"n":1}\n{"n":2}\nnot json\n{"n":3}\n');
+  expect(result.exitCode).toBe(0);
+});
+
+test("runViaBun without onChunk behaves exactly as before — full buffered stdout, no callback invoked, no crash on the missing option", async () => {
+  const result = await runViaBun(["sh", "-c", "printf 'hello\\n'"], { cwd: "/tmp" });
+  expect(result.stdout).toBe("hello\n");
+  expect(result.exitCode).toBe(0);
 });

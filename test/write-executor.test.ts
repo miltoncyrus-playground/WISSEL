@@ -85,6 +85,53 @@ test("runs claude in acceptEdits mode inside an isolated worktree and parses a s
   }
 });
 
+// docs/SDD-live-task-output.md §3.2/§4 — the executor closes over
+// task.id so runClaude's own onChunk (line-only) becomes the store's
+// (taskId, line) shape without the store needing to know about tasks.
+test("onChunk, when given, fires with (task.id, line) for every parsed JSONL line runClaude sees, in order", async () => {
+  const home = await fakeHome();
+  try {
+    const seen: Array<[string, unknown]> = [];
+    const chunks = [{ type: "system" }, { type: "result", subtype: "success", is_error: false, result: "shipped" }];
+    const executor = new WriteExecutor({
+      homeDir: home,
+      runner: async (cmd: string[], opts: { onChunk?: (line: unknown) => void }) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        for (const c of chunks) opts.onChunk?.(c);
+        return { stdout: chunks.map((c) => JSON.stringify(c)).join("\n"), stderr: "", exitCode: 0 };
+      },
+      onChunk: (taskId, line) => seen.push([taskId, line]),
+    });
+    const result = await executor.run(task, agent);
+    expect(seen).toEqual([
+      ["t1", chunks[0]],
+      ["t1", chunks[1]],
+    ]);
+    expect(result.ok).toBe(true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("omitting onChunk never passes one through to runClaude — identical to today's behavior", async () => {
+  const home = await fakeHome();
+  try {
+    let sawOnChunk: unknown = "unset";
+    const executor = new WriteExecutor({
+      homeDir: home,
+      runner: async (cmd: string[], opts: { onChunk?: (line: unknown) => void }) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        sawOnChunk = opts.onChunk;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(task, agent);
+    expect(sawOnChunk).toBeUndefined();
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("runs claude inside the worktree, not task.repo directly — the whole point of this executor", async () => {
   const home = await fakeHome();
   try {
