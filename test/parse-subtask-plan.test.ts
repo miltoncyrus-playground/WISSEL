@@ -108,3 +108,55 @@ test("an empty array is a valid (empty) plan", () => {
   const raw = ["```subtask-plan", "[]", "```"].join("\n");
   expect(parseSubtaskPlan(raw)).toEqual([]);
 });
+
+test("parses correctly when an item's own body embeds a nested fenced code sample (the real bug this parser once had)", () => {
+  // Caught live: a planner run decomposing "Add/import projects" put a
+  // TypeScript interface snippet (its own ```/``` fence) inside its
+  // first item's `body` field — legitimate, useful prose for the
+  // implementer who reads it. The old non-greedy regex
+  // (`/```subtask-plan\s*\n([\s\S]*?)```/g`) stopped at THAT nested
+  // closing fence instead of the block's real end, truncating the
+  // capture mid-string and failing every plan shaped like this one.
+  const nestedSnippetBody = [
+    "Add a Project type:",
+    "```",
+    "export interface Project {",
+    "  id: string;",
+    "}",
+    "```",
+    "Then wire it in.",
+  ].join("\n");
+  const raw = [
+    "Decomposed into 2 subtasks.",
+    "",
+    "```subtask-plan",
+    JSON.stringify([
+      { title: "Core model", body: nestedSnippetBody, labels: ["code"] },
+      { title: "Wire it up", body: "Depends on the model above.", labels: ["code"], dependsOnIndex: 0 },
+    ]),
+    "```",
+  ].join("\n");
+
+  expect(parseSubtaskPlan(raw)).toEqual([
+    { title: "Core model", body: nestedSnippetBody, labels: ["code"] },
+    { title: "Wire it up", body: "Depends on the model above.", labels: ["code"], dependsOnIndex: 0 },
+  ]);
+});
+
+test("multiple items each embedding their own nested fenced code sample still parse correctly", () => {
+  const bodyA = ["Snippet A:", "```", "const a = 1;", "```"].join("\n");
+  const bodyB = ["Snippet B:", "```", "const b = 2;", "```"].join("\n");
+  const raw = [
+    "```subtask-plan",
+    JSON.stringify([
+      { title: "a", body: bodyA, labels: [] },
+      { title: "b", body: bodyB, labels: [], dependsOnIndex: 0 },
+    ]),
+    "```",
+  ].join("\n");
+
+  expect(parseSubtaskPlan(raw)).toEqual([
+    { title: "a", body: bodyA, labels: [] },
+    { title: "b", body: bodyB, labels: [], dependsOnIndex: 0 },
+  ]);
+});
