@@ -2167,6 +2167,7 @@
   }
 
   var harnesses = [];
+  var projects = [];
 
   function refetchTasks() {
     // /harnesses is refetched alongside /tasks (not just once at
@@ -2475,13 +2476,24 @@
     modelSelect.disabled = !harness || models.length === 0;
   }
 
+  // Registered projects (GET /projects) are the primary source of
+  // suggestions — they show up before any task has ever targeted that
+  // repo. Task history is folded in too so a path used before this
+  // feature shipped (never formally registered) keeps working exactly
+  // as it did before.
   function renderRepoOptions() {
     var list = document.getElementById("ntRepoList");
     if (!list) return;
     list.textContent = "";
-    uniqueSorted(tasks.map(function (t) { return t.repo; })).forEach(function (repo) {
+    var labelByPath = {};
+    projects.forEach(function (p) { labelByPath[p.path] = p.name + " (" + p.source + ")"; });
+    var repoPaths = uniqueSorted(
+      projects.map(function (p) { return p.path; }).concat(tasks.map(function (t) { return t.repo; })),
+    );
+    repoPaths.forEach(function (repo) {
       var opt = document.createElement("option");
       opt.value = repo;
+      if (labelByPath[repo]) opt.label = labelByPath[repo];
       list.appendChild(opt);
     });
   }
@@ -2529,12 +2541,14 @@
     fetch("/agents").then(function (r) { return r.json(); }),
     fetch("/tasks").then(function (r) { return r.json(); }),
     fetch("/harnesses").then(function (r) { return r.json(); }),
+    fetch("/projects").then(function (r) { return r.json(); }),
   ]).then(function (results) {
     allAgents = results[0] || [];
     allAgents.forEach(function (a) { agentsById[a.id] = a; });
     knownTags = uniqueSorted(allAgents.reduce(function (acc, a) { return acc.concat(a.tags || []); }, []));
     tasks = results[1] || [];
     harnesses = results[2] || [];
+    projects = results[3] || [];
     render();
     renderOverrideGrid();
 

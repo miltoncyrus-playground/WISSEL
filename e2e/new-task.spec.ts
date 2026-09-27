@@ -1,4 +1,7 @@
 import { test, expect } from "@playwright/test";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function unique(label: string): string {
   return `${label} ${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -224,5 +227,36 @@ test.describe("New Task tab", () => {
     const body = createResponse.request().postDataJSON();
     expect(body).not.toHaveProperty("harnessOverride");
     expect(body).not.toHaveProperty("model");
+  });
+
+  // Registers a real project via POST /projects/local against a tmp git
+  // repo the test creates (initGit: true, since the tmp dir starts as a
+  // plain folder) — same discipline as the harness+model test above:
+  // assert on the real POST /tasks body, not just that the datalist
+  // option rendered.
+  test("registered projects appear in the repo datalist and submit their real path", async ({ page, request }) => {
+    const dir = await mkdtemp(join(tmpdir(), "wissel-e2e-project-"));
+    const addResponse = await request.post("/projects/local", { data: { path: dir, initGit: true } });
+    expect(addResponse.ok()).toBe(true);
+    const project = await addResponse.json();
+    expect(project.path).toBe(dir);
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "New task" }).click();
+
+    const option = page.locator(`#ntRepoList option[value="${dir}"]`);
+    await expect(option).toHaveCount(1);
+    expect(await option.getAttribute("label")).toBe(`${project.name} (${project.source})`);
+
+    const title = unique("Project-picked repo task");
+    await page.locator("#ntTitle").fill(title);
+    await page.locator("#ntBody").fill("Created by selecting a registered project as the repo.");
+    await page.locator("#ntRepo").fill(dir);
+
+    const [createResponse] = await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith("/tasks") && r.request().method() === "POST"),
+      page.locator("#newTaskForm button[type=submit]").click(),
+    ]);
+    expect(createResponse.request().postDataJSON()).toMatchObject({ repo: dir });
   });
 });
