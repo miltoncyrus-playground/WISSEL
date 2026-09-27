@@ -460,3 +460,45 @@ by this subtask):**
   sitting unmerged. Both are pipeline-runner.ts/finishResult concerns,
   deliberately untouched by this subtask (see the card's own hard
   constraint) — flagged here for whoever picks up Phase 2.
+
+## 10. Full Task Lifecycle pipeline (extends Subtask 5, not a new subtask)
+
+Milton asked for a second stored `PipelineDef` "reflecting Wissel's
+current pipeline" more broadly than just the review-handoff loop.
+`src/core/full-lifecycle-pipeline.ts` (`buildFullLifecyclePipelineGraph`)
+puts one `triager` step in front of `buildReviewHandoffPipelineGraph`'s
+exact same loop (imports `REVIEW_HANDOFF_PUSHBACK_LIMIT` from
+`review-handoff-pipeline.ts` rather than duplicating the cap) — a real
+card starts as raw input triager turns into a structured card, not as an
+already-structured implementer task, so this is a strictly more accurate
+picture of how a task actually begins in this project.
+
+**Deliberately still excludes `planner` and `integrator`** — not
+because they were forgotten, but because both are fundamentally
+incompatible with this engine's static graph model, for the same reason
+named in §3.3: `planner` produces a runtime-decided number of subtask
+cards, and `PipelineStepDef`'s outgoing edges (`src/core/types.ts`) are
+fixed at authoring time. `integrator` only runs today as a downstream
+consequence of that same dynamic fan-out (`maybeSpawnIntegrator`,
+`src/core/orchestrator.ts`), so it has nothing to attach to here either.
+Bolting a fixed-arity "planner step" or an "integrate after approve"
+step onto this graph would misrepresent real behavior rather than
+recreate it — see `full-lifecycle-pipeline.ts`'s own doc comment for the
+point-by-point reasoning. Migrating `planner`'s fan-out onto a future,
+more expressive engine primitive remains Phase 2 work, unchanged from
+§3.3.
+
+`test/full-lifecycle-pipeline.test.ts` (gate lane) proves the graph
+shape (triage is the only true entry step, everything downstream is
+byte-identical to `buildReviewHandoffPipelineGraph`'s own shape) and both
+terminal outcomes against a scripted `claude`/Anthropic stand-in.
+`eval/pipeline-full-lifecycle.eval.ts` is the live smoke test (real
+`claude`, real git worktrees) — same two fixtures and pass-bar structure
+as Subtask 5's own eval, with an added assertion that triage runs exactly
+once per run; **not yet empirically run**, same reasoning as Subtask 5's
+eval (see §9).
+
+Seeded as a second, separate stored `PipelineDef` (`POST /pipelines`,
+name "Full Task Lifecycle") alongside the existing "Review-Handoff Loop"
+row — both visible and runnable from `/pipelines/edit` independently; this
+one is not a replacement for the other.

@@ -18,6 +18,7 @@
     "eval:implementer-reviewer": "bun run eval/implementer-reviewer.eval.ts",
     "eval:planner-subtask-plan": "bun run eval/planner-subtask-plan.eval.ts",
     "eval:pipeline-review-handoff": "bun run eval/pipeline-review-handoff.eval.ts",
+    "eval:pipeline-full-lifecycle": "bun run eval/pipeline-full-lifecycle.eval.ts",
     "eval:live-task-output": "bun run eval/live-task-output.eval.ts"
   },
   "devDependencies": {
