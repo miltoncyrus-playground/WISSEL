@@ -5,6 +5,8 @@ import type { Board, BoardEvent } from "../services/board.ts";
 import { SqliteBoard } from "../services/board.ts";
 import type { PipelineStore } from "../services/pipelines.ts";
 import { SqlitePipelineStore } from "../services/pipelines.ts";
+import type { ProjectStore } from "../services/projects.ts";
+import { SqliteProjectStore } from "../services/projects.ts";
 import { TelemetryLog } from "../services/telemetry.ts";
 import { HarnessPool } from "../core/harness-pool.ts";
 import { Registry } from "../core/registry.ts";
@@ -113,6 +115,20 @@ export interface CreateAppOptions {
    *  (see SqliteBoard.db's doc comment for why it has to be the *same*
    *  connection, not a second one opened against the same path). */
   pipelines?: PipelineStore;
+  /** Storage for registered projects/repos (see src/services/projects.ts
+   *  for the store's CRUD/clone contract) — injectable so tests never
+   *  share a real on-disk projects table. Defaults to a SqliteProjectStore
+   *  sharing `board`'s own connection, same reasoning as `pipelines` above. */
+  projects?: ProjectStore;
+  /** The `CommandRunner` used for `POST /projects/local`'s git checks and
+   *  `POST /projects/clone`'s git clone — same shared-real-runner
+   *  convention `harnessRunner` above already established (defaults to
+   *  `runViaBun`), kept as its own option rather than reusing
+   *  `harnessRunner` itself since that one's doc comment scopes it
+   *  specifically to `POST /harnesses/:id/enable`'s re-validation check.
+   *  Overridable so tests never spawn a real `git` subprocess for the
+   *  failure-path cases (bad URL, auth failure). */
+  commandRunner?: CommandRunner;
   /** Where a task's durable raw-output JSONL lives (see
    *  src/services/task-output.ts's own DEFAULT_TASK_OUTPUT_DIR). Defaults
    *  to `~/.wissel/task-output`; overridable so tests never touch that
@@ -194,6 +210,8 @@ export function createApp(
   // executeWriteTier-gated one.
   const pipelines: PipelineStore = opts.pipelines ?? new SqlitePipelineStore((board as SqliteBoard).db);
   const pipelineEditorDist = opts.pipelineEditorDist ?? DEFAULT_PIPELINE_EDITOR_DIST;
+  const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
+  const commandRunner = opts.commandRunner ?? runViaBun;
 
   // One Orchestrator instance regardless of whether the automatic loop is
   // started, so its `inFlight` guard covers both paths — a human clicking
@@ -466,6 +484,43 @@ export function createApp(
           const tasks = await board.list();
           const runs = tasks.filter((t) => t.pipelineId === parts[1] && t.parentTaskId === undefined).reverse();
           return json(runs);
+        }
+      }
+
+      if (parts[0] === "projects") {
+        if (parts.length === 1 && req.method === "GET") {
+          return json(await projects.list());
+        }
+
+        if (parts.length === 2 && parts[1] === "local" && req.method === "POST") {
+          const body = (await req.json()) as { path?: string; initGit?: boolean };
+          if (!body.path || !body.path.trim()) return json({ error: "path is required" }, 400);
+          const result = await projects.addLocalProject(body.path, { initGit: body.initGit }, commandRunner);
+          if ("error" in result) return json({ error: result.error }, 400);
+          return json(result.project, 201);
+        }
+
+        // Distinguishes a genuinely fresh clone (201) from the
+        // already-cloned-here case (200 + alreadyExists: true) by status
+        // code alone, so a client can branch on it without string-matching
+        // a message — see SqliteProjectStore.addGithubProject's own
+        // idempotent-by-sourceUrl behavior.
+        if (parts.length === 2 && parts[1] === "clone" && req.method === "POST") {
+          const body = (await req.json()) as { url?: string; name?: string };
+          if (!body.url || !body.url.trim()) return json({ error: "url is required" }, 400);
+          const result = await projects.addGithubProject(body.url, { name: body.name }, commandRunner);
+          if ("error" in result) return json({ error: result.error }, 400);
+          if (result.alreadyExists) return json({ project: result.project, alreadyExists: true }, 200);
+          return json(result.project, 201);
+        }
+
+        // Unregisters the row only — never touches the filesystem, matching
+        // ProjectStore.delete's own contract (see its doc comment).
+        if (parts.length === 2 && req.method === "DELETE") {
+          const existing = (await projects.list()).find((p) => p.id === parts[1]);
+          if (!existing) return notFound();
+          await projects.delete(parts[1]!);
+          return new Response(null, { status: 204 });
         }
       }
 

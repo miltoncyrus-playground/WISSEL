@@ -1242,3 +1242,107 @@ test("POST /pipelines/edit is not found (the SPA route only serves GET)", async 
   const res = await app(req("/pipelines/edit", { method: "POST" }));
   expect(res.status).toBe(404);
 });
+
+/** Runs real `git` synchronously for one-off test-fixture setup — same
+ *  helper as test/projects.test.ts's own `git()`, kept local here since
+ *  this file has no shared test-utils module to import it from. */
+function gitInit(dir: string): void {
+  const result = Bun.spawnSync(["git", "init", "-q"], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) {
+    throw new Error(`git init failed: ${result.stderr.toString("utf8")}`);
+  }
+}
+
+test("GET /projects on an empty board returns []", async () => {
+  const app = await makeApp();
+  const res = await app(req("/projects"));
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual([]);
+});
+
+test("POST /projects/local registers a real tmp git repo, and it shows up in a follow-up GET /projects", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-projects-local-"));
+  try {
+    gitInit(dir);
+    const app = await makeApp();
+
+    const createRes = await app(req("/projects/local", { method: "POST", body: JSON.stringify({ path: dir }) }));
+    expect(createRes.status).toBe(201);
+    const created = (await createRes.json()) as { id: string; name: string; path: string; source: string };
+    expect(created.source).toBe("local");
+    expect(created.path).toBe(dir);
+    expect(typeof created.id).toBe("string");
+
+    const listRes = await app(req("/projects"));
+    expect(await listRes.json()).toEqual([created]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /projects/local with a bad path 400s, and a follow-up GET /projects still shows nothing", async () => {
+  const app = await makeApp();
+
+  const res = await app(
+    req("/projects/local", { method: "POST", body: JSON.stringify({ path: join(tmpdir(), "wissel-api-projects-does-not-exist") }) }),
+  );
+  expect(res.status).toBe(400);
+  const body = (await res.json()) as { error: string };
+  expect(typeof body.error).toBe("string");
+
+  const listRes = await app(req("/projects"));
+  expect(await listRes.json()).toEqual([]);
+});
+
+test("POST /projects/clone 400s with the store's captured git stderr on a bad URL", async () => {
+  const commandRunner: CommandRunner = async () => ({ stdout: "", stderr: "fatal: repository 'nope' not found", exitCode: 128 });
+  const app = await makeApp(new SqliteBoard(), { commandRunner });
+
+  const res = await app(req("/projects/clone", { method: "POST", body: JSON.stringify({ url: "org/does-not-exist" }) }));
+  expect(res.status).toBe(400);
+  const body = (await res.json()) as { error: string };
+  expect(body.error).toContain("repository 'nope' not found");
+});
+
+test("POST /projects/clone called twice with the identical URL: 201 then 200 + alreadyExists", async () => {
+  let cloneCalls = 0;
+  const commandRunner: CommandRunner = async (cmd) => {
+    if (cmd[0] === "git" && cmd[1] === "clone") cloneCalls++;
+    return { stdout: "", stderr: "", exitCode: 0 };
+  };
+  const app = await makeApp(new SqliteBoard(), { commandRunner });
+
+  const first = await app(req("/projects/clone", { method: "POST", body: JSON.stringify({ url: "org/repo" }) }));
+  expect(first.status).toBe(201);
+  const firstBody = (await first.json()) as { id: string; sourceUrl: string };
+
+  const second = await app(req("/projects/clone", { method: "POST", body: JSON.stringify({ url: "org/repo" }) }));
+  expect(second.status).toBe(200);
+  const secondBody = (await second.json()) as { project: { id: string }; alreadyExists: boolean };
+  expect(secondBody.alreadyExists).toBe(true);
+  expect(secondBody.project.id).toBe(firstBody.id);
+
+  expect(cloneCalls).toBe(1);
+});
+
+test("DELETE /projects/:id removes it (404s on unknown, and it's gone from a follow-up GET /projects)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-projects-delete-"));
+  try {
+    gitInit(dir);
+    const app = await makeApp();
+
+    const created = (await (await app(req("/projects/local", { method: "POST", body: JSON.stringify({ path: dir }) }))).json()) as {
+      id: string;
+    };
+
+    const missing = await app(req("/projects/does-not-exist", { method: "DELETE" }));
+    expect(missing.status).toBe(404);
+
+    const del = await app(req(`/projects/${created.id}`, { method: "DELETE" }));
+    expect(del.status).toBe(204);
+
+    expect(await (await app(req("/projects"))).json()).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
