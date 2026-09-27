@@ -251,6 +251,24 @@ export class SqliteBoard implements Board {
         updatedAt TEXT NOT NULL
       );
     `);
+    // Registered projects/repos — schema owned here (same reasoning as
+    // `pipelines` above), CRUD owned by src/services/projects.ts's
+    // SqliteProjectStore, which shares this exact `db` instance. Brand
+    // new table, so CREATE TABLE IF NOT EXISTS alone is correct — no
+    // ALTER TABLE healing needed today. The day a column gets added to
+    // an *already-existing* projects table, it needs the same
+    // heal-on-open ALTER TABLE ... ADD COLUMN try/catch treatment every
+    // other table here gets (see the `tasks` table above).
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        path TEXT NOT NULL UNIQUE,
+        source TEXT NOT NULL,
+        sourceUrl TEXT,
+        createdAt TEXT NOT NULL
+      );
+    `);
     this.db.run(`
       CREATE TABLE IF NOT EXISTS routing_decisions (
         taskId TEXT NOT NULL,

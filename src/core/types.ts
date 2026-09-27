@@ -204,6 +204,19 @@ export interface PipelineHandoff {
   note?: string;
 }
 
+/** A registered project/repo — the durable backing for what
+ *  `TaskCard.repo` today is just a free-typed string for. See
+ *  src/services/projects.ts (storage/CRUD, two creation paths: a local
+ *  folder already on disk, or a fresh GitHub clone). */
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+  source: "local" | "github";
+  sourceUrl?: string;
+  createdAt: string;
+}
+
 export interface TaskCard {
   id: string;
   title: string;
