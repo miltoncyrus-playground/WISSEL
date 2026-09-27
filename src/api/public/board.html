@@ -472,6 +472,7 @@
       <button type="button" data-view="archive" aria-pressed="false">Archive</button>
       <button type="button" data-view="newtask" aria-pressed="false">New task</button>
       <button type="button" data-view="memory" aria-pressed="false">Memory</button>
+      <button type="button" data-view="projects" aria-pressed="false">Projects</button>
     </div>
     <div style="display: flex; align-items: center; gap: 16px;">
       <a href="/pipelines/edit" style="font-size: 13px;">Pipeline editor ↗</a>
@@ -611,6 +612,57 @@
     <section class="panel-flush section-gap">
       <div class="panel-head"><h2>Curation history</h2><span class="count" id="memoryHistoryCount"></span></div>
       <div style="padding: 16px;" id="memoryHistory"></div>
+    </section>
+  </section>
+
+  <section class="panel" id="projectsPanel" hidden>
+    <p class="eyebrow">Projects</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Register a local folder or clone a GitHub repo so it's available as a repo target elsewhere in wissel.</p>
+
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Add local folder</h2></div>
+      <div style="padding: 16px;">
+        <form id="projLocalForm">
+          <div class="field">
+            <label for="projLocalPath">Absolute path</label>
+            <input id="projLocalPath" type="text" required autocomplete="off" placeholder="/home/me/code/my-repo">
+          </div>
+          <div class="field">
+            <label><input id="projLocalInitGit" type="checkbox"> git init if needed</label>
+          </div>
+          <div class="form-actions">
+            <span id="projLocalStatus" class="form-status" hidden></span>
+            <span id="projLocalError" class="field-error" hidden></span>
+            <button type="submit" id="projLocalSubmit">Add folder</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Clone from GitHub</h2></div>
+      <div style="padding: 16px;">
+        <form id="projCloneForm">
+          <div class="field">
+            <label for="projCloneUrl">URL or org/repo</label>
+            <input id="projCloneUrl" type="text" required autocomplete="off" placeholder="org/repo or https://github.com/org/repo.git">
+          </div>
+          <div class="field">
+            <label for="projCloneName">Name (optional)</label>
+            <input id="projCloneName" type="text" autocomplete="off">
+          </div>
+          <div class="form-actions">
+            <span id="projCloneStatus" class="form-status" hidden></span>
+            <span id="projCloneError" class="field-error" hidden></span>
+            <button type="submit" id="projCloneSubmit">Clone</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Registered projects</h2><span class="count" id="projectsCount"></span></div>
+      <div class="fleet-list" id="projectsList"></div>
     </section>
   </section>
 </div>
@@ -2670,6 +2722,7 @@
   var archivePanel = document.getElementById("archivePanel");
   var newTaskPanel = document.getElementById("newTaskPanel");
   var memoryPanel = document.getElementById("memoryPanel");
+  var projectsPanel = document.getElementById("projectsPanel");
   document.querySelectorAll("#viewToggle button").forEach(function (btn) {
     btn.addEventListener("click", function () {
       document.querySelectorAll("#viewToggle button").forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
@@ -2680,10 +2733,12 @@
       archivePanel.hidden = view !== "archive";
       newTaskPanel.hidden = view !== "newtask";
       memoryPanel.hidden = view !== "memory";
+      projectsPanel.hidden = view !== "projects";
       // Refetched on every visit, not cached — a curation run since the
       // last time this tab was open should show up without a manual
       // page reload, and this is cheap (two small local reads).
       if (view === "memory") loadMemoryTab();
+      if (view === "projects") loadProjectsTab();
     });
   });
 
@@ -2817,6 +2872,166 @@
       historyEl.textContent = "Failed to load history: " + err.message;
     });
   }
+
+  // --- Projects tab ----------------------------------------------------
+
+  function projectRow(p) {
+    var row = document.createElement("div");
+    row.className = "fleet-row";
+
+    var main = document.createElement("div");
+    main.style.flex = "1"; main.style.minWidth = "0";
+    var head = document.createElement("div");
+    head.style.display = "flex"; head.style.alignItems = "center"; head.style.gap = "8px";
+    var nameEl = document.createElement("span"); nameEl.className = "fleet-id"; nameEl.textContent = p.name;
+    var sourceEl = document.createElement("span"); sourceEl.className = "tag"; sourceEl.textContent = p.source;
+    head.appendChild(nameEl); head.appendChild(sourceEl);
+    var pathEl = document.createElement("div"); pathEl.className = "fleet-desc mono"; pathEl.textContent = p.path;
+    main.appendChild(head); main.appendChild(pathEl);
+
+    var side = document.createElement("div");
+    side.style.flex = "none";
+    var removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "live-output-btn";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", function () {
+      // Same confirm-before-destroy shape as the task drawer's own
+      // "Delete" action (see drawerAction("Delete", ...) above) — this
+      // only unregisters the row (ProjectStore.delete never touches the
+      // filesystem), but the action is still irreversible from the UI's
+      // point of view, so it gets the same guard.
+      if (!window.confirm("Remove \"" + p.name + "\" from projects? This unregisters it here only — the folder on disk is untouched.")) return;
+      fetch("/projects/" + p.id, { method: "DELETE" }).then(function () { loadProjectsTab(); });
+    });
+    side.appendChild(removeBtn);
+
+    row.appendChild(main); row.appendChild(side);
+    return row;
+  }
+
+  function loadProjectsTab() {
+    fetch("/projects").then(function (r) { return r.json(); }).then(function (list) {
+      var wrap = document.getElementById("projectsList");
+      var countEl = document.getElementById("projectsCount");
+      wrap.textContent = "";
+      countEl.textContent = list.length ? (list.length + (list.length === 1 ? " project" : " projects")) : "";
+      if (list.length === 0) {
+        var empty = document.createElement("p");
+        empty.className = "muted";
+        empty.style.padding = "10px 16px";
+        empty.textContent = "No projects registered yet.";
+        wrap.appendChild(empty);
+        return;
+      }
+      list.forEach(function (p) { wrap.appendChild(projectRow(p)); });
+    }).catch(function (err) {
+      document.getElementById("projectsList").textContent = "Failed to load: " + err.message;
+    });
+  }
+
+  document.getElementById("projLocalForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var pathEl = document.getElementById("projLocalPath");
+    var initGitEl = document.getElementById("projLocalInitGit");
+    var errorEl = document.getElementById("projLocalError");
+    var statusEl = document.getElementById("projLocalStatus");
+    var submitBtn = document.getElementById("projLocalSubmit");
+
+    var path = pathEl.value.trim();
+    errorEl.hidden = true;
+    statusEl.hidden = true;
+
+    if (!path) {
+      errorEl.textContent = "Path is required.";
+      errorEl.hidden = false;
+      return;
+    }
+
+    submitBtn.disabled = true;
+    statusEl.hidden = false;
+    statusEl.textContent = "adding…";
+
+    fetch("/projects/local", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: path, initGit: initGitEl.checked }),
+    })
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+        return r.json();
+      })
+      .then(function (project) {
+        statusEl.textContent = "Added “" + project.name + "”.";
+        pathEl.value = "";
+        initGitEl.checked = false;
+        loadProjectsTab();
+      })
+      .catch(function (err) {
+        errorEl.textContent = err.message;
+        errorEl.hidden = false;
+        statusEl.hidden = true;
+      })
+      .finally(function () {
+        submitBtn.disabled = false;
+      });
+  });
+
+  document.getElementById("projCloneForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var urlEl = document.getElementById("projCloneUrl");
+    var nameEl = document.getElementById("projCloneName");
+    var errorEl = document.getElementById("projCloneError");
+    var statusEl = document.getElementById("projCloneStatus");
+    var submitBtn = document.getElementById("projCloneSubmit");
+
+    var url = urlEl.value.trim();
+    var name = nameEl.value.trim();
+    errorEl.hidden = true;
+    statusEl.hidden = true;
+
+    if (!url) {
+      errorEl.textContent = "URL is required.";
+      errorEl.hidden = false;
+      return;
+    }
+
+    submitBtn.disabled = true;
+    statusEl.hidden = false;
+    statusEl.textContent = "cloning…";
+
+    fetch("/projects/clone", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: url, name: name || undefined }),
+    })
+      .then(function (r) {
+        return r.json().then(function (body) { return { status: r.status, body: body }; });
+      })
+      .then(function (result) {
+        // 201 (fresh clone) and 200+alreadyExists (already registered
+        // here) are deliberately distinct API outcomes — see POST
+        // /projects/clone's own comment in src/api/server.ts — so they
+        // get distinct message text here instead of collapsing back
+        // into one "success" string.
+        if (result.status === 201) {
+          statusEl.textContent = "Cloned “" + result.body.name + "”.";
+        } else if (result.status === 200 && result.body.alreadyExists) {
+          statusEl.textContent = "Already registered here as “" + result.body.project.name + "”.";
+        } else {
+          throw new Error(result.body.error || ("HTTP " + result.status));
+        }
+        urlEl.value = "";
+        nameEl.value = "";
+        loadProjectsTab();
+      })
+      .catch(function (err) {
+        errorEl.textContent = err.message;
+        errorEl.hidden = false;
+        statusEl.hidden = true;
+      })
+      .finally(function () {
+        submitBtn.disabled = false;
+      });
+  });
 
   // Theme toggle: mirrors the view segmented-control's click/aria-pressed
   // pattern. "" (Auto) means no override — remove the attribute so the
