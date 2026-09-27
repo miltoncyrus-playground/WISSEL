@@ -215,6 +215,18 @@ export interface Project {
   source: "local" | "github";
   sourceUrl?: string;
   createdAt: string;
+  /** A cached, one-paragraph plain-language summary of what this project
+   *  does — see src/services/project-eli5.ts. Generated lazily (on the
+   *  first `GET /projects/:id/eli5` that finds it missing) and cached
+   *  here rather than regenerated on every board render — an LLM call
+   *  per page load would be both slow and a real, avoidable cost.
+   *  Undefined until first generated. */
+  eli5?: string;
+  /** When `eli5` was last (re)generated — undefined alongside `eli5`
+   *  itself. Lets the UI show staleness and offer a manual refresh
+   *  rather than silently trusting a summary that may predate the
+   *  project's current state. */
+  eli5UpdatedAt?: string;
 }
 
 export interface TaskCard {

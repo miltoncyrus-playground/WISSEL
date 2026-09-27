@@ -10,6 +10,8 @@ import { Registry } from "../src/core/registry.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
 import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../src/core/types.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
+import type { AnthropicMessagesClient } from "../src/executors/anthropic-api.ts";
+import type Anthropic from "@anthropic-ai/sdk";
 
 function req(path: string, init?: RequestInit): Request {
   return new Request(`http://localhost${path}`, init);
@@ -1342,6 +1344,107 @@ test("DELETE /projects/:id removes it (404s on unknown, and it's gone from a fol
     expect(del.status).toBe(204);
 
     expect(await (await app(req("/projects"))).json()).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** Real `git` synchronously, mirroring gitInit above — commits so
+ *  `GET /projects/:id/status`'s `git log -1` has something real to
+ *  report, not just an empty repo. */
+function gitInitWithCommit(dir: string): void {
+  gitInit(dir);
+  for (const args of [["config", "user.email", "wissel-test@example.com"], ["config", "user.name", "wissel test"], ["commit", "--allow-empty", "-q", "-m", "seed"]]) {
+    const result = Bun.spawnSync(["git", ...args], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+    if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr.toString("utf8")}`);
+  }
+}
+
+function fakeEli5Client(text: string): (apiKey?: string) => AnthropicMessagesClient {
+  return () => ({
+    messages: {
+      create: async (params): Promise<Anthropic.Message> =>
+        ({
+          id: "msg_1", type: "message", role: "assistant", model: params.model,
+          content: [{ type: "text", text, citations: null }],
+          stop_reason: "end_turn", stop_sequence: null,
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }) as Anthropic.Message,
+    },
+  });
+}
+
+test("GET /projects/:id/status returns real git state for a registered project (404 on unknown id)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-projects-status-"));
+  try {
+    gitInitWithCommit(dir);
+    const app = await makeApp();
+    const created = (await (await app(req("/projects/local", { method: "POST", body: JSON.stringify({ path: dir }) }))).json()) as { id: string };
+
+    const res = await app(req(`/projects/${created.id}/status`));
+    expect(res.status).toBe(200);
+    const status = (await res.json()) as { branch: string; dirty: boolean; latestCommit?: { message: string } };
+    expect(status.dirty).toBe(false);
+    expect(status.latestCommit?.message).toBe("seed");
+
+    const missing = await app(req("/projects/does-not-exist/status"));
+    expect(missing.status).toBe(404);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /projects/:id/eli5 generates and caches on first call, then serves the cache on a second call without invoking the model again", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-projects-eli5-"));
+  try {
+    gitInit(dir);
+    await writeFile(join(dir, "README.md"), "# Test project\nDoes a thing.");
+    let calls = 0;
+    const clientFactory = () => {
+      calls++;
+      return fakeEli5Client("A friendly one-paragraph explanation.")();
+    };
+    const app = await makeApp(new SqliteBoard(), { projectEli5ClientFactory: clientFactory });
+    const created = (await (await app(req("/projects/local", { method: "POST", body: JSON.stringify({ path: dir }) }))).json()) as { id: string };
+
+    const first = await app(req(`/projects/${created.id}/eli5`));
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as { eli5: string; cached: boolean };
+    expect(firstBody.eli5).toBe("A friendly one-paragraph explanation.");
+    expect(firstBody.cached).toBe(false);
+    expect(calls).toBe(1);
+
+    const second = await app(req(`/projects/${created.id}/eli5`));
+    const secondBody = (await second.json()) as { eli5: string; cached: boolean };
+    expect(secondBody.eli5).toBe("A friendly one-paragraph explanation.");
+    expect(secondBody.cached).toBe(true);
+    expect(calls).toBe(1); // no second model call — served from the cached project row
+
+    const refreshed = await app(req(`/projects/${created.id}/eli5?refresh=1`));
+    expect((await refreshed.json() as { cached: boolean }).cached).toBe(false);
+    expect(calls).toBe(2); // ?refresh=1 forces a real regeneration
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /projects/:id/eli5 surfaces a model failure as 502, and 404s on an unknown project id", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-projects-eli5-error-"));
+  try {
+    gitInit(dir);
+    const throwingClientFactory: (apiKey?: string) => AnthropicMessagesClient = () => ({
+      messages: { create: async () => { throw new Error("network down"); } },
+    });
+    const app = await makeApp(new SqliteBoard(), { projectEli5ClientFactory: throwingClientFactory });
+    const created = (await (await app(req("/projects/local", { method: "POST", body: JSON.stringify({ path: dir }) }))).json()) as { id: string };
+
+    const res = await app(req(`/projects/${created.id}/eli5`));
+    expect(res.status).toBe(502);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("network down");
+
+    const missing = await app(req("/projects/does-not-exist/eli5"));
+    expect(missing.status).toBe(404);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

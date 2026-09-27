@@ -488,6 +488,14 @@
     </div>
   </div>
 
+  <section id="projectSummaryBox" class="panel-flush section-gap">
+    <div class="panel-head">
+      <h2 id="projSummaryTitle">Projects</h2>
+      <button type="button" id="projSummaryRefreshBtn" class="harness-manage-btn" hidden>Refresh summary</button>
+    </div>
+    <div id="projSummaryBody" style="padding: 12px 16px; max-height: 160px; overflow-y: auto; font-size: 13px; line-height: 1.5;"></div>
+  </section>
+
   <section id="boardPanel">
     <div class="stats" id="stats"></div>
 
@@ -2208,6 +2216,7 @@
 
   function render() {
     renderProjectSwitcher();
+    renderProjectSummaryBox();
     renderStats();
     renderKanban();
     renderSwimlanes();
@@ -2305,6 +2314,136 @@
       hint.hidden = true;
     }
     updateSubmitEnabled();
+  }
+
+  // Real git state for the selected project (GET /projects/:id/status)
+  // — cheap local git, so it's fine to recompute; but only when the
+  // selection actually changes, not on every render() tick (an SSE event
+  // firing every few seconds shouldn't spawn a fresh git process each
+  // time for data that hasn't moved). `null` means "not loaded yet for
+  // the current selection."
+  var projSummaryStatus = null;
+  var projSummaryStatusForPath = null;
+  var projSummaryStatusLoading = false;
+  var projSummaryEli5Loading = {};
+
+  function fetchProjectStatus(projectId, forPath) {
+    if (projSummaryStatusLoading) return;
+    projSummaryStatusLoading = true;
+    fetch("/projects/" + projectId + "/status").then(function (r) { return r.json(); }).then(function (status) {
+      projSummaryStatusLoading = false;
+      // The selection may have changed again while this was in flight —
+      // a stale response for an old selection must never overwrite the
+      // (already-loading-again) state for whatever's selected now.
+      if (forPath !== selectedProjectPath) return;
+      projSummaryStatus = status.error ? null : status;
+      renderProjectSummaryBox();
+    }).catch(function () {
+      projSummaryStatusLoading = false;
+    });
+  }
+
+  // Generates (if missing) or force-refreshes (refresh: true) a
+  // project's ELI5 summary, then patches the cached value directly onto
+  // the matching entry in `projects` so every reader of that array (this
+  // box, the New Task repo hint, a future re-render) sees it without a
+  // full /projects refetch.
+  function fetchProjectEli5(projectId, refresh) {
+    if (projSummaryEli5Loading[projectId] && !refresh) return;
+    projSummaryEli5Loading[projectId] = true;
+    fetch("/projects/" + projectId + "/eli5" + (refresh ? "?refresh=1" : "")).then(function (r) { return r.json(); }).then(function (body) {
+      projSummaryEli5Loading[projectId] = false;
+      if (body.error) return;
+      var project = projects.filter(function (p) { return p.id === projectId; })[0];
+      if (project) { project.eli5 = body.eli5; project.eli5UpdatedAt = body.eli5UpdatedAt; }
+      renderProjectSummaryBox();
+    }).catch(function () {
+      projSummaryEli5Loading[projectId] = false;
+    });
+  }
+
+  // The first sentence only, capped — the "all projects" list is meant
+  // to stay scannable/compact, not reproduce each project's full
+  // paragraph N times over.
+  function eli5OneLiner(text) {
+    var firstSentence = (text.split(/(?<=[.!?])\s/)[0] || text).trim();
+    return firstSentence.length > 140 ? firstSentence.slice(0, 140) + "…" : firstSentence;
+  }
+
+  function formatProjectStatusLine(status) {
+    var bits = [status.detached ? ("detached @ " + status.branch) : status.branch];
+    bits.push(status.dirty ? (status.changedFiles + (status.changedFiles === 1 ? " file changed" : " files changed")) : "clean");
+    if (status.hasUpstream && (status.ahead !== undefined || status.behind !== undefined)) {
+      bits.push("↑" + (status.ahead || 0) + " ↓" + (status.behind || 0));
+    }
+    var line = bits.join(" · ");
+    if (status.latestCommit) {
+      line += " — latest checkout: " + status.latestCommit.shortSha + " “" + status.latestCommit.message + "” (" + status.latestCommit.date.slice(0, 10) + ")";
+    } else {
+      line += " — no commits yet";
+    }
+    return line;
+  }
+
+  // Top box: an ELI5 of the selected project (or, with none selected, a
+  // compact one-line-each list across every registered project), plus —
+  // for a single selected project only, since git state is inherently
+  // per-repo — its current branch/dirty state and latest checkout. See
+  // src/services/project-status.ts (deterministic git lookup) and
+  // src/services/project-eli5.ts (the one LLM-backed piece, cached on
+  // the Project row so it's not regenerated on every render).
+  function renderProjectSummaryBox() {
+    var body = document.getElementById("projSummaryBody");
+    var title = document.getElementById("projSummaryTitle");
+    var refreshBtn = document.getElementById("projSummaryRefreshBtn");
+    if (!body || !title || !refreshBtn) return;
+
+    if (!selectedProjectPath) {
+      title.textContent = "Projects";
+      refreshBtn.hidden = true;
+      body.textContent = "";
+      if (projects.length === 0) {
+        body.textContent = "No projects registered yet — add one in the Projects tab.";
+        return;
+      }
+      projects.forEach(function (p) {
+        var line = document.createElement("p");
+        line.style.margin = "0 0 6px 0";
+        var strong = document.createElement("strong");
+        strong.textContent = p.name + ": ";
+        line.appendChild(strong);
+        line.appendChild(document.createTextNode(p.eli5 ? eli5OneLiner(p.eli5) : "Summarizing…"));
+        body.appendChild(line);
+        if (!p.eli5) fetchProjectEli5(p.id, false);
+      });
+      return;
+    }
+
+    var project = projects.filter(function (p) { return p.path === selectedProjectPath; })[0];
+    if (!project) { title.textContent = "Project"; refreshBtn.hidden = true; body.textContent = ""; return; }
+
+    title.textContent = project.name;
+    refreshBtn.hidden = false;
+    refreshBtn.onclick = function () { fetchProjectEli5(project.id, true); };
+
+    if (projSummaryStatusForPath !== selectedProjectPath) {
+      projSummaryStatusForPath = selectedProjectPath;
+      projSummaryStatus = null;
+      fetchProjectStatus(project.id, selectedProjectPath);
+    }
+
+    body.textContent = "";
+    var eli5P = document.createElement("p");
+    eli5P.style.margin = "0 0 8px 0";
+    eli5P.textContent = project.eli5 || "Generating summary…";
+    body.appendChild(eli5P);
+    if (!project.eli5) fetchProjectEli5(project.id, false);
+
+    var stateP = document.createElement("p");
+    stateP.className = "mono";
+    stateP.style.cssText = "margin: 0; font-size: 12px; color: var(--ink-muted);";
+    stateP.textContent = projSummaryStatus ? formatProjectStatusLine(projSummaryStatus) : "Loading current state…";
+    body.appendChild(stateP);
   }
 
   document.getElementById("projectSwitcher").addEventListener("change", function (ev) {

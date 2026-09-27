@@ -24,6 +24,9 @@ import { ApiExecutor } from "../executors/anthropic-api.ts";
 import { CodexReadOnlyExecutor } from "../executors/codex-readonly.ts";
 import { CodexWriteExecutor } from "../executors/codex-write.ts";
 import { getRepoDiff } from "../services/repo-diff.ts";
+import { getProjectGitStatus } from "../services/project-status.ts";
+import { generateProjectEli5 } from "../services/project-eli5.ts";
+import type { AnthropicMessagesClient } from "../executors/anthropic-api.ts";
 import { mergeTaskWorktree, removeTaskWorktree } from "../services/worktree.ts";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
 import { checkHarnessAuth } from "../core/harness-discovery.ts";
@@ -120,15 +123,22 @@ export interface CreateAppOptions {
    *  share a real on-disk projects table. Defaults to a SqliteProjectStore
    *  sharing `board`'s own connection, same reasoning as `pipelines` above. */
   projects?: ProjectStore;
-  /** The `CommandRunner` used for `POST /projects/local`'s git checks and
-   *  `POST /projects/clone`'s git clone — same shared-real-runner
-   *  convention `harnessRunner` above already established (defaults to
-   *  `runViaBun`), kept as its own option rather than reusing
-   *  `harnessRunner` itself since that one's doc comment scopes it
-   *  specifically to `POST /harnesses/:id/enable`'s re-validation check.
-   *  Overridable so tests never spawn a real `git` subprocess for the
-   *  failure-path cases (bad URL, auth failure). */
+  /** The `CommandRunner` used for `POST /projects/local`'s git checks,
+   *  `POST /projects/clone`'s git clone, and `GET /projects/:id/status`'s
+   *  real git state lookup (src/services/project-status.ts) — same
+   *  shared-real-runner convention `harnessRunner` above already
+   *  established (defaults to `runViaBun`), kept as its own option rather
+   *  than reusing `harnessRunner` itself since that one's doc comment
+   *  scopes it specifically to `POST /harnesses/:id/enable`'s
+   *  re-validation check. Overridable so tests never spawn a real `git`
+   *  subprocess for the failure-path cases (bad URL, auth failure). */
   commandRunner?: CommandRunner;
+  /** Injectable Anthropic client factory for `GET /projects/:id/eli5`
+   *  (src/services/project-eli5.ts) — same convention as ApiExecutor's
+   *  own `clientFactory` option (src/executors/anthropic-api.ts):
+   *  defaults to a real client using ambient credentials, overridable so
+   *  tests never spend a real token generating a summary. */
+  projectEli5ClientFactory?: (apiKey?: string) => AnthropicMessagesClient;
   /** Where a task's durable raw-output JSONL lives (see
    *  src/services/task-output.ts's own DEFAULT_TASK_OUTPUT_DIR). Defaults
    *  to `~/.wissel/task-output`; overridable so tests never touch that
@@ -212,6 +222,7 @@ export function createApp(
   const pipelineEditorDist = opts.pipelineEditorDist ?? DEFAULT_PIPELINE_EDITOR_DIST;
   const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
   const commandRunner = opts.commandRunner ?? runViaBun;
+  const projectEli5ClientFactory = opts.projectEli5ClientFactory;
 
   // One Orchestrator instance regardless of whether the automatic loop is
   // started, so its `inFlight` guard covers both paths — a human clicking
@@ -521,6 +532,37 @@ export function createApp(
           if (!existing) return notFound();
           await projects.delete(parts[1]!);
           return new Response(null, { status: 204 });
+        }
+
+        // Real, deterministic git state — no LLM involved (see
+        // src/services/project-status.ts's own doc comment). Recomputed
+        // fresh on every call, unlike eli5 below: this is cheap local
+        // git, not a paid API call, so there's nothing worth caching.
+        if (parts.length === 3 && parts[2] === "status" && req.method === "GET") {
+          const project = (await projects.list()).find((p) => p.id === parts[1]);
+          if (!project) return notFound();
+          const status = await getProjectGitStatus(project.path, commandRunner);
+          if ("error" in status) return json({ error: status.error }, 400);
+          return json(status);
+        }
+
+        // Lazily generates and caches a one-paragraph ELI5 summary
+        // (src/services/project-eli5.ts) — the one part of this feature
+        // that's a real LLM call, so it only ever runs once per project
+        // and is reused after that. `?refresh=1` forces regeneration
+        // (e.g. after the repo's README changed); otherwise a cached
+        // summary is returned as-is, cost-free.
+        if (parts.length === 3 && parts[2] === "eli5" && req.method === "GET") {
+          const project = (await projects.list()).find((p) => p.id === parts[1]);
+          if (!project) return notFound();
+          const forceRefresh = url.searchParams.get("refresh") === "1";
+          if (project.eli5 && !forceRefresh) {
+            return json({ eli5: project.eli5, eli5UpdatedAt: project.eli5UpdatedAt, cached: true });
+          }
+          const generated = await generateProjectEli5(project.path, project.name, { clientFactory: projectEli5ClientFactory });
+          if ("error" in generated) return json({ error: generated.error }, 502);
+          const updated = await projects.setEli5(project.id, generated.eli5);
+          return json({ eli5: updated.eli5, eli5UpdatedAt: updated.eli5UpdatedAt, cached: false });
         }
       }
 

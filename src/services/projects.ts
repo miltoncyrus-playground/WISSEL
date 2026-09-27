@@ -21,6 +21,11 @@ export interface ProjectStore {
   ): Promise<{ project: Project; alreadyExists?: boolean } | { error: string }>;
   list(): Promise<Project[]>;
   delete(id: string): Promise<void>;
+  /** Caches a generated ELI5 summary (see src/services/project-eli5.ts)
+   *  against this project's row, stamping `eli5UpdatedAt` to now. Throws
+   *  if the id doesn't exist, matching every other mutator in this file
+   *  (addLocalProject/addGithubProject only ever produce a real row). */
+  setEli5(id: string, eli5: string): Promise<Project>;
 }
 
 interface ProjectRow {
@@ -30,6 +35,8 @@ interface ProjectRow {
   source: Project["source"];
   sourceUrl: string | null;
   createdAt: string;
+  eli5: string | null;
+  eli5UpdatedAt: string | null;
 }
 
 function rowToProject(row: ProjectRow): Project {
@@ -40,6 +47,8 @@ function rowToProject(row: ProjectRow): Project {
     source: row.source,
     sourceUrl: row.sourceUrl ?? undefined,
     createdAt: row.createdAt,
+    eli5: row.eli5 ?? undefined,
+    eli5UpdatedAt: row.eli5UpdatedAt ?? undefined,
   };
 }
 
@@ -97,6 +106,17 @@ export class SqliteProjectStore implements ProjectStore {
         createdAt TEXT NOT NULL
       );
     `);
+    // eli5/eli5UpdatedAt shipped after the original table — heal-on-open,
+    // same ALTER TABLE ... ADD COLUMN try/catch pattern every post-launch
+    // column in this codebase already uses (see board.ts). Both nullable,
+    // so an existing on-disk projects table opens and writes cleanly.
+    for (const ddl of ["ALTER TABLE projects ADD COLUMN eli5 TEXT;", "ALTER TABLE projects ADD COLUMN eli5UpdatedAt TEXT;"]) {
+      try {
+        this.db.run(ddl);
+      } catch {
+        // already has the column
+      }
+    }
   }
 
   async addLocalProject(path: string, opts: { initGit?: boolean }, runner: CommandRunner): Promise<{ project: Project } | { error: string }> {
@@ -183,5 +203,13 @@ export class SqliteProjectStore implements ProjectStore {
    */
   async delete(id: string): Promise<void> {
     this.db.run("DELETE FROM projects WHERE id = ?", [id]);
+  }
+
+  async setEli5(id: string, eli5: string): Promise<Project> {
+    const row = this.db.query("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | null;
+    if (!row) throw new Error(`project not found: ${id}`);
+    const eli5UpdatedAt = new Date().toISOString();
+    this.db.run("UPDATE projects SET eli5 = ?, eli5UpdatedAt = ? WHERE id = ?", [eli5, eli5UpdatedAt, id]);
+    return rowToProject({ ...row, eli5, eli5UpdatedAt });
   }
 }
