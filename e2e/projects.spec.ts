@@ -216,3 +216,97 @@ test.describe("Projects tab", () => {
     }
   });
 });
+
+test.describe("Project switcher", () => {
+  test("selecting a project filters the board to only its own cards", async ({ page, request }) => {
+    const dir = await tmp("switch-a");
+    const otherRepo = "/tmp/wissel-e2e-project-switch-other-" + Date.now();
+    let projectId: string | undefined;
+    try {
+      git(["init", "-q"], dir);
+      const project = await (await request.post("/projects/local", { data: { path: dir, initGit: false } })).json();
+      projectId = project.id;
+
+      const titleA = unique("Card in project A");
+      const titleB = unique("Card in a different repo");
+      await request.post("/tasks", { data: { title: titleA, body: "x", labels: [], repo: dir } });
+      await request.post("/tasks", { data: { title: titleB, body: "x", labels: [], repo: otherRepo } });
+
+      await page.goto("/board");
+      // Before selecting a project, both cards are visible.
+      await expect(page.locator("#kanbanBody")).toContainText(titleA);
+      await expect(page.locator("#kanbanBody")).toContainText(titleB);
+
+      await page.locator("#projectSwitcher").selectOption({ value: dir });
+      await expect(page.locator("#kanbanBody")).toContainText(titleA);
+      await expect(page.locator("#kanbanBody")).not.toContainText(titleB);
+      await expect(page.locator("#taskCount")).toContainText("1 task");
+
+      await page.locator("#projectSwitcher").selectOption({ value: "" });
+      await expect(page.locator("#kanbanBody")).toContainText(titleA);
+      await expect(page.locator("#kanbanBody")).toContainText(titleB);
+    } finally {
+      if (projectId) await page.request.delete(`/projects/${projectId}`).catch(() => {});
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a selected project locks the New Task repo field and the created card carries that repo", async ({ page, request }) => {
+    const dir = await tmp("switch-lock");
+    let projectId: string | undefined;
+    try {
+      git(["init", "-q"], dir);
+      const project = await (await request.post("/projects/local", { data: { path: dir, initGit: false } })).json();
+      projectId = project.id;
+
+      await page.goto("/board");
+      await page.locator("#projectSwitcher").selectOption({ value: dir });
+
+      await page.getByRole("button", { name: "New task" }).click();
+      await expect(page.locator("#ntRepo")).toHaveValue(dir);
+      await expect(page.locator("#ntRepo")).toHaveAttribute("readonly", "");
+      await expect(page.locator("#ntRepoProjectHint")).toBeVisible();
+      await expect(page.locator("#ntRepoProjectHint")).toContainText(project.name);
+
+      const title = unique("Locked-to-project card");
+      await page.locator("#ntTitle").fill(title);
+      await page.locator("#ntBody").fill("Created while a project was selected.");
+
+      const [createResponse] = await Promise.all([
+        page.waitForResponse((r) => r.url().endsWith("/tasks") && r.request().method() === "POST"),
+        page.locator("#newTaskForm button[type=submit]").click(),
+      ]);
+      // Asserts the real outgoing request body's repo field, not just
+      // what the (readonly) input displays — the same discipline this
+      // file's other tests already hold POST /projects/* to.
+      expect(createResponse.request().postDataJSON().repo).toBe(dir);
+
+      await page.locator("#projectSwitcher").selectOption({ value: "" });
+      await expect(page.locator("#ntRepo")).not.toHaveAttribute("readonly", "");
+      await expect(page.locator("#ntRepoProjectHint")).toBeHidden();
+    } finally {
+      if (projectId) await page.request.delete(`/projects/${projectId}`).catch(() => {});
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the selected project persists across a reload", async ({ page, request }) => {
+    const dir = await tmp("switch-persist");
+    let projectId: string | undefined;
+    try {
+      git(["init", "-q"], dir);
+      const project = await (await request.post("/projects/local", { data: { path: dir, initGit: false } })).json();
+      projectId = project.id;
+
+      await page.goto("/board");
+      await page.locator("#projectSwitcher").selectOption({ value: dir });
+      await expect(page.locator("#projectSwitcher")).toHaveValue(dir);
+
+      await page.reload();
+      await expect(page.locator("#projectSwitcher")).toHaveValue(dir);
+    } finally {
+      if (projectId) await page.request.delete(`/projects/${projectId}`).catch(() => {});
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

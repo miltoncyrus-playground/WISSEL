@@ -475,6 +475,9 @@
       <button type="button" data-view="projects" aria-pressed="false">Projects</button>
     </div>
     <div style="display: flex; align-items: center; gap: 16px;">
+      <select id="projectSwitcher" title="Filter the board to one project; new cards default to it" style="font-size: 13px;">
+        <option value="">All projects</option>
+      </select>
       <a href="/pipelines/edit" style="font-size: 13px;">Pipeline editor ↗</a>
       <div class="segmented" id="themeToggle" role="group" aria-label="Theme">
         <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
@@ -540,6 +543,7 @@
         <label for="ntRepo">Repo</label>
         <input id="ntRepo" type="text" required list="ntRepoList" autocomplete="off">
         <datalist id="ntRepoList"></datalist>
+        <p class="field-hint" id="ntRepoProjectHint" hidden></p>
       </div>
 
       <div class="field" style="position: relative;">
@@ -2203,6 +2207,7 @@
   }
 
   function render() {
+    renderProjectSwitcher();
     renderStats();
     renderKanban();
     renderSwimlanes();
@@ -2221,6 +2226,23 @@
   var harnesses = [];
   var projects = [];
 
+  // `allTasks` is every task the server returns, unfiltered; `tasks`
+  // (declared once, up top) is the project-scoped working set every
+  // render function already reads — see applyProjectFilter. Keeping the
+  // split here, rather than threading a project filter through every
+  // render*/select-option function individually, means renderKanban,
+  // renderSwimlanes, renderStats, renderArchiveTab,
+  // renderDependsOnOptions, renderParentTaskOptions, findTask, and
+  // isActive all get correct per-project scoping for free, with zero
+  // changes to any of them.
+  var allTasks = [];
+  var selectedProjectPath = "";
+  try { selectedProjectPath = localStorage.getItem("wissel-selected-project") || ""; } catch (e) {}
+
+  function applyProjectFilter() {
+    tasks = selectedProjectPath ? allTasks.filter(function (t) { return t.repo === selectedProjectPath; }) : allTasks;
+  }
+
   function refetchTasks() {
     // /harnesses is refetched alongside /tasks (not just once at
     // startup) because its activeCount is live server-side state — a
@@ -2230,11 +2252,70 @@
       fetch("/tasks").then(function (r) { return r.json(); }),
       fetch("/harnesses").then(function (r) { return r.json(); }),
     ]).then(function (results) {
-      tasks = results[0];
+      allTasks = results[0];
       harnesses = results[1];
+      applyProjectFilter();
       render();
     });
   }
+
+  // Options mirror the switcher's own <option> list; "All projects" (the
+  // persisted selection no longer matching a real project's path — the
+  // project was removed, or nothing was ever selected) resets cleanly to
+  // showing everything rather than silently freezing on a dead filter.
+  function renderProjectSwitcher() {
+    var select = document.getElementById("projectSwitcher");
+    if (!select) return;
+    if (selectedProjectPath && !projects.some(function (p) { return p.path === selectedProjectPath; })) {
+      selectedProjectPath = "";
+      try { localStorage.removeItem("wissel-selected-project"); } catch (e) {}
+      applyProjectFilter();
+    }
+    select.textContent = "";
+    var allOpt = document.createElement("option");
+    allOpt.value = ""; allOpt.textContent = "All projects";
+    select.appendChild(allOpt);
+    projects.forEach(function (p) {
+      var opt = document.createElement("option");
+      opt.value = p.path;
+      opt.textContent = p.name + " (" + p.source + ")";
+      select.appendChild(opt);
+    });
+    select.value = selectedProjectPath;
+    applyProjectLockToNewTaskForm();
+  }
+
+  // Enforces "cards created while a project is selected only ever apply
+  // to that project": locks the New Task repo field to the selected
+  // project's path (read-only, not just pre-filled) so it can't be
+  // retyped to something else by accident. "All projects" reverts to the
+  // normal free-text + datalist behavior, unchanged.
+  function applyProjectLockToNewTaskForm() {
+    var repoEl = document.getElementById("ntRepo");
+    var hint = document.getElementById("ntRepoProjectHint");
+    if (!repoEl || !hint) return;
+    if (selectedProjectPath) {
+      if (repoEl.value !== selectedProjectPath) repoEl.value = selectedProjectPath;
+      repoEl.readOnly = true;
+      var project = projects.filter(function (p) { return p.path === selectedProjectPath; })[0];
+      hint.textContent = "Locked to the selected project" + (project ? " (" + project.name + ")" : "") + ". Switch to “All projects” to target a different repo.";
+      hint.hidden = false;
+    } else {
+      repoEl.readOnly = false;
+      hint.hidden = true;
+    }
+    updateSubmitEnabled();
+  }
+
+  document.getElementById("projectSwitcher").addEventListener("change", function (ev) {
+    selectedProjectPath = ev.target.value;
+    try {
+      if (selectedProjectPath) localStorage.setItem("wissel-selected-project", selectedProjectPath);
+      else localStorage.removeItem("wissel-selected-project");
+    } catch (e) {}
+    applyProjectFilter();
+    render();
+  });
 
   // One pill per harness that's actually discovered and available —
   // enabled: false (a harnesses.yaml entry that failed re-verification,
@@ -2556,7 +2637,12 @@
   function resetNewTaskForm(keepRepo) {
     document.getElementById("ntTitle").value = "";
     document.getElementById("ntBody").value = "";
-    if (!keepRepo) document.getElementById("ntRepo").value = "";
+    // A selected project always wins over keepRepo/clear — the whole
+    // point of locking the field (applyProjectLockToNewTaskForm) is that
+    // a card created while a project is active can't drift onto a
+    // different repo just because a prior form reset cleared it.
+    if (!keepRepo && !selectedProjectPath) document.getElementById("ntRepo").value = "";
+    applyProjectLockToNewTaskForm();
     ntLabels = [];
     renderChips();
     document.getElementById("ntLabelInput").value = "";
@@ -2598,9 +2684,10 @@
     allAgents = results[0] || [];
     allAgents.forEach(function (a) { agentsById[a.id] = a; });
     knownTags = uniqueSorted(allAgents.reduce(function (acc, a) { return acc.concat(a.tags || []); }, []));
-    tasks = results[1] || [];
+    allTasks = results[1] || [];
     harnesses = results[2] || [];
     projects = results[3] || [];
+    applyProjectFilter();
     render();
     renderOverrideGrid();
 
@@ -2912,6 +2999,14 @@
 
   function loadProjectsTab() {
     fetch("/projects").then(function (r) { return r.json(); }).then(function (list) {
+      // Keeps the global `projects` array (and everything reading it —
+      // the project switcher, the New Task repo datalist) in sync the
+      // moment a project is added or removed here, rather than only
+      // after the next full page load.
+      projects = list;
+      renderProjectSwitcher();
+      renderRepoOptions();
+
       var wrap = document.getElementById("projectsList");
       var countEl = document.getElementById("projectsCount");
       wrap.textContent = "";
