@@ -4,6 +4,7 @@ import { buildAgentPrompt } from "../core/prompt.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import type { CommandResult, CommandRunner } from "./claude-cli.ts";
 import { resolveMcpGrants } from "./mcp-config.ts";
+import { resolveScratchWorkspace } from "../services/scratch-workspace.ts";
 
 export type { CommandResult, CommandRunner } from "./claude-cli.ts";
 
@@ -122,6 +123,9 @@ export interface RunCodexOptions {
    *  parseJsonl below still reads the full accumulated stdout, exactly
    *  as before. */
   onChunk?: (line: unknown) => void;
+  /** Where a repo-less task's scratch workspace lives — see
+   *  RunClaudeOptions.homeDir's own doc comment, identical contract. */
+  homeDir?: string;
 }
 
 /**
@@ -157,7 +161,7 @@ export interface RunCodexOptions {
  * concrete follow-up this leaves open.
  */
 export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
-  const { runner, task, agent, sandbox, model, env, memoryPath, onChunk, mcpAccess, mcpServers } = opts;
+  const { runner, task, agent, sandbox, model, env, memoryPath, onChunk, mcpAccess, mcpServers, homeDir } = opts;
 
   const grants = resolveMcpGrants(mcpAccess, mcpServers);
   if (grants.length > 0) {
@@ -175,9 +179,15 @@ export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
   if (model) cmd.push("-m", model);
   cmd.push(buildAgentPrompt(task, agent, memory));
 
+  // Same fallback runClaude's own cwd resolution uses — see its doc
+  // comment. CodexWriteExecutor always hands this function a task whose
+  // `repo` is already its worktree path, so this only triggers for a
+  // repo-less readonly task.
+  const cwd = task.repo ?? (await resolveScratchWorkspace(task.id, homeDir));
+
   let cmdResult: CommandResult;
   try {
-    cmdResult = await runner(cmd, { cwd: task.repo, env, onChunk });
+    cmdResult = await runner(cmd, { cwd, env, onChunk });
   } catch (e) {
     return fail(task, agent, `failed to spawn codex: ${(e as Error).message}`);
   }

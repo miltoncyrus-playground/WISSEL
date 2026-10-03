@@ -30,6 +30,10 @@ export interface ReadOnlyExecutorOptions {
    *  Undefined (the default) keeps runClaude's non-streaming
    *  `--output-format json` behavior entirely unchanged. */
   onChunk?: (taskId: string, line: unknown) => void;
+  /** Where a repo-less task's scratch workspace lives, passed straight
+   *  through to runClaude — injectable so tests never touch the real
+   *  $HOME. Omitted uses the real one (`~/.wissel/scratch/<taskId>`). */
+  homeDir?: string;
 }
 
 /**
@@ -52,6 +56,7 @@ export class ReadOnlyExecutor implements Executor {
   private memoryPath?: string;
   private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
+  private homeDir?: string;
 
   constructor(opts: ReadOnlyExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
@@ -59,6 +64,7 @@ export class ReadOnlyExecutor implements Executor {
     this.memoryPath = opts.memoryPath;
     this.mcpServers = opts.mcpServers;
     this.onChunk = opts.onChunk;
+    this.homeDir = opts.homeDir;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -81,6 +87,7 @@ export class ReadOnlyExecutor implements Executor {
       mcpAccess: agent.mcpAccess,
       mcpServers: this.mcpServers,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
+      homeDir: this.homeDir,
     });
     return harness ? { ...result, harnessId: harness.id } : result;
   }

@@ -479,6 +479,79 @@ test("POST /tasks accepts a valid harnessOverride+model, 400s on an invalid mode
   }
 });
 
+// --- optional repo / scratch workspace (docs/SDD-mcp-orchestration.md §3.3/§4, Subtask 5) ---
+
+test("POST /tasks with no repo and labels that resolve to a write/bash-capable agent 400s with a clear error, and never creates the task", async () => {
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+
+  const res = await app(
+    req("/tasks", {
+      method: "POST",
+      body: JSON.stringify({ title: "fix the bug", body: "", labels: ["code", "typescript"] }),
+    }),
+  );
+
+  expect(res.status).toBe(400);
+  const body = (await res.json()) as { error: string };
+  expect(body.error).toContain("repo is required");
+  expect(body.error).toContain("implementer");
+  expect(await board.list()).toEqual([]);
+});
+
+test("POST /tasks with no repo and labels that resolve to a readonly, no-file-access agent succeeds with repo left undefined", async () => {
+  const app = await makeApp();
+
+  const res = await app(
+    req("/tasks", {
+      method: "POST",
+      body: JSON.stringify({ title: "triage this", body: "raw input", labels: ["intake", "unstructured"] }),
+    }),
+  );
+
+  expect(res.status).toBe(201);
+  const task = (await res.json()) as TaskCard;
+  expect(task.repo).toBeUndefined();
+});
+
+// Ambiguous/no-match labels at creation time are allowed through without
+// a repo — Orchestrator.process's own write/bash-access check is the
+// dispatch-time safety net if a later label edit routes it to a
+// write-tier agent (see orchestrator.ts).
+test("POST /tasks with no repo and labels that don't confidently resolve to anything succeeds without a repo", async () => {
+  const app = await makeApp();
+
+  const res = await app(
+    req("/tasks", {
+      method: "POST",
+      body: JSON.stringify({ title: "ambiguous", body: "", labels: ["totally-unknown-label"] }),
+    }),
+  );
+
+  expect(res.status).toBe(201);
+  const task = (await res.json()) as TaskCard;
+  expect(task.repo).toBeUndefined();
+});
+
+// Regression: every existing repo-supplied creation path (write-tier and
+// readonly alike) is completely unaffected by the no-repo validation
+// above.
+test("POST /tasks with a real repo is unaffected regardless of which agent the labels resolve to", async () => {
+  const app = await makeApp();
+
+  const writeTier = await app(
+    req("/tasks", { method: "POST", body: JSON.stringify({ title: "fix the bug", body: "", labels: ["code", "typescript"], repo: "/real/repo" }) }),
+  );
+  expect(writeTier.status).toBe(201);
+  expect(((await writeTier.json()) as TaskCard).repo).toBe("/real/repo");
+
+  const readonlyTier = await app(
+    req("/tasks", { method: "POST", body: JSON.stringify({ title: "triage this", body: "", labels: ["intake", "unstructured"], repo: "/real/repo" }) }),
+  );
+  expect(readonlyTier.status).toBe(201);
+  expect(((await readonlyTier.json()) as TaskCard).repo).toBe("/real/repo");
+});
+
 test("GET /tasks?status=escalated finds an escalated task — the human queue for a review-pushback lineage that hit its limit", async () => {
   const board = new SqliteBoard();
   const app = await makeApp(board);
@@ -940,6 +1013,21 @@ test("GET /tasks/:id/diff reports isGitRepo: false for a task whose repo isn't a
 
   const missing = await app(req("/tasks/nope/diff"));
   expect(missing.status).toBe(404);
+});
+
+// A repo-less task (docs/SDD-mcp-orchestration.md §3.3/§4, Subtask 5)
+// never touches a filesystem at all, so there's nothing to diff — not
+// just an empty one.
+test("GET /tasks/:id/diff 409s for a repo-less task with no worktree", async () => {
+  const app = await makeApp();
+  const created = (await (
+    await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "triage this", body: "", labels: ["intake", "unstructured"] }) }))
+  ).json()) as TaskCard;
+  expect(created.repo).toBeUndefined();
+
+  const res = await app(req(`/tasks/${created.id}/diff`));
+  expect(res.status).toBe(409);
+  expect(((await res.json()) as { error: string }).error).toContain("no filesystem workspace");
 });
 
 test("POST /tasks/:id/run routes and runs a task on the injected manual executor, 404s on unknown id", async () => {

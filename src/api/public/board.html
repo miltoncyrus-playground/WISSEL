@@ -548,10 +548,11 @@
       </div>
 
       <div class="field">
-        <label for="ntRepo">Repo</label>
+        <label for="ntRepo" id="ntRepoLabel">Repo</label>
         <input id="ntRepo" type="text" required list="ntRepoList" autocomplete="off">
         <datalist id="ntRepoList"></datalist>
         <p class="field-hint" id="ntRepoProjectHint" hidden></p>
+        <p class="field-hint" id="ntRepoOptionalHint" hidden>Not required — the resolved agent has no file/bash access. Runs in a scratch workspace instead.</p>
       </div>
 
       <div class="field" style="position: relative;">
@@ -917,7 +918,7 @@
     meta.appendChild(agentSpan);
     var sep = document.createElement("span"); sep.textContent = "·"; sep.style.opacity = "0.45";
     meta.appendChild(sep);
-    var repoSpan = document.createElement("span"); repoSpan.className = "mono"; repoSpan.textContent = task.repo;
+    var repoSpan = document.createElement("span"); repoSpan.className = "mono"; repoSpan.textContent = task.repo || "(no repo — scratch workspace)";
     meta.appendChild(repoSpan);
 
     renderEscalationTimeline(task);
@@ -1780,7 +1781,7 @@
     if (!t.supersededBy && (t.status === "running" || t.status === "dispatched")) ka.appendChild(activeDot("actively working"));
     var sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
     ka.appendChild(sep);
-    var repoSpan = document.createElement("span"); repoSpan.className = "repo"; repoSpan.textContent = t.repo;
+    var repoSpan = document.createElement("span"); repoSpan.className = "repo"; repoSpan.textContent = t.repo || "(scratch)";
     ka.appendChild(repoSpan);
     // "Live output" — only while there's something actually live to
     // watch (see docs/SDD-live-task-output.md §3.6); a finished task's
@@ -2570,6 +2571,49 @@
     box.hidden = false;
   }
 
+  // Whichever agent would actually run this task right now — an
+  // explicit override (ntOverride) always wins over the router's own
+  // preview pick, mirroring how the real create/dispatch path treats a
+  // manual override (see setOverride, and server.ts's own POST /tasks
+  // handoff-allowlist precedence). Null when neither is resolved yet
+  // (no labels, or an unconfident preview) — repoRequired() below
+  // treats that as "stay conservative," not "definitely optional."
+  function ntResolvedAgent() {
+    if (ntOverride) return agentsById[ntOverride] || null;
+    if (ntLastPreview && ntLastPreview.confident && ntLastPreview.selected) return agentsById[ntLastPreview.selected] || null;
+    return null;
+  }
+
+  // `repo` is only ever truly optional for a readonly, no-file-access
+  // agent (toolAccess has neither "write" nor "bash") — see
+  // TaskCard.repo's own doc comment and the identical check POST /tasks
+  // enforces server-side. No resolved agent yet defaults to required:
+  // the server's own check defaults the same way for an
+  // unconfident/no-match preview, so the form never offers a "looks
+  // optional" state the server would then reject.
+  function ntRepoRequired() {
+    var agent = ntResolvedAgent();
+    if (!agent) return true;
+    var toolAccess = agent.toolAccess || [];
+    return toolAccess.indexOf("write") !== -1 || toolAccess.indexOf("bash") !== -1;
+  }
+
+  // Toggles the native `required` attribute (so the browser's own submit
+  // gate reflects it too) and the submit-button gate — same convention
+  // renderNtModelOptions already uses for toggling `disabled` off a live
+  // selection. Always re-run after anything that can change
+  // ntResolvedAgent()'s answer: the preview resolving, an override pick,
+  // or a form reset.
+  function updateNtRepoRequired() {
+    var repoEl = document.getElementById("ntRepo");
+    var hint = document.getElementById("ntRepoOptionalHint");
+    if (!repoEl) return;
+    var required = ntRepoRequired();
+    repoEl.required = required;
+    if (hint) hint.hidden = required;
+    updateSubmitEnabled();
+  }
+
   // Debounced call to the real Router (POST /route/preview) — never a
   // client-side reimplementation of tag-overlap scoring, so the preview
   // can never drift from what actually happens at dispatch time. Also
@@ -2584,6 +2628,7 @@
       ntLastPreview = null;
       previewBody.className = "muted";
       previewBody.textContent = "Add labels to see what the router would pick.";
+      updateNtRepoRequired();
       return;
     }
     previewBody.className = "muted";
@@ -2596,6 +2641,7 @@
         ntLastPreview = decision;
         previewBody.className = "";
         renderDecision(decision, previewBody, true);
+        updateNtRepoRequired();
       }).catch(function (err) {
         previewBody.className = "muted";
         previewBody.textContent = "preview failed: " + err.message;
@@ -2605,6 +2651,7 @@
 
   function setOverride(agentId) {
     ntOverride = agentId;
+    updateNtRepoRequired();
     document.querySelectorAll("#ntOverrideGrid button").forEach(function (btn) {
       btn.setAttribute("aria-pressed", btn.getAttribute("data-override") === agentId ? "true" : "false");
     });
@@ -2805,7 +2852,7 @@
     var title = document.getElementById("ntTitle").value.trim();
     var body = document.getElementById("ntBody").value.trim();
     var repo = document.getElementById("ntRepo").value.trim();
-    document.getElementById("ntSubmit").disabled = !(title && body && repo);
+    document.getElementById("ntSubmit").disabled = !(title && body && (repo || !ntRepoRequired()));
   }
 
   fetch("/version").then(function (r) { return r.json(); }).then(function (v) {
@@ -2877,8 +2924,8 @@
     errorEl.hidden = true;
     statusEl.hidden = true;
 
-    if (!title || !taskBody || !repo) {
-      errorEl.textContent = "Title, description, and repo are required.";
+    if (!title || !taskBody || (!repo && ntRepoRequired())) {
+      errorEl.textContent = ntRepoRequired() ? "Title, description, and repo are required." : "Title and description are required.";
       errorEl.hidden = false;
       return;
     }
@@ -2891,7 +2938,7 @@
     var harnessOverride = document.getElementById("ntHarness").value;
     var model = document.getElementById("ntModel").value;
     var payload = {
-      title: title, body: taskBody, labels: ntLabels.slice(), repo: repo, dependsOn: selectedDependsOn(),
+      title: title, body: taskBody, labels: ntLabels.slice(), repo: repo || undefined, dependsOn: selectedDependsOn(),
       parentTaskId: parentTaskId || undefined,
       harnessOverride: harnessOverride || undefined,
       model: model || undefined,

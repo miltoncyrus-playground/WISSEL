@@ -87,7 +87,10 @@ export class WriteExecutor implements Executor {
     // worktree/branch as every other attempt in its lineage instead of
     // cloning fresh off HEAD — see createTaskWorktree's doc comment.
     const worktreeKey = task.reviewLineageId ?? task.id;
-    const worktree = await createTaskWorktree(task.repo, worktreeKey, { runner: this.runner, homeDir: this.homeDir });
+    // `repo` is mandatory for any write/bash-capable agent, enforced at
+    // creation by POST /tasks (see TaskCard.repo's own doc comment) —
+    // a write-tier task reaching this executor always has one.
+    const worktree = await createTaskWorktree(task.repo!, worktreeKey, { runner: this.runner, homeDir: this.homeDir });
     if ("error" in worktree) return fail(task, agent, worktree.error);
 
     const result = await runClaude({

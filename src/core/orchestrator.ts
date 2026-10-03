@@ -415,7 +415,10 @@ async function tryAutoMerge(board: Board, result: TaskResult, runner: CommandRun
   if (!result.worktree) return true;
   const task = await board.get(result.taskId);
   if (!task) return false;
-  const merge = await mergeTaskWorktree(task.repo, result.worktree, task, runner);
+  // A worktree only ever exists for a write-tier run, which requires
+  // `repo` at creation time (see POST /tasks' validation) — never
+  // reachable for a repo-less readonly task.
+  const merge = await mergeTaskWorktree(task.repo!, result.worktree, task, runner);
   return merge.ok;
 }
 
@@ -757,6 +760,21 @@ export class Orchestrator {
       const agent = this.registry.get(decision.selected);
       if (!agent) {
         console.error(`orchestrator: routed task ${task.id} to unknown agent "${decision.selected}"`);
+        return;
+      }
+
+      // Defense in depth alongside POST /tasks' own synchronous check
+      // (src/api/server.ts): that check only catches a *confident*
+      // routing decision at creation time, so a task created with
+      // ambiguous/no-match labels and no repo could still land here
+      // later with a real write/bash-capable agent after a label edit.
+      // Without this, a repo-less task would reach WriteExecutor/
+      // CodexWriteExecutor's createTaskWorktree(task.repo!, ...) with
+      // `undefined` for `repo` — never a crash (JS has no runtime type
+      // enforcement), but a silently wrong `git worktree add` run
+      // against whatever the server process's own cwd happens to be.
+      if ((agent.toolAccess.includes("write") || agent.toolAccess.includes("bash")) && !task.repo) {
+        console.error(`orchestrator: task ${task.id} routed to "${agent.id}" (file/bash access) but has no repo`);
         return;
       }
 

@@ -1,10 +1,11 @@
 # SDD — MCP tool orchestration: growing wissel beyond a coding agent
 
-Status: **Subtasks 1 and 2 shipped and merged.** Written per Milton's ask,
-following a design conversation in this session about turning wissel from
-a dev-focused coding orchestrator into one that can also drive arbitrary
-MCP servers (Slack, ticketing systems, databases, anything with an MCP
-tool surface) alongside the coding work it already does.
+Status: **Subtasks 1, 2, and 5 shipped and merged.** Written per Milton's
+ask, following a design conversation in this session about turning
+wissel from a dev-focused coding orchestrator into one that can also
+drive arbitrary MCP servers (Slack, ticketing systems, databases,
+anything with an MCP tool surface) alongside the coding work it already
+does.
 
 **What shipped**: `McpServer` type + `mcp-servers.yaml` + `McpServerPool`
 (load/from/all/get/acquire/release/setEnabled, deliberately no
@@ -14,7 +15,11 @@ Subtask 1), `checkMcpServerReachable`, `GET /mcp-servers` + `POST
 callout); `AgentDef.mcpAccess`, `TaskResult.mcpCalls`, the
 `claude-cli.ts`/`codex-cli.ts` grant-building and transcript-parsing
 wiring (`runCodex`'s own real MCP flag syntax is a named, unresolved gap —
-see §4's second revision callout). Subtasks 3-7 are still design-only, not
+see §4's second revision callout); `TaskCard.repo` becoming optional +
+`src/services/scratch-workspace.ts` + the `POST /tasks` conditional
+requirement + the New Task form's live `repo` required-toggle (§3.3,
+Subtask 5 — see §4's third revision callout for what went beyond the
+original §3.3 text). Subtasks 3, 4, 6, and 7 are still design-only, not
 built — see §6/§7 for what's next and in what order.
 
 ## 1. Goal
@@ -130,6 +135,40 @@ injectable-`homeDir` convention `worktreesRoot()` already uses) purely as
 a `cwd` for the CLI process, never a git repo. `WriteExecutor`'s own path
 is completely untouched — a write-tier agent still always requires
 `repo` and still always gets a worktree, no exceptions.
+
+> **Revision (subtask 5, shipped):** three things went beyond this
+> paragraph's original text, named explicitly rather than left as silent
+> drift:
+> 1. "`WriteExecutor`'s own path is completely untouched" holds at the
+>    *behavior* level (a write-tier run's `cwd` is byte-identical to
+>    before) but not at the *character* level — `strict: true` TypeScript
+>    means `TaskCard.repo` becoming `string | undefined` forces a
+>    non-null assertion (`task.repo!`) at `WriteExecutor`/
+>    `CodexWriteExecutor`'s own `createTaskWorktree(task.repo!, ...)`
+>    call, each with a one-line comment citing the invariant (`repo` is
+>    mandatory for any write/bash-capable agent, enforced at creation).
+>    Same treatment at every other `string`-typed call site that reads
+>    `task.repo` (`mergeTaskWorktree`/`removeTaskWorktree`/`getRepoDiff`
+>    in `src/api/server.ts` and `src/core/orchestrator.ts`,
+>    `runStepAndSuccessors`'s `repo` param in `src/core/pipeline-runner.ts`).
+> 2. The server-side check this paragraph describes only resolves the
+>    routed agent *synchronously, at `POST /tasks` creation time* — it
+>    can't catch a task created with ambiguous/no-match labels and no
+>    repo that's later routed to a write/bash-capable agent by a label
+>    edit (routing itself normally happens inside `sweep()`, not at
+>    creation). `Orchestrator.process` (`src/core/orchestrator.ts`) gained
+>    a second, dispatch-time check right after the agent is resolved for
+>    real, logging and refusing to dispatch rather than letting a
+>    repo-less task reach `createTaskWorktree` with `undefined`.
+> 3. The New Task form's `#ntRepo` field (`src/api/public/board.html`)
+>    implements the live client-side toggle the implementation card for
+>    this subtask left as an explicit either/or choice (toggle live, or
+>    leave `required` and rely on the server) — feasible because the form
+>    already loads the full agent list (`GET /agents`, `toolAccess`
+>    included) and already runs a debounced `POST /route/preview` as
+>    labels change; toggling `required` off `agentsById[decision.selected]
+>    .toolAccess` (or the manual-override pick, which wins when set)
+>    needed no new endpoint.
 
 **3.4 — Review needs a second shape (`"tool-calls"`), and this is where
 new, real capture work actually happens.** `AgentDef` gains

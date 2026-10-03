@@ -28,6 +28,10 @@ export interface CodexReadOnlyExecutorOptions {
    *  codex's stdout streams in — wired to appendTaskOutput(taskId, ...)
    *  by src/api/server.ts (see docs/SDD-live-task-output.md §3.2/§4). */
   onChunk?: (taskId: string, line: unknown) => void;
+  /** Where a repo-less task's scratch workspace lives — see
+   *  ReadOnlyExecutorOptions.homeDir's own doc comment, identical
+   *  contract. */
+  homeDir?: string;
 }
 
 /**
@@ -49,6 +53,7 @@ export class CodexReadOnlyExecutor implements Executor {
   private memoryPath?: string;
   private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
+  private homeDir?: string;
 
   constructor(opts: CodexReadOnlyExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
@@ -56,6 +61,7 @@ export class CodexReadOnlyExecutor implements Executor {
     this.memoryPath = opts.memoryPath;
     this.mcpServers = opts.mcpServers;
     this.onChunk = opts.onChunk;
+    this.homeDir = opts.homeDir;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -74,6 +80,7 @@ export class CodexReadOnlyExecutor implements Executor {
       mcpAccess: agent.mcpAccess,
       mcpServers: this.mcpServers,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
+      homeDir: this.homeDir,
     });
     return harness ? { ...result, harnessId: harness.id } : result;
   }
