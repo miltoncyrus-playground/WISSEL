@@ -401,6 +401,77 @@ test("POST /mcp-servers/:id/enable and /disable 404 for an unknown id", async ()
   expect((await app(req("/mcp-servers/missing/disable", { method: "POST" }))).status).toBe(404);
 });
 
+test("POST /mcp-servers/:id/tools/:tool/trust persists to mcp-servers.yaml and updates the live pool", async () => {
+  const { dir, path } = await mcpServersFixture(
+    "mcp-servers:\n  - id: a\n    label: A\n    enabled: true\n    transport:\n      kind: stdio\n      command: /bin/true\n      args: []\n    tools:\n      - name: foo\n        trust: approval-required\n",
+  );
+  try {
+    const mcpServers = McpServerPool.from([
+      {
+        id: "a",
+        label: "A",
+        transport: { kind: "stdio", command: "/bin/true", args: [] },
+        tools: [{ name: "foo", trust: "approval-required" }],
+        enabled: true,
+      },
+    ]);
+    const app = await makeApp(new SqliteBoard(), { mcpServers, mcpServersPath: path });
+
+    const res = await app(
+      req("/mcp-servers/a/tools/foo/trust", { method: "POST", body: JSON.stringify({ trust: "auto" }) }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as McpServer;
+    expect(body.tools).toEqual([{ name: "foo", trust: "auto" }]);
+    expect(mcpServers.get("a")?.tools).toEqual([{ name: "foo", trust: "auto" }]);
+    const onDisk = parse(await readFile(path, "utf8")) as { "mcp-servers": McpServer[] };
+    expect(onDisk["mcp-servers"].find((s) => s.id === "a")?.tools).toEqual([{ name: "foo", trust: "auto" }]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /mcp-servers/:id/tools/:tool/trust 404s for an unknown server id, and 404s for an unknown tool on a known server", async () => {
+  const mcpServers = McpServerPool.from([
+    { id: "a", label: "A", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [{ name: "foo", trust: "auto" }], enabled: true },
+  ]);
+  const app = await makeApp(new SqliteBoard(), { mcpServers });
+
+  const missingServer = await app(
+    req("/mcp-servers/missing/tools/foo/trust", { method: "POST", body: JSON.stringify({ trust: "auto" }) }),
+  );
+  expect(missingServer.status).toBe(404);
+
+  const missingTool = await app(
+    req("/mcp-servers/a/tools/missing-tool/trust", { method: "POST", body: JSON.stringify({ trust: "auto" }) }),
+  );
+  expect(missingTool.status).toBe(404);
+});
+
+test("POST /mcp-servers/:id/tools/:tool/trust 400s on an invalid trust value and never touches mcp-servers.yaml", async () => {
+  const { dir, path } = await mcpServersFixture(
+    "mcp-servers:\n  - id: a\n    label: A\n    enabled: true\n    transport:\n      kind: stdio\n      command: /bin/true\n      args: []\n    tools:\n      - name: foo\n        trust: auto\n",
+  );
+  const before = await readFile(path, "utf8");
+  try {
+    const mcpServers = McpServerPool.from([
+      { id: "a", label: "A", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [{ name: "foo", trust: "auto" }], enabled: true },
+    ]);
+    const app = await makeApp(new SqliteBoard(), { mcpServers, mcpServersPath: path });
+
+    const res = await app(
+      req("/mcp-servers/a/tools/foo/trust", { method: "POST", body: JSON.stringify({ trust: "not-a-real-trust-value" }) }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(mcpServers.get("a")?.tools).toEqual([{ name: "foo", trust: "auto" }]);
+    expect(await readFile(path, "utf8")).toBe(before);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("POST /tasks then GET /tasks round-trips, defaulting dependsOn to []", async () => {
   const app = await makeApp();
   const create = await app(

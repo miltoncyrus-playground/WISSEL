@@ -3,7 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { setMcpServerEnabled } from "../src/core/mcp-manifest.ts";
+import { setMcpServerEnabled, setMcpServerToolTrust } from "../src/core/mcp-manifest.ts";
+import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import type { McpServer } from "../src/core/types.ts";
 
 async function fixture(content: string): Promise<{ dir: string; path: string }> {
@@ -173,6 +174,130 @@ test("a server's env is persisted when present", async () => {
     await setMcpServerEnabled(path, withEnv, true);
     const parsed = parse(await readFile(path, "utf8")) as { "mcp-servers": McpServer[] };
     expect(parsed["mcp-servers"].find((s) => s.id === "c")?.env).toEqual({ SOME_TOKEN_ENV: "MY_TOKEN_VAR" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// --- setMcpServerToolTrust ---
+
+test("setMcpServerToolTrust() edits only the named tool, preserving comments and every other tool/server entry byte-for-byte", async () => {
+  const { dir, path } = await fixture(`# header comment, explaining the whole file
+mcp-servers:
+  - id: a
+    label: A
+    enabled: true
+    transport:
+      kind: stdio
+      # why this command
+      command: "/usr/local/bin/a-mcp"
+      args: []
+    tools:
+      - name: foo
+        trust: approval-required
+      - name: bar
+        trust: auto
+  - id: untouched
+    label: Untouched
+    enabled: true
+    transport:
+      kind: stdio
+      command: "/bin/true"
+      args: []
+    tools:
+      - name: baz
+        trust: approval-required
+`);
+  try {
+    await setMcpServerToolTrust(path, serverA, "foo", "auto");
+    const out = await readFile(path, "utf8");
+
+    expect(out).toContain("# header comment, explaining the whole file");
+    expect(out).toContain("# why this command");
+
+    const parsed = parse(out) as { "mcp-servers": McpServer[] };
+    const a = parsed["mcp-servers"].find((s) => s.id === "a")!;
+    expect(a.tools).toEqual([{ name: "foo", trust: "auto" }, { name: "bar", trust: "auto" }]);
+    const other = parsed["mcp-servers"].find((s) => s.id === "untouched")!;
+    expect(other.tools).toEqual([{ name: "baz", trust: "approval-required" }]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("setMcpServerToolTrust() on a server not yet in the file promotes it with the one named tool's trust already applied", async () => {
+  const { dir, path } = await fixture(`# header
+mcp-servers:
+  - id: untouched
+    label: Untouched
+    enabled: true
+    transport:
+      kind: stdio
+      command: "/bin/true"
+      args: []
+    tools: []
+`);
+  try {
+    const newServer: McpServer = {
+      id: "b",
+      label: "B",
+      transport: { kind: "http", url: "https://example.internal/mcp" },
+      tools: [{ name: "query", trust: "approval-required" }, { name: "list", trust: "auto" }],
+      enabled: true,
+    };
+    await setMcpServerToolTrust(path, newServer, "query", "auto");
+    const out = await readFile(path, "utf8");
+
+    expect(out).toContain("# header");
+    const parsed = parse(out) as { "mcp-servers": McpServer[] };
+    expect(parsed["mcp-servers"]).toHaveLength(2);
+    const promoted = parsed["mcp-servers"].find((s) => s.id === "b")!;
+    expect(promoted.tools).toEqual([{ name: "query", trust: "auto" }, { name: "list", trust: "auto" }]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("setMcpServerToolTrust() round-trips through a second read — the change survives a fresh load, not just the in-memory write", async () => {
+  const { dir, path } = await fixture(`mcp-servers:
+  - id: a
+    label: A
+    enabled: true
+    transport:
+      kind: stdio
+      command: "/usr/local/bin/a-mcp"
+      args: []
+    tools:
+      - name: foo
+        trust: approval-required
+`);
+  try {
+    await setMcpServerToolTrust(path, serverA, "foo", "auto");
+    const pool = await McpServerPool.load(path);
+    expect(pool.get("a")?.tools).toEqual([{ name: "foo", trust: "auto" }]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("setMcpServerToolTrust() on an unknown tool name is a no-op on disk, matching McpServerPool.setToolTrust's own undefined-and-unchanged contract", async () => {
+  const { dir, path } = await fixture(`mcp-servers:
+  - id: a
+    label: A
+    enabled: true
+    transport:
+      kind: stdio
+      command: "/usr/local/bin/a-mcp"
+      args: []
+    tools:
+      - name: foo
+        trust: approval-required
+`);
+  try {
+    const before = await readFile(path, "utf8");
+    await setMcpServerToolTrust(path, serverA, "missing-tool", "auto");
+    const after = await readFile(path, "utf8");
+    expect(after).toBe(before);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

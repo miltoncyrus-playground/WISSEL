@@ -1,0 +1,26 @@
+# e2e fixture — playwright.config.ts's webServer.command copies this to
+# a disposable tmp path (/tmp/wissel-e2e-mcp-servers.yaml) before every
+# test run; nothing here is ever read or written in place, so a test
+# that mutates it (e.g. board.spec.ts's Manage MCP Servers panel tests)
+# can never touch this checked-in file.
+#
+# `/bin/true` is used as the stdio command (same precedent
+# test/api.test.ts's own fixtures already establish) specifically
+# because it's an absolute, always-executable path on every Linux
+# machine and in CI — checkMcpServerReachable only checks the path
+# exists and is executable for an absolute stdio command, so this comes
+# back `enabled: true`/reachable deterministically, unlike a real MCP
+# server binary this fixture can't guarantee is installed.
+mcp-servers:
+  - id: e2e-fixture-mcp
+    label: "E2E Fixture MCP Server"
+    enabled: true
+    transport:
+      kind: stdio
+      command: /bin/true
+      args: []
+    tools:
+      - name: read_thing
+        trust: auto
+      - name: write_thing
+        trust: approval-required

@@ -8,6 +8,11 @@ import { test, expect, type APIRequestContext } from "@playwright/test";
  *  in-memory pool's view of it. */
 const HARNESSES_FIXTURE_PATH = "/tmp/wissel-e2e-harnesses.yaml";
 
+/** Same disposable tmp path for the MCP-servers fixture
+ *  (e2e/fixtures/mcp-servers.yaml), seeded the same way by
+ *  playwright.config.ts's webServer.command. */
+const MCP_SERVERS_FIXTURE_PATH = "/tmp/wissel-e2e-mcp-servers.yaml";
+
 /**
  * Drives one implementer task through 6 straight reviewer rejections to
  * `escalated`, purely over HTTP — no orchestrator sweep, no real `claude`
@@ -901,6 +906,137 @@ test.describe("Board view", () => {
 
     const after = await readFile(HARNESSES_FIXTURE_PATH, "utf8");
     expect(after).toBe(before);
+  });
+
+  // Mirrors the "Manage harnesses" open/close/render smoke test above,
+  // but for the sibling "Manage MCP servers" panel — this one *can*
+  // assert on specific content, unlike the harness panel's own
+  // deliberate abstention, because e2e/fixtures/mcp-servers.yaml is a
+  // disposable fixture this suite fully controls, not a developer's
+  // real machine-dependent harnesses.yaml.
+  test("Manage MCP servers panel opens from the strip, renders the fixture server and its tools, and closes via X/Escape/overlay", async ({ page }) => {
+    await page.goto("/board");
+
+    const panel = page.locator("#mcpPanel");
+    await expect(panel).toBeHidden();
+
+    await page.locator("#mcpOpenBtn").click();
+    await expect(panel).toBeVisible();
+
+    const serverRow = panel.locator(".hm-row", { hasText: "E2E Fixture MCP Server" });
+    await expect(serverRow).toBeVisible();
+    await expect(serverRow.locator(".hm-toggle")).toHaveText("Disable");
+
+    // Both declared tools render as their own rows with a trust toggle
+    // whose label reflects the fixture's own starting trust tier.
+    await expect(panel.getByText("read_thing")).toBeVisible();
+    await expect(panel.getByText("write_thing")).toBeVisible();
+    await expect(panel.locator(".hm-row", { hasText: "read_thing" }).locator(".hm-toggle")).toHaveText("Require approval");
+    await expect(panel.locator(".hm-row", { hasText: "write_thing" }).locator(".hm-toggle")).toHaveText("Allow auto");
+
+    await page.keyboard.press("Escape");
+    await expect(panel).toBeHidden();
+
+    await page.locator("#mcpOpenBtn").click();
+    await expect(panel).toBeVisible();
+    await page.locator("#mcpClose").click();
+    await expect(panel).toBeHidden();
+
+    await page.locator("#mcpOpenBtn").click();
+    await expect(panel).toBeVisible();
+    await page.locator("#mcpOverlay").click({ position: { x: 5, y: 5 } });
+    await expect(panel).toBeHidden();
+  });
+
+  // Unlike the render-only test above, this one mutates real state —
+  // safely, because playwright.config.ts points WISSEL_MCP_SERVERS_PATH
+  // at a disposable tmp copy of e2e/fixtures/mcp-servers.yaml rather
+  // than any checked-in original. Drives the actual toggle button the
+  // real click listener is wired to (not a route-intercepted stand-in),
+  // asserting on the real outgoing request — same discipline the
+  // harness/project-panel e2e tests already hold, named explicitly in
+  // this project's own lessons after a past bug shipped a button wired
+  // to nothing.
+  test("disabling the fixture MCP server fires the real POST /mcp-servers/:id/disable request and persists", async ({ page }) => {
+    await page.goto("/board");
+    await page.locator("#mcpOpenBtn").click();
+
+    const panel = page.locator("#mcpPanel");
+    await expect(panel).toBeVisible();
+
+    const serverRow = panel.locator(".hm-row", { hasText: "E2E Fixture MCP Server" });
+    const toggle = serverRow.locator(".hm-toggle");
+    await expect(toggle).toHaveText("Disable");
+
+    const [disableResponse] = await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith("/mcp-servers/e2e-fixture-mcp/disable") && r.request().method() === "POST"),
+      toggle.click(),
+    ]);
+    expect(disableResponse.status()).toBe(200);
+
+    await expect(toggle).toHaveText("Enable");
+    await expect(serverRow).toContainText("disabled by you");
+
+    const onDisk = await readFile(MCP_SERVERS_FIXTURE_PATH, "utf8");
+    expect(onDisk).toContain("enabled: false");
+
+    // Re-enable so this test doesn't leave the fixture disabled for
+    // whatever e2e test runs after it in the same server lifetime.
+    const [enableResponse] = await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith("/mcp-servers/e2e-fixture-mcp/enable") && r.request().method() === "POST"),
+      toggle.click(),
+    ]);
+    expect(enableResponse.status()).toBe(200);
+    await expect(toggle).toHaveText("Disable");
+  });
+
+  // Same real-request discipline as the disable test above, but for the
+  // new per-tool trust endpoint this subtask adds — asserts the actual
+  // request body (not just that the button is clickable), and asserts
+  // the change survives a full page reload reading back from a fresh
+  // GET /mcp-servers (i.e. it actually persisted to mcp-servers.yaml,
+  // not just an optimistic client-side render).
+  test("changing a tool's trust fires the real POST .../tools/:tool/trust request with the right body, and persists across reload", async ({ page }) => {
+    await page.goto("/board");
+    await page.locator("#mcpOpenBtn").click();
+
+    const panel = page.locator("#mcpPanel");
+    const toolRow = panel.locator(".hm-row", { hasText: "read_thing" });
+    const trustToggle = toolRow.locator(".hm-toggle");
+    await expect(trustToggle).toHaveText("Require approval");
+
+    const [trustResponse] = await Promise.all([
+      page.waitForResponse(
+        (r) => r.url().endsWith("/mcp-servers/e2e-fixture-mcp/tools/read_thing/trust") && r.request().method() === "POST",
+      ),
+      trustToggle.click(),
+    ]);
+    expect(trustResponse.request().postDataJSON()).toEqual({ trust: "approval-required" });
+    expect(trustResponse.status()).toBe(200);
+
+    await expect(trustToggle).toHaveText("Allow auto");
+
+    const onDisk = await readFile(MCP_SERVERS_FIXTURE_PATH, "utf8");
+    expect(onDisk).toContain("name: read_thing");
+    expect(onDisk).toContain("trust: approval-required");
+
+    // Reload — a fresh GET /mcp-servers on page load, not the optimistic
+    // client-side render from the click above — still shows the
+    // persisted value.
+    await page.reload();
+    await page.locator("#mcpOpenBtn").click();
+    await expect(page.locator("#mcpPanel .hm-row", { hasText: "read_thing" }).locator(".hm-toggle")).toHaveText("Allow auto");
+
+    // Flip it back so this test doesn't leave the fixture mutated for
+    // whatever e2e test runs after it in the same server lifetime.
+    const toolRowAfterReload = page.locator("#mcpPanel .hm-row", { hasText: "read_thing" });
+    await Promise.all([
+      page.waitForResponse(
+        (r) => r.url().endsWith("/mcp-servers/e2e-fixture-mcp/tools/read_thing/trust") && r.request().method() === "POST",
+      ),
+      toolRowAfterReload.locator(".hm-toggle").click(),
+    ]);
+    await expect(toolRowAfterReload.locator(".hm-toggle")).toHaveText("Require approval");
   });
 
   test("an empty column collapses to just its header instead of reserving full card space", async ({ page }) => {

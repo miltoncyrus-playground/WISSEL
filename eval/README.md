@@ -11,6 +11,7 @@ wall-clock time. Run explicitly before ship, and nightly.
 | `eval/planner-subtask-plan.eval.ts` | `bun run eval:planner-subtask-plan` | The real planner agent reliably produces a well-formed ```subtask-plan``` block against a vague card, and `finishResult`'s `spawnSubtasksFromPlan` turns it into real child cards with correct `dependsOn` chaining. |
 | `eval/pipeline-review-handoff.eval.ts` | `bun run eval:pipeline-review-handoff` | The review-handoff loop recreated as a real `PipelineDef` (`src/core/review-handoff-pipeline.ts`) actually converges through `startPipelineRun` end to end against real `implementer`/`pipeline-reviewer` agents — see docs/SDD-pipelines.md §6 Subtask 5. |
 | `eval/pipeline-full-lifecycle.eval.ts` | `bun run eval:pipeline-full-lifecycle` | The full task lifecycle `PipelineDef` (`src/core/full-lifecycle-pipeline.ts` — triager in front of the same review-handoff loop) actually converges end to end against real `triager`/`implementer`/`pipeline-reviewer` agents — see docs/SDD-pipelines.md §10. |
+| `eval/pipeline-mcp-integration.eval.ts` | `bun run eval:pipeline-mcp-integration` | A heterogeneous pipeline (a file-editing coding step bound to `implementer`, then an MCP-tool-calling step bound to `mcp-tool-caller`) actually composes end to end through `startPipelineRun` against a real, attached MCP server — see docs/SDD-mcp-orchestration.md §6 Subtask 7. |
 | `eval/live-task-output.eval.ts` | `bun run eval:live-task-output` | A real `claude -p` call's streamed stdout actually lands in the durable task-output store and is deliverable live over a real HTTP SSE connection, end to end — spawn -> stream -> store -> SSE -> render — see docs/SDD-live-task-output.md §6 Subtask 5. |
 
 ## implementer-reviewer eval
@@ -191,6 +192,81 @@ actual result once it's been observed.
 
 Same pattern as the other evals above — add a nightly cron line and a
 required CI step for `bun run eval:pipeline-review-handoff`, same
+`timeout 1800`, same real-authenticated-`claude` requirement.
+
+## pipeline-mcp-integration eval
+
+`test/mcp-integration-pipeline.test.ts` (gate lane) already proves the
+recreated `PipelineDef`'s *shape* is correct — two steps, the right
+agent ids, a single "all"-transition edge between them — and
+`test/pipeline-runner.test.ts` already proves, against a scripted
+stand-in, that a pipeline step whose result carries a pending MCP
+approval request correctly parks on `"review"` with `pendingMcpApproval`
+set, and that the run stays `"running"` rather than being declared
+`"done"` around it (the real bug this eval's own Scenario 2 found and
+drove the fix for — see `src/core/orchestrator.ts`'s `finishResult` and
+`src/core/pipeline-runner.ts`'s `settleRoot`, and this eval's own header
+comment for the full story). What neither gate test can prove is whether
+the real `implementer` and `mcp-tool-caller` agents (agents/manifest.yaml)
+actually converge through `startPipelineRun` against a *genuine* attached
+MCP server (`eval/fixtures/mcp-echo-server.ts`, a real hand-rolled stdio
+JSON-RPC 2.0 server — not the official SDK, not a mock) — this is also
+the first real, unscripted round trip confirming the `stream-json`
+tool-call event shape docs/SDD-mcp-orchestration.md's "Revision (subtask
+2, shipped)" callout flagged as corroborated-but-not-observed.
+
+Two scenarios, reusing the same stored `PipelineDef` with different
+`input` (see the eval's own header comment for the full design):
+
+- **Scenario 1** — the coding step adds a trivial file, the MCP step
+  calls the granted `echo` tool (`trust: "auto"`). Expected: the whole
+  run reaches `done`, and the MCP step's own result carries a real,
+  non-empty `mcpCalls`.
+- **Scenario 2** — the MCP step is asked to call `echo_sensitive`
+  instead (`trust: "approval-required"`, so it can't actually be called).
+  Expected: the MCP step's own `TaskCard` lands on `"review"` with
+  `pendingMcpApproval` set (not silently `"done"`, not `"failed"`), and
+  the whole run stays `"running"`.
+
+### Pass bar
+
+Both scenarios must pass, every run. Either scenario landing on a
+different outcome — Scenario 1 failing to reach `done`, or missing
+`mcpCalls`; Scenario 2's step landing on `"done"`/`"failed"` instead of
+`"review"`, or the run settling `"done"`/`"failed"` instead of staying
+`"running"` — is a real finding about this composition, not something to
+paper over by loosening the bar.
+
+### Status — not yet empirically run
+
+Same situation as this project's other evals when first written (see
+e.g. `eval:pipeline-review-handoff`'s own "Status" note above): this
+script, `src/core/mcp-integration-pipeline.ts`,
+`eval/fixtures/mcp-echo-server.ts`, and the `mcp-tool-caller` manifest
+entry were all written and hand-traced in a session whose sandbox
+blocked every subprocess spawn (`bun run eval/fixtures/mcp-echo-server.ts`
+itself couldn't be run to confirm it completes a real JSON-RPC
+handshake, let alone a full `claude -p` + attached-MCP-server round
+trip), so **none of this has actually been run against a real `claude`
+process or a real spawned MCP server yet**. The gate tests
+(`test/mcp-integration-pipeline.test.ts`, the new case in
+`test/pipeline-runner.test.ts`) prove the shape and the orchestrator fix
+correct against scripted stand-ins — but the first real run of this eval
+(`bun run eval:pipeline-mcp-integration`) is also the first empirical
+check that: the hand-rolled echo server actually speaks MCP's stdio
+transport correctly against the real `claude` CLI client, a granted
+`auto`-trust tool call really does surface as `mcp__wissel-echo-mcp__echo`
+in the `tool_use` block the way `parse-mcp-calls.ts`'s own doc comment
+predicts, and `mcp-tool-caller` reliably follows the pending-approval
+instruction for `echo_sensitive` rather than ignoring it or malforming
+the `mcp-approval-request` block. Run it before relying on this
+composition for anything real, and update this note with the actual
+result once it's been observed.
+
+### Scheduling
+
+Same pattern as the other evals above — add a nightly cron line and a
+required CI step for `bun run eval:pipeline-mcp-integration`, same
 `timeout 1800`, same real-authenticated-`claude` requirement.
 
 ## live-task-output eval

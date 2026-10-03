@@ -91,6 +91,26 @@ export class McpServerPool {
     this.servers.set(id, updated);
     return updated;
   }
+
+  /** Mutates the live pool's copy of one named tool's trust tier in
+   *  place — the in-memory half of a human's trust-tier edit (board's
+   *  Manage MCP Servers panel), mirroring setEnabled's exact shape (the
+   *  disk half is `setMcpServerToolTrust` in mcp-manifest.ts, always
+   *  done first by the caller). Returns undefined, changing nothing,
+   *  for an unknown server id OR an unknown tool name on that server —
+   *  same "caller must have already resolved both" contract setEnabled
+   *  holds for the server id alone. */
+  setToolTrust(id: string, toolName: string, trust: "auto" | "approval-required"): McpServer | undefined {
+    const existing = this.servers.get(id);
+    if (!existing) return undefined;
+    if (!existing.tools.some((t) => t.name === toolName)) return undefined;
+    const updated: McpServer = {
+      ...existing,
+      tools: existing.tools.map((t) => (t.name === toolName ? { ...t, trust } : t)),
+    };
+    this.servers.set(id, updated);
+    return updated;
+  }
 }
 
 /** Injectable so tests never hit the real filesystem PATH or spend a

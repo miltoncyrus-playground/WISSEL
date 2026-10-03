@@ -141,6 +141,32 @@ export async function finishResult(
     if (!pipelineCtx) {
       throw new Error(`finishResult: task ${task.id} is a pipeline step but no pipelineCtx was provided — only pipeline-runner.ts should ever produce a result for one`);
     }
+
+    // Real finding from MCP orchestration subtask 7's integration proof:
+    // a pipeline step's own result can carry `mcpApprovalRequest` (an
+    // agent describing a blocked, approval-required MCP tool call — see
+    // AgentDef.mcpAccess/the mcpApprovalRequest branch below, which this
+    // mirrors) with `result.ok` still true. Before this fix, this
+    // branch's own unconditional `board.move(task.id, result.ok ? "done"
+    // : "failed")` ran first and landed such a step straight on "done" —
+    // silently succeeding instead of surfacing the approval gate, the
+    // exact failure mode docs/SDD-mcp-orchestration.md §6 Subtask 7 named
+    // as a real composition question subtask 3 never had reason to test
+    // against the pipeline engine. Checked first, same priority order as
+    // the non-pipeline path's own mcpApprovalRequest branch a few lines
+    // down: the step hasn't actually settled (done/failed) in this case,
+    // it's parked on a human decision exactly like a non-pipeline task in
+    // the same state (see TaskCard.pendingMcpApproval). No call to
+    // handlePipelineStepResult — there's nothing to advance until a human
+    // resolves it via `POST /tasks/:id/mcp-approval/{approve,deny}`, and
+    // that endpoint spawns a standalone follow-up task, never a
+    // resumption of this run (see its own doc comment) — the same v1
+    // limitation named in §3.5, now also true for a pipeline step.
+    if (result.mcpApprovalRequest !== undefined) {
+      await board.requestMcpApproval(task.id, result.mcpApprovalRequest);
+      return;
+    }
+
     await board.move(task.id, result.ok ? "done" : "failed");
     await handlePipelineStepResult(board, registry, task, result, { ...pipelineCtx, telemetry, memoryPath });
     return;
