@@ -33,6 +33,42 @@ export function resolveMcpGrants(mcpAccess: AgentDef["mcpAccess"], pool: McpServ
   return grants;
 }
 
+/** Splits a resolved grant list by each tool's own trust tier
+ *  (McpServer.tools[].trust — stored since subtask 1, enforced starting
+ *  here). `auto` is safe to call unattended and is the only subset ever
+ *  built into --mcp-config/--allowedTools (see claude-cli.ts's runClaude)
+ *  — an `approval-required` tool is never present there, full stop,
+ *  regardless of what the agent's own `mcpAccess` declares.
+ *
+ *  A tool named in a grant but NOT declared at all in the server's own
+ *  `tools` list (a grant/manifest typo, or a server whose `tools` entry
+ *  for it just hasn't been added yet) is treated as `pendingApproval`,
+ *  never `auto` — fails closed on an unknown trust tier exactly the way
+ *  every other "can't determine this safely" case in this codebase does
+ *  (never silently grants the more permissive behavior by default).
+ *
+ *  A server contributes a grant entry to each bucket independently
+ *  (e.g. a Slack server with both an `auto` `read_messages` and an
+ *  `approval-required` `send_message`, both granted, lands one entry in
+ *  each bucket) — splitting happens per tool, not per server. Either
+ *  bucket is `[]`, never omitted, when it has nothing. */
+export function splitGrantsByTrust(grants: ResolvedMcpGrant[]): { auto: ResolvedMcpGrant[]; pendingApproval: ResolvedMcpGrant[] } {
+  const auto: ResolvedMcpGrant[] = [];
+  const pendingApproval: ResolvedMcpGrant[] = [];
+  for (const { server, tools } of grants) {
+    const autoTools: string[] = [];
+    const pendingTools: string[] = [];
+    for (const tool of tools) {
+      const declared = server.tools.find((t) => t.name === tool);
+      if (declared?.trust === "auto") autoTools.push(tool);
+      else pendingTools.push(tool);
+    }
+    if (autoTools.length > 0) auto.push({ server, tools: autoTools });
+    if (pendingTools.length > 0) pendingApproval.push({ server, tools: pendingTools });
+  }
+  return { auto, pendingApproval };
+}
+
 /** The exact tool-naming convention Claude Code itself uses for an MCP
  *  tool once it's attached — confirmed against the current official docs
  *  (code.claude.com/docs/en/mcp): `mcp__<server-name>__<tool-name>`. Used

@@ -99,3 +99,44 @@ test("plan-mode note comes after the output contract, so it's the last thing the
   expect(prompt.indexOf(contract)).toBeLessThan(prompt.indexOf("ExitPlanMode"));
   expect(prompt.trim().endsWith("per the output contract above.")).toBe(true);
 });
+
+// Pending-approval MCP tools (docs/SDD-mcp-orchestration.md §3.5) — only
+// ever appended when the caller (runClaude) found at least one
+// approval-required grant for this run.
+
+test("omits the mcp-approval-request instruction when pendingMcpApprovalTools is undefined", () => {
+  const prompt = buildAgentPrompt(task, agent);
+  expect(prompt).not.toContain("mcp-approval-request");
+});
+
+test("omits the mcp-approval-request instruction for an explicitly empty array too — byte-identical to undefined", () => {
+  const withEmpty = buildAgentPrompt(task, agent, undefined, { pendingMcpApprovalTools: [] });
+  const withUndefined = buildAgentPrompt(task, agent);
+  expect(withEmpty).toBe(withUndefined);
+  expect(withEmpty).not.toContain("mcp-approval-request");
+});
+
+test("appends an instruction naming every pending-approval server/tool pair and the fenced-block contract", () => {
+  const prompt = buildAgentPrompt(task, agent, undefined, {
+    pendingMcpApprovalTools: [
+      { server: "slack", tool: "send_message" },
+      { server: "jira", tool: "create_ticket" },
+    ],
+  });
+  expect(prompt).toContain("slack/send_message");
+  expect(prompt).toContain("jira/create_ticket");
+  expect(prompt).toContain("```mcp-approval-request");
+  expect(prompt).toContain("NOT available to you in this session");
+});
+
+test("the mcp-approval-request instruction comes after the output contract but before the plan-mode note", () => {
+  const contract = 'End with a ```review-verdict``` block.';
+  const prompt = buildAgentPrompt(task, { ...agent, outputContract: contract }, undefined, {
+    planMode: true,
+    pendingMcpApprovalTools: [{ server: "slack", tool: "send_message" }],
+  });
+  expect(prompt.indexOf(contract)).toBeLessThan(prompt.indexOf("mcp-approval-request"));
+  expect(prompt.indexOf("mcp-approval-request")).toBeLessThan(prompt.indexOf("ExitPlanMode"));
+  // The plan-mode note is still the literal last thing in the prompt.
+  expect(prompt.trim().endsWith("per the output contract above.")).toBe(true);
+});

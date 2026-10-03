@@ -28,6 +28,18 @@ export interface BuildAgentPromptOptions {
    *  intermittent under plan mode generally. This note is the fix: tell
    *  the model directly that no such tool or approval step exists here. */
   planMode?: boolean;
+  /** This run's own pending-approval MCP grants — the tools
+   *  splitGrantsByTrust (src/executors/mcp-config.ts) excluded from
+   *  --allowedTools because their trust tier is `approval-required`.
+   *  When non-empty, appends an instruction naming exactly these
+   *  server/tool pairs and the ```mcp-approval-request``` fenced-block
+   *  convention for describing (never executing) the one blocked call
+   *  the agent would make, if any — see parse-mcp-approval-request.ts
+   *  and docs/SDD-mcp-orchestration.md §3.5. Undefined or empty (every
+   *  agent with zero approval-required grants — today, every agent,
+   *  since no real mcp-servers.yaml entry exists yet) means zero prompt
+   *  change, byte-identical to before this option existed. */
+  pendingMcpApprovalTools?: { server: string; tool: string }[];
 }
 
 export function buildAgentPrompt(task: TaskCard, agent: AgentDef, memory?: string, opts?: BuildAgentPromptOptions): string {
@@ -49,6 +61,17 @@ export function buildAgentPrompt(task: TaskCard, agent: AgentDef, memory?: strin
   }
   if (agent.verificationContract) {
     lines.push("", agent.verificationContract);
+  }
+  if (opts?.pendingMcpApprovalTools && opts.pendingMcpApprovalTools.length > 0) {
+    const names = opts.pendingMcpApprovalTools.map((t) => `${t.server}/${t.tool}`).join(", ");
+    lines.push(
+      "",
+      `The following tool(s) require human approval before they can be called, and are NOT available to you in this session: ${names}. ` +
+        "Any attempt to call one will be rejected. If completing this task would require calling one of them, do not attempt it — " +
+        "instead, end your final message with a fenced block in exactly this form, naming the exact server id and tool name from the list above:\n" +
+        '```mcp-approval-request\n{"server": "...", "tool": "...", "args": {...}, "reason": "..."}\n```\n' +
+        "If no such call is needed to complete this task, do not emit this block at all — just complete the task normally.",
+    );
   }
   if (opts?.planMode) {
     lines.push(

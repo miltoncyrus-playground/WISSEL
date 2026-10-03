@@ -635,3 +635,208 @@ test("mcpCalls is still attached on a failed run (e.g. a non-zero exit) when a g
   expect(result.ok).toBe(false);
   expect(result.mcpCalls).toEqual([{ server: "slack", tool: "send_message", args: {}, result: "sent", ok: true }]);
 });
+
+// --- Per-tool trust tiers + v1 approval gate (docs/SDD-mcp-orchestration.md §3.5) ---
+
+test("an approval-required tool is never present in --allowedTools or --mcp-config, regardless of what mcpAccess declares", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  const cmd = await captureCmd({ agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] }, mcpServers: pool });
+  expect(cmd).not.toContain("--mcp-config");
+  expect(cmd).not.toContain("--strict-mcp-config");
+  expect(cmd).not.toContain("--allowedTools");
+});
+
+test("a mixed grant builds --mcp-config/--allowedTools from only the auto tool, excluding the approval-required one", async () => {
+  const pool = McpServerPool.from([
+    mcpServer({
+      id: "slack",
+      tools: [
+        { name: "read_messages", trust: "auto" },
+        { name: "send_message", trust: "approval-required" },
+      ],
+    }),
+  ]);
+  const cmd = await captureCmd({
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["read_messages", "send_message"] }] },
+    mcpServers: pool,
+  });
+  const configIdx = cmd.indexOf("--mcp-config");
+  expect(configIdx).toBeGreaterThan(-1);
+  expect(JSON.parse(cmd[configIdx + 1]!)).toEqual({ mcpServers: { slack: { command: "/usr/local/bin/example-mcp-server", args: [] } } });
+  const toolsIdx = cmd.indexOf("--allowedTools");
+  expect(cmd.slice(toolsIdx + 1)).toEqual(["mcp__slack__read_messages"]);
+});
+
+test("a tool not declared on the server at all is excluded from --allowedTools too — fails closed, never assumes auto", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [] })]);
+  const cmd = await captureCmd({ agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["undeclared"] }] }, mcpServers: pool });
+  expect(cmd).not.toContain("--mcp-config");
+  expect(cmd).not.toContain("--allowedTools");
+});
+
+test("a run with only an approval-required grant doesn't force streaming — there's no auto tool call to capture a transcript for", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  const cmd = await captureCmd({ agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] }, mcpServers: pool });
+  expect(cmd[cmd.indexOf("--output-format") + 1]).toBe("json");
+});
+
+test("an agent with zero approval-required grants (every existing agent today) sees byte-identical behavior — no prompt change, no mcpApprovalRequest field", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "auto" }] })]);
+  let seenPrompt = "";
+  const result = await runClaude({
+    runner: async (cmd) => {
+      seenPrompt = cmd[2]!;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+    task,
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+    permissionMode: "plan",
+  });
+  expect(seenPrompt).not.toContain("mcp-approval-request");
+  expect(result.mcpApprovalRequest).toBeUndefined();
+  expect(result.ok).toBe(true);
+});
+
+test("an agent with a pending-approval grant gets the prompt instruction naming the blocked tool", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  let seenPrompt = "";
+  await runClaude({
+    runner: async (cmd) => {
+      seenPrompt = cmd[2]!;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+    task,
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+    permissionMode: "plan",
+  });
+  expect(seenPrompt).toContain("slack/send_message");
+  expect(seenPrompt).toContain("```mcp-approval-request");
+});
+
+test("a well-formed mcp-approval-request block naming a real pending tool attaches mcpApprovalRequest, stays ok: true", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  const resultText = [
+    "I can't send this directly.",
+    "",
+    "```mcp-approval-request",
+    '{"server": "slack", "tool": "send_message", "args": {"text": "hi"}, "reason": "notify the team"}',
+    "```",
+  ].join("\n");
+  const result = await runClaude({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: resultText }), stderr: "", exitCode: 0 }),
+    task,
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(true);
+  expect(result.mcpApprovalRequest).toEqual({ server: "slack", tool: "send_message", args: { text: "hi" }, reason: "notify the team" });
+});
+
+test("a pending-approval run where the agent has nothing to request (no block at all) stays ok: true with mcpApprovalRequest undefined", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  const result = await runClaude({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "Nothing to do here, task complete." }), stderr: "", exitCode: 0 }),
+    task,
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(true);
+  expect(result.mcpApprovalRequest).toBeUndefined();
+});
+
+test("a malformed mcp-approval-request block (attempted but garbled) fails the run closed, never silently drops it", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  const resultText = ["```mcp-approval-request", "not even json", "```"].join("\n");
+  const result = await runClaude({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: resultText }), stderr: "", exitCode: 0 }),
+    task,
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(false);
+  expect(result.mcpApprovalRequest).toBeUndefined();
+  expect(result.summary).toContain("malformed");
+});
+
+test("an mcp-approval-request naming a server/tool this run wasn't actually blocked on fails the run closed", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  const resultText = ["```mcp-approval-request", '{"server": "jira", "tool": "create_ticket", "args": {}, "reason": "x"}', "```"].join("\n");
+  const result = await runClaude({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: resultText }), stderr: "", exitCode: 0 }),
+    task,
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(false);
+  expect(result.mcpApprovalRequest).toBeUndefined();
+  expect(result.summary).toContain("isn't one of this run's pending-approval grants");
+});
+
+test("mcpAccessPreApproved: true bypasses the trust-tier split — a tool the server declares approval-required reaches --allowedTools/--mcp-config anyway", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  const cmd = await captureCmd({
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+    mcpAccessPreApproved: true,
+  });
+  expect(cmd).toContain("--mcp-config");
+  const configIdx = cmd.indexOf("--mcp-config");
+  expect(JSON.parse(cmd[configIdx + 1]!)).toEqual({ mcpServers: { slack: { command: "/usr/local/bin/example-mcp-server", args: [] } } });
+  const toolsIdx = cmd.indexOf("--allowedTools");
+  expect(cmd.slice(toolsIdx + 1)).toEqual(["mcp__slack__send_message"]);
+});
+
+test("mcpAccessPreApproved: true also skips the pending-approval prompt instruction entirely — the agent isn't told to describe-not-call a tool it can now actually call", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  let seenPrompt = "";
+  const result = await runClaude({
+    runner: async (cmd) => {
+      seenPrompt = cmd[2]!;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+    task,
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+    mcpAccessPreApproved: true,
+    permissionMode: "plan",
+  });
+  expect(seenPrompt).not.toContain("mcp-approval-request");
+  expect(result.mcpApprovalRequest).toBeUndefined();
+});
+
+test("omitting mcpAccessPreApproved (every call before this option existed) keeps the approval-required tool gated — the bypass is opt-in, never a default", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  const cmd = await captureCmd({
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+  });
+  expect(cmd).not.toContain("--mcp-config");
+  expect(cmd).not.toContain("--allowedTools");
+});
+
+test("every real agent in agents/manifest.yaml sees identical argv/prompt whether or not a server declares approval-required tools — none declare mcpAccess today", async () => {
+  const { Registry } = await import("../src/core/registry.ts");
+  const registry = await Registry.load();
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
+  for (const agent of registry.all()) {
+    expect(agent.mcpAccess).toBeUndefined();
+    const withoutPool = await captureCmd({ agent, permissionMode: "plan" });
+    const withPool = await captureCmd({ agent, permissionMode: "plan", mcpServers: pool });
+    expect(withPool).toEqual(withoutPool);
+  }
+});

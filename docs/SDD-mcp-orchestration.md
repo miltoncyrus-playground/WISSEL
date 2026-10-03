@@ -1,6 +1,6 @@
 # SDD — MCP tool orchestration: growing wissel beyond a coding agent
 
-Status: **Subtasks 1 and 2 shipped and merged.** Written per Milton's ask,
+Status: **Subtasks 1, 2, and 3 shipped and merged.** Written per Milton's ask,
 following a design conversation in this session about turning wissel from
 a dev-focused coding orchestrator into one that can also drive arbitrary
 MCP servers (Slack, ticketing systems, databases, anything with an MCP
@@ -14,8 +14,14 @@ Subtask 1), `checkMcpServerReachable`, `GET /mcp-servers` + `POST
 callout); `AgentDef.mcpAccess`, `TaskResult.mcpCalls`, the
 `claude-cli.ts`/`codex-cli.ts` grant-building and transcript-parsing
 wiring (`runCodex`'s own real MCP flag syntax is a named, unresolved gap —
-see §4's second revision callout). Subtasks 3-7 are still design-only, not
-built — see §6/§7 for what's next and in what order.
+see §4's second revision callout). Subtask 3 shipped `splitGrantsByTrust`
+(mcp-config.ts), the `--allowedTools`/`--mcp-config` trust-tier
+enforcement in `runClaude`, the `mcp-approval-request` describe-don't-
+execute prompt contract (`parse-mcp-approval-request.ts`), and the
+human-triggered approve/deny endpoints — see §4's third revision callout
+for where this subtask's concrete mechanism had to fill in gaps §3.5 only
+sketched the shape of. Subtasks 4-7 are still design-only, not built —
+see §6/§7 for what's next and in what order.
 
 ## 1. Goal
 
@@ -275,6 +281,83 @@ formatting, no LLM involved (per CLAUDE.md's latent/deterministic split
 > full reasoning. This is a concrete, named follow-up for whoever next
 > verifies codex's real CLI MCP surface — not a silently-dropped scope
 > item.
+
+> **Revision (subtask 3, shipped):** §3.5 deliberately only sketched the
+> shape ("describe, don't execute, then a human triggers a narrow
+> follow-up") without nailing down the exact mechanism — this subtask's
+> own card restated it as a concrete proposal and flagged it as the
+> implementer's own, not pre-blessed. Three places the real build ended
+> up diverging from (or filling in a genuine gap in) that proposal,
+> worth naming explicitly rather than leaving silent:
+>
+> 1. **The follow-up task's grant needed a new `TaskCard` field, not a
+>    literal `mcpAccess`.** The card's own text says the follow-up's
+>    "`mcpAccess` is scoped to exactly the one named server+tool" — but
+>    `mcpAccess` only exists on `AgentDef` (a manifest-level, static
+>    declaration), never on `TaskCard`. Added `TaskCard.mcpAccessOverride`
+>    instead, mirroring the existing `harnessOverride`/`model` task-level-
+>    override pattern exactly: every executor reads
+>    `task.mcpAccessOverride ?? agent.mcpAccess`, so the follow-up can
+>    route to *any* agent capable of running it and still be scoped down
+>    to exactly one tool call for that one task, without needing a
+>    dedicated one-off `AgentDef` per approval. See `TaskCard
+>    .mcpAccessOverride`'s own doc comment (src/core/types.ts).
+> 2. **The follow-up deliberately does NOT carry `parentTaskId`.** An
+>    earlier draft set it (for board-UI grouping), but
+>    `resolveHandoffAllowlist` (src/core/orchestrator.ts) restricts a
+>    `parentTaskId`-carrying follow-up's routing candidates to the
+>    parent's own routed agent's declared `handoffs` — which this
+>    follow-up has no principled reason to be bound by (the whole point
+>    is it can route to whichever agent can actually make the one
+>    approved call). `board.setSupersededBy` is the grouping link
+>    instead, exactly mirroring `POST /tasks/:id/escalation/retry`'s own
+>    identical choice for the same reason.
+> 3. **The `mcp-approval-request` contract is optional, unlike every
+>    other output contract in this codebase (review-verdict, subtask-
+>    plan, pipeline-handoff).** Those three are mandatory — a missing or
+>    malformed block is always a contract violation. Here, an agent with
+>    a pending-approval grant may legitimately have nothing blocked to
+>    report this run, so a totally absent block is NOT a failure — only
+>    an *attempted-but-malformed* block (or one naming a server/tool this
+>    run was never blocked on) fails closed. `mcpApprovalRequestBlockPresent`
+>    (parse-mcp-approval-request.ts) is what tells the two apart, since
+>    `parseMcpApprovalRequest` itself returns `null` for both.
+> 4. **The follow-up needed an explicit trust-tier bypass, caught in
+>    review, not foreseen by the original card.** `mcpAccessOverride`
+>    (point 1 above) is resolved through the exact same
+>    `resolveMcpGrants`/`splitGrantsByTrust` path as any other grant
+>    (`claude-cli.ts`'s `runClaude`) — which reads a tool's trust tier
+>    off the *server's* static `mcp-servers.yaml` declaration, not off
+>    where the grant came from. Since the approved tool is, by
+>    construction, declared `approval-required` on the server (that's
+>    the only reason it was ever blocked), the follow-up's own grant
+>    re-resolved into `pendingApproval` again — producing another
+>    `mcp-approval-request` instead of a real call, forever. Fixed by
+>    adding `RunClaudeOptions.mcpAccessPreApproved` (claude-cli.ts): when
+>    true, every grant resolved for that one invocation is treated as
+>    `auto` regardless of the server's declared trust tier, and the
+>    split is skipped entirely. `readonly.ts`/`write.ts` set it to
+>    `task.mcpAccessOverride !== undefined` — true only for a
+>    human-approved follow-up, never for an agent's own regular
+>    `agent.mcpAccess` grants, so the trust gate on ordinary agent
+>    grants is unweakened. See `RunClaudeOptions.mcpAccessPreApproved`'s
+>    own doc comment for the full reasoning.
+>
+> Two smaller, explicit judgment calls the card asked for directly: a
+> **denied** request moves the original task to `failed` (not `done`) —
+> the one thing it was waiting to do got rejected, so it didn't
+> accomplish what it was asked to do, same reasoning escalation's own
+> `abandon` action already holds. An **approved** request moves the
+> original task to `done` (the card didn't ask for a justification here,
+> but it's the same choice point) — its own job (describing the blocked
+> call) is complete the moment a human acts on it, and leaving it frozen
+> on `review` forever would also leave the Approve/Deny buttons visible
+> on a dead card if its drawer were reopened — the same latent gap
+> `POST /tasks/:id/escalation/retry` already has today: of escalation's
+> three resolution actions, `retry` alone never changes the resolved
+> card's own status, so a reopened drawer on that old card still renders
+> "Retry" as if nothing had happened. Not this subtask's gap to fix, but
+> worth citing as the reason `approve`/`deny` here both do change status.
 
 **`src/api/public/board.html`**: a "Manage MCP Servers" panel (mirrors
 the existing Manage Harnesses panel exactly — enable/disable per server,

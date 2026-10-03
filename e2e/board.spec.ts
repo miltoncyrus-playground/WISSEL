@@ -636,6 +636,101 @@ test.describe("Board view", () => {
     expect(stillEscalated.supersededBy).toBeFalsy();
   });
 
+  // Drives a task straight to `review` with a `pendingMcpApproval` set,
+  // purely over HTTP — `POST /tasks/:id/result` runs the exact same
+  // `finishResult` logic a live agent's report carrying
+  // `mcpApprovalRequest` would (see src/core/orchestrator.ts), so this
+  // reaches the real state, not a hand-rolled stand-in for it. Mirrors
+  // driveToEscalated's own approach immediately above.
+  async function driveToPendingMcpApproval(request: APIRequestContext, title: string, repo: string) {
+    const created = await request.post("/tasks", { data: { title, body: "x", labels: ["intake"], repo } });
+    const taskId = (await created.json()).id as string;
+    await request.post(`/tasks/${taskId}/result`, {
+      data: {
+        agentId: "triager",
+        ok: true,
+        summary: "described the call instead of making it",
+        mcpApprovalRequest: { server: "slack", tool: "send_message", args: { text: "deploy finished" }, reason: "the team asked to be notified" },
+      },
+    });
+    const tasks = await (await request.get("/tasks")).json();
+    return tasks.find((t: { id: string }) => t.id === taskId);
+  }
+
+  test("a task with a pending MCP approval request shows the requested call and Approve/Deny instead of Merge/Discard/Mark-done", async ({ page, request }) => {
+    const pending = await driveToPendingMcpApproval(request, `MCP approval test ${Date.now()}`, "/tmp/wissel-e2e-repo");
+    expect(pending).toBeDefined();
+    expect(pending.status).toBe("review");
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(pending.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer.locator("#tdMeta")).toContainText("Review");
+
+    const section = drawer.locator("#tdMcpApproval");
+    await expect(section).toBeVisible();
+    await expect(section).toContainText("slack");
+    await expect(section).toContainText("send_message");
+    await expect(section).toContainText("deploy finished");
+    await expect(section).toContainText("the team asked to be notified");
+
+    await expect(drawer.getByRole("button", { name: "Approve call" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Deny" })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Merge" })).toHaveCount(0);
+    await expect(drawer.getByRole("button", { name: "Discard" })).toHaveCount(0);
+    await expect(drawer.getByRole("button", { name: "Mark done" })).toHaveCount(0);
+    await expect(drawer.getByRole("button", { name: "Mark failed" })).toHaveCount(0);
+  });
+
+  test("Approve call creates a real follow-up task scoped to exactly the one call, and resolves the panel", async ({ page, request }) => {
+    const pending = await driveToPendingMcpApproval(request, `MCP approve test ${Date.now()}`, "/tmp/wissel-e2e-repo");
+    expect(pending).toBeDefined();
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(pending.title).click();
+    const drawer = page.locator("#taskDrawer");
+
+    page.on("dialog", (dialog) => dialog.accept());
+    await drawer.getByRole("button", { name: "Approve call" }).click();
+
+    await expect(drawer.locator("#tdMcpApprovalSection")).toBeHidden();
+    await expect(drawer.locator("#tdActionError")).toBeHidden();
+
+    const tasksAfter = await (await request.get("/tasks")).json();
+    const original = tasksAfter.find((t: { id: string }) => t.id === pending.id);
+    expect(original.status).toBe("done");
+    expect(original.supersededBy).toBeTruthy();
+
+    // Assert the actual created task's grant, not just that a request
+    // fired — scoped to exactly the one approved server+tool.
+    const followUp = tasksAfter.find((t: { id: string }) => t.id === original.supersededBy);
+    expect(followUp).toBeDefined();
+    expect(followUp.mcpAccessOverride).toEqual([{ server: "slack", tools: ["send_message"] }]);
+  });
+
+  test("Deny moves the task to failed with no follow-up task created", async ({ page, request }) => {
+    const pending = await driveToPendingMcpApproval(request, `MCP deny test ${Date.now()}`, "/tmp/wissel-e2e-repo");
+    expect(pending).toBeDefined();
+
+    const before = await (await request.get("/tasks")).json();
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(pending.title).click();
+    const drawer = page.locator("#taskDrawer");
+
+    page.on("dialog", (dialog) => dialog.accept());
+    await drawer.getByRole("button", { name: "Deny" }).click();
+
+    await expect(drawer.locator("#tdMcpApprovalSection")).toBeHidden();
+    await expect(drawer.locator("#tdActionError")).toBeHidden();
+
+    const after = await (await request.get("/tasks")).json();
+    expect(after.length).toBe(before.length); // no follow-up task created
+    const original = after.find((t: { id: string }) => t.id === pending.id);
+    expect(original.status).toBe("failed");
+  });
+
   test("View diff reports a non-git repo honestly instead of an empty diff", async ({ page, request }) => {
     const created = await request.post("/tasks", {
       data: { title: `Diff test ${Date.now()}`, body: "x", labels: [], repo: "/tmp" },
