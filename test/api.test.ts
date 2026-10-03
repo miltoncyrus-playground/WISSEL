@@ -8,7 +8,8 @@ import { createApp, servePipelineEditorAsset, type CreateAppOptions } from "../s
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
-import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../src/core/types.ts";
+import { McpServerPool } from "../src/core/mcp-server-pool.ts";
+import type { AgentDef, Executor, Harness, McpServer, TaskCard, TaskResult } from "../src/core/types.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
 import type { AnthropicMessagesClient } from "../src/executors/anthropic-api.ts";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -294,6 +295,110 @@ test("POST /harnesses/:id/model accepts any model unvalidated when the harness h
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+async function mcpServersFixture(content: string): Promise<{ dir: string; path: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-mcp-servers-test-"));
+  const path = join(dir, "mcp-servers.yaml");
+  await writeFile(path, content);
+  return { dir, path };
+}
+
+test("GET /mcp-servers defaults to empty, and returns configured servers with a live activeCount", async () => {
+  const empty = await makeApp();
+  expect(await (await empty(req("/mcp-servers"))).json()).toEqual([]);
+
+  const mcpServers = McpServerPool.from([
+    { id: "a", label: "A", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: true },
+  ]);
+  const withServer = await makeApp(new SqliteBoard(), { mcpServers });
+  const res = await withServer(req("/mcp-servers"));
+  const body = (await res.json()) as (McpServer & { activeCount: number })[];
+  expect(body).toHaveLength(1);
+  expect(body[0]!.id).toBe("a");
+  expect(body[0]!.activeCount).toBe(0);
+});
+
+test("POST /mcp-servers/:id/disable persists to mcp-servers.yaml and updates the live pool, no re-validation needed", async () => {
+  const { dir, path } = await mcpServersFixture(
+    "mcp-servers:\n  - id: a\n    label: A\n    enabled: true\n    transport:\n      kind: stdio\n      command: /bin/true\n      args: []\n    tools: []\n",
+  );
+  try {
+    const mcpServers = McpServerPool.from([
+      { id: "a", label: "A", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: true },
+    ]);
+    let fetchCalled = false;
+    const app = await makeApp(new SqliteBoard(), {
+      mcpServers,
+      mcpServersPath: path,
+      mcpServerReachabilityOpts: { fetchImpl: (async () => { fetchCalled = true; return new Response(null, { status: 200 }); }) as unknown as typeof fetch },
+    });
+
+    const res = await app(req("/mcp-servers/a/disable", { method: "POST" }));
+
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as McpServer).enabled).toBe(false);
+    expect(mcpServers.get("a")?.enabled).toBe(false);
+    expect(fetchCalled).toBe(false);
+    const onDisk = parse(await readFile(path, "utf8")) as { "mcp-servers": McpServer[] };
+    expect(onDisk["mcp-servers"].find((s) => s.id === "a")?.enabled).toBe(false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /mcp-servers/:id/enable re-validates first — succeeds and clears disabledReason when reachable", async () => {
+  const { dir, path } = await mcpServersFixture(
+    "mcp-servers:\n  - id: a\n    label: A\n    enabled: false\n    disabledReason: not reachable\n    transport:\n      kind: stdio\n      command: /bin/true\n      args: []\n    tools: []\n",
+  );
+  try {
+    const mcpServers = McpServerPool.from([
+      { id: "a", label: "A", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: false, disabledReason: "not reachable" },
+    ]);
+    const app = await makeApp(new SqliteBoard(), { mcpServers, mcpServersPath: path });
+
+    const res = await app(req("/mcp-servers/a/enable", { method: "POST" }));
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as McpServer;
+    expect(body.enabled).toBe(true);
+    expect(body.disabledReason).toBeUndefined();
+    expect(mcpServers.get("a")?.enabled).toBe(true);
+    const onDisk = parse(await readFile(path, "utf8")) as { "mcp-servers": McpServer[] };
+    expect(onDisk["mcp-servers"].find((s) => s.id === "a")?.enabled).toBe(true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /mcp-servers/:id/enable refuses with 409 when still not reachable, and never touches mcp-servers.yaml", async () => {
+  const { dir, path } = await mcpServersFixture(
+    "mcp-servers:\n  - id: a\n    label: A\n    enabled: false\n    transport:\n      kind: stdio\n      command: /no/such/binary\n      args: []\n    tools: []\n",
+  );
+  const before = await readFile(path, "utf8");
+  try {
+    const mcpServers = McpServerPool.from([
+      { id: "a", label: "A", transport: { kind: "stdio", command: "/no/such/binary", args: [] }, tools: [], enabled: false },
+    ]);
+    const app = await makeApp(new SqliteBoard(), { mcpServers, mcpServersPath: path });
+
+    const res = await app(req("/mcp-servers/a/enable", { method: "POST" }));
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("/no/such/binary");
+    expect(mcpServers.get("a")?.enabled).toBe(false);
+    expect(mcpServers.get("a")?.disabledReason).toContain("/no/such/binary");
+    expect(await readFile(path, "utf8")).toBe(before);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /mcp-servers/:id/enable and /disable 404 for an unknown id", async () => {
+  const app = await makeApp(new SqliteBoard(), { mcpServers: McpServerPool.from([]) });
+  expect((await app(req("/mcp-servers/missing/enable", { method: "POST" }))).status).toBe(404);
+  expect((await app(req("/mcp-servers/missing/disable", { method: "POST" }))).status).toBe(404);
 });
 
 test("POST /tasks then GET /tasks round-trips, defaulting dependsOn to []", async () => {

@@ -200,6 +200,19 @@ formatting, no LLM involved (per CLAUDE.md's latent/deterministic split
 `/harnesses`'s own shape), `GET /tasks/:id/mcp-calls` (mirrors `GET
 /tasks/:id/diff`).
 
+> **Revision (subtask 1, shipped):** "mirrors `/harnesses`'s own shape"
+> and "`GET/POST/DELETE /mcp-servers`" were in tension with each other —
+> `/harnesses` itself has no create/delete endpoints, only `GET
+> /harnesses` plus `POST /harnesses/:id/{enable,disable,model}`. Subtask
+> 1 followed the "mirrors `/harnesses`" half literally: it ships `GET
+> /mcp-servers` (every registered server + live `activeCount`) and `POST
+> /mcp-servers/:id/{enable,disable}` only. There's no `POST
+> /mcp-servers` (create) or `DELETE /mcp-servers/:id` — servers are
+> hand-registered in `mcp-servers.yaml`, same as harnesses are today (§5
+> already states no discovery mechanism is in scope). If a create/delete
+> API surface turns out to be needed later, that's new scope for a
+> follow-up subtask, not something subtask 1 silently dropped.
+
 **`src/api/public/board.html`**: a "Manage MCP Servers" panel (mirrors
 the existing Manage Harnesses panel exactly — enable/disable per server,
 plus a second-level toggle per tool for its trust tier); the task
@@ -238,7 +251,9 @@ convention the harness/model pickers already use elsewhere in this file).
 
 ### 1. MCP server registry + pool
 `mcp-servers.yaml` schema, `McpServerPool` (load/from/acquire/release),
-per-server reachability check, `GET/POST/DELETE /mcp-servers`.
+per-server reachability check, `GET /mcp-servers` + `POST
+/mcp-servers/:id/{enable,disable}` (see §4's revision callout — no
+create/delete endpoints, matching `/harnesses`'s own actual surface).
 
 **Acceptance criteria**
 - Round-trip test: load a real `mcp-servers.yaml` fixture, list servers,
