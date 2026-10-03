@@ -1,10 +1,13 @@
 import type { AgentDef, PipelineHandoff, ReviewVerdict, SubtaskPlanItem, TaskCard, TaskResult } from "../core/types.ts";
+import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
 import { parseSubtaskPlan } from "./parse-subtask-plan.ts";
 import { parsePipelineHandoff } from "./parse-pipeline-handoff.ts";
 import { parseSessionLimitReset } from "./parse-session-limit-reset.ts";
+import { buildMcpConfigJson, mcpAllowedToolNames, mcpServerEnvOverrides, resolveMcpGrants } from "./mcp-config.ts";
+import { parseMcpCalls } from "./parse-mcp-calls.ts";
 
 /** A retriable 429's reset time must be within this window of "now" —
  *  parseSessionLimitReset can in principle only ever return same-day or
@@ -167,6 +170,21 @@ export interface RunClaudeOptions {
    *  seeded bug via its own `bun test` output before reporting done.
    *  Undefined means no allowlist is passed — same as today. */
   allowedTools?: string[];
+  /** This run's agent-declared MCP grants (see AgentDef.mcpAccess's own
+   *  doc comment) — resolved against `mcpServers` below into the exact
+   *  server+tool pairs this invocation builds `--mcp-config` for and
+   *  extends `--allowedTools` with. Undefined/empty (every agent in
+   *  agents/manifest.yaml today), or no `mcpServers` pool given, means
+   *  zero MCP config is built — byte-for-byte identical argv to before
+   *  this option existed. See docs/SDD-mcp-orchestration.md §3.2 and
+   *  resolveMcpGrants (mcp-config.ts), which does the actual resolution. */
+  mcpAccess?: AgentDef["mcpAccess"];
+  /** The live MCP server registry `mcpAccess` above is resolved
+   *  against — a grant naming a server not in this pool (or disabled in
+   *  it) is silently dropped, never built into the invocation. Undefined
+   *  means "no pool wired up," identical in effect to `mcpAccess` itself
+   *  being undefined. */
+  mcpServers?: McpServerPool;
   /** The picked harness's env overrides, passed to the runner. Undefined
    *  when no harness was picked — identical to wissel's behavior before
    *  harnesses existed. Either way, runClaude always additionally forces
@@ -199,13 +217,33 @@ export interface RunClaudeOptions {
  * tiers is `--permission-mode`, which the caller picks.
  */
 export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
-  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath, onChunk } = opts;
+  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath, onChunk, mcpAccess, mcpServers } = opts;
   const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
   const prompt = buildAgentPrompt(task, agent, memory, { planMode: permissionMode === "plan" });
-  const cmd = ["claude", "-p", prompt, "--output-format", onChunk ? "stream-json" : "json", "--permission-mode", permissionMode];
-  if (onChunk) cmd.push("--include-partial-messages", "--verbose");
+
+  // Resolving against the pool happens once, up front — every other MCP
+  // decision below (the --mcp-config payload, the --allowedTools
+  // additions, whether to force streaming, how mcpCalls gets parsed) is
+  // deterministic off this same `grants` list. `[]` for an agent with no
+  // mcpAccess (or nothing in it that resolves) is the single source of
+  // truth for "behave exactly like before this field existed."
+  const grants = resolveMcpGrants(mcpAccess, mcpServers);
+  const mcpConfig = buildMcpConfigJson(grants);
+
+  // Streaming is forced on whenever there are MCP grants to capture a
+  // transcript for, even if the caller never asked for live display —
+  // mcpCalls can only be parsed out of the stream-json tool-call/
+  // tool-result events (see parseMcpCalls), which the non-streaming
+  // `--output-format json` response never carries. An agent with no
+  // grants is completely unaffected: streaming still only turns on when
+  // the caller passes onChunk, exactly as before.
+  const useStreaming = Boolean(onChunk) || grants.length > 0;
+  const cmd = ["claude", "-p", prompt, "--output-format", useStreaming ? "stream-json" : "json", "--permission-mode", permissionMode];
+  if (useStreaming) cmd.push("--include-partial-messages", "--verbose");
   if (model) cmd.push("--model", model);
-  if (allowedTools && allowedTools.length > 0) cmd.push("--allowedTools", ...allowedTools);
+  if (mcpConfig) cmd.push("--mcp-config", JSON.stringify(mcpConfig), "--strict-mcp-config");
+  const combinedAllowedTools = [...(allowedTools ?? []), ...mcpAllowedToolNames(grants)];
+  if (combinedAllowedTools.length > 0) cmd.push("--allowedTools", ...combinedAllowedTools);
 
   // Always force these two empty, harness or no harness — confirmed
   // live (not just for the auth-status probe): an ambient
@@ -217,7 +255,11 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // already scrubs these two for its own probe; this was the real
   // execution path that was missing the same guard until a live pipeline
   // run hit it for real.
-  const scopedEnv = { ...(env ?? {}), ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
+  //
+  // mcpServerEnvOverrides merges in before the two forced-empty vars so
+  // nothing an MCP server declares can ever override them — same
+  // last-wins ordering, same reasoning.
+  const scopedEnv = { ...(env ?? {}), ...mcpServerEnvOverrides(grants), ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
 
   let cmdResult: CommandResult;
   try {
@@ -227,6 +269,13 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   }
 
   const { stdout, stderr, exitCode } = cmdResult;
+
+  // Computed once, off the full accumulated stdout, regardless of
+  // exitCode/parse outcome below — a run that made real MCP tool calls
+  // before failing shouldn't lose that transcript just because the
+  // overall run didn't succeed. undefined for zero grants (see
+  // parseMcpCalls's own doc comment).
+  const mcpCalls = parseMcpCalls(stdout, grants);
 
   // Parsed *before* branching on exitCode (unlike before): a non-zero
   // exit can still carry a fully-formed JSON payload with real cost and
@@ -270,14 +319,15 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
           summary: `claude session limit hit — retrying after ${resetAt.toISOString()}`,
           actualCost: parsed.total_cost_usd,
           retryAfter: resetAt.toISOString(),
+          ...(mcpCalls ? { mcpCalls } : {}),
         };
       }
     }
-    return fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`, parsed?.total_cost_usd);
+    return fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`, parsed?.total_cost_usd, mcpCalls);
   }
 
   if (!parsed) {
-    return fail(task, agent, `could not parse claude output: ${parseError!.message}`);
+    return fail(task, agent, `could not parse claude output: ${parseError!.message}`, undefined, mcpCalls);
   }
 
   const denials = parsed.permission_denials ?? [];
@@ -352,9 +402,17 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     ...(verdict ? { verdict: verdict.verdict, reviewFeedback: verdict.feedback } : {}),
     ...(plan ? { subtaskPlan: plan } : {}),
     ...(handoff ? { pipelineHandoff: handoff } : {}),
+    ...(mcpCalls ? { mcpCalls } : {}),
   };
 }
 
-function fail(task: TaskCard, agent: AgentDef, summary: string, actualCost?: number): TaskResult {
-  return { taskId: task.id, agentId: agent.id, ok: false, summary, ...(actualCost !== undefined ? { actualCost } : {}) };
+function fail(task: TaskCard, agent: AgentDef, summary: string, actualCost?: number, mcpCalls?: TaskResult["mcpCalls"]): TaskResult {
+  return {
+    taskId: task.id,
+    agentId: agent.id,
+    ok: false,
+    summary,
+    ...(actualCost !== undefined ? { actualCost } : {}),
+    ...(mcpCalls ? { mcpCalls } : {}),
+  };
 }

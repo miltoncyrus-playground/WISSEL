@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { CodexReadOnlyExecutor } from "../src/executors/codex-readonly.ts";
-import type { AgentDef, TaskCard } from "../src/core/types.ts";
+import { McpServerPool } from "../src/core/mcp-server-pool.ts";
+import type { AgentDef, McpServer, TaskCard } from "../src/core/types.ts";
 
 const agent: AgentDef = {
   id: "triager",
@@ -89,4 +90,44 @@ test("reports harnessId on the result when a harness was picked", async () => {
 
   const result = await executor.run(task, agent, { id: "codex-personal", tool: "codex-cli", label: "Codex — personal", enabled: true });
   expect(result.harnessId).toBe("codex-personal");
+});
+
+// --- MCP grants (docs/SDD-mcp-orchestration.md §3.2) --------------------
+// See runCodex's own doc comment (codex-cli.ts) for why a resolved grant
+// fails loud here rather than being wired into the invocation — codex's
+// real MCP CLI surface is unverified, unlike claude-cli's.
+
+test("an agent with no mcpAccess gets identical argv whether or not an mcpServers pool is wired up on the executor", async () => {
+  const mcpServer: McpServer = { id: "slack", label: "Slack", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: true };
+  const pool = McpServerPool.from([mcpServer]);
+  const codexResult = {
+    stdout: '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"triaged"}}',
+    stderr: "",
+    exitCode: 0,
+  };
+
+  let cmdWithoutPool: string[] = [];
+  await new CodexReadOnlyExecutor({ runner: async (cmd) => ((cmdWithoutPool = cmd), codexResult) }).run(task, agent);
+  let cmdWithPool: string[] = [];
+  await new CodexReadOnlyExecutor({ mcpServers: pool, runner: async (cmd) => ((cmdWithPool = cmd), codexResult) }).run(task, agent);
+
+  expect(cmdWithPool).toEqual(cmdWithoutPool);
+});
+
+test("a declared, resolvable mcpAccess grant surfaces as a loud failure, not a silently-ignored one", async () => {
+  const mcpServer: McpServer = {
+    id: "slack",
+    label: "Slack",
+    transport: { kind: "stdio", command: "/bin/true", args: [] },
+    tools: [{ name: "send_message", trust: "auto" }],
+    enabled: true,
+  };
+  const pool = McpServerPool.from([mcpServer]);
+  const executor = new CodexReadOnlyExecutor({ mcpServers: pool, runner: async () => ({ stdout: "", stderr: "", exitCode: 0 }) });
+  const grantedAgent: AgentDef = { ...agent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] };
+
+  const result = await executor.run(task, grantedAgent);
+  expect(result.ok).toBe(false);
+  expect(result.summary).toContain("not yet implemented");
+  expect(result.summary).toContain("slack");
 });

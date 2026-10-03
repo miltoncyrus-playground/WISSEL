@@ -217,21 +217,21 @@ export function createApp(
   // (see their canHandle), so there's no write risk to gate behind
   // executeWriteTier the way WriteExecutor/CodexWriteExecutor are.
   const autoExecutors: Executor[] = [
-    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
+    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
     new ApiExecutor(),
-    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
+    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
   ];
   if (executeWriteTier)
     autoExecutors.push(
-      new WriteExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
-      new CodexWriteExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
+      new WriteExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
+      new CodexWriteExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
     );
   const manualExecutors: Executor[] = opts.manualExecutors ?? [
-    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
+    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
     new ApiExecutor(),
-    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
-    new WriteExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
-    new CodexWriteExecutor({ memoryPath: opts.memoryPath, onChunk: onTaskOutputChunk }),
+    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
+    new WriteExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
+    new CodexWriteExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
   ];
 
   // A pipeline run always executes every step in-process, the same way

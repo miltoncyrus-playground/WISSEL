@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexWriteExecutor } from "../src/executors/codex-write.ts";
-import type { AgentDef, TaskCard } from "../src/core/types.ts";
+import { McpServerPool } from "../src/core/mcp-server-pool.ts";
+import type { AgentDef, McpServer, TaskCard } from "../src/core/types.ts";
 
 const agent: AgentDef = {
   id: "implementer",
@@ -186,6 +187,55 @@ test("a worktree creation failure becomes a failed TaskResult without ever calli
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("failed to create worktree");
     expect(codexCalled).toBe(false);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+// --- MCP grants (docs/SDD-mcp-orchestration.md §3.2) --------------------
+// See runCodex's own doc comment (codex-cli.ts) — a resolved grant fails
+// loud rather than being wired into the invocation, since codex's real
+// MCP CLI surface is unverified, unlike claude-cli's.
+
+test("an agent with no mcpAccess gets identical argv whether or not an mcpServers pool is wired up on the executor", async () => {
+  const home = await fakeHome();
+  try {
+    const mcpServer: McpServer = { id: "slack", label: "Slack", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: true };
+    const pool = McpServerPool.from([mcpServer]);
+    const codexResult = { stdout: '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"shipped"}}', stderr: "", exitCode: 0 };
+
+    let cmdWithoutPool: string[] = [];
+    await new CodexWriteExecutor({ homeDir: home, runner: async (cmd) => (cmd[0] === "git" ? { stdout: "", stderr: "", exitCode: 0 } : ((cmdWithoutPool = cmd), codexResult)) }).run(task, agent);
+    let cmdWithPool: string[] = [];
+    await new CodexWriteExecutor({ homeDir: home, mcpServers: pool, runner: async (cmd) => (cmd[0] === "git" ? { stdout: "", stderr: "", exitCode: 0 } : ((cmdWithPool = cmd), codexResult)) }).run(task, agent);
+
+    expect(cmdWithPool).toEqual(cmdWithoutPool);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a declared, resolvable mcpAccess grant surfaces as a loud failure, not a silently-ignored one", async () => {
+  const home = await fakeHome();
+  try {
+    const mcpServer: McpServer = {
+      id: "slack",
+      label: "Slack",
+      transport: { kind: "stdio", command: "/bin/true", args: [] },
+      tools: [{ name: "send_message", trust: "auto" }],
+      enabled: true,
+    };
+    const pool = McpServerPool.from([mcpServer]);
+    const executor = new CodexWriteExecutor({
+      homeDir: home,
+      mcpServers: pool,
+      runner: async (cmd) => (cmd[0] === "git" ? { stdout: "", stderr: "", exitCode: 0 } : { stdout: "", stderr: "", exitCode: 0 }),
+    });
+    const grantedAgent: AgentDef = { ...agent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] };
+
+    const result = await executor.run(task, grantedAgent);
+    expect(result.ok).toBe(false);
+    expect(result.summary).toContain("not yet implemented");
   } finally {
     await rm(home, { recursive: true, force: true });
   }

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { runClaude, runViaBun, type CommandResult, type CommandRunner } from "../src/executors/claude-cli.ts";
-import type { AgentDef, TaskCard } from "../src/core/types.ts";
+import { McpServerPool } from "../src/core/mcp-server-pool.ts";
+import type { AgentDef, McpServer, TaskCard } from "../src/core/types.ts";
 
 const reviewerAgent: AgentDef = {
   id: "reviewer",
@@ -459,4 +460,178 @@ test("runViaBun without onChunk behaves exactly as before — full buffered stdo
   const result = await runViaBun(["sh", "-c", "printf 'hello\\n'"], { cwd: "/tmp" });
   expect(result.stdout).toBe("hello\n");
   expect(result.exitCode).toBe(0);
+});
+
+// --- MCP grants (docs/SDD-mcp-orchestration.md §3.2/§3.4) ---------------
+
+function mcpServer(overrides: Partial<McpServer> & Pick<McpServer, "id">): McpServer {
+  return {
+    label: overrides.id,
+    transport: { kind: "stdio", command: "/usr/local/bin/example-mcp-server", args: [] },
+    tools: [],
+    enabled: true,
+    ...overrides,
+  };
+}
+
+async function captureCmd(extra: Partial<Parameters<typeof runClaude>[0]> = {}): Promise<string[]> {
+  let seenCmd: string[] = [];
+  const agent = extra.agent ?? plainAgent;
+  await runClaude({
+    runner: async (cmd) => {
+      seenCmd = cmd;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+    task,
+    agent,
+    permissionMode: "plan",
+    // Mirrors exactly what every real executor (readonly.ts/write.ts)
+    // does: pass agent.mcpAccess through as its own top-level option —
+    // runClaude never reads it off `agent` itself, same as allowedTools
+    // is never derived from agent.toolAccess automatically.
+    mcpAccess: agent.mcpAccess,
+    ...extra,
+  });
+  return seenCmd;
+}
+
+test("an agent with no mcpAccess gets byte-for-byte identical argv to before mcpAccess existed, even with a real pool wired up", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack" })]);
+  const withoutPool = await captureCmd({});
+  const withPoolButNoGrant = await captureCmd({ mcpServers: pool });
+  expect(withPoolButNoGrant).toEqual(withoutPool);
+  expect(withPoolButNoGrant).not.toContain("--mcp-config");
+  expect(withPoolButNoGrant).not.toContain("--strict-mcp-config");
+  expect(withPoolButNoGrant).not.toContain("--allowedTools");
+  expect(withPoolButNoGrant[withPoolButNoGrant.indexOf("--output-format") + 1]).toBe("json");
+});
+
+test("every real agent in agents/manifest.yaml (none declare mcpAccess today) gets identical argv whether or not a real McpServerPool is wired up", async () => {
+  const { Registry } = await import("../src/core/registry.ts");
+  const registry = await Registry.load();
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "auto" }] })]);
+  for (const agent of registry.all()) {
+    expect(agent.mcpAccess).toBeUndefined();
+    const withoutPool = await captureCmd({ agent, permissionMode: "plan" });
+    const withPool = await captureCmd({ agent, permissionMode: "plan", mcpServers: pool });
+    expect(withPool).toEqual(withoutPool);
+  }
+});
+
+test("a grant naming a server not in the pool (or disabled) is dropped — same byte-identical argv as no mcpAccess at all", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", enabled: false })]);
+  const cmd = await captureCmd({ agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] }, mcpServers: pool });
+  expect(cmd).not.toContain("--mcp-config");
+  expect(cmd).not.toContain("--allowedTools");
+  expect(cmd[cmd.indexOf("--output-format") + 1]).toBe("json");
+});
+
+test("an agent with mcpAccess: [{server:'x', tools:['y']}] gets exactly that server+tool pair built into --mcp-config and --allowedTools, no more, no less", async () => {
+  const pool = McpServerPool.from([
+    mcpServer({ id: "x", transport: { kind: "stdio", command: "/bin/x-server", args: ["--flag"] }, tools: [{ name: "y", trust: "auto" }] }),
+    mcpServer({ id: "unrelated", tools: [{ name: "z", trust: "auto" }] }),
+  ]);
+  const cmd = await captureCmd({ agent: { ...plainAgent, mcpAccess: [{ server: "x", tools: ["y"] }] }, mcpServers: pool });
+
+  expect(cmd).toContain("--strict-mcp-config");
+  const configIdx = cmd.indexOf("--mcp-config");
+  expect(configIdx).toBeGreaterThan(-1);
+  const config = JSON.parse(cmd[configIdx + 1]!);
+  expect(config).toEqual({ mcpServers: { x: { command: "/bin/x-server", args: ["--flag"] } } });
+  expect(Object.keys(config.mcpServers)).toEqual(["x"]); // never "unrelated" — only the granted server
+
+  const toolsIdx = cmd.indexOf("--allowedTools");
+  expect(toolsIdx).toBeGreaterThan(-1);
+  expect(cmd.slice(toolsIdx + 1)).toEqual(["mcp__x__y"]);
+});
+
+test("MCP allowedTools entries are appended alongside an existing allowedTools list, not replacing it", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "x", tools: [{ name: "y", trust: "auto" }] })]);
+  const cmd = await captureCmd({
+    agent: { ...plainAgent, mcpAccess: [{ server: "x", tools: ["y"] }] },
+    mcpServers: pool,
+    allowedTools: ["Bash(bun test:*)"],
+    permissionMode: "acceptEdits",
+  });
+  const idx = cmd.indexOf("--allowedTools");
+  expect(cmd.slice(idx + 1)).toEqual(["Bash(bun test:*)", "mcp__x__y"]);
+});
+
+test("non-empty grants force stream-json/--include-partial-messages/--verbose even when the caller never asked for onChunk", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "x", tools: [{ name: "y", trust: "auto" }] })]);
+  const cmd = await captureCmd({ agent: { ...plainAgent, mcpAccess: [{ server: "x", tools: ["y"] }] }, mcpServers: pool });
+  expect(cmd[cmd.indexOf("--output-format") + 1]).toBe("stream-json");
+  expect(cmd).toContain("--include-partial-messages");
+  expect(cmd).toContain("--verbose");
+});
+
+test("a granted server's own env is merged into the spawned process's env, but never overrides the forced-empty ANTHROPIC_* vars", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "x", env: { SLACK_BOT_TOKEN: "SLACK_BOT_TOKEN" }, tools: [{ name: "y", trust: "auto" }] })]);
+  let seenEnv: Record<string, string> | undefined;
+  await runClaude({
+    runner: async (_cmd, opts) => {
+      seenEnv = opts.env;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+    task,
+    agent: { ...plainAgent, mcpAccess: [{ server: "x", tools: ["y"] }] },
+    mcpAccess: [{ server: "x", tools: ["y"] }],
+    mcpServers: pool,
+    permissionMode: "plan",
+  });
+  expect(seenEnv).toEqual({ SLACK_BOT_TOKEN: "SLACK_BOT_TOKEN", ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" });
+});
+
+test("mcpCalls is populated on the TaskResult when the stream carries a matching granted tool call", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "auto" }] })]);
+  const stdout = [
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "t1", name: "mcp__slack__send_message", input: { text: "hi" } }] },
+    }),
+    JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "sent", is_error: false }] } }),
+    JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "done" }),
+  ].join("\n");
+
+  const result = await runClaude({
+    runner: async () => ({ stdout, stderr: "", exitCode: 0 }),
+    task,
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+    permissionMode: "plan",
+  });
+
+  expect(result.ok).toBe(true);
+  expect(result.mcpCalls).toEqual([{ server: "slack", tool: "send_message", args: { text: "hi" }, result: "sent", ok: true }]);
+});
+
+test("mcpCalls is undefined when the agent has no mcpAccess, even if the (non-streamed) stdout happened to mention tool_use-shaped JSON", async () => {
+  const result = await runClaude({
+    runner: stub({ stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 }),
+    task,
+    agent: plainAgent,
+    permissionMode: "plan",
+  });
+  expect(result.mcpCalls).toBeUndefined();
+});
+
+test("mcpCalls is still attached on a failed run (e.g. a non-zero exit) when a granted call happened before the failure", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "auto" }] })]);
+  const stdout = [
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "mcp__slack__send_message", input: {} }] } }),
+    JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "sent", is_error: false }] } }),
+  ].join("\n");
+
+  const result = await runClaude({
+    runner: async () => ({ stdout, stderr: "crashed after the tool call", exitCode: 1 }),
+    task,
+    agent: { ...plainAgent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    mcpServers: pool,
+    permissionMode: "plan",
+  });
+
+  expect(result.ok).toBe(false);
+  expect(result.mcpCalls).toEqual([{ server: "slack", tool: "send_message", args: {}, result: "sent", ok: true }]);
 });

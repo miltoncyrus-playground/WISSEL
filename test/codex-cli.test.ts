@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { computeCost, runCodex, type CommandResult } from "../src/executors/codex-cli.ts";
-import type { AgentDef, TaskCard } from "../src/core/types.ts";
+import { McpServerPool } from "../src/core/mcp-server-pool.ts";
+import type { AgentDef, McpServer, TaskCard } from "../src/core/types.ts";
 
 const agent: AgentDef = {
   id: "implementer",
@@ -195,4 +196,64 @@ test("onChunk fires per parsed JSONL line, in order, as a streaming runner deliv
 test("onChunk omitted never calls the runner's onChunk-dependent path — identical to today's behavior", async () => {
   const result = await runCodex({ runner: stub({ stdout: CLEAN_RUN_STDOUT, stderr: "", exitCode: 0 }), task, agent, sandbox: "read-only" });
   expect(result.summary).toBe("spike ok");
+});
+
+// --- MCP grants (docs/SDD-mcp-orchestration.md §3.2) --------------------
+// Unlike runClaude, a resolved grant here fails the run loud instead of
+// being wired into the invocation — see runCodex's own doc comment for
+// why: codex's real MCP CLI surface has zero prior research in this repo
+// and was unreachable (no subprocess spawn, no WebFetch to non-Anthropic
+// domains) in this subtask's own sandbox.
+
+function mcpServer(overrides: Partial<McpServer> & Pick<McpServer, "id">): McpServer {
+  return { label: overrides.id, transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: true, ...overrides };
+}
+
+test("no mcpAccess produces byte-identical argv/env whether or not a real McpServerPool is wired up", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack" })]);
+  let cmdWithoutPool: string[] = [];
+  await runCodex({ runner: async (cmd) => ((cmdWithoutPool = cmd), { stdout: CLEAN_RUN_STDOUT, stderr: "", exitCode: 0 }), task, agent, sandbox: "read-only" });
+  let cmdWithPool: string[] = [];
+  await runCodex({
+    runner: async (cmd) => ((cmdWithPool = cmd), { stdout: CLEAN_RUN_STDOUT, stderr: "", exitCode: 0 }),
+    task,
+    agent,
+    sandbox: "read-only",
+    mcpServers: pool,
+  });
+  expect(cmdWithPool).toEqual(cmdWithoutPool);
+});
+
+test("a grant naming a server not in the pool (or disabled) is dropped — runs normally, not a failure", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", enabled: false })]);
+  const result = await runCodex({
+    runner: stub({ stdout: CLEAN_RUN_STDOUT, stderr: "", exitCode: 0 }),
+    task,
+    agent: { ...agent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    sandbox: "read-only",
+    mcpServers: pool,
+  });
+  expect(result.ok).toBe(true);
+  expect(result.summary).toBe("spike ok");
+});
+
+test("a declared, resolvable mcpAccess grant fails the run loud, naming the server, instead of guessing a CLI flag or silently dropping it", async () => {
+  const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "auto" }] })]);
+  let codexCalled = false;
+  const result = await runCodex({
+    runner: async () => {
+      codexCalled = true;
+      return { stdout: CLEAN_RUN_STDOUT, stderr: "", exitCode: 0 };
+    },
+    task,
+    agent: { ...agent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] },
+    mcpAccess: [{ server: "slack", tools: ["send_message"] }],
+    sandbox: "read-only",
+    mcpServers: pool,
+  });
+  expect(result.ok).toBe(false);
+  expect(result.summary).toContain("slack");
+  expect(result.summary).toContain("not yet implemented");
+  expect(codexCalled).toBe(false); // fails before ever spawning codex, not after a guessed invocation errors
 });

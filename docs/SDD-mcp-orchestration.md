@@ -213,6 +213,58 @@ formatting, no LLM involved (per CLAUDE.md's latent/deterministic split
 > API surface turns out to be needed later, that's new scope for a
 > follow-up subtask, not something subtask 1 silently dropped.
 
+> **Revision (subtask 2, shipped):** §3.4's named unknown — the real
+> `stream-json` event shape for an MCP tool call — is **corroborated, not
+> observed**. No live round-trip against a real, attached MCP server was
+> performed in this subtask (sandbox blocked the subprocess spawn needed
+> to run `claude -p` for real); the shape below is reasoned from
+> Anthropic's current official docs plus this repo's own already-shipped
+> `render-task-output.js` precedent, not from watching a real MCP tool
+> call happen. The generic `tool_use`/`tool_result` message envelope has
+> strong corroboration this way (it's not MCP-specific, and
+> `render-task-output.js` already depends on it in production). The one
+> piece that is genuinely MCP-specific and still **unverified against a
+> real attached server** is whether a granted MCP tool actually surfaces
+> as a `tool_use` block named `mcp__<server>__<tool>` in practice — that
+> naming convention is documented but has not been seen fire for real.
+> Per the documented (not observed) shape: a tool call is a `tool_use`
+> content block (`{type, id, name, input}`) inside a top-level
+> `type: "assistant"` message, and its result is a `tool_result` block
+> (`{type, tool_use_id, content, is_error}`) inside a top-level
+> `type: "user"` message — correlated by `tool_use_id === id`, never
+> nested inside a `stream_event`. Sourced from Anthropic's current
+> official docs (code.claude.com/docs/en/agent-sdk/streaming-output,
+> platform.claude.com/docs/en/agents-and-tools/tool-use/overview). Also
+> sourced this way (same method, not guessed, also not live-verified):
+> the real `claude` CLI flag is `--mcp-config <json-or-file>` plus
+> `--strict-mcp-config` (to ignore any other ambient MCP config, e.g. a
+> project's own `.mcp.json`), and the MCP tool-naming convention is
+> `mcp__<server-name>__<tool-name>` (code.claude.com/docs/en/mcp). See
+> `src/executors/parse-mcp-calls.ts`'s own doc comment for the exact
+> citations, and `test/parse-mcp-calls.test.ts` for the fixture built
+> against this corroborated-but-unobserved shape. **Open empirical item
+> for whoever builds subtask 7's integration proof:** run a real `claude
+> -p --output-format stream-json --include-partial-messages --verbose`
+> invocation against a genuine attached MCP server with a granted tool,
+> capture the real JSONL, and confirm (or correct) the shape above —
+> ideally replacing this fixture with a real captured one at that point.
+>
+> One piece §3.2/§4 assumed but subtask 2 could **not** verify:
+> `runCodex`'s own MCP wiring. Unlike `runClaude`, `codex exec` has zero
+> prior MCP research anywhere in this codebase, and this subtask's own
+> sandbox blocked every avenue to establish it for real (no `codex
+> --help`/`codex exec --help` subprocess spawn, no WebFetch to
+> non-Anthropic domains). Rather than guess a `-c mcp_servers...`
+> config-override syntax that might silently no-op instead of erroring
+> (a false positive worse than an obvious failure), `runCodex` accepts
+> `mcpAccess`/`mcpServers` for interface parity but fails any resolved,
+> non-empty grant loud, naming the server, instead of wiring it in. A
+> codex-backed agent with no `mcpAccess` is completely unaffected. See
+> `runCodex`'s own doc comment (`src/executors/codex-cli.ts`) for the
+> full reasoning. This is a concrete, named follow-up for whoever next
+> verifies codex's real CLI MCP surface — not a silently-dropped scope
+> item.
+
 **`src/api/public/board.html`**: a "Manage MCP Servers" panel (mirrors
 the existing Manage Harnesses panel exactly — enable/disable per server,
 plus a second-level toggle per tool for its trust tier); the task

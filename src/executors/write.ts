@@ -1,4 +1,5 @@
 import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../core/types.ts";
+import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { resolveModel } from "../core/model-resolution.ts";
 import { runClaude, runViaBun, type CommandRunner } from "./claude-cli.ts";
 import { createTaskWorktree } from "../services/worktree.ts";
@@ -19,6 +20,11 @@ export interface WriteExecutorOptions {
    *  see its own doc comment. Overridable so tests never fall back to
    *  this repo's real memory/lessons.md. */
   memoryPath?: string;
+  /** The live MCP server registry — see ReadOnlyExecutorOptions.mcpServers's
+   *  own doc comment, identical contract. Undefined (the default) means
+   *  no MCP grant on any agent routed through this executor can ever
+   *  resolve to anything — byte-identical to today. */
+  mcpServers?: McpServerPool;
   /** Fires once per parsed JSONL line for the given task, in order, as
    *  claude's stdout streams in — wired to appendTaskOutput(taskId, ...)
    *  by src/api/server.ts (see docs/SDD-live-task-output.md §3.2/§4).
@@ -57,6 +63,7 @@ export class WriteExecutor implements Executor {
   private model?: string;
   private homeDir?: string;
   private memoryPath?: string;
+  private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
 
   constructor(opts: WriteExecutorOptions = {}) {
@@ -64,6 +71,7 @@ export class WriteExecutor implements Executor {
     this.model = opts.model;
     this.homeDir = opts.homeDir;
     this.memoryPath = opts.memoryPath;
+    this.mcpServers = opts.mcpServers;
     this.onChunk = opts.onChunk;
   }
 
@@ -98,6 +106,8 @@ export class WriteExecutor implements Executor {
       // See docs/SDD-pipeline-automation.md §3.4.
       allowedTools: ["Bash(bun test:*)", "Bash(bun run typecheck:*)"],
       memoryPath: this.memoryPath,
+      mcpAccess: agent.mcpAccess,
+      mcpServers: this.mcpServers,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
     });
 
