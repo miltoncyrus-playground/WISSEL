@@ -54,6 +54,21 @@ export interface AgentDef {
   costProfile: CostProfile;
   trustLevel: TrustLevel;
   toolAccess: string[];
+  /** Which specific tools on which specific MCP servers this agent may
+   *  call — an open-ended axis alongside toolAccess's closed enum,
+   *  additive and orthogonal to both toolAccess and tier (a readonly-tier
+   *  agent can carry this with zero file access — e.g. "read a ticket via
+   *  an MCP server, answer a question," still dispatched through
+   *  ReadOnlyExecutor, still zero git/worktree involvement; a write-tier
+   *  agent can carry both). No new tier value — tier stays exactly
+   *  "file/bash blast radius." Resolved against the real McpServerPool at
+   *  dispatch time by the claude-cli/codex-cli executors, which build the
+   *  MCP config for ONLY these exact server+tool pairs — never "attach
+   *  every registered server." Undefined (the default, every agent in
+   *  agents/manifest.yaml today) means no MCP grants at all — a pure
+   *  addition with zero effect on any agent that doesn't declare it. See
+   *  docs/SDD-mcp-orchestration.md §3.2. */
+  mcpAccess?: { server: string; tools: string[] }[];
   /** Narrow, explicit exception to wissel's one non-negotiable
    *  write-tier policy — a human reviews every write-tier success
    *  before it's "done" (see finishResult). Setting this true lets THIS
@@ -502,6 +517,20 @@ export interface TaskResult {
    *  all" unambiguously, which no combination of optional flat fields
    *  could. Undefined for every non-pipeline-step run. */
   pipelineHandoff?: PipelineHandoff;
+  /** What MCP tools were actually called during this run — server id,
+   *  tool name, the arguments Claude sent, the result that came back, and
+   *  whether that call succeeded. Parsed out of the same stream-json
+   *  tool-call/tool-result event pair the live-output pipe already
+   *  carries (see docs/SDD-live-task-output.md), filtered to only the
+   *  tool_use blocks whose name matches one of this run's granted
+   *  mcpAccess tools — see parseMcpCalls, src/executors/parse-mcp-calls.ts.
+   *  Lets a later review step read "were the right tool calls made"
+   *  instead of only ever a diff. Undefined means no MCP calls happened,
+   *  or this run didn't declare mcpAccess at all — same "absence always
+   *  means nothing to show, never unknown" discipline
+   *  TaskResult.subagents already holds. See
+   *  docs/SDD-mcp-orchestration.md §3.4. */
+  mcpCalls?: { server: string; tool: string; args: unknown; result: unknown; ok: boolean }[];
 }
 
 export interface Executor {

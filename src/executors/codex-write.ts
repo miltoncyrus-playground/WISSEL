@@ -1,4 +1,5 @@
 import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../core/types.ts";
+import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { resolveModel } from "../core/model-resolution.ts";
 import { runViaBun } from "./claude-cli.ts";
 import { runCodex, type CommandRunner } from "./codex-cli.ts";
@@ -18,6 +19,10 @@ export interface CodexWriteExecutorOptions {
    *  see its own doc comment. Overridable so tests never fall back to
    *  this repo's real memory/lessons.md. */
   memoryPath?: string;
+  /** The live MCP server registry — see CodexReadOnlyExecutorOptions
+   *  .mcpServers's doc comment, identical contract (and the same
+   *  fail-loud-on-non-empty-grant caveat). */
+  mcpServers?: McpServerPool;
   /** Fires once per parsed JSONL line for the given task, in order, as
    *  codex's stdout streams in — wired to appendTaskOutput(taskId, ...)
    *  by src/api/server.ts (see docs/SDD-live-task-output.md §3.2/§4). */
@@ -52,6 +57,7 @@ export class CodexWriteExecutor implements Executor {
   private model?: string;
   private homeDir?: string;
   private memoryPath?: string;
+  private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
 
   constructor(opts: CodexWriteExecutorOptions = {}) {
@@ -59,6 +65,7 @@ export class CodexWriteExecutor implements Executor {
     this.model = opts.model;
     this.homeDir = opts.homeDir;
     this.memoryPath = opts.memoryPath;
+    this.mcpServers = opts.mcpServers;
     this.onChunk = opts.onChunk;
   }
 
@@ -82,6 +89,8 @@ export class CodexWriteExecutor implements Executor {
       model: this.model ?? resolveModel(task, agent, harness),
       env: harness?.env,
       memoryPath: this.memoryPath,
+      mcpAccess: agent.mcpAccess,
+      mcpServers: this.mcpServers,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
     });
 

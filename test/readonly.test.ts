@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { ReadOnlyExecutor, type CommandResult } from "../src/executors/readonly.ts";
-import type { AgentDef, Harness, TaskCard } from "../src/core/types.ts";
+import { McpServerPool } from "../src/core/mcp-server-pool.ts";
+import type { AgentDef, Harness, McpServer, TaskCard } from "../src/core/types.ts";
 
 const agent: AgentDef = {
   id: "triager",
@@ -327,4 +328,42 @@ test("omitting onChunk never passes one through to runClaude — identical to to
   });
   await executor.run(task, agent);
   expect(sawOnChunk).toBeUndefined();
+});
+
+// --- MCP grants (docs/SDD-mcp-orchestration.md §3.2) --------------------
+
+test("an agent with no mcpAccess gets identical argv whether or not an mcpServers pool is wired up on the executor", async () => {
+  const mcpServer: McpServer = { id: "slack", label: "Slack", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: true };
+  const pool = McpServerPool.from([mcpServer]);
+  let cmdWithoutPool: string[] = [];
+  let cmdWithPool: string[] = [];
+
+  await new ReadOnlyExecutor({ runner: async (cmd) => ((cmdWithoutPool = cmd), { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 }) }).run(task, agent);
+  await new ReadOnlyExecutor({ mcpServers: pool, runner: async (cmd) => ((cmdWithPool = cmd), { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 }) }).run(task, agent);
+
+  expect(cmdWithPool).toEqual(cmdWithoutPool);
+});
+
+test("passes agent.mcpAccess and the executor's own mcpServers pool through to runClaude", async () => {
+  const mcpServer: McpServer = {
+    id: "slack",
+    label: "Slack",
+    transport: { kind: "stdio", command: "/bin/true", args: [] },
+    tools: [{ name: "send_message", trust: "auto" }],
+    enabled: true,
+  };
+  const pool = McpServerPool.from([mcpServer]);
+  const grantedAgent: AgentDef = { ...agent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] };
+
+  let seenCmd: string[] = [];
+  const withCapture = new ReadOnlyExecutor({
+    mcpServers: pool,
+    runner: async (cmd) => {
+      seenCmd = cmd;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+  });
+  await withCapture.run(task, grantedAgent);
+  expect(seenCmd).toContain("--mcp-config");
+  expect(seenCmd.join(" ")).toContain("mcp__slack__send_message");
 });

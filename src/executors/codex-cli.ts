@@ -1,7 +1,9 @@
 import type { AgentDef, TaskCard, TaskResult } from "../core/types.ts";
+import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import type { CommandResult, CommandRunner } from "./claude-cli.ts";
+import { resolveMcpGrants } from "./mcp-config.ts";
 
 export type { CommandResult, CommandRunner } from "./claude-cli.ts";
 
@@ -100,6 +102,17 @@ export interface RunCodexOptions {
   /** Path to the global memory/lessons.md file — see
    *  RunClaudeOptions.memoryPath's own doc comment, identical contract. */
   memoryPath?: string;
+  /** This run's agent-declared MCP grants — see RunClaudeOptions.mcpAccess's
+   *  own doc comment for the general contract. Undefined/empty means zero
+   *  effect on the invocation, same as claude-cli's own invariant.
+   *
+   *  **Unlike claude-cli.ts, non-empty grants here are not actually
+   *  wired into the `codex exec` invocation yet** — see runCodex's own
+   *  doc comment for why, and the fail-loud behavior that results. */
+  mcpAccess?: AgentDef["mcpAccess"];
+  /** The live MCP server registry `mcpAccess` is resolved against — see
+   *  RunClaudeOptions.mcpServers's own doc comment, identical contract. */
+  mcpServers?: McpServerPool;
   /** Fires once per parsed JSONL line, in order, as codex's stdout
    *  streams in — see docs/SDD-live-task-output.md §3.1. Unlike
    *  runClaude, no command-line flags change here: `codex exec --json`
@@ -120,9 +133,43 @@ export interface RunCodexOptions {
  * a stream of events instead of one JSON object; see
  * docs/SDD-codex-cli-harness.md §6.2 for the confirmed-live event shapes
  * this parses.
+ *
+ * **MCP grants (`mcpAccess`/`mcpServers`) are accepted for interface
+ * parity with runClaude, but deliberately NOT wired into the actual
+ * invocation here.** claude-cli.ts's own wiring was built against a
+ * real, confirmed CLI flag (`--mcp-config`/`--strict-mcp-config`,
+ * confirmed via `claude --help`) and a real, officially-documented
+ * stream-json event shape. Codex has zero prior MCP research anywhere in
+ * this codebase (`docs/SDD-codex-cli-harness.md` has no mention of MCP
+ * at all), and this subtask's own sandbox blocked every avenue to
+ * establish it for real: `codex exec --help` itself required an
+ * approval this session never received, and WebFetch against
+ * non-Anthropic domains (github.com, developers.openai.com) was denied
+ * the same way. Guessing a `-c mcp_servers.<id>...` config-override
+ * syntax here risked something worse than an obvious failure: a
+ * misnamed/mistyped TOML override can be silently ignored by codex
+ * rather than erroring, which would make an agent *look* like it has a
+ * granted MCP server attached when it actually doesn't — a silent
+ * false-positive, strictly worse than refusing outright. So: a
+ * non-empty resolved grant fails the run loud, with a message naming
+ * exactly what's missing, rather than either guessing or silently
+ * dropping the grant. See this subtask's own final report for the
+ * concrete follow-up this leaves open.
  */
 export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
-  const { runner, task, agent, sandbox, model, env, memoryPath, onChunk } = opts;
+  const { runner, task, agent, sandbox, model, env, memoryPath, onChunk, mcpAccess, mcpServers } = opts;
+
+  const grants = resolveMcpGrants(mcpAccess, mcpServers);
+  if (grants.length > 0) {
+    return fail(
+      task,
+      agent,
+      `codex-cli MCP wiring is unverified and not yet implemented — this agent's mcpAccess grants ` +
+        `(${grants.map((g) => g.server.id).join(", ")}) can't be honored by runCodex yet. See codex-cli.ts's ` +
+        `own doc comment on runCodex for why this fails loud instead of guessing a CLI flag.`,
+    );
+  }
+
   const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
   const cmd = ["codex", "exec", "--json", "-s", sandbox];
   if (model) cmd.push("-m", model);

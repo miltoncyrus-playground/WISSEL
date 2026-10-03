@@ -1,4 +1,5 @@
 import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../core/types.ts";
+import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { resolveModel } from "../core/model-resolution.ts";
 import { runClaude, runViaBun, type CommandRunner } from "./claude-cli.ts";
 
@@ -16,6 +17,13 @@ export interface ReadOnlyExecutorOptions {
    *  see its own doc comment. Overridable so tests never fall back to
    *  this repo's real memory/lessons.md. */
   memoryPath?: string;
+  /** The live MCP server registry — passed straight through to
+   *  runClaude, which resolves it against whatever `agent.mcpAccess`
+   *  declares (see RunClaudeOptions.mcpServers's own doc comment).
+   *  Undefined (the default) means no MCP grant on any agent routed
+   *  through this executor can ever resolve to anything — byte-identical
+   *  to today. See docs/SDD-mcp-orchestration.md §3.2. */
+  mcpServers?: McpServerPool;
   /** Fires once per parsed JSONL line for the given task, in order, as
    *  claude's stdout streams in — wired to appendTaskOutput(taskId, ...)
    *  by src/api/server.ts (see docs/SDD-live-task-output.md §3.2/§4).
@@ -42,12 +50,14 @@ export class ReadOnlyExecutor implements Executor {
   private runner: CommandRunner;
   private model?: string;
   private memoryPath?: string;
+  private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
 
   constructor(opts: ReadOnlyExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
     this.memoryPath = opts.memoryPath;
+    this.mcpServers = opts.mcpServers;
     this.onChunk = opts.onChunk;
   }
 
@@ -68,6 +78,8 @@ export class ReadOnlyExecutor implements Executor {
       model: this.model ?? resolveModel(task, agent, harness),
       env: harness?.env,
       memoryPath: this.memoryPath,
+      mcpAccess: agent.mcpAccess,
+      mcpServers: this.mcpServers,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
     });
     return harness ? { ...result, harnessId: harness.id } : result;

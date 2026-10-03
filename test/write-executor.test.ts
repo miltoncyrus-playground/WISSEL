@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WriteExecutor } from "../src/executors/write.ts";
 import type { CommandResult, CommandRunner } from "../src/executors/claude-cli.ts";
-import type { AgentDef, TaskCard } from "../src/core/types.ts";
+import { McpServerPool } from "../src/core/mcp-server-pool.ts";
+import type { AgentDef, McpServer, TaskCard } from "../src/core/types.ts";
 
 const agent: AgentDef = {
   id: "implementer",
@@ -336,6 +337,58 @@ test("a worktree creation failure becomes a failed TaskResult without ever calli
     expect(result.ok).toBe(false);
     expect(result.summary).toContain("failed to create worktree");
     expect(claudeCalled).toBe(false);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+// --- MCP grants (docs/SDD-mcp-orchestration.md §3.2) --------------------
+
+test("an agent with no mcpAccess gets identical argv whether or not an mcpServers pool is wired up on the executor", async () => {
+  const home = await fakeHome();
+  try {
+    const mcpServer: McpServer = { id: "slack", label: "Slack", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: true };
+    const pool = McpServerPool.from([mcpServer]);
+    const claudeResult = { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+
+    let cmdWithoutPool: string[] = [];
+    await new WriteExecutor({ homeDir: home, runner: async (cmd) => (cmd[0] === "git" ? { stdout: "", stderr: "", exitCode: 0 } : ((cmdWithoutPool = cmd), claudeResult)) }).run(task, agent);
+
+    let cmdWithPool: string[] = [];
+    await new WriteExecutor({ homeDir: home, mcpServers: pool, runner: async (cmd) => (cmd[0] === "git" ? { stdout: "", stderr: "", exitCode: 0 } : ((cmdWithPool = cmd), claudeResult)) }).run(task, agent);
+
+    expect(cmdWithPool).toEqual(cmdWithoutPool);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("passes agent.mcpAccess and the executor's own mcpServers pool through to runClaude", async () => {
+  const home = await fakeHome();
+  try {
+    const mcpServer: McpServer = {
+      id: "slack",
+      label: "Slack",
+      transport: { kind: "stdio", command: "/bin/true", args: [] },
+      tools: [{ name: "send_message", trust: "auto" }],
+      enabled: true,
+    };
+    const pool = McpServerPool.from([mcpServer]);
+    const grantedAgent: AgentDef = { ...agent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] };
+
+    let seenCmd: string[] = [];
+    const executor = new WriteExecutor({
+      homeDir: home,
+      mcpServers: pool,
+      runner: async (cmd) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenCmd = cmd;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(task, grantedAgent);
+    expect(seenCmd).toContain("--mcp-config");
+    expect(seenCmd.join(" ")).toContain("mcp__slack__send_message");
   } finally {
     await rm(home, { recursive: true, force: true });
   }
