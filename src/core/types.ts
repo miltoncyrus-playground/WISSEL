@@ -395,6 +395,35 @@ export interface Harness {
   model?: string;
 }
 
+/** An external tool surface an agent can reach once it's running — Slack,
+ *  a database, a ticketing system, etc. Distinct from Harness on purpose:
+ *  a Harness answers "whose account does the CLI process run as"
+ *  (identity/auth); an McpServer answers "what capability can the agent
+ *  reach" (capability). Orthogonal axes — never bolted onto Harness
+ *  itself. See docs/SDD-mcp-orchestration.md §3.1.
+ *
+ *  Unlike HarnessPool.acquire(), which picks exactly one harness per
+ *  task (only one account can drive a given CLI process), a single
+ *  agent run may use multiple MCP servers at once — each one
+ *  independently acquired/released as its own tools get called. See
+ *  McpServerPool in mcp-server-pool.ts. */
+export interface McpServer {
+  id: string;
+  label: string;
+  transport: { kind: "stdio"; command: string; args: string[] } | { kind: "sse" | "http"; url: string };
+  /** Name-the-env-var-never-the-value — same pointer convention
+   *  Harness.env/apiKeyEnv already hold. */
+  env?: Record<string, string>;
+  /** Stored and round-tripped by this subtask, but NOT yet enforced —
+   *  no approval-gate logic exists yet. That's a later, separate card. */
+  tools: { name: string; trust: "auto" | "approval-required" }[];
+  enabled: boolean;
+  /** Why `enabled` is false, when it's false for a reason other than a
+   *  human's own choice — e.g. "not reachable" (set by a failed
+   *  reachability check). Mirrors Harness.disabledReason's own role. */
+  disabledReason?: string;
+}
+
 export interface Candidate {
   agentId: string;
   score: number;

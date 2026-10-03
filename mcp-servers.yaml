@@ -1,0 +1,44 @@
+# MCP (Model Context Protocol) servers an agent can reach once it's
+# running — the external tool surface (Slack, a database, a ticketing
+# system, etc.), distinct from harnesses.yaml's fleet of CLI
+# identities. A Harness answers "whose account runs the process"; an
+# McpServer answers "what capability can the agent reach once it's
+# running" — orthogonal axes, never merged. See
+# docs/SDD-mcp-orchestration.md §3.1.
+#
+# Unlike a harness, a single agent run may use multiple MCP servers at
+# once (per its own per-agent grants, wired in a later subtask) — this
+# file is just the registry of what's available, not a per-task pick.
+#
+# `env`, when given, is a pointer to an already-set-up credential (an
+# env var name), never a secret value itself — same convention
+# harnesses.yaml's own `env`/`apiKeyEnv` already use.
+#
+# `tools[].trust` is stored and round-tripped but not yet enforced — no
+# approval-gate logic exists yet (a later, separate card).
+#
+# This repo has no real MCP server to point at yet. Example schema,
+# commented out:
+#
+# mcp-servers:
+#   - id: example-stdio
+#     label: "Example (stdio)"
+#     transport:
+#       kind: stdio
+#       command: /usr/local/bin/example-mcp-server
+#       args: []
+#     enabled: true
+#     tools:
+#       - name: example_tool
+#         trust: approval-required
+#   - id: example-http
+#     label: "Example (http)"
+#     transport:
+#       kind: http
+#       url: "https://example.internal/mcp"
+#     enabled: true
+#     tools:
+#       - name: example_query
+#         trust: auto
+
+mcp-servers: []

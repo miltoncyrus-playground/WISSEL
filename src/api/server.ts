@@ -9,6 +9,8 @@ import type { ProjectStore } from "../services/projects.ts";
 import { SqliteProjectStore } from "../services/projects.ts";
 import { TelemetryLog } from "../services/telemetry.ts";
 import { HarnessPool } from "../core/harness-pool.ts";
+import { McpServerPool, checkMcpServerReachable, type CheckMcpServerReachableOptions } from "../core/mcp-server-pool.ts";
+import { setMcpServerEnabled } from "../core/mcp-manifest.ts";
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
@@ -77,6 +79,22 @@ export interface CreateAppOptions {
    *  injectable so tests never spawn a real `claude`/`codex` process.
    *  Defaults to the real one. */
   harnessRunner?: CommandRunner;
+  /** MCP servers (external tool surfaces — Slack, a database, a
+   *  ticketing system) an agent can reach once it's running — orthogonal
+   *  to `harnesses` (which answers "whose account runs the process," not
+   *  "what capability can it reach"). See
+   *  docs/SDD-mcp-orchestration.md §3.1. Defaults to an empty pool (no
+   *  MCP servers registered), same "injectable, sensible empty default"
+   *  convention `harnesses` above follows. */
+  mcpServers?: McpServerPool;
+  /** Path to the mcp-servers.yaml manifest — where `POST
+   *  /mcp-servers/:id/enable`/`/disable` persist a human's decision. Same
+   *  convention as `harnessesPath` above. */
+  mcpServersPath?: string;
+  /** Used only by `POST /mcp-servers/:id/enable`'s re-validation check —
+   *  injectable so tests never hit a real filesystem PATH lookup or
+   *  network probe. Defaults to the real environment/fetch. */
+  mcpServerReachabilityOpts?: CheckMcpServerReachableOptions;
   /** Starts the in-process memory-curation scheduler (see
    *  src/core/memory-scheduler.ts) — off by default, same gate pattern
    *  as orchestratorEnabled. A no-op if `telemetry` isn't also given:
@@ -176,6 +194,9 @@ export function createApp(
   const harnesses = opts.harnesses ?? HarnessPool.from([]);
   const harnessesPath = opts.harnessesPath ?? "harnesses.yaml";
   const harnessRunner = opts.harnessRunner ?? runViaBun;
+  const mcpServers = opts.mcpServers ?? McpServerPool.from([]);
+  const mcpServersPath = opts.mcpServersPath ?? "mcp-servers.yaml";
+  const mcpServerReachabilityOpts = opts.mcpServerReachabilityOpts ?? {};
   // Same default the refresh scheduler itself falls back to — read here
   // too so `GET /harnesses`/`POST /harnesses/:id/model`/`POST /tasks`
   // validate against exactly the file the scheduler (or a real refresh
@@ -405,6 +426,39 @@ export function createApp(
           }
           await setHarnessModel(harnessesPath, harness, resolved);
           return json(harnesses.setModel(harness.id, resolved));
+        }
+      }
+
+      // MCP servers — the external tool surface an agent can reach once
+      // it's running (Slack, a database, a ticketing system), orthogonal
+      // to harnesses above (which account runs the CLI process). See
+      // docs/SDD-mcp-orchestration.md §3.1/§6.
+      if (url.pathname === "/mcp-servers" && req.method === "GET") {
+        return json(mcpServers.all().map((s) => ({ ...s, activeCount: mcpServers.activeCount(s.id) })));
+      }
+
+      if (parts[0] === "mcp-servers" && parts.length === 3) {
+        const server = mcpServers.get(parts[1]!);
+        if (!server) return notFound();
+
+        // Same "a human's enable is only ever granted for real"
+        // discipline `/harnesses/:id/enable` already holds — re-runs the
+        // reachability check before flipping enabled: true, refusing
+        // with a clear reason instead of a server that would just fail
+        // the moment a task actually tries to call it.
+        if (parts[2] === "enable" && req.method === "POST") {
+          const { reachable, reason } = await checkMcpServerReachable(server, mcpServerReachabilityOpts);
+          if (!reachable) {
+            mcpServers.setEnabled(server.id, false, reason ?? "not reachable");
+            return json({ error: reason ?? "not reachable" }, 409);
+          }
+          await setMcpServerEnabled(mcpServersPath, server, true);
+          return json(mcpServers.setEnabled(server.id, true));
+        }
+
+        if (parts[2] === "disable" && req.method === "POST") {
+          await setMcpServerEnabled(mcpServersPath, server, false);
+          return json(mcpServers.setEnabled(server.id, false));
         }
       }
 
@@ -981,6 +1035,15 @@ if (import.meta.main) {
   // detected harnesses is a valid, common state, not a startup error.
   const harnesses = await HarnessPool.autoload(harnessesPath);
 
+  // Same relative-path default/override convention as harnessesPath
+  // above. Unlike harnesses, there's no auto-discovery concept for MCP
+  // servers (no "already-authenticated local account" to probe for) —
+  // a missing file is just an empty registry, mirroring
+  // HarnessPool.autoload()'s own "missing manifest is a valid starting
+  // point" tolerance for its own manual-entries layer.
+  const mcpServersPath = process.env.WISSEL_MCP_SERVERS_PATH ?? "mcp-servers.yaml";
+  const mcpServers = await McpServerPool.load(mcpServersPath).catch(() => McpServerPool.from([]));
+
   // Off by default: this loop routes eligible tasks automatically the
   // moment they appear. Read-only agents run in-process; write-tier
   // agents are only decided and handed off (unless executeWriteTier is
@@ -1032,6 +1095,8 @@ if (import.meta.main) {
       executeWriteTier,
       harnesses,
       harnessesPath,
+      mcpServers,
+      mcpServersPath,
       maxConcurrentTasks,
       spendCeilingUsd,
       memoryCurationEnabled,
@@ -1056,6 +1121,11 @@ if (import.meta.main) {
     harnesses.all().length
       ? `harnesses: ${harnesses.all().map((h) => (h.enabled ? h.id : `${h.id} (disabled: not authenticated here)`)).join(", ")}`
       : "no harnesses.yaml found — running with no named harness (ambient environment only)",
+  );
+  console.log(
+    mcpServers.all().length
+      ? `mcp servers: ${mcpServers.all().map((s) => (s.enabled ? s.id : `${s.id} (disabled${s.disabledReason ? `: ${s.disabledReason}` : ""})`)).join(", ")}`
+      : "no mcp-servers.yaml found — running with no MCP servers registered",
   );
   console.log(
     memoryCurationEnabled
