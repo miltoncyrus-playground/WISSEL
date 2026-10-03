@@ -76,6 +76,27 @@ test("setEnabled() clears disabledReason when a human enables a server — their
   expect(updated?.disabledReason).toBeUndefined();
 });
 
+test("setToolTrust() mutates the one named tool in place, leaving every other tool on the server untouched", () => {
+  const pool = McpServerPool.from([
+    server({ id: "a", tools: [{ name: "foo", trust: "approval-required" }, { name: "bar", trust: "auto" }] }),
+  ]);
+  const updated = pool.setToolTrust("a", "foo", "auto");
+  expect(updated?.tools).toEqual([{ name: "foo", trust: "auto" }, { name: "bar", trust: "auto" }]);
+  expect(pool.get("a")?.tools).toEqual([{ name: "foo", trust: "auto" }, { name: "bar", trust: "auto" }]);
+});
+
+test("setToolTrust() returns undefined and changes nothing for an unknown server id", () => {
+  const pool = McpServerPool.from([server({ id: "a", tools: [{ name: "foo", trust: "auto" }] })]);
+  expect(pool.setToolTrust("missing", "foo", "approval-required")).toBeUndefined();
+  expect(pool.get("a")?.tools).toEqual([{ name: "foo", trust: "auto" }]);
+});
+
+test("setToolTrust() returns undefined and changes nothing for an unknown tool name on a known server", () => {
+  const pool = McpServerPool.from([server({ id: "a", tools: [{ name: "foo", trust: "auto" }] })]);
+  expect(pool.setToolTrust("a", "missing-tool", "approval-required")).toBeUndefined();
+  expect(pool.get("a")?.tools).toEqual([{ name: "foo", trust: "auto" }]);
+});
+
 test("disabling an already-acquired server doesn't interrupt what's already running under it", () => {
   const pool = McpServerPool.from([server({ id: "a" })]);
   pool.acquire("a");

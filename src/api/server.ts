@@ -10,7 +10,7 @@ import { SqliteProjectStore } from "../services/projects.ts";
 import { TelemetryLog } from "../services/telemetry.ts";
 import { HarnessPool } from "../core/harness-pool.ts";
 import { McpServerPool, checkMcpServerReachable, type CheckMcpServerReachableOptions } from "../core/mcp-server-pool.ts";
-import { setMcpServerEnabled } from "../core/mcp-manifest.ts";
+import { setMcpServerEnabled, setMcpServerToolTrust } from "../core/mcp-manifest.ts";
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
@@ -460,6 +460,28 @@ export function createApp(
           await setMcpServerEnabled(mcpServersPath, server, false);
           return json(mcpServers.setEnabled(server.id, false));
         }
+      }
+
+      // Per-tool trust-tier edit (board's Manage MCP Servers panel) —
+      // the one piece of McpServer.tools[].trust not covered by
+      // enable/disable above. 404s on an unknown server OR an unknown
+      // tool name on that server, same "both halves must resolve for
+      // real" discipline /enable's reachability re-check holds; 400s on
+      // a body that isn't one of the two real trust values rather than
+      // silently persisting garbage.
+      if (parts[0] === "mcp-servers" && parts.length === 5 && parts[2] === "tools" && parts[4] === "trust" && req.method === "POST") {
+        const server = mcpServers.get(parts[1]!);
+        if (!server) return notFound();
+        const toolName = parts[3]!;
+        if (!server.tools.some((t) => t.name === toolName)) return notFound();
+
+        const { trust } = (await req.json()) as { trust?: string };
+        if (trust !== "auto" && trust !== "approval-required") {
+          return json({ error: `trust must be "auto" or "approval-required", got ${JSON.stringify(trust)}` }, 400);
+        }
+
+        await setMcpServerToolTrust(mcpServersPath, server, toolName, trust);
+        return json(mcpServers.setToolTrust(server.id, toolName, trust));
       }
 
       if (url.pathname === "/events" && req.method === "GET") {

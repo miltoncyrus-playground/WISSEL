@@ -301,6 +301,13 @@
   .hm-model-select:hover { border-color: var(--accent); }
   .hm-error { font-size: 11.5px; color: var(--critical); margin-top: 4px; }
   .hm-empty { font-size: 12.5px; color: var(--ink-muted); padding: 8px 0; }
+  /* "Manage MCP servers" panel — mirrors the harness panel's own .hm-row
+     family verbatim for the per-server row; .hm-tools is the one new
+     bit, an indented sub-list of per-tool trust rows nested under it. */
+  .hm-tools { padding: 0 0 10px 18px; border-bottom: 1px solid var(--line); }
+  .hm-tools:last-child { border-bottom: none; }
+  .hm-tools .hm-row { padding: 6px 0; }
+  .hm-tools-empty { font-size: 11px; color: var(--ink-muted); padding: 4px 0; }
 
   .decision-head { font-size: 13px; color: var(--ink-2); margin: 0 0 12px; }
   .decision-head b { color: var(--ink-1); }
@@ -472,6 +479,7 @@
   <div class="harness-strip-row">
     <div class="harness-strip" id="harnessStrip"></div>
     <button type="button" class="harness-manage-btn" id="hmOpenBtn">Manage harnesses</button>
+    <button type="button" class="harness-manage-btn" id="mcpOpenBtn">Manage MCP servers</button>
   </div>
 
   <div class="toolbar">
@@ -763,6 +771,20 @@
   </div>
 </aside>
 
+<div class="drawer-overlay" id="mcpOverlay" hidden></div>
+<aside class="drawer" id="mcpPanel" role="dialog" aria-modal="true" aria-labelledby="mcpTitle" hidden>
+  <div class="drawer-head">
+    <h2 id="mcpTitle">Manage MCP servers</h2>
+    <button type="button" class="drawer-close" id="mcpClose" aria-label="Close">×</button>
+  </div>
+  <div class="drawer-body">
+    <section class="drawer-section">
+      <p class="drawer-desc">Every registered MCP server — the external tool surfaces (Slack, a ticketing system, a database) an agent can reach once it's running, orthogonal to the harnesses above. Enable/disable a server, or flip a tool's trust tier between auto (safe to call unattended) and approval-required (blocked until a human approves).</p>
+    </section>
+    <section class="drawer-section" id="mcpList"></section>
+  </div>
+</aside>
+
 <div class="drawer-overlay" id="loOverlay" hidden></div>
 <aside class="drawer" id="liveOutputPanel" role="dialog" aria-modal="true" aria-labelledby="loTitle" hidden>
   <div class="drawer-head">
@@ -882,6 +904,7 @@
 
   var drawerTaskId = null;
   var harnessPanelOpen = false;
+  var mcpPanelOpen = false;
   // Real bug found live: refreshOpenDrawer() fires on every SSE event
   // (any task moving, anywhere — not just this one), and used to call
   // renderDrawerActions(task) with no result, which reset a review-gated
@@ -1595,6 +1618,7 @@
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && drawerTaskId) closeTaskDrawer();
     if (ev.key === "Escape" && harnessPanelOpen) closeHarnessPanel();
+    if (ev.key === "Escape" && mcpPanelOpen) closeMcpPanel();
     if (ev.key === "Escape" && liveOutputTaskId) closeLiveOutput();
   });
 
@@ -1757,6 +1781,182 @@
   document.getElementById("hmOpenBtn").addEventListener("click", openHarnessPanel);
   document.getElementById("hmClose").addEventListener("click", closeHarnessPanel);
   document.getElementById("hmOverlay").addEventListener("click", closeHarnessPanel);
+
+  // "Manage MCP servers" — a sibling panel to "Manage harnesses" above,
+  // same open/close/render shape, just listing the registered MCP server
+  // surfaces (docs/SDD-mcp-orchestration.md §6 Subtask 6) instead of
+  // harnesses: enable/disable per server, plus a per-tool trust toggle
+  // (auto vs approval-required) nested under each server row.
+  function openMcpPanel() {
+    mcpPanelOpen = true;
+    renderMcpPanel();
+    document.getElementById("mcpOverlay").hidden = false;
+    document.getElementById("mcpPanel").hidden = false;
+    requestAnimationFrame(function () {
+      document.getElementById("mcpOverlay").classList.add("open");
+      document.getElementById("mcpPanel").classList.add("open");
+    });
+  }
+
+  function closeMcpPanel() {
+    mcpPanelOpen = false;
+    document.getElementById("mcpOverlay").classList.remove("open");
+    document.getElementById("mcpPanel").classList.remove("open");
+    setTimeout(function () {
+      document.getElementById("mcpOverlay").hidden = true;
+      document.getElementById("mcpPanel").hidden = true;
+    }, 180);
+  }
+
+  var mcpActionError = null;
+
+  // Renders from the same `mcpServers` array refetchTasks/the initial
+  // load already fetch (live activeCount is server-side state, same
+  // reasoning renderHarnessPanel's own comment gives for harnesses), so
+  // this stays live across the normal SSE-driven refetch cycle with no
+  // separate fetch of its own. Guarded by mcpPanelOpen in render()
+  // below, same "only do the work if it's actually open" pattern
+  // renderHarnessPanel already uses.
+  function renderMcpPanel() {
+    var list = document.getElementById("mcpList");
+    list.textContent = "";
+
+    if (mcpServers.length === 0) {
+      var empty = document.createElement("p");
+      empty.className = "hm-empty";
+      empty.textContent = "No MCP servers configured yet.";
+      list.appendChild(empty);
+      return;
+    }
+
+    mcpServers.forEach(function (s) {
+      var row = document.createElement("div");
+      row.className = "hm-row";
+
+      var main = document.createElement("div");
+      main.className = "hm-row-main";
+      var label = document.createElement("div");
+      label.className = "hm-row-label";
+      label.textContent = s.label || s.id;
+      main.appendChild(label);
+
+      var meta = document.createElement("div");
+      meta.className = "hm-row-meta";
+      var metaBits = [s.transport.kind];
+      if (s.activeCount > 0) metaBits.push(s.activeCount + " active");
+      meta.textContent = metaBits.join(" · ");
+      main.appendChild(meta);
+
+      if (!s.enabled) {
+        var reason = document.createElement("div");
+        reason.className = "hm-row-meta reason";
+        reason.textContent = s.disabledReason || "disabled by you";
+        main.appendChild(reason);
+      }
+
+      row.appendChild(main);
+
+      var toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "hm-toggle" + (s.enabled ? " is-enabled" : "");
+      toggle.textContent = s.enabled ? "Disable" : "Enable";
+      toggle.addEventListener("click", function () { toggleMcpServer(s.id, !s.enabled); });
+      row.appendChild(toggle);
+
+      list.appendChild(row);
+
+      if (mcpActionError && mcpActionError.id === s.id && !mcpActionError.tool) {
+        var err = document.createElement("p");
+        err.className = "hm-error";
+        err.textContent = mcpActionError.message;
+        list.appendChild(err);
+      }
+
+      var tools = document.createElement("div");
+      tools.className = "hm-tools";
+      if (s.tools.length === 0) {
+        var toolsEmpty = document.createElement("p");
+        toolsEmpty.className = "hm-tools-empty";
+        toolsEmpty.textContent = "No tools declared for this server.";
+        tools.appendChild(toolsEmpty);
+      } else {
+        s.tools.forEach(function (t) {
+          var toolRow = document.createElement("div");
+          toolRow.className = "hm-row";
+
+          var toolMain = document.createElement("div");
+          toolMain.className = "hm-row-main";
+          var toolLabel = document.createElement("div");
+          toolLabel.className = "hm-row-label";
+          toolLabel.textContent = t.name;
+          toolMain.appendChild(toolLabel);
+          var toolMeta = document.createElement("div");
+          toolMeta.className = "hm-row-meta";
+          toolMeta.textContent = t.trust;
+          toolMain.appendChild(toolMeta);
+          toolRow.appendChild(toolMain);
+
+          var trustToggle = document.createElement("button");
+          trustToggle.type = "button";
+          var nextTrust = t.trust === "auto" ? "approval-required" : "auto";
+          trustToggle.className = "hm-toggle" + (t.trust === "auto" ? " is-enabled" : "");
+          trustToggle.textContent = t.trust === "auto" ? "Require approval" : "Allow auto";
+          trustToggle.addEventListener("click", function () { setMcpToolTrust(s.id, t.name, nextTrust); });
+          toolRow.appendChild(trustToggle);
+
+          tools.appendChild(toolRow);
+
+          if (mcpActionError && mcpActionError.id === s.id && mcpActionError.tool === t.name) {
+            var toolErr = document.createElement("p");
+            toolErr.className = "hm-error";
+            toolErr.textContent = mcpActionError.message;
+            tools.appendChild(toolErr);
+          }
+        });
+      }
+      list.appendChild(tools);
+    });
+  }
+
+  function toggleMcpServer(id, enable) {
+    mcpActionError = null;
+    var action = enable ? "enable" : "disable";
+    fetch("/mcp-servers/" + id + "/" + action, { method: "POST" }).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).then(function () {
+      renderMcpPanel();
+    }).catch(function (err) {
+      mcpActionError = { id: id, message: err.message };
+      renderMcpPanel();
+    });
+  }
+
+  // Sets a tool's trust tier — same request/refetch/error shape as
+  // toggleMcpServer above, just a different endpoint/body, and the error
+  // state also carries which tool it's scoped to so an error on one
+  // tool's toggle doesn't render under every other tool on the same
+  // server.
+  function setMcpToolTrust(id, tool, trust) {
+    mcpActionError = null;
+    fetch("/mcp-servers/" + id + "/tools/" + encodeURIComponent(tool) + "/trust", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ trust: trust }),
+    }).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).then(function () {
+      renderMcpPanel();
+    }).catch(function (err) {
+      mcpActionError = { id: id, tool: tool, message: err.message };
+      renderMcpPanel();
+    });
+  }
+
+  document.getElementById("mcpOpenBtn").addEventListener("click", openMcpPanel);
+  document.getElementById("mcpClose").addEventListener("click", closeMcpPanel);
+  document.getElementById("mcpOverlay").addEventListener("click", closeMcpPanel);
 
   // --- Live output panel ----------------------------------------------
   //
@@ -2375,6 +2575,7 @@
     renderFleetBoxes();
     renderHarnessStrip();
     if (harnessPanelOpen) renderHarnessPanel();
+    if (mcpPanelOpen) renderMcpPanel();
     renderRepoOptions();
     renderDependsOnOptions();
     renderParentTaskOptions();
@@ -2384,6 +2585,7 @@
   }
 
   var harnesses = [];
+  var mcpServers = [];
   var projects = [];
 
   // `allTasks` is every task the server returns, unfiltered; `tasks`
@@ -2404,16 +2606,18 @@
   }
 
   function refetchTasks() {
-    // /harnesses is refetched alongside /tasks (not just once at
-    // startup) because its activeCount is live server-side state — a
-    // harness going idle/busy is exactly the kind of change task events
-    // already trigger a refetch for.
+    // /harnesses and /mcp-servers are both refetched alongside /tasks
+    // (not just once at startup) because their activeCount is live
+    // server-side state — a harness/server going idle/busy is exactly
+    // the kind of change task events already trigger a refetch for.
     return Promise.all([
       fetch("/tasks").then(function (r) { return r.json(); }),
       fetch("/harnesses").then(function (r) { return r.json(); }),
+      fetch("/mcp-servers").then(function (r) { return r.json(); }),
     ]).then(function (results) {
       allTasks = results[0];
       harnesses = results[1];
+      mcpServers = results[2];
       applyProjectFilter();
       render();
     });
@@ -3016,6 +3220,7 @@
     fetch("/tasks").then(function (r) { return r.json(); }),
     fetch("/harnesses").then(function (r) { return r.json(); }),
     fetch("/projects").then(function (r) { return r.json(); }),
+    fetch("/mcp-servers").then(function (r) { return r.json(); }),
   ]).then(function (results) {
     allAgents = results[0] || [];
     allAgents.forEach(function (a) { agentsById[a.id] = a; });
@@ -3023,6 +3228,7 @@
     allTasks = results[1] || [];
     harnesses = results[2] || [];
     projects = results[3] || [];
+    mcpServers = results[4] || [];
     applyProjectFilter();
     render();
     renderOverrideGrid();

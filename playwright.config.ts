@@ -40,7 +40,8 @@ export default defineConfig({
     // files directly, so a mutating test never touches the checked-in
     // originals — same "never touch the real file" discipline
     // WISSEL_MEMORY_PATH below already established.
-    command: "cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && bun run src/api/server.ts",
+    command:
+      "cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
     url: `http://localhost:${PORT}/health`,
     reuseExistingServer: false,
     env: {
@@ -58,6 +59,12 @@ export default defineConfig({
       // why "e2e-fixture-harness" is deterministic across every machine.
       WISSEL_HARNESSES_PATH: "/tmp/wissel-e2e-harnesses.yaml",
       WISSEL_MODELS_CACHE_PATH: "/tmp/wissel-e2e-models-cache.json",
+      // Same "disposable tmp copy, never the checked-in original"
+      // discipline as WISSEL_HARNESSES_PATH above — see
+      // e2e/fixtures/mcp-servers.yaml's own comment for why
+      // "e2e-fixture-mcp" is deterministically reachable across every
+      // machine.
+      WISSEL_MCP_SERVERS_PATH: "/tmp/wissel-e2e-mcp-servers.yaml",
     },
   },
 });
