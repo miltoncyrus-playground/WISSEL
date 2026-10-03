@@ -69,6 +69,19 @@ export interface AgentDef {
    *  addition with zero effect on any agent that doesn't declare it. See
    *  docs/SDD-mcp-orchestration.md §3.2. */
   mcpAccess?: { server: string; tools: string[] }[];
+  /** What a reviewer following this agent's handoffs is judging:
+   *  `"diff"` (the default — undefined means `"diff"`, today's unchanged
+   *  behavior for every agent in agents/manifest.yaml) means the review
+   *  task's body is a plain copy of the implementer's own body, same as
+   *  always, with the reviewer discovering the diff itself at runtime via
+   *  its own `repo` (see spawnReviewerTask, src/core/orchestrator.ts).
+   *  `"tool-calls"` means this agent's run has no worktree/file-change
+   *  state for a reviewer to discover on its own (no `repo`, no diff) —
+   *  so spawnReviewerTask instead embeds the run's own
+   *  `TaskResult.mcpCalls`, formatted by `formatMcpTranscript`
+   *  (src/services/mcp-transcript.ts), directly into the review task's
+   *  body. See docs/SDD-mcp-orchestration.md §3.4. */
+  reviewTarget?: "diff" | "tool-calls";
   /** Narrow, explicit exception to wissel's one non-negotiable
    *  write-tier policy — a human reviews every write-tier success
    *  before it's "done" (see finishResult). Setting this true lets THIS

@@ -333,7 +333,8 @@ export class SqliteBoard implements Board {
         harnessId TEXT,
         subagents TEXT,
         verdict TEXT,
-        reviewFeedback TEXT
+        reviewFeedback TEXT,
+        mcpCalls TEXT
       );
     `);
     // actualCost/harnessId shipped on TaskResult well before this table
@@ -349,6 +350,12 @@ export class SqliteBoard implements Board {
       "ALTER TABLE task_results ADD COLUMN subagents TEXT;",
       "ALTER TABLE task_results ADD COLUMN verdict TEXT;",
       "ALTER TABLE task_results ADD COLUMN reviewFeedback TEXT;",
+      // mcpCalls shipped on TaskResult (subtask 2) well before this
+      // table learned to store it — same gap as actualCost/harnessId
+      // above: GET /tasks/:id/mcp-calls (subtask 4) needs it to survive
+      // the recordResult -> getResult round trip, not just live in the
+      // in-memory TaskResult finishResult already has.
+      "ALTER TABLE task_results ADD COLUMN mcpCalls TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -586,7 +593,7 @@ export class SqliteBoard implements Board {
 
   async recordResult(result: TaskResult): Promise<void> {
     this.db.run(
-      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback, mcpCalls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         result.taskId,
         result.agentId,
@@ -599,6 +606,7 @@ export class SqliteBoard implements Board {
         result.subagents ? JSON.stringify(result.subagents) : null,
         result.verdict ?? null,
         result.reviewFeedback ?? null,
+        result.mcpCalls ? JSON.stringify(result.mcpCalls) : null,
       ],
     );
     this.events.emit("event", { type: "task.result", result } satisfies BoardEvent);
@@ -617,6 +625,7 @@ export class SqliteBoard implements Board {
       subagents: string | null;
       verdict: TaskResult["verdict"] | null;
       reviewFeedback: string | null;
+      mcpCalls: string | null;
     } | null;
     if (!row) return undefined;
     return {
@@ -631,6 +640,7 @@ export class SqliteBoard implements Board {
       subagents: row.subagents ? (JSON.parse(row.subagents) as TaskResult["subagents"]) : undefined,
       verdict: row.verdict ?? undefined,
       reviewFeedback: row.reviewFeedback ?? undefined,
+      mcpCalls: row.mcpCalls ? (JSON.parse(row.mcpCalls) as TaskResult["mcpCalls"]) : undefined,
     };
   }
 

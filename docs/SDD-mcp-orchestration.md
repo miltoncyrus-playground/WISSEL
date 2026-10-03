@@ -1,6 +1,6 @@
 # SDD — MCP tool orchestration: growing wissel beyond a coding agent
 
-Status: **Subtasks 1 and 2 shipped and merged.** Written per Milton's ask,
+Status: **Subtasks 1, 2, and 4 shipped and merged.** Written per Milton's ask,
 following a design conversation in this session about turning wissel from
 a dev-focused coding orchestrator into one that can also drive arbitrary
 MCP servers (Slack, ticketing systems, databases, anything with an MCP
@@ -14,8 +14,18 @@ Subtask 1), `checkMcpServerReachable`, `GET /mcp-servers` + `POST
 callout); `AgentDef.mcpAccess`, `TaskResult.mcpCalls`, the
 `claude-cli.ts`/`codex-cli.ts` grant-building and transcript-parsing
 wiring (`runCodex`'s own real MCP flag syntax is a named, unresolved gap —
-see §4's second revision callout). Subtasks 3-7 are still design-only, not
-built — see §6/§7 for what's next and in what order.
+see §4's second revision callout); `AgentDef.reviewTarget`,
+`formatMcpTranscript` (`src/services/mcp-transcript.ts`),
+`spawnReviewerTask`'s `"tool-calls"` branch (`src/core/orchestrator.ts`),
+`GET /tasks/:id/mcp-calls`, and the task drawer's "Tool calls" section —
+see §6 Subtask 4. Also fixed in passing while building Subtask 4:
+`TaskResult.mcpCalls` had shipped in Subtask 2 well before
+`SqliteBoard`'s `task_results` table learned to store it, so
+`recordResult`/`getResult` silently dropped it on every round trip —
+healed the same way the `actualCost`/`harnessId`/`subagents` columns
+were healed before it (see `src/services/board.ts`). Subtasks 3, 5, 6,
+and 7 are still design-only, not built — see §6/§7 for what's next and
+in what order.
 
 ## 1. Goal
 
@@ -372,6 +382,29 @@ branching on which shape a result actually carries, `GET
 - Board UI: a task with `mcpCalls` set shows the "Tool calls" section; a
   task with `worktree`/a diff shows "Diff"; a task with neither shows
   neither (never a broken/empty section rendered regardless).
+
+> **Revision (subtask 4, review round 1):** the acceptance criterion
+> above ("a task with neither shows neither") described gating the
+> "View diff" button on `result.worktree`, the way "View tool calls" is
+> gated on `result.mcpCalls`. That shipped initially but was a real
+> regression, caught in review: `result.worktree` is the wrong signal
+> for "a diff is available" — it only reflects whether *this task's own
+> run* produced a worktree, which is false in two real cases where a
+> diff genuinely is fetchable: a never-run task (no result yet at all,
+> so the button disappeared permanently rather than just before the
+> first result arrives) and every reviewer task (`ReadOnlyExecutor`
+> never sets `worktree` on its own `TaskResult`, even though its `repo`
+> points at the implementer's worktree and `GET /tasks/:id/diff`'s own
+> existing fallback can diff it). Fixed by reverting "View diff" to
+> always render unconditionally — same as before this subtask touched
+> it — and relying on the diff endpoint's own graceful "isn't a git
+> working tree" / "No changes yet." messages for the genuinely-nothing-
+> to-show case instead of pre-emptively hiding the button. "View tool
+> calls" keeps the `result.mcpCalls` gate as-is: unlike diff, there's no
+> fallback endpoint message and no ambient state to discover for a
+> tool-calls review, so a result either carries the transcript or there
+> is nothing to show, full stop. Net effect: "a task with neither shows
+> neither" now only holds for the Tool-calls section, not for Diff.
 
 ### 5. Optional repo + scratch workspace
 `TaskCard.repo` optional-when-no-file-access validation in `POST

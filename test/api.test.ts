@@ -942,6 +942,32 @@ test("GET /tasks/:id/diff reports isGitRepo: false for a task whose repo isn't a
   expect(missing.status).toBe(404);
 });
 
+test("GET /tasks/:id/mcp-calls returns [] when the task has no recorded result, the actual calls once recorded, 404s on unknown id", async () => {
+  const app = await makeApp();
+  const created = (await (
+    await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "t", body: "", labels: [], repo: "/tmp" }) }))
+  ).json()) as TaskCard;
+
+  const beforeResult = await app(req(`/tasks/${created.id}/mcp-calls`));
+  expect(beforeResult.status).toBe(200);
+  expect(await beforeResult.json()).toEqual([]);
+
+  const mcpCalls = [{ server: "slack", tool: "send_message", args: { text: "hi" }, result: "sent", ok: true }];
+  await app(
+    req(`/tasks/${created.id}/result`, {
+      method: "POST",
+      body: JSON.stringify({ agentId: "triager", ok: true, summary: "done", mcpCalls }),
+    }),
+  );
+
+  const afterResult = await app(req(`/tasks/${created.id}/mcp-calls`));
+  expect(afterResult.status).toBe(200);
+  expect(await afterResult.json()).toEqual(mcpCalls);
+
+  const missing = await app(req("/tasks/nope/mcp-calls"));
+  expect(missing.status).toBe(404);
+});
+
 test("POST /tasks/:id/run routes and runs a task on the injected manual executor, 404s on unknown id", async () => {
   const seen: TaskCard[] = [];
   const app = await makeApp(new SqliteBoard(), {

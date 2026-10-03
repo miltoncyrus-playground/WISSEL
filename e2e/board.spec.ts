@@ -650,6 +650,37 @@ test.describe("Board view", () => {
     await expect(drawer.locator("#tdDiffSection")).toContainText("isn't a git working tree");
   });
 
+  // Regression test: "View diff" used to be gated on `result.worktree`
+  // (see docs/SDD-mcp-orchestration.md §6 Subtask 4's revision callout),
+  // which false-negatived on a reviewer task — its own TaskResult
+  // (ReadOnlyExecutor) never carries `worktree`, even though its `repo`
+  // points at the implementer's worktree/repo and GET /tasks/:id/diff's
+  // own fallback (`result?.worktree?.path ?? task.repo`) can diff it.
+  test("View diff stays visible on a reviewer task whose own result has no worktree", async ({ page, request }) => {
+    const created = await request.post("/tasks", {
+      data: { title: `Reviewer diff test ${Date.now()}`, body: "x", labels: ["code"], repo: "/tmp" },
+    });
+    const implementerId = (await created.json()).id as string;
+
+    await request.post(`/tasks/${implementerId}/result`, { data: { agentId: "implementer", ok: true, summary: "attempt 1" } });
+
+    const afterImpl = await (await request.get("/tasks")).json();
+    const reviewer = afterImpl.find((t: { parentTaskId?: string }) => t.parentTaskId === implementerId);
+    expect(reviewer).toBeDefined();
+
+    // Mirrors the real shape a reviewer's own result carries: no
+    // `worktree` field at all.
+    await request.post(`/tasks/${reviewer.id}/result`, {
+      data: { agentId: "reviewer", ok: true, summary: "looks fine", verdict: "approve" },
+    });
+
+    await page.goto("/board");
+    await page.locator("#kanbanBody").getByText(reviewer.title).click();
+
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer.getByRole("button", { name: "View diff" })).toBeVisible();
+  });
+
   // Deliberately never calls the mutating /enable or /disable endpoints
   // here — the e2e server boots against this repo's real harnesses.yaml
   // (see playwright.config.ts), and which harnesses exist/authenticate

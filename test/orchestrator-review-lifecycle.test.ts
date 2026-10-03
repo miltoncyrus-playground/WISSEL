@@ -12,6 +12,8 @@ import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import { runViaBun } from "../src/executors/claude-cli.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
 import type { AgentDef, ReviewVerdict } from "../src/core/types.ts";
+import { McpServerPool } from "../src/core/mcp-server-pool.ts";
+import { formatMcpTranscript } from "../src/services/mcp-transcript.ts";
 
 /**
  * Subtask C's whole point — automatic implementer -> reviewer handoff,
@@ -131,6 +133,86 @@ test("implementer success -> pending-review, with a reviewer task auto-created w
     expect(existsSync(implResult!.worktree!.path)).toBe(true);
   } finally {
     await cleanup(fixture);
+  }
+});
+
+test("regression: a reviewTarget:'diff'-or-undefined implementer's reviewer task body is byte-identical to the implementer's own body", async () => {
+  // The exact regression the subtask 4 card calls out as the most
+  // important to avoid: embedding a transcript must never alter the
+  // plain-diff path's reviewer task body, not even whitespace.
+  const fixture = await setup([]);
+  try {
+    const task = await fixture.board.create({ title: "Add a feature", body: "Implement X.\nWith two lines.", labels: ["code"], repo: fixture.repo });
+
+    await fixture.orchestrator.sweep();
+
+    const reviewerTask = (await fixture.board.list()).find((t) => t.parentTaskId === task.id);
+    expect(reviewerTask!.body).toBe(task.body);
+  } finally {
+    await cleanup(fixture);
+  }
+});
+
+test("a reviewTarget:'tool-calls' implementer's reviewer task body embeds the formatted MCP transcript instead of relying on a diff", async () => {
+  const realReviewer = (await Registry.load()).get("reviewer")!;
+  const mcpImplementer: AgentDef = {
+    id: "mcp-implementer",
+    name: "MCP implementer",
+    kind: "agent",
+    tier: "write",
+    description: "d",
+    whenToUse: "w",
+    tags: ["code"],
+    executor: "handoff",
+    handoffs: ["reviewer"],
+    inputs: [],
+    outputs: [],
+    trustLevel: "high",
+    toolAccess: [],
+    costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.5 },
+    reviewTarget: "tool-calls",
+    mcpAccess: [{ server: "test-server", tools: ["echo"] }],
+  };
+  const pool = McpServerPool.from([
+    { id: "test-server", label: "Test server", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: true },
+  ]);
+
+  const repo = await realRepo();
+  const home = await mkdtemp(join(tmpdir(), "wissel-review-lifecycle-home-"));
+  const runner: CommandRunner = async (cmd, opts) => {
+    if (cmd[0] === "git") return runViaBun(cmd, opts);
+    const mode = cmd[cmd.indexOf("--permission-mode") + 1];
+    if (mode === "acceptEdits") {
+      const stdout = [
+        JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "mcp__test-server__echo", input: { text: "hi" } }] } }),
+        JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", content: "hi", is_error: false }] } }),
+        JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "called echo" }),
+      ].join("\n");
+      return { stdout, stderr: "", exitCode: 0 };
+    }
+    throw new Error("reviewer should not run in this test — only the implementer pass is driven");
+  };
+
+  const board = new SqliteBoard();
+  const registry = Registry.from([mcpImplementer, realReviewer]);
+  const executors = [new WriteExecutor({ runner, homeDir: home, mcpServers: pool }), new ReadOnlyExecutor({ runner })];
+  const orchestrator = new Orchestrator(board, registry, new Router(registry), executors, undefined, { executeWriteTier: true });
+
+  try {
+    const task = await board.create({ title: "Call the echo tool", body: "Use the echo tool and report back.", labels: ["code"], repo });
+
+    await orchestrator.sweep();
+
+    const implResult = await board.getResult(task.id);
+    expect(implResult!.mcpCalls).toEqual([{ server: "test-server", tool: "echo", args: { text: "hi" }, result: "hi", ok: true }]);
+
+    const reviewerTask = (await board.list()).find((t) => t.parentTaskId === task.id);
+    expect(reviewerTask).toBeDefined();
+    expect(reviewerTask!.body).toBe(`${task.body}\n\n---\nTool calls made:\n${formatMcpTranscript(implResult!.mcpCalls!)}`);
+    expect(reviewerTask!.body).not.toBe(task.body);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
   }
 });
 

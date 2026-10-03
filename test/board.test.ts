@@ -385,6 +385,28 @@ test("getResult round-trips subagents (docs/SDD-subagent-visibility.md)", async 
   });
 });
 
+// Found the same way actualCost/harnessId/subagents were above, while
+// building GET /tasks/:id/mcp-calls (docs/SDD-mcp-orchestration.md
+// §3.4/§4): mcpCalls had shipped on TaskResult (subtask 2) well before
+// task_results learned to store it, so it silently vanished the moment
+// recordResult ran, even though the in-memory TaskResult carried it the
+// whole time.
+test("getResult round-trips mcpCalls (docs/SDD-mcp-orchestration.md §3.4)", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+
+  const mcpCalls = [{ server: "slack", tool: "send_message", args: { text: "hi" }, result: "sent", ok: true }];
+  await board.recordResult({ taskId: task.id, agentId: "a", ok: true, summary: "done", mcpCalls });
+
+  expect(await board.getResult(task.id)).toEqual({
+    taskId: task.id,
+    agentId: "a",
+    ok: true,
+    summary: "done",
+    mcpCalls,
+  });
+});
+
 test("delete removes a task and its decision/result/override, rejects unknown ids, emits an event", async () => {
   const board = new SqliteBoard();
   const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
