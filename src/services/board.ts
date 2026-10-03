@@ -48,6 +48,16 @@ export interface Board {
    *  write-tier retry reuses its existing worktree exactly the way a
    *  pushback re-attempt does. */
   scheduleRetry(id: string, retryAfter: string): Promise<TaskCard>;
+  /** Resets a crash-orphaned `"running"` task back to `"inbox"` and
+   *  clears `routedTo`, so the router reconsiders it fresh rather than
+   *  reusing a possibly-stale decision — the one-time startup cleanup
+   *  `reconcileOrphanedTasks` performs (see
+   *  docs/SDD-crash-recovery.md §3.1). Deliberately a sibling of
+   *  `scheduleRetry` rather than a reuse of it: this case has no
+   *  `retryAfter` to set (the task should be immediately eligible
+   *  again, not delayed). Throws on an unknown id, matching every other
+   *  Board method. */
+  resetToInbox(id: string): Promise<TaskCard>;
   /** Archives `id` and every descendant reachable by walking
    *  `parentTaskId` downward from it (the mirror image of
    *  `findLineageRoot`'s upward walk in board.html) — stamps
@@ -524,6 +534,15 @@ export class SqliteBoard implements Board {
     if (!existing) throw new Error(`task not found: ${id}`);
     this.db.run("UPDATE tasks SET status = ?, routedTo = NULL, retryAfter = ? WHERE id = ?", ["inbox", retryAfter, id]);
     const updated: TaskCard = { ...existing, status: "inbox", routedTo: undefined, retryAfter };
+    this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async resetToInbox(id: string): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET status = ?, routedTo = NULL WHERE id = ?", ["inbox", id]);
+    const updated: TaskCard = { ...existing, status: "inbox", routedTo: undefined };
     this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
     return updated;
   }
