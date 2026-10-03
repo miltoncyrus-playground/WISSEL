@@ -393,3 +393,72 @@ test("passes agent.mcpAccess and the executor's own mcpServers pool through to r
     await rm(home, { recursive: true, force: true });
   }
 });
+
+test("task.mcpAccessOverride naming an approval-required tool actually reaches --allowedTools — the approved follow-up call is pre-approved, not re-gated", async () => {
+  const home = await fakeHome();
+  try {
+    const mcpServer: McpServer = {
+      id: "slack",
+      label: "Slack",
+      transport: { kind: "stdio", command: "/bin/true", args: [] },
+      tools: [{ name: "send_message", trust: "approval-required" }],
+      enabled: true,
+    };
+    const pool = McpServerPool.from([mcpServer]);
+    const overriddenTask: TaskCard = { ...task, mcpAccessOverride: [{ server: "slack", tools: ["send_message"] }] };
+
+    let seenCmd: string[] = [];
+    const executor = new WriteExecutor({
+      homeDir: home,
+      mcpServers: pool,
+      runner: async (cmd) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenCmd = cmd;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    // The routed agent declares no mcpAccess at all — the grant comes
+    // entirely from the task-level override, same as the real
+    // human-approved-follow-up task the approve endpoint creates.
+    await executor.run(overriddenTask, agent);
+    expect(seenCmd).toContain("--mcp-config");
+    expect(seenCmd.join(" ")).toContain("mcp__slack__send_message");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("an agent's own regular mcpAccess grant for an approval-required tool stays gated even with a pool wired up — only task.mcpAccessOverride bypasses the gate", async () => {
+  const home = await fakeHome();
+  try {
+    const mcpServer: McpServer = {
+      id: "slack",
+      label: "Slack",
+      transport: { kind: "stdio", command: "/bin/true", args: [] },
+      tools: [{ name: "send_message", trust: "approval-required" }],
+      enabled: true,
+    };
+    const pool = McpServerPool.from([mcpServer]);
+    const grantedAgent: AgentDef = { ...agent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] };
+
+    let seenCmd: string[] = [];
+    const executor = new WriteExecutor({
+      homeDir: home,
+      mcpServers: pool,
+      runner: async (cmd) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenCmd = cmd;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(task, grantedAgent);
+    expect(seenCmd).not.toContain("--mcp-config");
+    // WriteExecutor always adds its own fixed Bash(bun ...) allowedTools
+    // regardless of MCP grants (see write.ts), so --allowedTools itself
+    // is expected here — the actual gate is that the mcp tool name never
+    // joins that list.
+    expect(seenCmd.join(" ")).not.toContain("mcp__slack__send_message");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

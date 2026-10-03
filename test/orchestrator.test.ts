@@ -397,6 +397,52 @@ test("finishResult moves any failed report to failed", async () => {
   expect((await board.get(task.id))!.status).toBe("failed");
 });
 
+// A result carrying mcpApprovalRequest (docs/SDD-mcp-orchestration.md
+// §3.5) takes a result straight to the human queue (`review`, with
+// `pendingMcpApproval` set), regardless of agent.tier — the whole point
+// of this being orthogonal to tier, unlike the done-vs-review split
+// every other branch below it enforces.
+
+test("finishResult moves a readonly report carrying mcpApprovalRequest to review, not done — ahead of the normal tier-based policy", async () => {
+  const { board, registry } = await setup([]);
+  const task = await board.create({ title: "check Jira, maybe post to Slack", body: "", labels: ["intake"], repo: "r" });
+  const request = { server: "slack", tool: "send_message", args: { text: "hi" }, reason: "notify the channel" };
+
+  await finishResult(board, registry, { taskId: task.id, agentId: "triager", ok: true, summary: "described the call", mcpApprovalRequest: request });
+
+  const updated = await board.get(task.id);
+  expect(updated!.status).toBe("review");
+  expect(updated!.pendingMcpApproval).toEqual(request);
+});
+
+test("finishResult moves a write-tier report carrying mcpApprovalRequest to review the same way — never done, and never the plain write-tier auto-handoff/auto-merge path", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([plainWriteAgent]);
+  const task = await board.create({ title: "build the thing", body: "", labels: [], repo: "r" });
+  const request = { server: "jira", tool: "create_ticket", args: { title: "x" }, reason: "needs a human to confirm the project" };
+
+  await finishResult(board, registry, { taskId: task.id, agentId: "plain-write", ok: true, summary: "described the call", mcpApprovalRequest: request });
+
+  const updated = await board.get(task.id);
+  expect(updated!.status).toBe("review");
+  expect(updated!.pendingMcpApproval).toEqual(request);
+});
+
+test("finishResult on a vanished task with mcpApprovalRequest doesn't throw — recordResult already captured it for history", async () => {
+  const { board, registry } = await setup([]);
+  const task = await board.create({ title: "check Jira", body: "", labels: ["intake"], repo: "r" });
+  await board.delete(task.id);
+
+  await finishResult(board, registry, {
+    taskId: task.id,
+    agentId: "triager",
+    ok: true,
+    summary: "described the call",
+    mcpApprovalRequest: { server: "slack", tool: "send_message", args: {}, reason: "x" },
+  });
+  // No assertion beyond "didn't throw" — there's no card left to move.
+});
+
 // autoMerge is the one deliberate, narrow exception to the write-tier
 // review gate (AgentDef.autoMerge) — these exercise it directly against
 // a synthetic agent rather than the real manifest, so they don't depend

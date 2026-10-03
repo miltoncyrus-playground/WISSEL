@@ -411,3 +411,54 @@ test("passes agent.mcpAccess and the executor's own mcpServers pool through to r
   expect(seenCmd).toContain("--mcp-config");
   expect(seenCmd.join(" ")).toContain("mcp__slack__send_message");
 });
+
+test("task.mcpAccessOverride naming an approval-required tool actually reaches --allowedTools — the approved follow-up call is pre-approved, not re-gated", async () => {
+  const mcpServer: McpServer = {
+    id: "slack",
+    label: "Slack",
+    transport: { kind: "stdio", command: "/bin/true", args: [] },
+    tools: [{ name: "send_message", trust: "approval-required" }],
+    enabled: true,
+  };
+  const pool = McpServerPool.from([mcpServer]);
+  const overriddenTask: TaskCard = { ...task, mcpAccessOverride: [{ server: "slack", tools: ["send_message"] }] };
+
+  let seenCmd: string[] = [];
+  const executor = new ReadOnlyExecutor({
+    mcpServers: pool,
+    runner: async (cmd) => {
+      seenCmd = cmd;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+  });
+  // The routed agent itself declares no mcpAccess at all — the grant
+  // comes entirely from the task-level override, same as the real
+  // human-approved-follow-up task the approve endpoint creates.
+  await executor.run(overriddenTask, agent);
+  expect(seenCmd).toContain("--mcp-config");
+  expect(seenCmd.join(" ")).toContain("mcp__slack__send_message");
+});
+
+test("an agent's own regular mcpAccess grant for an approval-required tool stays gated even when the executor also has a pool wired up — only task.mcpAccessOverride bypasses the gate", async () => {
+  const mcpServer: McpServer = {
+    id: "slack",
+    label: "Slack",
+    transport: { kind: "stdio", command: "/bin/true", args: [] },
+    tools: [{ name: "send_message", trust: "approval-required" }],
+    enabled: true,
+  };
+  const pool = McpServerPool.from([mcpServer]);
+  const grantedAgent: AgentDef = { ...agent, mcpAccess: [{ server: "slack", tools: ["send_message"] }] };
+
+  let seenCmd: string[] = [];
+  const executor = new ReadOnlyExecutor({
+    mcpServers: pool,
+    runner: async (cmd) => {
+      seenCmd = cmd;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+  });
+  await executor.run(task, grantedAgent);
+  expect(seenCmd).not.toContain("--mcp-config");
+  expect(seenCmd).not.toContain("--allowedTools");
+});

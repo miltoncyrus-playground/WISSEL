@@ -917,3 +917,89 @@ test("opens a fresh DB with the pipelines table already present", async () => {
   const board = new SqliteBoard();
   expect(() => board.db.query("SELECT * FROM pipelines").all()).not.toThrow();
 });
+
+// --- mcpAccessOverride / pendingMcpApproval (docs/SDD-mcp-orchestration.md §3.5/§6) ---
+
+test("create round-trips mcpAccessOverride, and leaves it undefined when omitted", async () => {
+  const board = new SqliteBoard();
+  const scoped = await board.create({
+    title: "approved call",
+    body: "",
+    labels: [],
+    repo: "r",
+    mcpAccessOverride: [{ server: "slack", tools: ["send_message"] }],
+  });
+  expect(scoped.mcpAccessOverride).toEqual([{ server: "slack", tools: ["send_message"] }]);
+  expect((await board.get(scoped.id))!.mcpAccessOverride).toEqual([{ server: "slack", tools: ["send_message"] }]);
+
+  const bare = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  expect(bare.mcpAccessOverride).toBeUndefined();
+});
+
+test("requestMcpApproval moves a task to review and records pendingMcpApproval atomically, emits task.moved, rejects unknown ids", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  const request = { server: "slack", tool: "send_message", args: { text: "hi" }, reason: "notify the channel" };
+
+  const events: string[] = [];
+  board.events.on("event", (e) => events.push(e.type));
+
+  const updated = await board.requestMcpApproval(task.id, request);
+  expect(updated.status).toBe("review");
+  expect(updated.pendingMcpApproval).toEqual(request);
+  expect(events).toContain("task.moved");
+
+  const fetched = await board.get(task.id);
+  expect(fetched).toEqual(updated);
+
+  await expect(board.requestMcpApproval("nope", request)).rejects.toThrow("task not found");
+});
+
+// Same class of bug as every other post-launch column: a pre-existing
+// on-disk DB from before mcpAccessOverride/pendingMcpApproval existed
+// must heal on open, not throw "table tasks has no column named
+// mcpAccessOverride" the first time one of these fields is written.
+test("opens and heals a real pre-existing on-disk DB from before mcpAccessOverride/pendingMcpApproval existed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-board-legacy-"));
+  const dbPath = join(dir, "board.sqlite");
+  try {
+    const legacy = new Database(dbPath, { create: true });
+    legacy.run(`
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        labels TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        status TEXT NOT NULL,
+        routedTo TEXT,
+        dependsOn TEXT NOT NULL DEFAULT '[]',
+        parentTaskId TEXT,
+        harness TEXT,
+        pushbackCount INTEGER,
+        reviewLineageId TEXT,
+        supersededBy TEXT,
+        escalationContext TEXT,
+        retryAfter TEXT,
+        doneAt TEXT,
+        archivedAt TEXT,
+        model TEXT,
+        harnessOverride TEXT,
+        pipelineId TEXT,
+        pipelineRunId TEXT,
+        pipelineStepId TEXT
+      );
+    `);
+    legacy.close();
+
+    const board = new SqliteBoard(dbPath);
+    const task = await board.create({ title: "t", body: "", labels: [], repo: "r", mcpAccessOverride: [{ server: "slack", tools: ["send_message"] }] });
+    expect(task.mcpAccessOverride).toEqual([{ server: "slack", tools: ["send_message"] }]);
+
+    const approved = await board.requestMcpApproval(task.id, { server: "slack", tool: "send_message", args: {}, reason: "x" });
+    expect(approved.status).toBe("review");
+    expect((await board.get(task.id))!.pendingMcpApproval).toEqual({ server: "slack", tool: "send_message", args: {}, reason: "x" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

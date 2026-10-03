@@ -1,4 +1,4 @@
-import type { AgentDef, PipelineHandoff, ReviewVerdict, SubtaskPlanItem, TaskCard, TaskResult } from "../core/types.ts";
+import type { AgentDef, McpApprovalRequest, PipelineHandoff, ReviewVerdict, SubtaskPlanItem, TaskCard, TaskResult } from "../core/types.ts";
 import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
@@ -6,9 +6,10 @@ import { parseReviewVerdict } from "./parse-review-verdict.ts";
 import { parseSubtaskPlan } from "./parse-subtask-plan.ts";
 import { parsePipelineHandoff } from "./parse-pipeline-handoff.ts";
 import { parseSessionLimitReset } from "./parse-session-limit-reset.ts";
-import { buildMcpConfigJson, mcpAllowedToolNames, mcpServerEnvOverrides, resolveMcpGrants } from "./mcp-config.ts";
+import { buildMcpConfigJson, mcpAllowedToolNames, mcpServerEnvOverrides, resolveMcpGrants, splitGrantsByTrust } from "./mcp-config.ts";
 import { parseMcpCalls } from "./parse-mcp-calls.ts";
 import { resolveScratchWorkspace } from "../services/scratch-workspace.ts";
+import { mcpApprovalRequestBlockPresent, parseMcpApprovalRequest } from "./parse-mcp-approval-request.ts";
 
 /** A retriable 429's reset time must be within this window of "now" —
  *  parseSessionLimitReset can in principle only ever return same-day or
@@ -186,6 +187,29 @@ export interface RunClaudeOptions {
    *  means "no pool wired up," identical in effect to `mcpAccess` itself
    *  being undefined. */
   mcpServers?: McpServerPool;
+  /** When true, every grant resolved out of `mcpAccess` above is treated
+   *  as `auto` for this one invocation, regardless of the tool's own
+   *  trust tier declared on the server (McpServer.tools[].trust) —
+   *  `splitGrantsByTrust` is skipped entirely. This is NOT a general
+   *  escape hatch: the only caller that ever sets it true is a
+   *  human-approved MCP follow-up task (see `POST
+   *  /tasks/:id/mcp-approval/approve`, src/api/server.ts), identified by
+   *  `task.mcpAccessOverride` being set — readonly.ts/write.ts pass
+   *  `mcpAccessPreApproved: task.mcpAccessOverride !== undefined`. That
+   *  override is itself scoped by the approve endpoint to EXACTLY the
+   *  one server+tool a human just signed off on, so "treat every grant
+   *  in this call as auto" and "treat exactly that one approved pair as
+   *  auto" are the same statement for this call. An agent's own regular
+   *  `agent.mcpAccess` (the `task.mcpAccessOverride` is undefined case)
+   *  never sets this true, so the trust gate on an agent's own declared
+   *  grants is never weakened — only the narrow, human-approved
+   *  follow-up bypasses it. Without this, the follow-up's one approved
+   *  call would re-resolve against the server's still-approval-required
+   *  declaration and land right back in `pendingApproval`, producing an
+   *  approval request that can never actually execute — an infinite
+   *  "approve again" loop caught in review. Undefined/false (every call
+   *  before this option existed) is byte-identical to today. */
+  mcpAccessPreApproved?: boolean;
   /** The picked harness's env overrides, passed to the runner. Undefined
    *  when no harness was picked — identical to wissel's behavior before
    *  harnesses existed. Either way, runClaude always additionally forces
@@ -225,9 +249,9 @@ export interface RunClaudeOptions {
  * tiers is `--permission-mode`, which the caller picks.
  */
 export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
-  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath, onChunk, mcpAccess, mcpServers, homeDir } = opts;
+  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath, onChunk, mcpAccess, mcpServers, homeDir, mcpAccessPreApproved } =
+    opts;
   const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
-  const prompt = buildAgentPrompt(task, agent, memory, { planMode: permissionMode === "plan" });
 
   // Resolving against the pool happens once, up front — every other MCP
   // decision below (the --mcp-config payload, the --allowedTools
@@ -236,21 +260,51 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // mcpAccess (or nothing in it that resolves) is the single source of
   // truth for "behave exactly like before this field existed."
   const grants = resolveMcpGrants(mcpAccess, mcpServers);
-  const mcpConfig = buildMcpConfigJson(grants);
+
+  // Per-tool trust-tier split (docs/SDD-mcp-orchestration.md §3.5) — an
+  // `approval-required` tool is NEVER built into --mcp-config/
+  // --allowedTools below, regardless of what `mcpAccess` declared; only
+  // `auto` ever reaches the real invocation. `pendingApproval` instead
+  // only reaches the agent's prompt, as a named "this exists but is
+  // blocked" instruction (see buildAgentPrompt's pendingMcpApprovalTools
+  // option) — `[]` for every agent with zero approval-required grants
+  // (today: every agent, since mcp-servers.yaml has no real entries yet)
+  // is the single source of truth for "no prompt change, no behavior
+  // change from before this subtask existed."
+  //
+  // `mcpAccessPreApproved` (see its own doc comment above) short-circuits
+  // the split entirely for a human-approved follow-up run: every
+  // resolved grant becomes `auto`, none becomes `pendingApproval`. This
+  // is what lets the one approved server+tool actually reach
+  // --allowedTools/--mcp-config instead of re-landing in
+  // pendingApproval and re-triggering another approval request forever.
+  const { auto, pendingApproval } = mcpAccessPreApproved ? { auto: grants, pendingApproval: [] } : splitGrantsByTrust(grants);
+  const pendingMcpApprovalTools = pendingApproval.flatMap((g) => g.tools.map((tool) => ({ server: g.server.id, tool })));
+
+  const prompt = buildAgentPrompt(task, agent, memory, {
+    planMode: permissionMode === "plan",
+    pendingMcpApprovalTools: pendingMcpApprovalTools.length > 0 ? pendingMcpApprovalTools : undefined,
+  });
+
+  const mcpConfig = buildMcpConfigJson(auto);
 
   // Streaming is forced on whenever there are MCP grants to capture a
   // transcript for, even if the caller never asked for live display —
   // mcpCalls can only be parsed out of the stream-json tool-call/
   // tool-result events (see parseMcpCalls), which the non-streaming
-  // `--output-format json` response never carries. An agent with no
-  // grants is completely unaffected: streaming still only turns on when
-  // the caller passes onChunk, exactly as before.
-  const useStreaming = Boolean(onChunk) || grants.length > 0;
+  // `--output-format json` response never carries. Keyed off `auto`, not
+  // the full `grants` list: a pending-approval-only grant can never
+  // produce a real tool_use event (its tool is never in --allowedTools),
+  // so there's nothing streaming would ever let parseMcpCalls capture
+  // for it. An agent with no auto grants is completely unaffected:
+  // streaming still only turns on when the caller passes onChunk,
+  // exactly as before.
+  const useStreaming = Boolean(onChunk) || auto.length > 0;
   const cmd = ["claude", "-p", prompt, "--output-format", useStreaming ? "stream-json" : "json", "--permission-mode", permissionMode];
   if (useStreaming) cmd.push("--include-partial-messages", "--verbose");
   if (model) cmd.push("--model", model);
   if (mcpConfig) cmd.push("--mcp-config", JSON.stringify(mcpConfig), "--strict-mcp-config");
-  const combinedAllowedTools = [...(allowedTools ?? []), ...mcpAllowedToolNames(grants)];
+  const combinedAllowedTools = [...(allowedTools ?? []), ...mcpAllowedToolNames(auto)];
   if (combinedAllowedTools.length > 0) cmd.push("--allowedTools", ...combinedAllowedTools);
 
   // Always force these two empty, harness or no harness — confirmed
@@ -267,7 +321,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // mcpServerEnvOverrides merges in before the two forced-empty vars so
   // nothing an MCP server declares can ever override them — same
   // last-wins ordering, same reasoning.
-  const scopedEnv = { ...(env ?? {}), ...mcpServerEnvOverrides(grants), ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
+  const scopedEnv = { ...(env ?? {}), ...mcpServerEnvOverrides(auto), ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
 
   // A write-tier run always arrives here with `task.repo` already set to
   // its worktree path (see WriteExecutor/CodexWriteExecutor), so this
@@ -290,7 +344,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // before failing shouldn't lose that transcript just because the
   // overall run didn't succeed. undefined for zero grants (see
   // parseMcpCalls's own doc comment).
-  const mcpCalls = parseMcpCalls(stdout, grants);
+  const mcpCalls = parseMcpCalls(stdout, auto);
 
   // Parsed *before* branching on exitCode (unlike before): a non-zero
   // exit can still carry a fully-formed JSON payload with real cost and
@@ -397,6 +451,36 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     }
   }
 
+  // Unlike verdict/plan/handoff above, this contract is driven by
+  // whether THIS run has a pending-approval grant at all
+  // (pendingMcpApprovalTools), never by agent.outputContract/
+  // outputContractFormat — it's orthogonal to an agent's identity, tied
+  // instead to whatever mcpAccess happened to resolve this run. It's
+  // also deliberately OPTIONAL, unlike every other contract here: an
+  // agent with a pending-approval grant may legitimately have nothing
+  // to request this run (see buildAgentPrompt's own instruction, which
+  // tells it exactly that), so a totally absent block is not a failure.
+  // mcpApprovalRequestBlockPresent is what tells "absent" (fine) apart
+  // from "attempted but malformed, or names a tool this run was never
+  // blocked on" (a real contract violation, fails closed same as every
+  // other contract in this file) — see its own doc comment.
+  let mcpApprovalRequest: McpApprovalRequest | null = null;
+  if (ok && pendingMcpApprovalTools.length > 0) {
+    const rawResult = parsed.result ?? "";
+    if (mcpApprovalRequestBlockPresent(rawResult)) {
+      const requested = parseMcpApprovalRequest(rawResult);
+      if (requested === null) {
+        ok = false;
+        summary = `${agent.name} emitted a malformed \`\`\`mcp-approval-request fenced block — expected {"server":"...","tool":"...","args":{...},"reason":"..."}, got: ${rawResult}`;
+      } else if (!pendingMcpApprovalTools.some((t) => t.server === requested.server && t.tool === requested.tool)) {
+        ok = false;
+        summary = `${agent.name} requested approval for ${requested.server}/${requested.tool}, which isn't one of this run's pending-approval grants (${pendingMcpApprovalTools.map((t) => `${t.server}/${t.tool}`).join(", ")})`;
+      } else {
+        mcpApprovalRequest = requested;
+      }
+    }
+  }
+
   // Undefined (not a zero-valued object) when nothing was spawned — "no
   // field" and "definitely spawned nothing" read the same way the rest
   // of TaskResult already treats absence (see SDD §3).
@@ -418,6 +502,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     ...(plan ? { subtaskPlan: plan } : {}),
     ...(handoff ? { pipelineHandoff: handoff } : {}),
     ...(mcpCalls ? { mcpCalls } : {}),
+    ...(mcpApprovalRequest ? { mcpApprovalRequest } : {}),
   };
 }
 

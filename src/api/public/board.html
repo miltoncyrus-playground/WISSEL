@@ -708,6 +708,11 @@
       <div class="escalation-timeline" id="tdEscalation"></div>
     </section>
 
+    <section class="drawer-section" id="tdMcpApprovalSection" hidden>
+      <p class="eyebrow">MCP approval requested</p>
+      <div class="escalation-timeline" id="tdMcpApproval"></div>
+    </section>
+
     <section class="drawer-section">
       <div class="drawer-actions" id="tdActions"></div>
       <div class="field" id="tdRetryForm" hidden>
@@ -936,6 +941,7 @@
     meta.appendChild(repoSpan);
 
     renderEscalationTimeline(task);
+    renderMcpApprovalSection(task);
   }
 
   // TaskCard.escalationContext (see orchestrator.ts's buildEscalationContext)
@@ -974,6 +980,28 @@
       feedback.className = "er-feedback";
       feedback.textContent = round.feedback;
       row.appendChild(head); row.appendChild(feedback);
+      body.appendChild(row);
+    });
+  }
+
+  // TaskCard.pendingMcpApproval — mirrors renderEscalationTimeline's own
+  // gating exactly: hidden the moment status moves off "review" (the
+  // one resolvable state for this), even though the field itself is
+  // never cleared once set (same "status gates the panel, not the
+  // field's presence" discipline escalationContext already holds).
+  function renderMcpApprovalSection(task) {
+    var section = document.getElementById("tdMcpApprovalSection");
+    var body = document.getElementById("tdMcpApproval");
+    if (task.status !== "review" || !task.pendingMcpApproval) { section.hidden = true; return; }
+    section.hidden = false;
+    body.textContent = "";
+    var req = task.pendingMcpApproval;
+    [["Server", req.server], ["Tool", req.tool], ["Reason", req.reason], ["Arguments", JSON.stringify(req.args, null, 2)]].forEach(function (pair) {
+      var row = document.createElement("div");
+      row.className = "escalation-round";
+      var head = document.createElement("div"); head.className = "er-head"; head.textContent = pair[0];
+      var val = document.createElement("div"); val.className = "er-feedback"; val.textContent = pair[1];
+      row.appendChild(head); row.appendChild(val);
       body.appendChild(row);
     });
   }
@@ -1035,7 +1063,28 @@
     // exactly that case — same review gate, but the action actually
     // moves the changes (or discards them) instead of just flipping a
     // status flag.
-    if (task.status === "review") {
+    if (task.status === "review" && task.pendingMcpApproval) {
+      // A separate branch from the plain "review" one below — this task
+      // isn't waiting on a diff/merge decision, it's waiting on whether
+      // one specific, named MCP tool call is allowed to happen at all
+      // (see renderMcpApprovalSection/tdMcpApprovalSection above).
+      // Mirrors escalationAction's own confirm-dialog discipline.
+      var req = task.pendingMcpApproval;
+      wrap.appendChild(drawerAction("Approve call", {
+        className: "primary",
+        onClick: function () {
+          if (!window.confirm("Approve the " + req.server + "/" + req.tool + " call? This creates a new follow-up task scoped to exactly this one call.")) return;
+          mcpApprovalAction(task.id, "approve");
+        },
+      }));
+      wrap.appendChild(drawerAction("Deny", {
+        className: "danger",
+        onClick: function () {
+          if (!window.confirm("Deny this request? No follow-up task will be created.")) return;
+          mcpApprovalAction(task.id, "deny");
+        },
+      }));
+    } else if (task.status === "review") {
       if (result && result.worktree) {
         wrap.appendChild(drawerAction("Merge", {
           className: "primary",
@@ -1232,6 +1281,17 @@
       opts.body = JSON.stringify(body);
     }
     return fetch("/tasks/" + taskId + "/escalation/" + action, opts).then(function (r) {
+      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).catch(function (err) { setDrawerActionError(err.message); throw err; });
+  }
+
+  // See renderDrawerActions' "review" + pendingMcpApproval branch for the
+  // endpoint contract this depends on. No request body for either action
+  // — unlike escalation/approve, nothing here needs an actor/reason.
+  function mcpApprovalAction(taskId, action) {
+    setDrawerActionError(null);
+    return fetch("/tasks/" + taskId + "/mcp-approval/" + action, { method: "POST" }).then(function (r) {
       if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
       return refetchTasks();
     }).catch(function (err) { setDrawerActionError(err.message); throw err; });

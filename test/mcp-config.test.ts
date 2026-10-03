@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { buildMcpConfigJson, mcpAllowedToolNames, mcpServerEnvOverrides, mcpToolName, resolveMcpGrants } from "../src/executors/mcp-config.ts";
+import { buildMcpConfigJson, mcpAllowedToolNames, mcpServerEnvOverrides, mcpToolName, resolveMcpGrants, splitGrantsByTrust } from "../src/executors/mcp-config.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import type { McpServer } from "../src/core/types.ts";
 
@@ -130,4 +130,63 @@ test("mcpServerEnvOverrides merges every granted server's own env, last-wins on 
     pool,
   );
   expect(mcpServerEnvOverrides(grants)).toEqual({ FOO: "2", BAR: "3" });
+});
+
+// --- splitGrantsByTrust (docs/SDD-mcp-orchestration.md §3.5) ---
+
+test("splitGrantsByTrust returns [] for both buckets with zero grants", () => {
+  expect(splitGrantsByTrust([])).toEqual({ auto: [], pendingApproval: [] });
+});
+
+test("splitGrantsByTrust puts an auto-trust tool in auto, nothing in pendingApproval", () => {
+  const pool = McpServerPool.from([server({ id: "a", tools: [{ name: "x", trust: "auto" }] })]);
+  const grants = resolveMcpGrants([{ server: "a", tools: ["x"] }], pool);
+  expect(splitGrantsByTrust(grants)).toEqual({ auto: [{ server: pool.get("a")!, tools: ["x"] }], pendingApproval: [] });
+});
+
+test("splitGrantsByTrust puts an approval-required tool in pendingApproval, never in auto", () => {
+  const pool = McpServerPool.from([server({ id: "a", tools: [{ name: "x", trust: "approval-required" }] })]);
+  const grants = resolveMcpGrants([{ server: "a", tools: ["x"] }], pool);
+  expect(splitGrantsByTrust(grants)).toEqual({ auto: [], pendingApproval: [{ server: pool.get("a")!, tools: ["x"] }] });
+});
+
+test("splitGrantsByTrust fails closed to pendingApproval for a tool not declared on the server at all — never assumes auto", () => {
+  const pool = McpServerPool.from([server({ id: "a", tools: [] })]);
+  const grants = resolveMcpGrants([{ server: "a", tools: ["undeclared"] }], pool);
+  expect(splitGrantsByTrust(grants)).toEqual({ auto: [], pendingApproval: [{ server: pool.get("a")!, tools: ["undeclared"] }] });
+});
+
+test("splitGrantsByTrust splits one server's own tools independently — a server with both an auto and an approval-required granted tool lands an entry in each bucket", () => {
+  const pool = McpServerPool.from([
+    server({
+      id: "slack",
+      tools: [
+        { name: "read_messages", trust: "auto" },
+        { name: "send_message", trust: "approval-required" },
+      ],
+    }),
+  ]);
+  const grants = resolveMcpGrants([{ server: "slack", tools: ["read_messages", "send_message"] }], pool);
+  expect(splitGrantsByTrust(grants)).toEqual({
+    auto: [{ server: pool.get("slack")!, tools: ["read_messages"] }],
+    pendingApproval: [{ server: pool.get("slack")!, tools: ["send_message"] }],
+  });
+});
+
+test("splitGrantsByTrust handles multiple independent grants, each split on its own server's tools", () => {
+  const pool = McpServerPool.from([
+    server({ id: "a", tools: [{ name: "x", trust: "auto" }] }),
+    server({ id: "b", tools: [{ name: "y", trust: "approval-required" }] }),
+  ]);
+  const grants = resolveMcpGrants(
+    [
+      { server: "a", tools: ["x"] },
+      { server: "b", tools: ["y"] },
+    ],
+    pool,
+  );
+  expect(splitGrantsByTrust(grants)).toEqual({
+    auto: [{ server: pool.get("a")!, tools: ["x"] }],
+    pendingApproval: [{ server: pool.get("b")!, tools: ["y"] }],
+  });
 });

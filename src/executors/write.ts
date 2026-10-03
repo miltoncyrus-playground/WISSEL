@@ -109,8 +109,14 @@ export class WriteExecutor implements Executor {
       // See docs/SDD-pipeline-automation.md §3.4.
       allowedTools: ["Bash(bun test:*)", "Bash(bun run typecheck:*)"],
       memoryPath: this.memoryPath,
-      mcpAccess: agent.mcpAccess,
+      mcpAccess: task.mcpAccessOverride ?? agent.mcpAccess,
       mcpServers: this.mcpServers,
+      // Only true for a human-approved MCP follow-up task (`task
+      // .mcpAccessOverride` set — see its own doc comment and `POST
+      // /tasks/:id/mcp-approval/approve`), never for an agent's own
+      // regular `agent.mcpAccess` grants — see RunClaudeOptions
+      // .mcpAccessPreApproved's own doc comment for why this is safe.
+      mcpAccessPreApproved: task.mcpAccessOverride !== undefined,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
     });
 

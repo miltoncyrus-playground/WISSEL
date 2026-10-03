@@ -174,7 +174,18 @@ test("a reviewTarget:'tool-calls' implementer's reviewer task body embeds the fo
     mcpAccess: [{ server: "test-server", tools: ["echo"] }],
   };
   const pool = McpServerPool.from([
-    { id: "test-server", label: "Test server", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: true },
+    {
+      id: "test-server",
+      label: "Test server",
+      transport: { kind: "stdio", command: "/bin/true", args: [] },
+      // trust: "auto" — otherwise subtask 3's trust gate (splitGrantsByTrust,
+      // mcp-config.ts) correctly treats an undeclared/non-"auto" tool as
+      // approval-required and excludes it from --allowedTools entirely,
+      // which isn't what this test is about: it's checking mcpCalls gets
+      // embedded in the reviewer body, not trust-gating behavior.
+      tools: [{ name: "echo", trust: "auto" }],
+      enabled: true,
+    },
   ]);
 
   const repo = await realRepo();

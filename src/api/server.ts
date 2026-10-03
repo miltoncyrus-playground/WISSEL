@@ -905,6 +905,62 @@ export function createApp(
           }
         }
 
+        // Human resolution actions for a task sitting in `review` with a
+        // `pendingMcpApproval` (docs/SDD-mcp-orchestration.md §3.5/§6) —
+        // the agent described a blocked tool call and a human has to say
+        // yes or no before anything actually calls it. Mirrors the
+        // escalation endpoints' own shape immediately above: 400 when the
+        // task isn't actually in this exact state, so a stale board view
+        // can't double-fire a resolution that already happened.
+        if (parts.length === 4 && parts[2] === "mcp-approval") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+
+          // Creates a brand-new, narrow follow-up task — never a
+          // resumption of the original session, per §3.5's own stated
+          // v1 limitation — scoped via `mcpAccessOverride` to EXACTLY
+          // the one approved server+tool (see TaskCard.mcpAccessOverride's
+          // own doc comment for why this is a task-level override rather
+          // than a literal `mcpAccess` field, which only AgentDef has).
+          // `labels`/`repo` carried over from the original give the
+          // follow-up the same routing chance the original task had;
+          // `parentTaskId` is deliberately NOT set here — doing so would
+          // restrict the follow-up's routing candidates to the original
+          // routed agent's own declared `handoffs` (see
+          // resolveHandoffAllowlist), which this follow-up has no reason
+          // to be bound by. `setSupersededBy` is the grouping link
+          // instead (mirrors `/escalation/retry`'s identical choice
+          // immediately above) — it's UI-visible but never read by
+          // routing.
+          if (parts[3] === "approve" && req.method === "POST") {
+            if (task.status !== "review" || !task.pendingMcpApproval) return json({ error: "task has no pending MCP approval request" }, 400);
+            const request = task.pendingMcpApproval;
+            const followUp = await board.create({
+              title: `Approved MCP call: ${request.server}/${request.tool}`,
+              body:
+                `A human approved exactly one MCP tool call. Make exactly this one call, then end your turn — do not take any other action.\n\n` +
+                `Server: ${request.server}\nTool: ${request.tool}\nArguments: ${JSON.stringify(request.args)}\n\n` +
+                `Reason originally given for this call: ${request.reason}`,
+              labels: task.labels,
+              repo: task.repo,
+              mcpAccessOverride: [{ server: request.server, tools: [request.tool] }],
+            });
+            await board.setSupersededBy(task.id, followUp.id);
+            await board.move(task.id, "done");
+            return json(followUp, 201);
+          }
+
+          // Denied: no follow-up, ever. Lands on `failed` rather than
+          // `done` — same reasoning as escalation's own `abandon` action
+          // above: the one thing this task was waiting to do got
+          // rejected, so it didn't accomplish what it was asked to do.
+          if (parts[3] === "deny" && req.method === "POST") {
+            if (task.status !== "review" || !task.pendingMcpApproval) return json({ error: "task has no pending MCP approval request" }, 400);
+            const moved = await board.move(task.id, "failed");
+            return json(moved);
+          }
+        }
+
         // Manual archive — any task, any status (docs/SDD-task-archiving.md
         // §3.5). Cascades to id's own subtree (not necessarily the whole
         // lineage root's tree — see Board.archive) and returns every card

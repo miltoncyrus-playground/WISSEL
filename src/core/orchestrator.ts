@@ -151,6 +151,21 @@ export async function finishResult(
     return;
   }
 
+  // An mcp-approval-request takes this result straight to the human
+  // queue via Board.requestMcpApproval, regardless of agent.tier — a
+  // readonly-tier agent with a pending-approval MCP grant and zero file
+  // access still needs this stop (see AgentDef.mcpAccess's own doc
+  // comment: tier stays "file/bash blast radius," MCP approval is a
+  // completely orthogonal gate). Checked ahead of verdict/subtaskPlan:
+  // a described-but-blocked call needs a human's decision before
+  // anything else about this result matters. A vanished task (deleted
+  // mid-run) has nothing left to move — recordResult above already
+  // captured the request for history.
+  if (result.mcpApprovalRequest !== undefined) {
+    if (task) await board.requestMcpApproval(task.id, result.mcpApprovalRequest);
+    return;
+  }
+
   // A reviewer pass carries a verdict (see TaskResult.verdict) — that
   // entirely bypasses the tier-based done/review split below, since a
   // reviewer is readonly-tier and would otherwise land straight on

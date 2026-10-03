@@ -1200,6 +1200,130 @@ test("POST /tasks/:id/escalation/retry spawns a fresh pushback task with pushbac
   expect(missingId.status).toBe(404);
 });
 
+test("POST /tasks/:id/mcp-approval/approve creates a real follow-up task scoped to exactly the one approved call, supersedes and moves the original to done; 400 when there's no pending request", async () => {
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+  const original = await board.create({ title: "check Jira, maybe notify Slack", body: "", labels: ["intake"], repo: "r" });
+  const request = { server: "slack", tool: "send_message", args: { text: "deploy finished" }, reason: "the team asked to be notified" };
+  await board.requestMcpApproval(original.id, request);
+
+  const res = await app(req(`/tasks/${original.id}/mcp-approval/approve`, { method: "POST" }));
+  expect(res.status).toBe(201);
+  const followUp = (await res.json()) as TaskCard;
+
+  // The actual created task's grant, not just that a request fired —
+  // scoped to EXACTLY the one approved server+tool, never the server's
+  // other tools or any other server.
+  expect(followUp.mcpAccessOverride).toEqual([{ server: "slack", tools: ["send_message"] }]);
+  expect(followUp.title).toContain("slack/send_message");
+  expect(followUp.body).toContain("deploy finished");
+  expect(followUp.labels).toEqual(["intake"]);
+  expect(followUp.repo).toBe("r");
+  expect(followUp.parentTaskId).toBeUndefined(); // see server.ts's own doc comment: never restricts routing via resolveHandoffAllowlist
+
+  const originalAfter = (await (await app(req(`/tasks/${original.id}`))).json()) as TaskCard;
+  expect(originalAfter.status).toBe("done");
+  expect(originalAfter.supersededBy).toBe(followUp.id);
+
+  const noRequest = await board.create({ title: "plain task", body: "", labels: [], repo: "r" });
+  const rejected = await app(req(`/tasks/${noRequest.id}/mcp-approval/approve`, { method: "POST" }));
+  expect(rejected.status).toBe(400);
+
+  const missingId = await app(req("/tasks/nope/mcp-approval/approve", { method: "POST" }));
+  expect(missingId.status).toBe(404);
+});
+
+test("the follow-up task a real approve creates actually executes the approved call — not just a correctly-shaped mcpAccessOverride that re-blocks forever", async () => {
+  // Regression coverage for a review-caught bug: the follow-up's
+  // mcpAccessOverride names a tool that is, by construction, declared
+  // approval-required on the server (that's the only reason it was ever
+  // blocked) — so resolving it through the ordinary trust-tier split
+  // would land it right back in pendingApproval, producing an
+  // mcp-approval-request that can never execute. This test runs the
+  // real follow-up task the real approve endpoint creates through the
+  // real ReadOnlyExecutor/runClaude path and asserts the approved tool
+  // actually reaches --allowedTools/--mcp-config.
+  const { ReadOnlyExecutor } = await import("../src/executors/readonly.ts");
+
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+  const original = await board.create({ title: "check Jira, maybe notify Slack", body: "", labels: ["intake"], repo: "r" });
+  const request = { server: "slack", tool: "send_message", args: { text: "deploy finished" }, reason: "the team asked to be notified" };
+  await board.requestMcpApproval(original.id, request);
+
+  const res = await app(req(`/tasks/${original.id}/mcp-approval/approve`, { method: "POST" }));
+  expect(res.status).toBe(201);
+  const followUp = (await res.json()) as TaskCard;
+
+  const mcpServer: McpServer = {
+    id: "slack",
+    label: "Slack",
+    transport: { kind: "stdio", command: "/bin/true", args: [] },
+    tools: [{ name: "send_message", trust: "approval-required" }],
+    enabled: true,
+  };
+  const pool = McpServerPool.from([mcpServer]);
+  // The routed agent declares no mcpAccess of its own — in production
+  // the follow-up is routed by normal label/tag matching, but whatever
+  // agent it lands on, the grant comes entirely from the task-level
+  // override, never from the agent's own manifest entry.
+  const noGrantAgent: AgentDef = {
+    id: "triager",
+    name: "Triager",
+    kind: "agent",
+    tier: "readonly",
+    description: "x",
+    whenToUse: "x",
+    tags: ["intake"],
+    executor: "readonly",
+    inputs: [],
+    outputs: [],
+    trustLevel: "low",
+    toolAccess: ["read"],
+    costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.03 },
+  };
+
+  let seenCmd: string[] = [];
+  const executor = new ReadOnlyExecutor({
+    mcpServers: pool,
+    runner: async (cmd) => {
+      seenCmd = cmd;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "sent" }), stderr: "", exitCode: 0 };
+    },
+  });
+  const result = await executor.run(followUp, noGrantAgent);
+
+  expect(result.ok).toBe(true);
+  expect(seenCmd).toContain("--mcp-config");
+  expect(seenCmd.join(" ")).toContain("mcp__slack__send_message");
+  // The pending-approval prompt instruction must NOT appear — this run
+  // is pre-approved, not blocked, so there's nothing left to describe
+  // instead of calling.
+  expect(seenCmd[2]).not.toContain("mcp-approval-request");
+});
+
+test("POST /tasks/:id/mcp-approval/deny moves the task to failed with no follow-up created; 400 when there's no pending request", async () => {
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+  const original = await board.create({ title: "check Jira, maybe notify Slack", body: "", labels: ["intake"], repo: "r" });
+  await board.requestMcpApproval(original.id, { server: "slack", tool: "send_message", args: {}, reason: "x" });
+
+  const before = await board.list();
+  const res = await app(req(`/tasks/${original.id}/mcp-approval/deny`, { method: "POST" }));
+  expect(res.status).toBe(200);
+  expect(((await res.json()) as TaskCard).status).toBe("failed");
+
+  const after = await board.list();
+  expect(after.length).toBe(before.length); // no follow-up task created
+
+  const noRequest = await board.create({ title: "plain task", body: "", labels: [], repo: "r" });
+  const rejected = await app(req(`/tasks/${noRequest.id}/mcp-approval/deny`, { method: "POST" }));
+  expect(rejected.status).toBe(400);
+
+  const missingId = await app(req("/tasks/nope/mcp-approval/deny", { method: "POST" }));
+  expect(missingId.status).toBe(404);
+});
+
 test("POST /tasks/:id/run 409s when a run for that task is already in flight", async () => {
   let release!: () => void;
   const blocked = new Promise<void>((resolve) => { release = resolve; });

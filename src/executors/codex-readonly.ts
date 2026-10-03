@@ -77,7 +77,7 @@ export class CodexReadOnlyExecutor implements Executor {
       model: this.model ?? resolveModel(task, agent, harness),
       env: harness?.env,
       memoryPath: this.memoryPath,
-      mcpAccess: agent.mcpAccess,
+      mcpAccess: task.mcpAccessOverride ?? agent.mcpAccess,
       mcpServers: this.mcpServers,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
       homeDir: this.homeDir,

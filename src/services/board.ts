@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
+import type { McpApprovalRequest, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 /**
  * The board is the single source of truth. Everything else is a client
@@ -29,6 +29,14 @@ export interface Board {
    *  the way `move` + a hypothetical `setEscalationContext` would. See
    *  TaskCard.escalationContext. */
   escalate(id: string, escalationContext: string): Promise<TaskCard>;
+  /** Moves a task to `review` and records the one blocked MCP tool call
+   *  its agent described wanting to make — the human queue's entry
+   *  point for docs/SDD-mcp-orchestration.md §3.5's approval gate.
+   *  Mirrors `escalate` above exactly: status + context set atomically,
+   *  one call, since there's no valid intermediate state where a task
+   *  carries `pendingMcpApproval` without actually being in `review`.
+   *  See TaskCard.pendingMcpApproval. */
+  requestMcpApproval(id: string, request: McpApprovalRequest): Promise<TaskCard>;
   /** Reschedules a task after a transient failure (today: a claude-cli
    *  429 session-limit hit — see TaskCard.retryAfter, TaskResult.retryAfter,
    *  runClaude/parseSessionLimitReset) instead of moving it to `failed`.
@@ -120,6 +128,8 @@ interface TaskRow {
   pipelineId: string | null;
   pipelineRunId: string | null;
   pipelineStepId: string | null;
+  mcpAccessOverride: string | null;
+  pendingMcpApproval: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -152,6 +162,8 @@ function rowToCard(row: TaskRow): TaskCard {
     pipelineId: row.pipelineId ?? undefined,
     pipelineRunId: row.pipelineRunId ?? undefined,
     pipelineStepId: row.pipelineStepId ?? undefined,
+    mcpAccessOverride: row.mcpAccessOverride ? (JSON.parse(row.mcpAccessOverride) as { server: string; tools: string[] }[]) : undefined,
+    pendingMcpApproval: row.pendingMcpApproval ? (JSON.parse(row.pendingMcpApproval) as McpApprovalRequest) : undefined,
   };
 }
 
@@ -198,7 +210,9 @@ export class SqliteBoard implements Board {
         harnessOverride TEXT,
         pipelineId TEXT,
         pipelineRunId TEXT,
-        pipelineStepId TEXT
+        pipelineStepId TEXT,
+        mcpAccessOverride TEXT,
+        pendingMcpApproval TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -225,6 +239,8 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN pipelineId TEXT;",
       "ALTER TABLE tasks ADD COLUMN pipelineRunId TEXT;",
       "ALTER TABLE tasks ADD COLUMN pipelineStepId TEXT;",
+      "ALTER TABLE tasks ADD COLUMN mcpAccessOverride TEXT;",
+      "ALTER TABLE tasks ADD COLUMN pendingMcpApproval TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -414,7 +430,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -435,6 +451,7 @@ export class SqliteBoard implements Board {
         full.pipelineId ?? null,
         full.pipelineRunId ?? null,
         full.pipelineStepId ?? null,
+        full.mcpAccessOverride ? JSON.stringify(full.mcpAccessOverride) : null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
@@ -489,6 +506,15 @@ export class SqliteBoard implements Board {
     if (!existing) throw new Error(`task not found: ${id}`);
     this.db.run("UPDATE tasks SET status = ?, escalationContext = ? WHERE id = ?", ["escalated", escalationContext, id]);
     const updated: TaskCard = { ...existing, status: "escalated", escalationContext };
+    this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async requestMcpApproval(id: string, request: McpApprovalRequest): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET status = ?, pendingMcpApproval = ? WHERE id = ?", ["review", JSON.stringify(request), id]);
+    const updated: TaskCard = { ...existing, status: "review", pendingMcpApproval: request };
     this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
     return updated;
   }

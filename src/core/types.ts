@@ -217,6 +217,21 @@ export interface PipelineDef {
   updatedAt: string;
 }
 
+/** The shape of one described-but-blocked MCP tool call — both the
+ *  agent's own request (TaskResult.mcpApprovalRequest, parsed by
+ *  parse-mcp-approval-request.ts out of a trailing ```mcp-approval-
+ *  request``` fenced block) and the durable record of it a human acts on
+ *  (TaskCard.pendingMcpApproval) share this exact shape, so there's
+ *  never a lossy translation between "what the agent asked for" and
+ *  "what the board shows a human." See docs/SDD-mcp-orchestration.md
+ *  §3.5. */
+export interface McpApprovalRequest {
+  server: string;
+  tool: string;
+  args: unknown;
+  reason: string;
+}
+
 /** A pipeline step's mandated final-message contract: a
  *  ```pipeline-handoff``` fenced block containing this shape. See
  *  parsePipelineHandoff, the only code allowed to construct one from raw
@@ -312,6 +327,49 @@ export interface TaskCard {
    *  enabled harness fails the run loud rather than silently falling
    *  back to the normal pick. */
   harnessOverride?: string;
+  /** A task-level override of the routed agent's own declared
+   *  `mcpAccess` — same "task override beats the manifest-level default"
+   *  shape as `harnessOverride`/`model` above, just for MCP grants
+   *  instead of harness/model choice. Read by every executor as
+   *  `task.mcpAccessOverride ?? agent.mcpAccess` (see readonly.ts/
+   *  write.ts/codex-readonly.ts/codex-write.ts) — undefined (every task
+   *  before this field existed) falls straight through to the routed
+   *  agent's own manifest declaration, byte-identical to today.
+   *
+   *  This is this subtask's own concrete mechanism for §3.5/§6's
+   *  "narrow follow-up run scoped to exactly the one named tool call" —
+   *  the SDD names the *shape* ("whose mcpAccess is scoped to exactly
+   *  the one server+tool") but TaskCard itself has no `mcpAccess` field
+   *  to scope (only AgentDef does); routing a follow-up to an existing
+   *  agent and narrowing just *that task's* grant via this override,
+   *  rather than fabricating a one-off AgentDef per approval, is the
+   *  cleanest fit with the override pattern this codebase already
+   *  established for harness/model. See `POST
+   *  /tasks/:id/mcp-approval/approve`, src/api/server.ts.
+   *
+   *  Presence of this field (not its contents) is also the exact signal
+   *  readonly.ts/write.ts use to set RunClaudeOptions.mcpAccessPreApproved
+   *  — the one named server+tool pair here is, by construction, the one
+   *  a human just approved, so it's treated as `auto` for this run
+   *  regardless of the server's own still-`approval-required`
+   *  declaration (see mcpAccessPreApproved's own doc comment in
+   *  claude-cli.ts). Without that bypass, the follow-up would re-resolve
+   *  the same tool against the same server declaration and land right
+   *  back in `pendingApproval` — an approval that can never actually
+   *  execute. */
+  mcpAccessOverride?: { server: string; tools: string[] }[];
+  /** Set when a result for this task carried `TaskResult
+   *  .mcpApprovalRequest` (see finishResult, src/core/orchestrator.ts) —
+   *  the durable, human-facing record of the one blocked MCP call an
+   *  agent described wanting to make, landed on the existing `"review"`
+   *  human queue rather than a new status value (mirrors how
+   *  `escalationContext` reuses `"escalated"` instead of inventing a
+   *  parallel status). Like `escalationContext`, this is never cleared
+   *  once resolved (approve/deny) — `status` moving off `"review"` is
+   *  what the board UI actually gates showing the approval panel on, not
+   *  this field's presence alone. See `POST /tasks/:id/mcp-approval/
+   *  {approve,deny}`, docs/SDD-mcp-orchestration.md §3.5/§6. */
+  pendingMcpApproval?: McpApprovalRequest;
   /** How many times a reviewer has sent this task's lineage back with
    *  `changes_requested`. Incremented each pushback round; distinct from
    *  a plain retry count because it's scoped to the review loop, not to
@@ -554,6 +612,25 @@ export interface TaskResult {
    *  TaskResult.subagents already holds. See
    *  docs/SDD-mcp-orchestration.md §3.4. */
   mcpCalls?: { server: string; tool: string; args: unknown; result: unknown; ok: boolean }[];
+  /** Set when this run had at least one pending-approval MCP grant (see
+   *  splitGrantsByTrust, src/executors/mcp-config.ts) and the agent's
+   *  final message ended with a well-formed ```mcp-approval-request```
+   *  block naming one of them — see parseMcpApprovalRequest,
+   *  src/executors/parse-mcp-approval-request.ts. Unlike mcpCalls, this
+   *  is never a call that actually happened — the tool was excluded from
+   *  --allowedTools, so the agent physically could not call it; this is
+   *  only the agent's own description of the one call it would have
+   *  made. Undefined whenever this run had zero pending-approval grants
+   *  at all (same "absence always means nothing to show" discipline
+   *  every other optional TaskResult field holds) — also undefined when
+   *  the agent simply had nothing to request (the block is optional, not
+   *  mandatory, unlike verdict/subtaskPlan/pipelineHandoff's contracts;
+   *  see parse-mcp-approval-request.ts's own doc comment). `ok` is set
+   *  to `false` instead when a pending-approval grant existed and the
+   *  agent attempted the block but produced something malformed, or
+   *  named a server/tool this run wasn't actually blocked on — fails
+   *  closed, never guesses. See docs/SDD-mcp-orchestration.md §3.5. */
+  mcpApprovalRequest?: McpApprovalRequest;
 }
 
 export interface Executor {
