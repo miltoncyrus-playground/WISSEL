@@ -282,6 +282,62 @@ agents:
       from reading the diff alone, and never treat a write denial as a
       concern to flag or a blocker to work around.
 
+  - id: mcp-tool-caller
+    name: MCP tool caller
+    kind: agent
+    tier: readonly
+    description: Calls a granted MCP server's tool and reports exactly what it returned — the pipeline-engine counterpart
+      to `implementer`, for proving a pipeline can compose a file-editing step with an MCP-tool-calling step.
+    whenToUse: A pipeline step (src/core/pipeline-runner.ts) that needs to call a specific MCP tool rather than edit files —
+      never routed by the fuzzy Router (see its tags below).
+    # Deliberately NOT a tag shared with any other agent in this file —
+    # pipeline-runner.ts looks this agent up directly by id (every step
+    # task it creates carries `labels: []`, see runStepAndSuccessors/
+    # startPipelineRun, src/core/pipeline-runner.ts), so tags do nothing
+    # for pipeline execution, but they DO still feed the real Router for
+    # anything else on the board. `pipeline-reviewer`'s own comment above
+    # documents a real, confirmed collision from reusing shared tags on a
+    # pipeline-only agent — this single unique tag is what avoids
+    # repeating that.
+    tags: [pipeline-mcp-step]
+    executor: readonly
+    inputs: [task-card]
+    outputs: [mcp-tool-result]
+    trustLevel: medium
+    toolAccess: [read]
+    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.05 }
+    # Points at the eval's own test-local McpServerPool fixture
+    # (eval/pipeline-mcp-integration.eval.ts), not a real registered
+    # entry in mcp-servers.yaml — see that eval's own doc comment for why
+    # (a stdio server's command is spawned with the *task's* cwd, not the
+    # repo root, so a portable checked-in path can't be hardcoded the way
+    # the rest of mcp-servers.yaml's entries are; the eval computes an
+    # absolute path at run time instead, the same way
+    # test/claude-cli.test.ts's own `mcpServer()` helper builds fixture
+    # servers inline rather than in the checked-in registry). Outside
+    # that eval's own locally-constructed pool (e.g. the real
+    # `McpServerPool.load("mcp-servers.yaml")` src/api/server.ts builds),
+    # "wissel-echo-mcp" isn't a registered server id, so this grant
+    # silently resolves to zero MCP access (see resolveMcpGrants,
+    # src/executors/mcp-config.ts) — this agent is a harmless, inert
+    # readonly agent anywhere outside that eval. `echo_sensitive` is
+    # granted alongside `echo` specifically so this agent's prompt is
+    # exercised against a real `approval-required` tool too, proving the
+    # subtask-3 approval gate composes through a pipeline step (see
+    # docs/SDD-mcp-orchestration.md §6 Subtask 7's own composition
+    # question) — this agent is never expected to need it for the main
+    # "call echo and report" proof itself.
+    mcpAccess:
+      - server: wissel-echo-mcp
+        tools: [echo, echo_sensitive]
+    # This agent's own run never has a worktree/diff for a reviewer to
+    # discover — see AgentDef.reviewTarget's own doc comment. Declared
+    # for correctness even though this agent has no `handoffs` today (so
+    # nothing currently reads it); matches how a future pipeline step
+    # reviewing this agent's work should be shown its tool-call
+    # transcript, not a diff.
+    reviewTarget: tool-calls
+
   - id: repo-briefer
     name: Repo briefer
     kind: agent

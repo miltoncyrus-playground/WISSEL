@@ -506,16 +506,40 @@ test("an agent with no mcpAccess gets byte-for-byte identical argv to before mcp
   expect(withPoolButNoGrant[withPoolButNoGrant.indexOf("--output-format") + 1]).toBe("json");
 });
 
-test("every real agent in agents/manifest.yaml (none declare mcpAccess today) gets identical argv whether or not a real McpServerPool is wired up", async () => {
+test("every real agent in agents/manifest.yaml that doesn't declare mcpAccess gets identical argv whether or not a real McpServerPool is wired up", async () => {
+  // `mcp-tool-caller` (agents/manifest.yaml) is the one deliberate
+  // exception — added by MCP orchestration subtask 7 specifically to
+  // carry a real mcpAccess grant (see docs/SDD-mcp-orchestration.md §6
+  // Subtask 7) — excluded from this loop and covered by its own
+  // assertion below instead. Every other agent in the manifest must
+  // still see zero behavior change from a pool being wired up, exactly
+  // as before that agent existed.
   const { Registry } = await import("../src/core/registry.ts");
   const registry = await Registry.load();
   const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "auto" }] })]);
   for (const agent of registry.all()) {
+    if (agent.id === "mcp-tool-caller") continue;
     expect(agent.mcpAccess).toBeUndefined();
     const withoutPool = await captureCmd({ agent, permissionMode: "plan" });
     const withPool = await captureCmd({ agent, permissionMode: "plan", mcpServers: pool });
     expect(withPool).toEqual(withoutPool);
   }
+});
+
+test("mcp-tool-caller's own manifest-declared mcpAccess is inert against a pool that doesn't register its server (e.g. the real mcp-servers.yaml today)", async () => {
+  const { Registry } = await import("../src/core/registry.ts");
+  const registry = await Registry.load();
+  const agent = registry.get("mcp-tool-caller")!;
+  expect(agent.mcpAccess).toEqual([{ server: "wissel-echo-mcp", tools: ["echo", "echo_sensitive"] }]);
+
+  const withoutPool = await captureCmd({ agent, permissionMode: "plan" });
+  // A pool with servers registered, but never "wissel-echo-mcp" — same
+  // "unknown/disabled server is silently dropped" contract
+  // resolveMcpGrants already holds (src/executors/mcp-config.ts).
+  const poolMissingServer = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "auto" }] })]);
+  const withUnrelatedPool = await captureCmd({ agent, permissionMode: "plan", mcpServers: poolMissingServer });
+  expect(withUnrelatedPool).toEqual(withoutPool);
+  expect(withUnrelatedPool).not.toContain("--mcp-config");
 });
 
 test("a grant naming a server not in the pool (or disabled) is dropped — same byte-identical argv as no mcpAccess at all", async () => {
@@ -829,11 +853,17 @@ test("omitting mcpAccessPreApproved (every call before this option existed) keep
   expect(cmd).not.toContain("--allowedTools");
 });
 
-test("every real agent in agents/manifest.yaml sees identical argv/prompt whether or not a server declares approval-required tools — none declare mcpAccess today", async () => {
+test("every real agent in agents/manifest.yaml that doesn't declare mcpAccess sees identical argv/prompt whether or not a server declares approval-required tools", async () => {
+  // Same `mcp-tool-caller` exclusion as the test above — see its own
+  // comment. A pool here that declares its granted "echo"/"echo_sensitive"
+  // tools under the real "wissel-echo-mcp" server id would legitimately
+  // change this agent's argv, which is exactly the point of that agent
+  // existing — not a regression to assert away.
   const { Registry } = await import("../src/core/registry.ts");
   const registry = await Registry.load();
   const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
   for (const agent of registry.all()) {
+    if (agent.id === "mcp-tool-caller") continue;
     expect(agent.mcpAccess).toBeUndefined();
     const withoutPool = await captureCmd({ agent, permissionMode: "plan" });
     const withPool = await captureCmd({ agent, permissionMode: "plan", mcpServers: pool });

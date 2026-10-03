@@ -301,9 +301,25 @@ function buildNextStepBody(originalInput: string, handoff: { note?: string; data
  *  handlePipelineStepResult) — safe to treat as final precisely because
  *  the whole traversal is sequential/depth-first (see startPipelineRun's
  *  own doc comment): nothing is still "in flight" by the time this
- *  runs. Any step under the run having failed fails the whole run. */
+ *  runs. Any step under the run having failed fails the whole run.
+ *
+ *  One real exception, found by MCP orchestration subtask 7's
+ *  integration proof: a step parked on `"review"` (finishResult's own
+ *  mcpApprovalRequest branch, above) hasn't settled at all — it's
+ *  waiting on a human's approve/deny decision, not done and not failed.
+ *  Declaring the run "done" out from under a step that's still blocked
+ *  would be wrong, so this leaves the root exactly as-is (still
+ *  "running", from startPipelineRun's own initial move) instead. There
+ *  is no mechanism in this phase to resume a pipeline run once that
+ *  approval is later resolved (the follow-up task `POST
+ *  /tasks/:id/mcp-approval/approve` spawns is a standalone task, not a
+ *  resumption of this run — see its own doc comment, and §3.5's
+ *  already-named v1 limitation) — "stays running forever" is a
+ *  deliberate, named outcome for this case, not a new resume primitive
+ *  this subtask was ever scoped to build. */
 async function settleRoot(board: Board, runId: string): Promise<TaskCard> {
   const cards = (await board.list()).filter((t) => t.pipelineRunId === runId);
+  if (cards.some((t) => t.status === "review")) return (await board.get(runId))!;
   const anyFailed = cards.some((t) => t.status === "failed");
   return await board.move(runId, anyFailed ? "failed" : "done");
 }

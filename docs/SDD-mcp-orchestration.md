@@ -1,6 +1,6 @@
 # SDD — MCP tool orchestration: growing wissel beyond a coding agent
 
-Status: **Subtasks 1, 2, 3, 4, 5, and 6 shipped and merged.** Written per
+Status: **All 7 subtasks shipped and merged — design complete.** Written per
 Milton's ask, following a design conversation in this session about
 turning wissel from a dev-focused coding orchestrator into one that can
 also drive arbitrary MCP servers (Slack, ticketing systems, databases,
@@ -39,8 +39,15 @@ in gaps §3.5 only sketched the shape of). Also: `McpServerPool
 /mcp-servers/:id/tools/:tool/trust`, and the board's "Manage MCP
 servers" panel — enable/disable per server plus a per-tool trust toggle,
 mirroring the existing "Manage harnesses" panel's own `.hm-row` CSS
-family verbatim (Subtask 6 — see §4's fifth revision callout). Subtask 7
-is still design-only, not built — see §7 for what's next.
+family verbatim (Subtask 6 — see §4's fifth revision callout). Also:
+`src/core/mcp-integration-pipeline.ts`
+(`buildMcpIntegrationPipelineGraph`), `eval/fixtures/mcp-echo-server.ts`
+(a real, minimal, hand-rolled stdio MCP server — no SDK dependency), the
+permanent `mcp-tool-caller` manifest agent, and two real fixes in
+`finishResult`/`settleRoot` the integration proof's own live Scenario 2
+surfaced (Subtask 7 — see §6/§7's own revision callout for the full
+story, including the direct answer to the "does pipeline-runner.ts need
+any changes at all" question this subtask's card posed).
 
 ## 1. Goal
 
@@ -606,15 +613,101 @@ against the review-handoff loop.
   reaching `done`, with the MCP step's `mcpCalls` visible on its own
   step's `TaskCard` the same way a coding step's diff already is.
 
+> **Revision (subtask 7, shipped):** this subtask's own card asked a
+> direct question up front — "does `pipeline-runner.ts` need any changes
+> at all to make this work?" — and named it as the single most useful
+> finding the subtask could report, whichever way it went. The direct
+> answer is **mixed, not a clean yes or no**:
+>
+> 1. **For the ordinary case (a coding step followed by an `auto`-trust
+>    MCP-tool-calling step), the "likely good news" held exactly as
+>    predicted: zero changes to `pipeline-runner.ts`.**
+>    `runStepAndSuccessors` only ever calls `executor.run()` — the MCP
+>    wiring (grant resolution, `--mcp-config`/`--allowedTools` building,
+>    `mcpCalls` transcript parsing) lives entirely inside
+>    `ReadOnlyExecutor`/`runClaude`, already exercised by `POST
+>    /tasks/:id/run` for an ordinary task, and composes by pure
+>    construction: a pipeline step's `TaskCard` is dispatched through the
+>    exact same `executor.run(created, agent, harness)` call, carrying
+>    the exact same `agent.mcpAccess`. `eval/pipeline-mcp-integration.eval.ts`'s
+>    Scenario 1 is the live proof of this half.
+> 2. **For the approval-gate composition (subtask 3's "describe, don't
+>    execute" path reached from inside a pipeline step), two real,
+>    concrete bugs existed and needed fixing** — exactly the kind of
+>    finding the card asked to be surfaced rather than assumed away:
+>    - `finishResult`'s pipeline-step branch (`src/core/orchestrator.ts`)
+>      ran its own unconditional `board.move(task.id, result.ok ? "done"
+>      : "failed")` *before* ever checking `result.mcpApprovalRequest` —
+>      a pipeline step that successfully describes a blocked call
+>      (`result.ok` stays `true` for a well-formed request, see
+>      `runClaude`) landed straight on `"done"`, silently succeeding
+>      instead of surfacing the approval gate at all. The non-pipeline
+>      path a few lines down already checked this first; the pipeline
+>      branch didn't mirror that priority order. Fixed by checking
+>      `result.mcpApprovalRequest` first, inside the pipeline branch,
+>      calling `board.requestMcpApproval` and returning without ever
+>      calling `handlePipelineStepResult` — the step hasn't settled,
+>      it's parked on a human decision, the same v1 limitation §3.5
+>      already named, now also true for a pipeline step.
+>    - `pipeline-runner.ts`'s own `settleRoot` declared the whole run
+>      `"done"` the moment no step had *failed* — even with a step still
+>      parked on `"review"` awaiting that same human decision. Fixed by
+>      treating any `"review"`-status step under the run as "not settled
+>      yet": the run now stays `"running"` instead, with no mechanism in
+>      this phase to resume it once the approval is later resolved (the
+>      follow-up task `POST /tasks/:id/mcp-approval/approve` spawns is a
+>      standalone task, never a resumption of the run — the same
+>      already-named v1 limitation again, not a new gap).
+>
+>    Both are gate-tested against a scripted stand-in
+>    (`test/pipeline-runner.test.ts`) that reproduces the exact failure
+>    mode `eval/pipeline-mcp-integration.eval.ts`'s own live Scenario 2
+>    would otherwise have hit silently, with no live run required to
+>    catch it.
+>
+> Two further judgment calls, stated plainly: `mcp-tool-caller`
+> (agents/manifest.yaml) was added as a **permanent** agent, not a
+> test-local registry entry — mirroring how `pipeline-reviewer` was
+> added permanently for `docs/SDD-pipelines.md` §6 Subtask 5's own proof
+> — reasoning: a generic "call this run's granted MCP tool and report"
+> agent is reusable by any future pipeline step, and it's completely
+> inert in production (its grant names `wissel-echo-mcp`, a server id
+> the real `mcp-servers.yaml` never registers, so `resolveMcpGrants`
+> drops it to `[]` everywhere outside the eval's own pool). The MCP
+> server itself (`eval/fixtures/mcp-echo-server.ts`) is deliberately
+> **not** a `mcp-servers.yaml` entry, even though the agent pointing at
+> it is permanent — a stdio server's `command`/`args` are spawned with
+> the *task's own cwd*, never the repo root, so a portable, checked-in
+> path can't be hardcoded the way the file's own doc-comment examples
+> assume; the eval computes an absolute path at run time instead
+> (`import.meta.dir`), the same way `test/claude-cli.test.ts`'s own
+> `mcpServer()` helper already builds fixture servers inline rather than
+> editing the checked-in registry.
+>
+> **Not yet empirically run.** Same situation as this project's other
+> evals when first written: the implementer session that built this
+> subtask had every subprocess spawn blocked by its sandbox (not even
+> `bun run eval/fixtures/mcp-echo-server.ts` alone could be executed to
+> confirm the hand-rolled server completes a real JSON-RPC handshake), so
+> neither scenario of `eval/pipeline-mcp-integration.eval.ts` has actually
+> been run against a real `claude` process or a real spawned MCP server.
+> The two orchestrator fixes above are gate-tested, not just hand-traced,
+> but the live eval itself — and with it, the first real observation of
+> whether a granted MCP tool truly surfaces as `mcp__wissel-echo-mcp__echo`
+> in practice, the one piece §4's "Revision (subtask 2, shipped)" callout
+> named as corroborated-but-not-observed — remains open empirical work for
+> whoever next has subprocess access. See `eval/README.md`'s own
+> "pipeline-mcp-integration eval" section for the full pass bar.
+
 ## 7. Sequencing
 
 1 blocks 2. 2 blocks 3 and 4 (4 only needs 2's transcript capture, not
 3's approval gate — can proceed in parallel with 3 once 2 lands). 5 is
 fully independent of 1-4, can run in parallel from the start. 6 needs 1
-and (for the per-tool trust toggle specifically) 3. 7 needs 2 and 4 both
-fully working — it's the integration proof, not a standalone piece,
-lands last, same discipline `docs/SDD-pipelines.md` §7 already held its
-own Subtask 5 to.
+and (for the per-tool trust toggle specifically) 3. 7 needed 2 and 4 both
+fully working — it's the integration proof, not a standalone piece, and
+landed after both, same discipline `docs/SDD-pipelines.md` §7 already
+held its own Subtask 5 to. All seven subtasks have now shipped.
 
 ## 8. Verification
 

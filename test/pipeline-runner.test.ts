@@ -4,10 +4,11 @@ import { SqlitePipelineStore } from "../src/services/pipelines.ts";
 import { Registry } from "../src/core/registry.ts";
 import { finishResult } from "../src/core/orchestrator.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
+import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import { startPipelineRun, type PipelineRunnerContext } from "../src/core/pipeline-runner.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
-import type { AgentDef, Harness, PipelineGraph, TaskResult } from "../src/core/types.ts";
+import type { AgentDef, Harness, McpServer, PipelineGraph, TaskResult } from "../src/core/types.ts";
 
 function pipelineAgent(id: string): AgentDef {
   return {
@@ -283,6 +284,120 @@ test("a configured HarnessPool is acquired before each step's run and released a
 
   const steps = (await board.list()).filter((t) => t.pipelineRunId === root.id);
   expect(steps.every((s) => s.harness === "solo")).toBe(true);
+});
+
+// --- MCP approval-gate composition (docs/SDD-mcp-orchestration.md §6 ---
+// Subtask 7's own named, real finding) ------------------------------------
+
+function readonlyMcpAgent(id: string, mcpAccess: AgentDef["mcpAccess"]): AgentDef {
+  return {
+    id,
+    name: id,
+    kind: "agent",
+    tier: "readonly",
+    description: "test MCP step agent",
+    whenToUse: "test only",
+    tags: ["test"],
+    executor: "readonly",
+    inputs: [],
+    outputs: [],
+    trustLevel: "low",
+    toolAccess: ["read"],
+    costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.01 },
+    mcpAccess,
+  };
+}
+
+function mcpApprovalRequestBody(server: string, tool: string): string {
+  return [
+    "Found a blocked call.",
+    "",
+    "```mcp-approval-request",
+    JSON.stringify({ server, tool, args: { text: "hi" }, reason: "needs a human" }),
+    "```",
+  ].join("\n");
+}
+
+test("a pipeline step whose result carries a pending MCP approval request parks the step on review (pendingMcpApproval set), never done or failed — and the run stays running rather than settling around it", async () => {
+  const board = new SqliteBoard();
+  const pool = McpServerPool.from([
+    { id: "x", label: "x", transport: { kind: "stdio", command: "/bin/true", args: [] }, enabled: true, tools: [{ name: "y", trust: "approval-required" }] } as McpServer,
+  ]);
+  const agent = readonlyMcpAgent("mcp-step", [{ server: "x", tools: ["y"] }]);
+  const registry = Registry.from([agent]);
+  const graph: PipelineGraph = { steps: [{ id: "s", name: "S", agentId: "mcp-step", transition: "all" }], edges: [] };
+
+  const resultText = mcpApprovalRequestBody("x", "y");
+  const runner: CommandRunner = async () => ({
+    stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: resultText }),
+    stderr: "",
+    exitCode: 0,
+  });
+
+  const pipelines = new SqlitePipelineStore(board.db);
+  const ctx: PipelineRunnerContext = { executors: [new ReadOnlyExecutor({ runner, mcpServers: pool })], pipelines };
+  const pipelineDef = await pipelines.create({ name: "MCP approval composition", description: "", graph });
+
+  const root = await startPipelineRun(board, registry, pipelineDef, "/tmp/repo", "do the mcp thing", ctx);
+
+  // Before the fix, this branch's own unconditional done/failed move ran
+  // first (result.ok is true for a well-formed approval request) and the
+  // step silently landed on "done" — see finishResult's own comment.
+  const stepCard = (await board.list()).find((t) => t.pipelineRunId === root.id);
+  expect(stepCard!.status).toBe("review");
+  expect(stepCard!.pendingMcpApproval).toEqual({ server: "x", tool: "y", args: { text: "hi" }, reason: "needs a human" });
+
+  // Before the fix, settleRoot declared the run "done" the moment no
+  // step had *failed* — even with this step still parked on "review".
+  expect(root.status).toBe("running");
+});
+
+test("an 'all' fan-out step whose sibling settles normally still leaves the run running while the other sibling is parked on a pending MCP approval", async () => {
+  const board = new SqliteBoard();
+  const pool = McpServerPool.from([
+    { id: "x", label: "x", transport: { kind: "stdio", command: "/bin/true", args: [] }, enabled: true, tools: [{ name: "y", trust: "approval-required" }] } as McpServer,
+  ]);
+  const registry = Registry.from([
+    readonlyMcpAgent("fan-out", undefined),
+    readonlyMcpAgent("mcp-step", [{ server: "x", tools: ["y"] }]),
+    readonlyMcpAgent("plain-step", undefined),
+  ]);
+  const graph: PipelineGraph = {
+    steps: [
+      { id: "fan", name: "Fan", agentId: "fan-out", transition: "all" },
+      { id: "mcp", name: "MCP", agentId: "mcp-step", transition: "all" },
+      { id: "plain", name: "Plain", agentId: "plain-step", transition: "all" },
+    ],
+    edges: [
+      { id: "e1", from: "fan", to: "mcp" },
+      { id: "e2", from: "fan", to: "plain" },
+    ],
+  };
+
+  let call = 0;
+  const runner: CommandRunner = async () => {
+    call++;
+    // Call order follows the depth-first traversal (fan, then mcp, then
+    // plain) — only the second call (the mcp-step's own run) returns the
+    // approval-request body.
+    const result = call === 2 ? mcpApprovalRequestBody("x", "y") : "ok, nothing blocked";
+    return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result }), stderr: "", exitCode: 0 };
+  };
+
+  const pipelines = new SqlitePipelineStore(board.db);
+  const ctx: PipelineRunnerContext = { executors: [new ReadOnlyExecutor({ runner, mcpServers: pool })], pipelines };
+  const pipelineDef = await pipelines.create({ name: "Fan-out with one blocked sibling", description: "", graph });
+
+  const root = await startPipelineRun(board, registry, pipelineDef, "/tmp/repo", "do the thing", ctx);
+
+  const cards = (await board.list()).filter((t) => t.pipelineRunId === root.id);
+  const mcpCard = cards.find((c) => c.pipelineStepId === "mcp");
+  const plainCard = cards.find((c) => c.pipelineStepId === "plain");
+  expect(mcpCard!.status).toBe("review");
+  expect(plainCard!.status).toBe("done"); // the unrelated sibling settles normally
+  // The run as a whole must not be declared done while its mcp sibling
+  // is still parked awaiting a human decision.
+  expect(root.status).toBe("running");
 });
 
 test("finishResult's pipeline branch never fires for a non-pipeline TaskResult", async () => {
