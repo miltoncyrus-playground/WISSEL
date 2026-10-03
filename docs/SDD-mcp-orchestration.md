@@ -1,10 +1,21 @@
 # SDD — MCP tool orchestration: growing wissel beyond a coding agent
 
-Status: **Draft, not built.** Written per Milton's ask, following a design
-conversation in this session about turning wissel from a dev-focused
-coding orchestrator into one that can also drive arbitrary MCP servers
-(Slack, ticketing systems, databases, anything with an MCP tool surface)
-alongside the coding work it already does.
+Status: **Subtasks 1 and 2 shipped and merged.** Written per Milton's ask,
+following a design conversation in this session about turning wissel from
+a dev-focused coding orchestrator into one that can also drive arbitrary
+MCP servers (Slack, ticketing systems, databases, anything with an MCP
+tool surface) alongside the coding work it already does.
+
+**What shipped**: `McpServer` type + `mcp-servers.yaml` + `McpServerPool`
+(load/from/all/get/acquire/release/setEnabled, deliberately no
+single-pick `acquire(tool)` the way `HarnessPool` has — see §3.1/§6
+Subtask 1), `checkMcpServerReachable`, `GET /mcp-servers` + `POST
+/mcp-servers/:id/{enable,disable}` (no create/delete — see §4's revision
+callout); `AgentDef.mcpAccess`, `TaskResult.mcpCalls`, the
+`claude-cli.ts`/`codex-cli.ts` grant-building and transcript-parsing
+wiring (`runCodex`'s own real MCP flag syntax is a named, unresolved gap —
+see §4's second revision callout). Subtasks 3-7 are still design-only, not
+built — see §6/§7 for what's next and in what order.
 
 ## 1. Goal
 
