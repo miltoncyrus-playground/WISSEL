@@ -10,7 +10,8 @@ import { runViaBun } from "../executors/claude-cli.ts";
 import { mergeTaskWorktree } from "../services/worktree.ts";
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
 import { handlePipelineStepResult } from "./pipeline-runner.ts";
-import type { Executor, Harness, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
+import { formatMcpTranscript } from "../services/mcp-transcript.ts";
+import type { AgentDef, Executor, Harness, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
 
 /** What finishResult needs to drive a pipeline step's own follow-up work
  *  (see the `task.pipelineId !== undefined` branch below) — passed
@@ -196,7 +197,7 @@ export async function finishResult(
     // history; there's no card left to move or spawn a follow-up from.
     if (task) {
       await board.move(result.taskId, "pending-review");
-      await spawnReviewerTask(board, task, result);
+      await spawnReviewerTask(board, task, result, agent);
     }
     return;
   }
@@ -237,12 +238,24 @@ export async function finishResult(
  * whole reason the reviewer's own read-only run (ReadOnlyExecutor spawns
  * `claude` with `cwd: task.repo`) actually sees the diff under review
  * instead of the original repo's unrelated working tree.
+ *
+ * `implementerAgent.reviewTarget === "tool-calls"` is the one branch off
+ * today's behavior: a tool-calling run has no worktree/file-change state
+ * for the reviewer to discover on its own (no `repo`, no diff), so the
+ * transcript (`formatMcpTranscript`) is embedded directly into the
+ * review task's body instead. Every other agent (`reviewTarget`
+ * undefined, or `"diff"`) gets a byte-identical body to today — see
+ * docs/SDD-mcp-orchestration.md §3.4.
  */
-async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result: TaskResult): Promise<void> {
+async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result: TaskResult, implementerAgent: AgentDef): Promise<void> {
   const reviewLineageId = implementerTask.reviewLineageId ?? implementerTask.id;
+  const body =
+    implementerAgent.reviewTarget === "tool-calls" && result.mcpCalls
+      ? `${implementerTask.body}\n\n---\nTool calls made:\n${formatMcpTranscript(result.mcpCalls)}`
+      : implementerTask.body;
   await board.create({
     title: `Review: ${implementerTask.title}`,
-    body: implementerTask.body,
+    body,
     labels: ["review"],
     repo: result.worktree?.path ?? implementerTask.repo,
     parentTaskId: implementerTask.id,

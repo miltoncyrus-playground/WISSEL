@@ -749,6 +749,13 @@ export function createApp(
           return json(await getRepoDiff(diffPath));
         }
 
+        if (parts.length === 3 && parts[2] === "mcp-calls" && req.method === "GET") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          const result = await board.getResult(parts[1]!);
+          return json(result?.mcpCalls ?? []);
+        }
+
         // Point-in-time snapshot of a task's raw agent output — every
         // JSONL line recorded so far, from the durable file (not the
         // capped in-memory ring buffer — see getTaskOutput's own doc

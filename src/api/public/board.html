@@ -424,6 +424,15 @@
   .diff-view .diff-file { color: var(--ink-1); font-weight: 700; }
   .diff-untracked { margin-top: 8px; font-size: 11.5px; color: var(--ink-muted); }
   .diff-untracked code { background: var(--page); border-radius: 4px; padding: 1px 5px; }
+  .mcp-calls-view { margin: 0; padding-left: 20px; }
+  .mcp-call { margin-bottom: 10px; }
+  .mcp-call-head { font-size: 12.5px; font-weight: 700; color: var(--ink-1); }
+  .mcp-call-failed .mcp-call-head { color: var(--critical); }
+  .mcp-call-args, .mcp-call-result {
+    font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.5;
+    background: var(--page); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; margin: 4px 0 0;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  }
 
   .form-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; margin-top: 18px; }
   .field-error { color: var(--critical); font-size: 12.5px; }
@@ -726,6 +735,11 @@
     <section class="drawer-section" id="tdDiffSection" hidden>
       <p class="eyebrow">Diff</p>
       <div id="tdDiff"></div>
+    </section>
+
+    <section class="drawer-section" id="tdMcpCallsSection" hidden>
+      <p class="eyebrow">Tool calls</p>
+      <div id="tdMcpCalls"></div>
     </section>
   </div>
 </aside>
@@ -1121,9 +1135,31 @@
       onClick: function () { openLiveOutput(task.id); },
     }));
 
+    // Always rendered, regardless of result/worktree — the diff endpoint
+    // itself (GET /tasks/:id/diff) already handles every "nothing to
+    // show" case gracefully ("not a git working tree", "No changes
+    // yet."), and that's true even when this task's own TaskResult has
+    // no `worktree`: a never-run task has no result at all yet (result
+    // is null here until loadDrawerResult resolves), and a reviewer
+    // task's own ReadOnlyExecutor result never carries `worktree` even
+    // though its `repo` points at the implementer's worktree and a real
+    // diff is fetchable there via the diff endpoint's own fallback. Do
+    // not gate this button on `result.worktree` — it's the wrong signal
+    // for "a diff is available" and false-negatives on both of those
+    // real cases. See docs/SDD-mcp-orchestration.md §3.4/§6.
     wrap.appendChild(drawerAction("View diff", {
       onClick: function () { toggleDiff(task.id); },
     }));
+    // Tool calls, unlike diff, has no fallback endpoint message to lean
+    // on and no ambient state to discover — a result either carries
+    // mcpCalls or it doesn't — so this one stays gated on the result.
+    if (result && result.mcpCalls && result.mcpCalls.length) {
+      wrap.appendChild(drawerAction("View tool calls", {
+        onClick: function () { toggleMcpCalls(task.id); },
+      }));
+    } else {
+      document.getElementById("tdMcpCallsSection").hidden = true;
+    }
 
     wrap.appendChild(drawerAction("Delete", {
       className: "danger",
@@ -1333,6 +1369,58 @@
     return pre;
   }
 
+  // Renders the MCP tool-call transcript as a simple ordered list — one
+  // entry per call, in call order, mirroring formatMcpTranscript's own
+  // plain-text shape (src/services/mcp-transcript.ts) but as DOM nodes
+  // instead of a joined string.
+  function renderMcpCalls(calls) {
+    var list = document.createElement("ol");
+    list.className = "mcp-calls-view";
+    calls.forEach(function (call) {
+      var item = document.createElement("li");
+      item.className = "mcp-call" + (call.ok ? "" : " mcp-call-failed");
+      var head = document.createElement("div");
+      head.className = "mcp-call-head";
+      head.textContent = call.server + "." + call.tool + " — " + (call.ok ? "ok" : "failed");
+      item.appendChild(head);
+      var args = document.createElement("pre");
+      args.className = "mcp-call-args";
+      args.textContent = "args: " + JSON.stringify(call.args);
+      item.appendChild(args);
+      var result = document.createElement("pre");
+      result.className = "mcp-call-result";
+      result.textContent = "result: " + JSON.stringify(call.result);
+      item.appendChild(result);
+      list.appendChild(item);
+    });
+    return list;
+  }
+
+  function toggleMcpCalls(taskId) {
+    var section = document.getElementById("tdMcpCallsSection");
+    if (!section.hidden) { section.hidden = true; return; }
+    section.hidden = false;
+    fetchAndRenderMcpCalls(taskId);
+  }
+
+  function fetchAndRenderMcpCalls(taskId) {
+    var body = document.getElementById("tdMcpCalls");
+    body.textContent = "loading…";
+    fetch("/tasks/" + taskId + "/mcp-calls").then(function (r) { return r.json(); }).then(function (calls) {
+      body.textContent = "";
+      if (!calls.length) {
+        var empty = document.createElement("p");
+        empty.className = "diff-empty";
+        empty.textContent = "No tool calls recorded.";
+        body.appendChild(empty);
+        return;
+      }
+      body.appendChild(renderMcpCalls(calls));
+    }).catch(function (err) {
+      body.textContent = "failed to load tool calls: " + err.message;
+    });
+  }
+
   function toggleDiff(taskId) {
     var section = document.getElementById("tdDiffSection");
     if (!section.hidden) { section.hidden = true; return; }
@@ -1388,6 +1476,7 @@
     loadDrawerDecision(taskId);
     loadDrawerResult(taskId);
     document.getElementById("tdDiffSection").hidden = true;
+    document.getElementById("tdMcpCallsSection").hidden = true;
     document.getElementById("drawerOverlay").hidden = false;
     document.getElementById("taskDrawer").hidden = false;
     // rAF so the hidden->visible flip lands before the transform
@@ -1425,6 +1514,7 @@
     renderDrawerActions(task, drawerLastResult);
     loadDrawerResult(drawerTaskId);
     if (!document.getElementById("tdDiffSection").hidden) fetchAndRenderDiff(drawerTaskId);
+    if (!document.getElementById("tdMcpCallsSection").hidden) fetchAndRenderMcpCalls(drawerTaskId);
   }
 
   document.getElementById("tdClose").addEventListener("click", closeTaskDrawer);
