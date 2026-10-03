@@ -249,7 +249,17 @@ export interface TaskCard {
   title: string;
   body: string;
   labels: string[];
-  repo: string;
+  /** Required only for a task that will route to a write- or
+   *  bash-capable agent (checked against `toolAccess`, not `tier`
+   *  directly, at `POST /tasks` time — see src/api/server.ts). A task
+   *  that resolves to a readonly, no-file-access agent (e.g. "check
+   *  Jira, post to Slack") can omit this entirely; its run's `cwd`
+   *  falls back to a scratch directory instead — see
+   *  resolveScratchWorkspace, src/services/scratch-workspace.ts, and
+   *  docs/SDD-mcp-orchestration.md §3.3/§4 (Subtask 5). Undefined means
+   *  "no repo named," never "unknown" — a task that's never been
+   *  routed yet can still legitimately have no repo. */
+  repo?: string;
   /** dispatched: routed to a write-tier agent and handed off — wissel
    *  isn't the one running it, so it waits for an external result.
    *  no-match: routing stopped before spend because nothing matched

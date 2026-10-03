@@ -129,7 +129,10 @@ export async function handlePipelineStepResult(
 
   const root = (await board.get(runId))!;
   const nonce = runId.slice(0, 8);
-  const repoForNext = result.worktree?.path ?? task.repo;
+  // startPipelineRun requires a real `repo` string up front (see
+  // POST /pipelines/:id/run) and every step task inherits it, so this
+  // is never actually undefined for a pipeline step.
+  const repoForNext = result.worktree?.path ?? task.repo!;
   const nextBody = buildNextStepBody(root.body, result.pipelineHandoff, nonce);
 
   for (const targetId of targetIds) {

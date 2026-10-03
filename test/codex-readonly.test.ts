@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CodexReadOnlyExecutor } from "../src/executors/codex-readonly.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import type { AgentDef, McpServer, TaskCard } from "../src/core/types.ts";
@@ -90,6 +94,48 @@ test("reports harnessId on the result when a harness was picked", async () => {
 
   const result = await executor.run(task, agent, { id: "codex-personal", tool: "codex-cli", label: "Codex — personal", enabled: true });
   expect(result.harnessId).toBe("codex-personal");
+});
+
+// --- optional repo / scratch workspace (docs/SDD-mcp-orchestration.md §3.3/§4, Subtask 5) ---
+
+test("a repo-less task's cwd resolves to a real, created ~/.wissel/scratch/<taskId> directory", async () => {
+  const home = await mkdtemp(join(tmpdir(), "wissel-codex-readonly-scratch-test-"));
+  try {
+    let seenCwd = "";
+    const executor = new CodexReadOnlyExecutor({
+      homeDir: home,
+      runner: async (_cmd, opts) => {
+        seenCwd = opts.cwd;
+        return {
+          stdout: '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"ok"}}',
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+    });
+    const repoLessTask: TaskCard = { ...task, repo: undefined };
+
+    await executor.run(repoLessTask, agent);
+
+    expect(seenCwd).toBe(join(home, ".wissel", "scratch", "t1"));
+    expect(existsSync(seenCwd)).toBe(true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+// Regression: a task with a real repo is unaffected by the scratch-
+// workspace fallback above.
+test("a task with a real repo still uses that repo as cwd, never the scratch fallback", async () => {
+  let seenCwd = "";
+  const executor = new CodexReadOnlyExecutor({
+    runner: async (_cmd, opts) => {
+      seenCwd = opts.cwd;
+      return { stdout: '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"ok"}}', stderr: "", exitCode: 0 };
+    },
+  });
+  await executor.run(task, agent);
+  expect(seenCwd).toBe("/tmp");
 });
 
 // --- MCP grants (docs/SDD-mcp-orchestration.md §3.2) --------------------

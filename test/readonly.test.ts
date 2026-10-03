@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ReadOnlyExecutor, type CommandResult } from "../src/executors/readonly.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import type { AgentDef, Harness, McpServer, TaskCard } from "../src/core/types.ts";
@@ -328,6 +332,46 @@ test("omitting onChunk never passes one through to runClaude — identical to to
   });
   await executor.run(task, agent);
   expect(sawOnChunk).toBeUndefined();
+});
+
+// --- optional repo / scratch workspace (docs/SDD-mcp-orchestration.md §3.3/§4, Subtask 5) ---
+
+test("a repo-less task's cwd resolves to a real, created ~/.wissel/scratch/<taskId> directory", async () => {
+  const home = await mkdtemp(join(tmpdir(), "wissel-readonly-scratch-test-"));
+  try {
+    let seenCwd = "";
+    const executor = new ReadOnlyExecutor({
+      homeDir: home,
+      runner: async (_cmd, opts) => {
+        seenCwd = opts.cwd;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    const repoLessTask: TaskCard = { ...task, repo: undefined };
+
+    await executor.run(repoLessTask, agent);
+
+    expect(seenCwd).toBe(join(home, ".wissel", "scratch", "t1"));
+    expect(existsSync(seenCwd)).toBe(true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+// Regression: a task with a real repo is completely unaffected by the
+// scratch-workspace fallback above — same assertion the very first test
+// in this file already makes (seenCwd === "/tmp"), repeated here next to
+// the new repo-less behavior so the two are easy to compare.
+test("a task with a real repo still uses that repo as cwd, never the scratch fallback", async () => {
+  let seenCwd = "";
+  const executor = new ReadOnlyExecutor({
+    runner: async (_cmd, opts) => {
+      seenCwd = opts.cwd;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+  });
+  await executor.run(task, agent);
+  expect(seenCwd).toBe("/tmp");
 });
 
 // --- MCP grants (docs/SDD-mcp-orchestration.md §3.2) --------------------

@@ -268,6 +268,50 @@ test("a write-tier task is handed off, not run — wissel never spawns execution
   expect(updated!.routedTo).toBe("implementer");
 });
 
+// Defense in depth (docs/SDD-mcp-orchestration.md §3.3/§4, Subtask 5):
+// POST /tasks' own synchronous check (src/api/server.ts) only catches a
+// *confident* routing decision at creation time. A task created with
+// ambiguous labels and no repo, then later edited to labels that
+// resolve to a write-tier agent, must still never reach
+// createTaskWorktree with an undefined repo — this is the safety net
+// that catches it inside Orchestrator.process itself.
+test("a repo-less task that routes to a write/bash-capable agent is never dispatched — not even handed off", async () => {
+  const { board, orchestrator } = await setup([
+    fakeExecutor("write", async () => {
+      throw new Error("must never reach a write-tier executor for a repo-less task");
+    }),
+  ]);
+
+  const task = await board.create({ title: "build the thing", body: "", labels: ["code"] });
+  expect(task.repo).toBeUndefined();
+  await orchestrator.sweep();
+
+  const updated = await board.get(task.id);
+  // Never recorded as dispatched/routed — recordDecision() runs after
+  // this guard, same "don't record a decision we can't actually act on"
+  // discipline the executor-lookup guard right below it already uses.
+  expect(updated!.status).toBe("inbox");
+  expect(updated!.routedTo).toBeUndefined();
+});
+
+test("with executeWriteTier on, a repo-less task that routes to a write-tier agent is never run locally either", async () => {
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor("write", async () => {
+        throw new Error("must never reach a write-tier executor for a repo-less task");
+      }),
+    ],
+    { executeWriteTier: true },
+  );
+
+  const task = await board.create({ title: "build the thing", body: "", labels: ["code"] });
+  await orchestrator.sweep();
+
+  const updated = await board.get(task.id);
+  expect(updated!.status).toBe("inbox");
+  expect(updated!.routedTo).toBeUndefined();
+});
+
 test("with executeWriteTier on, a write-tier task runs on a registered write executor instead of being handed off", async () => {
   const seen: TaskCard[] = [];
   const { board, orchestrator } = await setup(

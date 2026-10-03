@@ -8,6 +8,7 @@ import { parsePipelineHandoff } from "./parse-pipeline-handoff.ts";
 import { parseSessionLimitReset } from "./parse-session-limit-reset.ts";
 import { buildMcpConfigJson, mcpAllowedToolNames, mcpServerEnvOverrides, resolveMcpGrants } from "./mcp-config.ts";
 import { parseMcpCalls } from "./parse-mcp-calls.ts";
+import { resolveScratchWorkspace } from "../services/scratch-workspace.ts";
 
 /** A retriable 429's reset time must be within this window of "now" —
  *  parseSessionLimitReset can in principle only ever return same-day or
@@ -208,6 +209,13 @@ export interface RunClaudeOptions {
    *  lastNonBlankLine's own doc comment. Omitted (the default) keeps
    *  today's exact buffered-json behavior, byte for byte. */
   onChunk?: (line: unknown) => void;
+  /** Where a repo-less task's scratch workspace lives, passed straight
+   *  through to resolveScratchWorkspace — injectable so tests never
+   *  touch the real $HOME. Only ever consulted when `task.repo` is
+   *  undefined (see the `cwd` resolution below); WriteExecutor always
+   *  hands this function a task whose `repo` is already its worktree
+   *  path, so this option has zero effect on a write-tier run. */
+  homeDir?: string;
 }
 
 /**
@@ -217,7 +225,7 @@ export interface RunClaudeOptions {
  * tiers is `--permission-mode`, which the caller picks.
  */
 export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
-  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath, onChunk, mcpAccess, mcpServers } = opts;
+  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath, onChunk, mcpAccess, mcpServers, homeDir } = opts;
   const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
   const prompt = buildAgentPrompt(task, agent, memory, { planMode: permissionMode === "plan" });
 
@@ -261,9 +269,16 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // last-wins ordering, same reasoning.
   const scopedEnv = { ...(env ?? {}), ...mcpServerEnvOverrides(grants), ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
 
+  // A write-tier run always arrives here with `task.repo` already set to
+  // its worktree path (see WriteExecutor/CodexWriteExecutor), so this
+  // fallback only ever triggers for a repo-less readonly task — see
+  // TaskCard.repo's own doc comment and docs/SDD-mcp-orchestration.md
+  // §3.3/§4 (Subtask 5).
+  const cwd = task.repo ?? (await resolveScratchWorkspace(task.id, homeDir));
+
   let cmdResult: CommandResult;
   try {
-    cmdResult = await runner(cmd, { cwd: task.repo, env: scopedEnv, onChunk });
+    cmdResult = await runner(cmd, { cwd, env: scopedEnv, onChunk });
   } catch (e) {
     return fail(task, agent, `failed to spawn claude: ${(e as Error).message}`);
   }

@@ -653,6 +653,37 @@ export function createApp(
               }
             }
           }
+          // `repo` is required only for a task that will route to a
+          // write- or bash-capable agent — a readonly, no-file-access
+          // agent (e.g. "check Jira, post to Slack") never touches a
+          // filesystem, so forcing a repo on it would just be a directory
+          // name nothing ever reads (see TaskCard.repo's own doc
+          // comment). Resolved synchronously here, the same way
+          // `/route/preview` already resolves a routing decision with no
+          // side effects — routing itself normally happens later, inside
+          // `sweep()`, but a confident resolution here lets a bad
+          // no-repo submission 400 immediately instead of silently
+          // stalling once sweep() actually routes it. A task that
+          // doesn't resolve confidently yet (ambiguous/no-match labels)
+          // is allowed through without a repo — see Orchestrator.process's
+          // own write/bash-access check for the dispatch-time safety net
+          // that covers this case if it's later routed to a write-tier
+          // agent by a label edit.
+          if (!body.repo) {
+            const allowIds = await resolveHandoffAllowlist(board as Board, registry, body.parentTaskId);
+            const previewTask: TaskCard = {
+              id: "repo-check",
+              title: body.title ?? "",
+              body: body.body ?? "",
+              labels: body.labels ?? [],
+              status: "inbox",
+            };
+            const decision = await router.route(previewTask, allowIds);
+            const agent = decision.confident && decision.selected ? registry.get(decision.selected) : undefined;
+            if (agent && (agent.toolAccess.includes("write") || agent.toolAccess.includes("bash"))) {
+              return json({ error: `repo is required — this task would route to "${agent.id}", which has file/bash access` }, 400);
+            }
+          }
           const task = await board.create(body);
           return json(task, 201);
         }
@@ -710,7 +741,12 @@ export function createApp(
           // handle that: a worktree is a plain git working tree with
           // uncommitted edits, same shape it already reads for task.repo.
           const result = await board.getResult(parts[1]!);
-          return json(await getRepoDiff(result?.worktree?.path ?? task.repo));
+          const diffPath = result?.worktree?.path ?? task.repo;
+          // A readonly task with no repo (see TaskCard.repo's own doc
+          // comment) never touches a filesystem at all — there's nothing
+          // to diff, not just an empty one.
+          if (!diffPath) return json({ error: "task has no filesystem workspace to diff" }, 409);
+          return json(await getRepoDiff(diffPath));
         }
 
         // Point-in-time snapshot of a task's raw agent output — every
@@ -768,7 +804,10 @@ export function createApp(
           if (!task) return notFound();
           const result = await board.getResult(parts[1]!);
           if (!result?.worktree) return json({ error: "task has no worktree to merge" }, 409);
-          const merge = await mergeTaskWorktree(task.repo, result.worktree, task, runViaBun);
+          // A worktree only ever exists for a write-tier run, which
+          // requires `repo` at creation time (see POST /tasks) — never
+          // reachable for a repo-less readonly task.
+          const merge = await mergeTaskWorktree(task.repo!, result.worktree, task, runViaBun);
           if (!merge.ok) return json({ error: merge.message }, 409);
           const moved = await board.move(task.id, "done");
           return json({ merged: true, message: merge.message, task: moved });
@@ -783,7 +822,9 @@ export function createApp(
           if (!task) return notFound();
           const result = await board.getResult(parts[1]!);
           if (!result?.worktree) return json({ error: "task has no worktree to discard" }, 409);
-          await removeTaskWorktree(task.repo, result.worktree, runViaBun);
+          // Same reasoning as the merge branch above — a worktree
+          // implies this was a write-tier run, which guarantees `repo`.
+          await removeTaskWorktree(task.repo!, result.worktree, runViaBun);
           const moved = await board.move(task.id, "failed");
           return json({ discarded: true, task: moved });
         }

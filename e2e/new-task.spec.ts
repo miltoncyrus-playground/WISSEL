@@ -28,6 +28,50 @@ test.describe("New Task tab", () => {
     await expect(submit).toBeDisabled();
   });
 
+  // docs/SDD-mcp-orchestration.md §3.3/§4 (Subtask 5): repo is only
+  // truly optional once the live preview confidently resolves to a
+  // readonly, no-file-access agent — "intake" is triager's real tag
+  // (toolAccess: [read]) in agents/manifest.yaml.
+  test("repo becomes optional once the live preview resolves to a readonly, no-file-access agent, and submits with no repo", async ({ page }) => {
+    const title = unique("Playwright scratch-workspace task");
+    const submit = page.locator("#newTaskForm button[type=submit]");
+    const repo = page.locator("#ntRepo");
+
+    await page.locator("#ntTitle").fill(title);
+    await page.locator("#ntBody").fill("Created by the New Task tab e2e scratch-workspace test.");
+    await expect(submit).toBeDisabled(); // repo still required — no confident resolution yet
+
+    await page.locator("#ntLabelInput").fill("intake");
+    await page.locator("#ntLabelInput").press("Enter");
+    await expect(page.locator("#ntPreviewBody")).toContainText("triager");
+
+    await expect(repo).not.toHaveAttribute("required");
+    await expect(submit).toBeEnabled();
+
+    const [createResponse] = await Promise.all([page.waitForResponse((r) => r.url().endsWith("/tasks") && r.request().method() === "POST"), submit.click()]);
+    expect(createResponse.request().postDataJSON()).not.toHaveProperty("repo");
+    await expect(page.locator("#ntStatus")).toContainText("Created");
+  });
+
+  // Regression: a write/bash-capable resolution (implementer, tag
+  // "code") keeps repo required exactly as before this feature existed.
+  test("repo stays required when the live preview resolves to a write/bash-capable agent", async ({ page }) => {
+    const submit = page.locator("#newTaskForm button[type=submit]");
+    const repo = page.locator("#ntRepo");
+
+    await page.locator("#ntTitle").fill("a title");
+    await page.locator("#ntBody").fill("a description");
+    await page.locator("#ntLabelInput").fill("code");
+    await page.locator("#ntLabelInput").press("Enter");
+    await expect(page.locator("#ntPreviewBody")).toContainText("implementer");
+
+    await expect(repo).toHaveAttribute("required");
+    await expect(submit).toBeDisabled();
+
+    await repo.fill("/tmp/wissel-e2e-repo");
+    await expect(submit).toBeEnabled();
+  });
+
   test("live routing preview calls the real router as labels change", async ({ page }) => {
     const preview = page.locator("#ntPreviewBody");
     await expect(preview).toContainText("Add labels");

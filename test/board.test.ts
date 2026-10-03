@@ -17,6 +17,32 @@ test("create then get round-trips a task", async () => {
   expect(fetched).toEqual(created);
 });
 
+// repo-less tasks (docs/SDD-mcp-orchestration.md §3.3/§4, Subtask 5): the
+// `repo` column is still `TEXT NOT NULL` (predates TaskCard.repo becoming
+// optional — see rowToCard's own doc comment), stored as "" and
+// round-tripped back to undefined, never the literal empty string.
+test("create round-trips a repo-less task — repo stays undefined, never the empty string it's stored as", async () => {
+  const board = new SqliteBoard();
+  const created = await board.create({ title: "t", body: "b", labels: ["x"] });
+  expect(created.repo).toBeUndefined();
+
+  const fetched = await board.get(created.id);
+  expect(fetched!.repo).toBeUndefined();
+
+  const row = board.db.query("SELECT repo FROM tasks WHERE id = ?").get(created.id) as { repo: string };
+  expect(row.repo).toBe("");
+});
+
+// Regression: a task created with a real repo is completely unaffected
+// by the repo-less path above — still stored and round-tripped as the
+// exact string given, never coerced to/through "".
+test("create round-trips a real repo exactly as given — unaffected by the repo-less path", async () => {
+  const board = new SqliteBoard();
+  const created = await board.create({ title: "t", body: "b", labels: ["x"], repo: "/real/repo" });
+  expect(created.repo).toBe("/real/repo");
+  expect((await board.get(created.id))!.repo).toBe("/real/repo");
+});
+
 test("create preserves an explicit dependsOn", async () => {
   const board = new SqliteBoard();
   const a = await board.create({ title: "a", body: "", labels: [], repo: "r" });

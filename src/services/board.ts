@@ -128,7 +128,13 @@ function rowToCard(row: TaskRow): TaskCard {
     title: row.title,
     body: row.body,
     labels: JSON.parse(row.labels) as string[],
-    repo: row.repo,
+    // The `repo` column predates TaskCard.repo becoming optional and is
+    // still `TEXT NOT NULL` — SQLite can't drop a NOT NULL constraint on
+    // an existing column without a full table rebuild, unlike the
+    // additive `ALTER TABLE ... ADD COLUMN` pattern every later column
+    // here uses. So a repo-less task is stored as `""`, round-tripped
+    // back to `undefined` here, rather than widening the schema.
+    repo: row.repo === "" ? undefined : row.repo,
     status: row.status,
     routedTo: row.routedTo ?? undefined,
     dependsOn: JSON.parse(row.dependsOn) as string[],
@@ -407,7 +413,7 @@ export class SqliteBoard implements Board {
         full.title,
         full.body,
         JSON.stringify(full.labels),
-        full.repo,
+        full.repo ?? "",
         full.status,
         full.routedTo ?? null,
         JSON.stringify(full.dependsOn),
