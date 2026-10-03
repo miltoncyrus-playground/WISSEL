@@ -14,6 +14,7 @@ import { setMcpServerEnabled, setMcpServerToolTrust } from "../core/mcp-manifest
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
+import { reconcileOrphanedTasks } from "../core/crash-recovery.ts";
 import { startPipelineRun } from "../core/pipeline-runner.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
@@ -258,7 +259,27 @@ export function createApp(
     telemetry,
     { executeWriteTier, harnesses, maxConcurrentTasks: opts.maxConcurrentTasks, spendCeilingUsd: opts.spendCeilingUsd, memoryPath: opts.memoryPath },
   );
-  if (opts.orchestratorEnabled) orchestrator.start();
+  // Unconditional — cleanup of existing state, not automation of new
+  // work, so it runs even when WISSEL_ORCHESTRATOR is off. Every task
+  // found at "running" here is a crash/restart orphan (see
+  // reconcileOrphanedTasks's own doc comment and docs/SDD-crash-recovery.md
+  // §3.1); "dispatched" tasks are deliberately untouched. Sequenced
+  // strictly before orchestrator.start()'s own initial sweep() below —
+  // not raced against it — so a reconciled task is actually eligible by
+  // the time that sweep runs, rather than reset a tick too late with
+  // nothing left to trigger a follow-up sweep. The returned fetch
+  // handler itself also awaits this below, so a request can never
+  // observe a still-orphaned task as "running" post-boot.
+  const crashRecoveryReady = reconcileOrphanedTasks(board)
+    .then((count) => {
+      console.log(`crash recovery: reset ${count} orphaned running task(s) back to inbox`);
+      return count;
+    })
+    .catch((e) => {
+      console.error(`crash recovery: reconciliation failed: ${(e as Error).message}`);
+      return 0;
+    });
+  if (opts.orchestratorEnabled) void crashRecoveryReady.then(() => orchestrator.start());
   // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
   // subtask set should get its integrator card queued the moment it
   // completes, the same way spawnReviewerTask always queues a reviewer
@@ -303,6 +324,12 @@ export function createApp(
   }
 
   return async function fetch(req: Request): Promise<Response> {
+    // Guarantees no request ever observes a crash-orphaned "running"
+    // task before this boot's one-time reconciliation has actually run
+    // — explicit sequencing, not a timing assumption. Near-instant in
+    // practice (a couple of local sqlite calls), already resolved by
+    // the time any real request arrives.
+    await crashRecoveryReady;
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
 
