@@ -167,6 +167,20 @@ an actionable card, this is pure visibility for anything already dangling
 when wissel starts (including, honestly, one its own §3.3 integrator
 attempt failed to resolve and left behind).
 
+**Revision callout (implementer, subtask 2):** the scheduler shipped
+gated behind a new `WISSEL_MERGE_HEALTH` flag (off by default), not
+unconditionally wired the way `wireAutoIntegrator` is — this paragraph
+originally implied "just runs." Every other periodic scheduler in this
+codebase (`WISSEL_MEMORY_CURATION`, `WISSEL_AUTO_ARCHIVE`,
+`WISSEL_MODEL_REFRESH`) is off-by-default and env-gated specifically so
+`createApp`'s test callers don't get new background behavior (here: real
+`git` subprocess spawns against every task's `repo` on every app
+construction) they never opted into. Matching that convention was judged
+more important than this doc's silence on the point; `GET /merge-health`
+itself is always registered and simply reports `[]` whenever the
+scheduler isn't running, same "empty, not broken" contract `GET
+/harnesses` already holds for an unrefreshed model cache.
+
 **`src/core/orchestrator.ts`**: `tryAutoMerge`'s existing `if
 (!merge.ok)` conflict path gains a new call — `maybeSpawnConflictIntegrator`
 (mirrors `maybeSpawnIntegrator`'s own shape: idempotent, checks no

@@ -271,6 +271,19 @@
   .harness-pill .h-tool { color: var(--ink-muted); font-size: 10.5px; }
   .harness-load { font-size: 10.5px; font-weight: 700; color: var(--ink-1); background: var(--accent-wash); border-radius: 999px; padding: 1px 7px; }
   .harness-strip-empty { font-size: 12.5px; color: var(--ink-muted); }
+
+  /* ---- merge-health banner — docs/SDD-crash-recovery.md §3.2/§4.
+     Detection + visibility only, never auto-resolution: a human could
+     be mid-manual-resolve of this exact conflict right now. Same
+     non-modal "small strip near the top" register as
+     .harness-strip-empty above, not a dialog — just tinted with
+     --critical (same color the write-tier chip/escalation reason text
+     already use for "needs attention") since this is actually actionable,
+     unlike the harness strip's neutral informational tone. ---- */
+  .merge-health-banner {
+    font-size: 12.5px; color: var(--critical); background: rgba(208, 59, 59, 0.08);
+    border: 1px solid rgba(208, 59, 59, 0.25); border-radius: 8px; padding: 8px 12px; margin: 0 0 12px 0;
+  }
   /* "Manage harnesses" — a separate panel (see docs/SDD-harness-enable-
      disable.md §9), not a change to the strip above: the strip stays
      usable-only (51904ff), this is where every configured harness,
@@ -481,6 +494,8 @@
     <button type="button" class="harness-manage-btn" id="hmOpenBtn">Manage harnesses</button>
     <button type="button" class="harness-manage-btn" id="mcpOpenBtn">Manage MCP servers</button>
   </div>
+
+  <div class="merge-health-banner" id="mergeHealthBanner" hidden></div>
 
   <div class="toolbar">
     <div class="segmented" id="viewToggle" role="group" aria-label="View">
@@ -797,6 +812,7 @@
 </aside>
 
 <script src="/render-task-output.js"></script>
+<script src="/render-merge-health.js"></script>
 <script>
 (function () {
   "use strict";
@@ -2580,6 +2596,7 @@
     renderDependsOnOptions();
     renderParentTaskOptions();
     renderNtHarnessOptions();
+    renderMergeHealthBanner();
     refreshOpenDrawer();
     document.getElementById("taskCount").innerHTML = '<span class="live-dot"></span>' + tasks.length + " tasks";
   }
@@ -2587,6 +2604,17 @@
   var harnesses = [];
   var mcpServers = [];
   var projects = [];
+  var mergeHealth = [];
+
+  // Thin DOM glue around the pure decision in render-merge-health.js —
+  // see docs/SDD-crash-recovery.md §3.2/§4. banner.hidden toggles on
+  // whether anything's actually dangling; never a modal/dialog.
+  function renderMergeHealthBanner() {
+    var banner = document.getElementById("mergeHealthBanner");
+    var text = formatMergeHealthBanner(mergeHealth);
+    banner.hidden = text === null;
+    banner.textContent = text || "";
+  }
 
   // `allTasks` is every task the server returns, unfiltered; `tasks`
   // (declared once, up top) is the project-scoped working set every
@@ -2610,14 +2638,19 @@
     // (not just once at startup) because their activeCount is live
     // server-side state — a harness/server going idle/busy is exactly
     // the kind of change task events already trigger a refetch for.
+    // /merge-health is refetched here too, unlike /projects below (fetched
+    // once only) — a dangling merge can appear or get resolved by a human
+    // at any time, not just at page load, and the banner should track that.
     return Promise.all([
       fetch("/tasks").then(function (r) { return r.json(); }),
       fetch("/harnesses").then(function (r) { return r.json(); }),
       fetch("/mcp-servers").then(function (r) { return r.json(); }),
+      fetch("/merge-health").then(function (r) { return r.json(); }),
     ]).then(function (results) {
       allTasks = results[0];
       harnesses = results[1];
       mcpServers = results[2];
+      mergeHealth = results[3];
       applyProjectFilter();
       render();
     });
@@ -3221,6 +3254,7 @@
     fetch("/harnesses").then(function (r) { return r.json(); }),
     fetch("/projects").then(function (r) { return r.json(); }),
     fetch("/mcp-servers").then(function (r) { return r.json(); }),
+    fetch("/merge-health").then(function (r) { return r.json(); }),
   ]).then(function (results) {
     allAgents = results[0] || [];
     allAgents.forEach(function (a) { agentsById[a.id] = a; });
@@ -3229,6 +3263,7 @@
     harnesses = results[2] || [];
     projects = results[3] || [];
     mcpServers = results[4] || [];
+    mergeHealth = results[5] || [];
     applyProjectFilter();
     render();
     renderOverrideGrid();

@@ -18,6 +18,7 @@ import { startPipelineRun } from "../core/pipeline-runner.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
 import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH } from "../core/model-refresh-scheduler.ts";
+import { startMergeHealthScheduler } from "../core/merge-health-scheduler.ts";
 import { readMemoryLessons, DEFAULT_MEMORY_PATH } from "../services/memory.ts";
 import { appendTaskOutput, getBufferedOutput, getTaskOutput, TASK_OUTPUT_EVENTS } from "../services/task-output.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
@@ -142,9 +143,10 @@ export interface CreateAppOptions {
    *  sharing `board`'s own connection, same reasoning as `pipelines` above. */
   projects?: ProjectStore;
   /** The `CommandRunner` used for `POST /projects/local`'s git checks,
-   *  `POST /projects/clone`'s git clone, and `GET /projects/:id/status`'s
-   *  real git state lookup (src/services/project-status.ts) — same
-   *  shared-real-runner convention `harnessRunner` above already
+   *  `POST /projects/clone`'s git clone, `GET /projects/:id/status`'s
+   *  real git state lookup (src/services/project-status.ts), and the
+   *  merge-health scheduler's own git checks (src/services/merge-health.ts)
+   *  — same shared-real-runner convention `harnessRunner` above already
    *  established (defaults to `runViaBun`), kept as its own option rather
    *  than reusing `harnessRunner` itself since that one's doc comment
    *  scopes it specifically to `POST /harnesses/:id/enable`'s
@@ -170,6 +172,18 @@ export interface CreateAppOptions {
    *  Overridable so tests point it at a fixture directory instead of
    *  requiring a real `vite build` to exist on disk. */
   pipelineEditorDist?: URL;
+  /** Starts the in-process dangling-merge detection scheduler (see
+   *  src/core/merge-health-scheduler.ts and
+   *  docs/SDD-crash-recovery.md §3.2/§4) — off by default, same gate
+   *  pattern as memoryCurationEnabled/autoArchiveEnabled/
+   *  modelRefreshEnabled. Detection and board visibility only — never
+   *  auto-resolution. */
+  mergeHealthEnabled?: boolean;
+  /** Passed straight through to startMergeHealthScheduler's option of
+   *  the same name — see its own doc comment. Defaults to
+   *  DEFAULT_MERGE_HEALTH_CHECK_INTERVAL_HOURS there (matches
+   *  archive-scheduler's own default). */
+  mergeHealthIntervalHours?: number;
 }
 
 /**
@@ -302,6 +316,22 @@ export function createApp(
     startModelRefreshScheduler({ harnesses, cachePath: modelsCachePath, intervalHours: opts.modelRefreshIntervalHours });
   }
 
+  // Off by default (WISSEL_MERGE_HEALTH) — see
+  // src/core/merge-health-scheduler.ts and
+  // docs/SDD-crash-recovery.md §3.2/§4. Detection + board visibility of
+  // any repo left mid-merge (a dangling `.git/MERGE_HEAD`), never
+  // auto-resolution — `GET /merge-health` below reads `getLast()`
+  // directly, so it stays [] (not an error) whenever this is off.
+  let mergeHealthScheduler: ReturnType<typeof startMergeHealthScheduler> | undefined;
+  if (opts.mergeHealthEnabled) {
+    mergeHealthScheduler = startMergeHealthScheduler({
+      board: board as Board,
+      projects,
+      runner: commandRunner,
+      checkIntervalHours: opts.mergeHealthIntervalHours,
+    });
+  }
+
   return async function fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
@@ -332,8 +362,27 @@ export function createApp(
         return new Response(Bun.file(new URL("render-task-output.js", PUBLIC_DIR)));
       }
 
+      // The merge-health banner's pure render decision (docs/SDD-crash-
+      // recovery.md §3.2/§4) — same "static sibling file, zero build
+      // step, directly import-able by bun test" reasoning as
+      // render-task-output.js above.
+      if (url.pathname === "/render-merge-health.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("render-merge-health.js", PUBLIC_DIR)));
+      }
+
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
+      }
+
+      // The merge-health scheduler's last-checked result (see
+      // src/core/merge-health-scheduler.ts) — [] whenever the scheduler
+      // isn't running (mergeHealthEnabled off, or no tick has resolved
+      // yet) or nothing's actually dangling. Detection + visibility
+      // only: resolving a reported entry is always a human (or a
+      // separate, later integrator) action, never something this
+      // endpoint or the scheduler behind it does on its own.
+      if (url.pathname === "/merge-health" && req.method === "GET") {
+        return json(mergeHealthScheduler?.getLast() ?? []);
       }
 
       if (url.pathname === "/harnesses" && req.method === "GET") {
@@ -1214,6 +1263,14 @@ if (import.meta.main) {
   const modelRefreshIntervalHours = process.env.WISSEL_MODEL_REFRESH_INTERVAL_HOURS ? Number(process.env.WISSEL_MODEL_REFRESH_INTERVAL_HOURS) : 24;
   const modelsCachePath = process.env.WISSEL_MODELS_CACHE_PATH;
 
+  // Off by default: detecting repos left mid-merge (a dangling
+  // `.git/MERGE_HEAD`) and surfacing them on the board — never
+  // auto-resolving them (see docs/SDD-crash-recovery.md §3.2/§4).
+  // WISSEL_MERGE_HEALTH_INTERVAL_HOURS only matters once this is on;
+  // default matches archive-scheduler's own default (1h).
+  const mergeHealthEnabled = ["1", "true"].includes(process.env.WISSEL_MERGE_HEALTH ?? "");
+  const mergeHealthIntervalHours = process.env.WISSEL_MERGE_HEALTH_INTERVAL_HOURS ? Number(process.env.WISSEL_MERGE_HEALTH_INTERVAL_HOURS) : 1;
+
   Bun.serve({
     port,
     fetch: createApp(board, registry, telemetry, {
@@ -1233,6 +1290,8 @@ if (import.meta.main) {
       modelRefreshEnabled,
       modelRefreshIntervalHours,
       modelsCachePath,
+      mergeHealthEnabled,
+      mergeHealthIntervalHours,
     }),
   });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
@@ -1267,5 +1326,10 @@ if (import.meta.main) {
     modelRefreshEnabled
       ? `model catalog refreshing every ${modelRefreshIntervalHours}h into ${modelsCachePath ?? join(homedir(), ".wissel", "models-cache.json")} (WISSEL_MODEL_REFRESH=1)`
       : "model catalog refresh not started — set WISSEL_MODEL_REFRESH=1 to refresh known model lists daily",
+  );
+  console.log(
+    mergeHealthEnabled
+      ? `merge-health checking every ${mergeHealthIntervalHours}h for repos left mid-merge (WISSEL_MERGE_HEALTH=1)`
+      : "merge-health checking not started — set WISSEL_MERGE_HEALTH=1 to surface repos left mid-merge on the board",
   );
 }

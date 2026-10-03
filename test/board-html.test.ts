@@ -45,3 +45,28 @@ test("board.html wires up the live output modal — markup, render script, and t
   expect(html.match(/liveOutputButton\(t\)/g)?.length).toBeGreaterThanOrEqual(2);
   expect(html).toContain('drawerAction(taskOutputIsLive(task) ? "Live output" : "View output"');
 });
+
+// docs/SDD-crash-recovery.md §3.2/§4 — the dangling-merge warning
+// banner's markup, its render script tag, and its wiring points must
+// actually be present, hidden by default (no in-progress merge detected
+// until the first fetch resolves), and driven by a real `/merge-health`
+// fetch — not a theoretical feature that looks wired but never runs.
+test("board.html wires up the merge-health banner — markup, render script, and the fetch wiring", async () => {
+  const html = await readFile(BOARD_HTML_PATH, "utf8");
+
+  expect(html).toContain('<script src="/render-merge-health.js"></script>');
+  expect(html).toContain('id="mergeHealthBanner"');
+  // Hidden by default in markup — the banner only becomes visible once
+  // formatMergeHealthBanner (render-merge-health.js) decides there's
+  // something to show; it never starts visible before any fetch runs.
+  expect(html).toMatch(/<div class="merge-health-banner" id="mergeHealthBanner" hidden><\/div>/);
+
+  expect(html).toContain("function renderMergeHealthBanner(");
+  expect(html).toContain("formatMergeHealthBanner(mergeHealth)");
+
+  // Wired into both the initial page load and the SSE-driven refetch —
+  // a dangling merge appearing/resolving after page load must still
+  // reach the banner, not just at first load.
+  expect(html.match(/fetch\("\/merge-health"\)/g)?.length).toBe(2);
+  expect(html).toContain("renderMergeHealthBanner();");
+});

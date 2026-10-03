@@ -849,6 +849,62 @@ test("createApp starts the auto-archive scheduler when autoArchiveEnabled is set
   }
 });
 
+// Off by default, matching every other opt-in scheduler flag — GET
+// /merge-health must report [] (not an error) when mergeHealthEnabled
+// was never set, same "empty, not broken" contract GET /harnesses
+// already holds for a cache-miss.
+test("GET /merge-health returns [] when mergeHealthEnabled is unset", async () => {
+  const app = await makeApp();
+  const res = await app(req("/merge-health"));
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual([]);
+});
+
+test("GET /merge-health returns the merge-health scheduler's real detected set — a real dangling merge and a clean repo", async () => {
+  const conflict = await mkdtemp(join(tmpdir(), "wissel-api-merge-health-conflict-"));
+  const clean = await mkdtemp(join(tmpdir(), "wissel-api-merge-health-clean-"));
+  try {
+    const gitSync = (args: string[], cwd: string) => Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    gitSync(["init", "-q", "-b", "main"], conflict);
+    gitSync(["config", "user.email", "wissel-test@example.com"], conflict);
+    gitSync(["config", "user.name", "wissel test"], conflict);
+    await writeFile(join(conflict, "file.txt"), "main line\n");
+    gitSync(["add", "-A"], conflict);
+    gitSync(["commit", "-q", "-m", "seed"], conflict);
+    gitSync(["checkout", "-q", "-b", "feature"], conflict);
+    await writeFile(join(conflict, "file.txt"), "feature line\n");
+    gitSync(["commit", "-q", "-am", "feature change"], conflict);
+    gitSync(["checkout", "-q", "main"], conflict);
+    await writeFile(join(conflict, "file.txt"), "main line, changed\n");
+    gitSync(["commit", "-q", "-am", "main change"], conflict);
+    const merge = gitSync(["merge", "feature"], conflict);
+    if (merge.exitCode === 0) throw new Error("test fixture bug: merge was expected to conflict but succeeded");
+
+    gitSync(["init", "-q", "-b", "main"], clean);
+    gitSync(["config", "user.email", "wissel-test@example.com"], clean);
+    gitSync(["config", "user.name", "wissel test"], clean);
+    gitSync(["commit", "-q", "--allow-empty", "-m", "seed"], clean);
+
+    const board = new SqliteBoard();
+    await board.create({ title: "conflicted", body: "", labels: [], repo: conflict });
+    await board.create({ title: "clean", body: "", labels: [], repo: clean });
+
+    const app = await makeApp(board, { mergeHealthEnabled: true, mergeHealthIntervalHours: 24 });
+
+    const deadline = Date.now() + 2000;
+    let body: unknown = [];
+    while (Date.now() < deadline) {
+      body = await (await app(req("/merge-health"))).json();
+      if (Array.isArray(body) && body.length > 0) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(body).toEqual([{ repo: conflict, branch: "feature" }]);
+  } finally {
+    await rm(conflict, { recursive: true, force: true });
+    await rm(clean, { recursive: true, force: true });
+  }
+});
+
 test("DELETE /tasks/:id removes the task, 404s on unknown id", async () => {
   const app = await makeApp();
   const created = (await (await app(req("/tasks", { method: "POST", body: JSON.stringify({ title: "t", body: "", labels: [], repo: "r" }) }))).json()) as TaskCard;
