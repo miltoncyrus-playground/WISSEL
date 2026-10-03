@@ -1,6 +1,6 @@
 # SDD — MCP tool orchestration: growing wissel beyond a coding agent
 
-Status: **Subtasks 1, 2, 3, 4, and 5 shipped and merged.** Written per
+Status: **Subtasks 1, 2, 3, 4, 5, and 6 shipped and merged.** Written per
 Milton's ask, following a design conversation in this session about
 turning wissel from a dev-focused coding orchestrator into one that can
 also drive arbitrary MCP servers (Slack, ticketing systems, databases,
@@ -34,8 +34,13 @@ enforcement in `runClaude`, the `mcp-approval-request` describe-don't-
 execute prompt contract (`parse-mcp-approval-request.ts`), and the
 human-triggered approve/deny endpoints (Subtask 3 — see §4's fourth
 revision callout for where this subtask's concrete mechanism had to fill
-in gaps §3.5 only sketched the shape of). Subtasks 6 and 7 are still
-design-only, not built — see §6/§7 for what's next and in what order.
+in gaps §3.5 only sketched the shape of). Also: `McpServerPool
+.setToolTrust`/`setMcpServerToolTrust` (mcp-manifest.ts), `POST
+/mcp-servers/:id/tools/:tool/trust`, and the board's "Manage MCP
+servers" panel — enable/disable per server plus a per-tool trust toggle,
+mirroring the existing "Manage harnesses" panel's own `.hm-row` CSS
+family verbatim (Subtask 6 — see §4's fifth revision callout). Subtask 7
+is still design-only, not built — see §7 for what's next.
 
 ## 1. Goal
 
@@ -407,6 +412,41 @@ formatting, no LLM involved (per CLAUDE.md's latent/deterministic split
 > "Retry" as if nothing had happened. Not this subtask's gap to fix, but
 > worth citing as the reason `approve`/`deny` here both do change status.
 
+> **Revision (subtask 6, shipped):** one real backend gap had to be
+> filled that neither §3.5 nor the card's own text named explicitly:
+> `McpServer.tools[].trust` was stored and enforced (subtask 3) but had
+> no API surface to *change* after registration — only server-level
+> `enable`/`disable` existed. Added `McpServerPool.setToolTrust`
+> (mcp-server-pool.ts, mirrors `setEnabled`'s exact in-memory-mutate
+> shape) and `setMcpServerToolTrust` (mcp-manifest.ts, mirrors
+> `setMcpServerEnabled`'s Document-API round-trip, reaching one level
+> deeper into the server's own `tools` YAMLSeq rather than a top-level
+> field), plus `POST /mcp-servers/:id/tools/:tool/trust` (404s on an
+> unknown server OR an unknown tool name on that server, 400s on a
+> `trust` value that isn't `"auto"`/`"approval-required"`). In passing,
+> fixed a stale doc comment on `McpServer.tools` itself (types.ts): it
+> still said "NOT yet enforced — no approval-gate logic exists yet.
+> That's a later, separate card" from subtask 1, left unupdated when
+> subtask 3 actually shipped the enforcement — now points at
+> `splitGrantsByTrust` and this subtask's own edit endpoint. The board
+> panel reuses the harness panel's `.hm-row`/`.hm-row-main`/
+> `.hm-row-label`/`.hm-row-meta`/`.hm-toggle`/`.hm-error`/`.hm-empty` CSS
+> classes verbatim for both the per-server row and the nested per-tool
+> rows, adding only `.hm-tools`/`.hm-tools-empty` for the indentation
+> wrapper — no new row-level classes invented. e2e coverage
+> (e2e/board.spec.ts, e2e/fixtures/mcp-servers.yaml) could not be
+> **run** in this subtask's own sandbox (`/opt/pw-browsers/chromium`
+> doesn't exist here, and `bun run test:e2e` itself requires an approval
+> this session was never granted — the same sandbox-wide Playwright gap
+> named in this project's prior subtasks, e.g. live-task-output and the
+> Projects feature's UI subtasks) — written and hand-traced against the
+> real DOM/endpoint wiring, confirmed via `bun test test/` (706 pass,
+> including new dedicated `McpServerPool.setToolTrust`/
+> `setMcpServerToolTrust`/`POST .../trust` unit+API tests that do run in
+> this sandbox) and `bun run typecheck` (clean), but not observed
+> running in a real browser. Named as an open item for whoever next has
+> Playwright/subprocess access in this environment.
+
 **`src/api/public/board.html`**: a "Manage MCP Servers" panel (mirrors
 the existing Manage Harnesses panel exactly — enable/disable per server,
 plus a second-level toggle per tool for its trust tier); the task
@@ -541,9 +581,12 @@ conditional `required` toggle.
   agent succeeds, and the resulting run's `cwd` is a real, created
   `~/.wissel/scratch/<taskId>` directory.
 
-### 6. Board UI: Manage MCP Servers panel
+### 6. Board UI: Manage MCP Servers panel — shipped
 Mirrors the Manage Harnesses panel exactly — list, enable/disable per
-server, per-tool trust toggle.
+server, per-tool trust toggle. See §4's fifth revision callout for the
+one real backend gap this subtask had to fill (no prior API surface to
+edit a tool's trust tier) and the Playwright/sandbox caveat on its e2e
+coverage.
 
 **Acceptance criteria**
 - e2e: enable/disable a registered server, assert the real `POST

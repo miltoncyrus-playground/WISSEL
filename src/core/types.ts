@@ -510,8 +510,14 @@ export interface McpServer {
   /** Name-the-env-var-never-the-value — same pointer convention
    *  Harness.env/apiKeyEnv already hold. */
   env?: Record<string, string>;
-  /** Stored and round-tripped by this subtask, but NOT yet enforced —
-   *  no approval-gate logic exists yet. That's a later, separate card. */
+  /** Enforced by `splitGrantsByTrust` (mcp-config.ts) at dispatch time —
+   *  an `approval-required` tool is excluded from `--allowedTools`
+   *  regardless of the agent's own `mcpAccess` grant, triggering the
+   *  describe-don't-execute approval flow instead of a real call (see
+   *  docs/SDD-mcp-orchestration.md §3.5/§6 Subtask 3). Editable per-tool
+   *  after registration via `POST /mcp-servers/:id/tools/:tool/trust`
+   *  (§6 Subtask 6) — `McpServerPool.setToolTrust`/
+   *  `setMcpServerToolTrust` in mcp-manifest.ts. */
   tools: { name: string; trust: "auto" | "approval-required" }[];
   enabled: boolean;
   /** Why `enabled` is false, when it's false for a reason other than a
