@@ -83,8 +83,20 @@ export default defineConfig({
     // files directly, so a mutating test never touches the checked-in
     // originals — same "never touch the real file" discipline
     // WISSEL_MEMORY_PATH below already established.
+    //
+    // WISSEL_MEMORY_PATH and WISSEL_TELEMETRY_PATH have no checked-in
+    // fixture to copy from (by design — see their own comments below), so
+    // instead of copying a template they're deleted here before boot.
+    // Without this, both files persist and accumulate across every
+    // separate `playwright test` invocation ever run on this machine,
+    // since nothing else ever clears them — confirmed live: the
+    // telemetry file alone had 538 stale lines from prior runs, which
+    // broke exact-count assertions in e2e/board.spec.ts (e.g. "Memory tab
+    // shows the empty state" and "a curation run shows exactly 1 history
+    // entry"). readMemoryLessons/readResultEvents already treat a missing
+    // file as empty/no-events, so deleting (not recreating) is correct.
     command:
-      "cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
+      "rm -f /tmp/wissel-e2e-memory-lessons.md /tmp/wissel-e2e-telemetry.jsonl && cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
     url: `http://localhost:${PORT}/health`,
     reuseExistingServer: false,
     env: {
