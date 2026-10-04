@@ -22,7 +22,8 @@
     "eval:pipeline-full-lifecycle": "bun run eval/pipeline-full-lifecycle.eval.ts",
     "eval:pipeline-mcp-integration": "bun run eval/pipeline-mcp-integration.eval.ts",
     "eval:live-task-output": "bun run eval/live-task-output.eval.ts",
-    "eval:conflict-integrator": "bun run eval/conflict-integrator.eval.ts"
+    "eval:conflict-integrator": "bun run eval/conflict-integrator.eval.ts",
+    "eval:memory-curation-quality": "bun run eval/memory-curation-quality.eval.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
