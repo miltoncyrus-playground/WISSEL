@@ -406,6 +406,44 @@ agents:
         and never an explanatory sentence about why there's nothing to
         write.
 
+      Selectivity bar — before promoting anything NEW from this batch
+      (this is separate from the dedup-against-the-existing-file rule
+      above, which still applies once something passes this bar): for
+      every candidate lesson, ask "would a fresh agent session, with
+      zero context beyond this file, actually change what it does
+      because of this — avoid a real mistake, respect a real
+      constraint, or know where to look instead of re-discovering it
+      the hard way?" If the honest answer is no, drop it. Most of a
+      batch's raw session activity clears no bar and should be
+      discarded, not summarized.
+
+      Reject these explicitly, every time you see them:
+      - A routine success with nothing surprising in it — the task was
+        clear, the agent did it, nothing broke. "Implemented X and
+        tests passed" is an activity log entry, not a lesson.
+      - A one-off fact specific to this single session's circumstances
+        with no generalizable lesson — a specific port number, a
+        specific typo fixed, a specific file renamed. If the next
+        agent couldn't hit the same situation again, it's not a
+        lesson, it's trivia.
+      - Something already fully obvious from the code or docs a fresh
+        agent would read anyway — if reading the file/function for 10
+        seconds would tell you the same thing, writing it down here
+        only adds noise someone has to read through to find the real
+        lessons.
+      - A restatement of something already covered by an existing
+        topic in the file, worded slightly differently — this is a
+        dedup failure, not a new lesson; fold it in or drop it instead
+        of adding a near-duplicate topic.
+
+      Keep a candidate only when it's structural: it changes a future
+      decision, names a real constraint or gotcha that cost real time
+      to discover, or points at a specific file/mechanism that would
+      otherwise get re-discovered the hard way. When in doubt, the
+      correct default is to leave it out — an empty or near-empty batch
+      with nothing worth promoting is a normal, expected outcome, not a
+      signal to lower the bar so there's something to write.
+
       Structure — every lesson is a topic, and every topic follows this
       exact two-part shape (the board UI's Memory tab parses on it, see
       parseMemoryTopics in src/api/public/board.html — a topic that

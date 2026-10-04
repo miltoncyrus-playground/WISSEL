@@ -14,6 +14,7 @@ wall-clock time. Run explicitly before ship, and nightly.
 | `eval/pipeline-mcp-integration.eval.ts` | `bun run eval:pipeline-mcp-integration` | A heterogeneous pipeline (a file-editing coding step bound to `implementer`, then an MCP-tool-calling step bound to `mcp-tool-caller`) actually composes end to end through `startPipelineRun` against a real, attached MCP server — see docs/SDD-mcp-orchestration.md §6 Subtask 7. |
 | `eval/live-task-output.eval.ts` | `bun run eval:live-task-output` | A real `claude -p` call's streamed stdout actually lands in the durable task-output store and is deliverable live over a real HTTP SSE connection, end to end — spawn -> stream -> store -> SSE -> render — see docs/SDD-live-task-output.md §6 Subtask 5. |
 | `eval/conflict-integrator.eval.ts` | `bun run eval:conflict-integrator` | The real `integrator` agent, pointed at a real two-branch git conflict shaped like this session's own two real ones (both additive, same file), actually resolves it correctly end to end — not just that a follow-up task got created. See docs/SDD-crash-recovery.md §6 Subtask 3. |
+| `eval/memory-curation-quality.eval.ts` | `bun run eval:memory-curation-quality` | The real `memory-curator` agent, handed a realistic mixed batch of durable-lesson and noise session entries, actually applies the selectivity bar in its `outputContract` (`agents/manifest.yaml`) — keeps the durable ones, drops the noise. See docs/SDD-memory-curator.md §10. |
 
 ## implementer-reviewer eval
 
@@ -430,3 +431,113 @@ refutes the earlier 3/3 failure above — the `extraAllowedTools` grant on
 Same pattern as the other evals above — add a nightly cron line and a
 required CI step for `bun run eval:conflict-integrator`, same `timeout
 1800`, same real-authenticated-`claude` requirement.
+
+## memory-curation-quality eval
+
+`test/memory-scheduler.test.ts`, `test/orchestrator.test.ts`, and
+`test/prompt.test.ts` (all gate lane) already prove the deterministic
+plumbing around memory curation is correct against scripted input:
+`gatherSessionLessons` assembles the right text, `finishResult`'s
+`outputs.includes("memory-entries")` hook writes the raw result back to
+`memory/lessons.md` wholesale, and the prompt-injection section renders
+correctly. None of that touches the thing actually in question: whether
+the real `memory-curator` agent, reading its `outputContract`'s
+"Selectivity bar" section (`agents/manifest.yaml`, see
+docs/SDD-memory-curator.md §10), actually judges which session entries
+are durable lessons worth keeping and which are noise worth dropping.
+That's a genuine latent-space judgment call with no single correct
+byte-for-byte output — per CLAUDE.md's latent/deterministic split, it
+belongs in this paid eval lane, not a gate test.
+
+The fixture is one batch shaped exactly like `gatherSessionLessons`'
+real output — a "Current memory/lessons.md:" section (one pre-existing,
+unrelated topic) followed by a "Sessions since ...:" bullet list, one
+`- Title: ok — summary (routing, cost, harness)` line per task, the
+same shape `formatSessionEntry` produces in production. It mixes 4
+entries carrying a genuinely durable, generalizable lesson (a real
+gotcha tied to a specific code symbol — `HarnessPool.release`,
+`waitForSelector` timeout, `loadConfig()`/`parse('')`, `Router.score()`
+— that a fresh agent would otherwise rediscover the hard way) with 4
+entries that are pure noise under the new selectivity bar: a routine
+success with nothing surprising (CSV export button), a one-off rename
+specific to this session with no generalizable lesson (`tmp2Variable`),
+a fact already obvious from the type it describes (`TaskCard`'s own
+fields), and a routine dependency bump.
+
+Judging "did it keep the durable ones and drop the noise" is a
+deterministic rubric check, not a second paid LLM-judge call: each
+durable entry carries a distinctive code-symbol marker the real curator
+is very likely to preserve verbatim if it keeps the lesson at all, and
+each noise entry carries a distinctive marker that should not survive
+if the selectivity bar is doing its job. Checking substring
+presence/absence against the real model's one actual output is
+same-input-same-output once that output exists — exactly the kind of
+check that belongs in deterministic code per CLAUDE.md, while the real
+cost and real signal still come from the one genuine, unscripted
+`memory-curator` call.
+
+### Pass bar
+
+Three conditions, all three must hold:
+
+- **Durable kept** — at least 3 of the 4 durable markers must appear in
+  the curated output (≥75%).
+- **Noise dropped** — at least 3 of the 4 noise markers must NOT appear
+  in the curated output (≥75% dropped, i.e. at most 1 leaks through).
+- **Format discipline** — the output must not open with a fenced code
+  block, and must not open with a conversational preamble ("here's",
+  "I've", "let me", "sure,", "below is").
+
+The eval prints the full curated output verbatim, plus a per-entry
+KEPT/DROPPED/LEAKED trace, so a human can sanity-check the rubric's
+verdict against the actual text rather than trusting the pass/fail line
+alone.
+
+### Status — two bugs found and fixed; both confirmed closed by a real clean run
+
+**Bug 1 — contamination (fixed, confirmed clean by a real run).** A
+review pass ran this eval for real against the first version of this
+file and got a FAIL (durable kept 2/4, below the 75% threshold) — but
+traced the FAIL to eval contamination, not a real selectivity-bar
+defect: `ReadOnlyExecutor` was constructed with no `memoryPath`
+override, so it fell through to `DEFAULT_MEMORY_PATH` and `runClaude`
+read this repo's real `memory/lessons.md` into the prompt's "Lessons
+learned from prior sessions" section — separate from, and inconsistent
+with, the fixture's own fake `EXISTING_MEMORY` text embedded in the
+task body. The printed curated output contained phrases like
+`parentTaskId is overloaded` and `SQLite schema changes` that only
+exist in this repo's real lessons file, not in the fixture, confirming
+the leak. Fixed by writing `EXISTING_MEMORY` to an isolated tmp file
+(inside the same `mkdtemp` dir the task's `repo` already uses) and
+passing it as `ReadOnlyExecutor`'s `memoryPath` — the same pattern
+every other test that touches memory (`test/memory-scheduler.test.ts`,
+`test/orchestrator.test.ts`, `test/api.test.ts`) already uses, and this
+eval was the one exception. A later review pass re-ran the eval for
+real and confirmed zero leakage from the real repo lessons file in the
+curated output.
+
+**Bug 2 — marker brittleness (fixed, confirmed clean by a real run).**
+With bug 1 fixed, a real run still produced `OVERALL: FAIL` (durable
+kept 2/4) — a second false negative, not a selectivity-bar defect. The
+real curator kept both affected durable lessons verbatim, but wrote
+the code identifier wrapped in markdown backticks (e.g. "`waitForSelector`
+timeout", "`parse('')` returns `null`"), which broke the rubric's plain
+substring check (`output.includes(e.marker)`) even though the
+identifier itself survived intact. Fixed by comparing markers against
+a backtick-stripped copy of the output (`strippedOutput` in
+`eval/memory-curation-quality.eval.ts`) instead of the raw output,
+since none of the markers contain backticks themselves.
+
+A real clean run of `bun run eval:memory-curation-quality` after both
+fixes landed produced **`OVERALL: PASS`** — durable kept 4/4 (100%),
+noise dropped 4/4 (100%), format discipline PASS, cost $0.0860 — with
+zero leakage from this repo's real `memory/lessons.md` (no
+"`parentTaskId` is overloaded", no "SQLite schema changes" in the
+output). Both bugs are now closed on empirical evidence, not just
+traced by hand.
+
+### Scheduling
+
+Same pattern as the other evals above — add a nightly cron line and a
+required CI step for `bun run eval:memory-curation-quality`, same
+`timeout 1800`, same real-authenticated-`claude` requirement.

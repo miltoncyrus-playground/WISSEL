@@ -2,7 +2,9 @@
 
 Status: **Phase 1 built and verified** (unit tests, no real `claude`/`codex`
 process spawned — see §9). Phases 2+ (per-agent filtering, growth-ceiling
-tooling) are explicitly out of scope for this pass — see §7.
+tooling) are explicitly out of scope for this pass — see §7. **Revised**:
+schedule frequency lowered and a selectivity bar added to the curation
+prompt — see §10.
 
 ## 1. Why
 
@@ -242,3 +244,108 @@ Tests (same commit, no real `claude`/`codex` process spawned anywhere):
   wholesale on a second run, does nothing for every other agent.
 - `test/prompt.test.ts` — memory section omitted when no content is
   given, included verbatim (ahead of any output contract) when it is.
+
+## 10. Revision — lower the schedule frequency, raise the selectivity bar
+
+Two changes, both prompted by the same observation: a day of normal
+wissel activity doesn't reliably produce a day's worth of genuinely
+durable lessons, and a curator that runs daily with no selectivity
+discipline beyond "dedup against the existing file" tends to promote
+routine activity-log noise just because something ran since last time.
+
+### 10.1 Schedule — 3x/week instead of daily
+
+`WISSEL_MEMORY_INTERVAL_HOURS` is now set to `56` (roughly every 56
+hours — about 3 times a week) instead of the §8.2 default of `24`. No
+code changed for this: `src/api/server.ts`'s existing bootstrap read of
+`process.env.WISSEL_MEMORY_INTERVAL_HOURS` (§3) already honors any
+override, and `isMemoryCurationDue` (§3) already treats "due" purely as
+elapsed-time-since-last-run — both were correct for this on day one.
+This is a config change (`.env`), not a design change, and §8.2's
+reasoning for *why* an interval exists at all (infrequent enough that a
+batch has a meaningful amount of real session activity to work with)
+still holds; `56` is just a different point on that same tradeoff,
+chosen because daily cadence was producing near-empty or noise-only
+batches more often than batches with real structural findings.
+
+### 10.2 Selectivity — a concrete bar for NEW candidate lessons
+
+Before this revision, `memory-curator`'s `outputContract`
+(`agents/manifest.yaml`) only instructed the agent how to merge a new
+batch against the *existing* `memory/lessons.md` file (dedup, drop
+stale/superseded entries — §6, §8.3). It said nothing about how
+selectively to judge whether a brand-new observation from the current
+batch deserves to become a persistent lesson in the first place. In
+practice this meant anything that happened to be novel relative to the
+existing file could get promoted, even when it was just today's work
+going fine.
+
+The `outputContract` now adds an explicit "Selectivity bar" section,
+additive to (not a replacement for) the existing dedup-against-prior-
+file instruction, the ELI5-plus-detail two-part topic shape, and the
+"no preamble, byte-for-byte replacement" formatting rules — none of
+those changed. The new section poses one concrete test for any
+candidate lesson: would a fresh agent session, with zero context beyond
+this file, actually change what it does because of this — avoid a real
+mistake, respect a real constraint, or know where to look instead of
+re-discovering it the hard way? It then names four anti-patterns to
+reject explicitly, rather than leaving "be selective" as an
+unenforceable platitude:
+
+- a routine success with nothing surprising in it,
+- a one-off fact specific to a single session's circumstances with no
+  generalizable lesson,
+- something already fully obvious from the code/docs a fresh agent
+  would read anyway,
+- a near-duplicate of an existing topic worded differently (a dedup
+  failure, not a new lesson).
+
+The section explicitly states that an empty or near-empty batch with
+nothing worth promoting is a normal, expected outcome — the opposite of
+the pre-revision incentive, where running meant something had to be
+written.
+
+### 10.3 Verification
+
+`eval/memory-curation-quality.eval.ts` (new, see eval/README.md's own
+section on it) is the periodic quality eval for this: a real
+`memory-curator` run against a deliberately mixed fixture (4 durable
+lessons tied to concrete code symbols, 4 noise entries matching the
+anti-patterns above), checked against a deterministic rubric for
+whether the durable entries survived and the noise didn't. This is a
+genuine latent-space judgment question per CLAUDE.md's own rule, so it
+belongs in the paid/periodic eval lane, not `bun test`'s gate lane.
+
+**Two bugs found and fixed in review; both confirmed closed by a real
+clean run.**
+
+1. **Contamination bug (fixed, confirmed clean by a real run).**
+   `ReadOnlyExecutor` had no `memoryPath` override, so it read this
+   repo's real `memory/lessons.md` into the prompt instead of the
+   fixture's own fake "Current memory/lessons.md" text — the curated
+   output contained real lessons like "`parentTaskId` is overloaded"
+   that don't exist in the fixture at all. Fixed by writing the
+   fixture's fake memory to an isolated tmp file and pointing
+   `memoryPath` at it, the same pattern every other memory-touching
+   test in this repo already uses. A later review pass re-ran the eval
+   for real and confirmed the curated output has zero leakage from the
+   real repo lessons file — only fixture content appears.
+2. **Marker-brittleness bug (fixed, confirmed clean by a real run).**
+   With the contamination bug fixed, a real run still produced
+   `OVERALL: FAIL` (durable kept 2/4) — but this was a false negative
+   in the eval's own rubric, not a selectivity-bar defect. The real
+   curator kept both affected durable lessons verbatim but wrapped the
+   code identifier in markdown backticks (e.g. "`waitForSelector`
+   timeout"), which broke the rubric's plain substring check
+   (`output.includes(e.marker)`) even though the underlying identifier
+   survived intact. Fixed by stripping backticks from the output
+   before the substring comparison (`eval/memory-curation-quality.eval.ts`'s
+   `strippedOutput`), since none of the markers themselves contain
+   backticks.
+
+A real clean run of `bun run eval:memory-curation-quality` after both
+fixes landed produced `OVERALL: PASS` — durable kept 4/4, noise dropped
+4/4, format discipline PASS, cost $0.0860 — with zero leakage from this
+repo's real `memory/lessons.md` (no "`parentTaskId` is overloaded", no
+"SQLite schema changes" in the output). Both bugs are closed on
+empirical evidence, not just by inspection.
