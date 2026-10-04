@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkMcpServerReachable, McpServerPool } from "../src/core/mcp-server-pool.ts";
+import { checkMcpServerReachable, McpServerPool, parseMcpServerCreateInput } from "../src/core/mcp-server-pool.ts";
 import type { McpServer } from "../src/core/types.ts";
 
 function server(overrides: Partial<McpServer> & Pick<McpServer, "id">): McpServer {
@@ -95,6 +95,20 @@ test("setToolTrust() returns undefined and changes nothing for an unknown tool n
   const pool = McpServerPool.from([server({ id: "a", tools: [{ name: "foo", trust: "auto" }] })]);
   expect(pool.setToolTrust("a", "missing-tool", "approval-required")).toBeUndefined();
   expect(pool.get("a")?.tools).toEqual([{ name: "foo", trust: "auto" }]);
+});
+
+test("add() inserts a new entry visible via get()/all() afterward", () => {
+  const pool = McpServerPool.from([server({ id: "a" })]);
+  const added = pool.add(server({ id: "b", label: "B" }));
+  expect(added.id).toBe("b");
+  expect(pool.all().map((s) => s.id)).toEqual(["a", "b"]);
+  expect(pool.get("b")?.label).toBe("B");
+});
+
+test("add() throws on a duplicate id, mirroring from()'s own guard", () => {
+  const pool = McpServerPool.from([server({ id: "a" })]);
+  expect(() => pool.add(server({ id: "a" }))).toThrow(/duplicate mcp server id: a/);
+  expect(pool.all()).toHaveLength(1);
 });
 
 test("disabling an already-acquired server doesn't interrupt what's already running under it", () => {
@@ -197,4 +211,91 @@ test("sse transport: unreachable when the injected fetch throws (connection refu
   const result = await checkMcpServerReachable(server({ id: "a", transport: { kind: "sse", url: "https://example.invalid/mcp" } }), { fetchImpl });
   expect(result.reachable).toBe(false);
   expect(result.reason).toBe("connection refused");
+});
+
+// --- parseMcpServerCreateInput ---
+
+test("parseMcpServerCreateInput accepts a well-formed stdio entry, defaulting an omitted tool trust to approval-required", () => {
+  const result = parseMcpServerCreateInput({
+    id: "my-stdio",
+    label: "My Stdio Server",
+    transport: { kind: "stdio", command: "/usr/local/bin/my-server", args: ["--flag"] },
+    tools: [{ name: "do_thing" }, { name: "other_thing", trust: "auto" }],
+  });
+  if ("error" in result) throw new Error(`expected success, got: ${result.error}`);
+  expect(result.server).toEqual({
+    id: "my-stdio",
+    label: "My Stdio Server",
+    transport: { kind: "stdio", command: "/usr/local/bin/my-server", args: ["--flag"] },
+    tools: [
+      { name: "do_thing", trust: "approval-required" },
+      { name: "other_thing", trust: "auto" },
+    ],
+    enabled: true,
+  });
+});
+
+test("parseMcpServerCreateInput accepts a well-formed sse/http entry with no tools and an env map", () => {
+  const result = parseMcpServerCreateInput({
+    id: "my-http",
+    label: "My HTTP Server",
+    transport: { kind: "http", url: "https://example.internal/mcp" },
+    env: { API_KEY: "MY_API_KEY_ENV_VAR" },
+  });
+  if ("error" in result) throw new Error(`expected success, got: ${result.error}`);
+  expect(result.server).toEqual({
+    id: "my-http",
+    label: "My HTTP Server",
+    transport: { kind: "http", url: "https://example.internal/mcp" },
+    tools: [],
+    enabled: true,
+    env: { API_KEY: "MY_API_KEY_ENV_VAR" },
+  });
+});
+
+test("parseMcpServerCreateInput rejects a missing id/label", () => {
+  expect(parseMcpServerCreateInput({ label: "x", transport: { kind: "stdio", command: "y" } })).toEqual({ error: "id is required" });
+  expect(parseMcpServerCreateInput({ id: "x", transport: { kind: "stdio", command: "y" } })).toEqual({ error: "label is required" });
+});
+
+test("parseMcpServerCreateInput rejects a missing transport", () => {
+  const result = parseMcpServerCreateInput({ id: "x", label: "X" });
+  expect(result).toEqual({ error: "transport is required" });
+});
+
+test("parseMcpServerCreateInput rejects a stdio transport missing command", () => {
+  const result = parseMcpServerCreateInput({ id: "x", label: "X", transport: { kind: "stdio" } });
+  expect(result).toEqual({ error: "transport.command is required for a stdio server" });
+});
+
+test("parseMcpServerCreateInput rejects an sse/http transport missing url", () => {
+  const sse = parseMcpServerCreateInput({ id: "x", label: "X", transport: { kind: "sse" } });
+  expect(sse).toEqual({ error: "transport.url is required for a sse server" });
+  const http = parseMcpServerCreateInput({ id: "x", label: "X", transport: { kind: "http" } });
+  expect(http).toEqual({ error: "transport.url is required for a http server" });
+});
+
+test("parseMcpServerCreateInput rejects an unknown transport.kind", () => {
+  const result = parseMcpServerCreateInput({ id: "x", label: "X", transport: { kind: "carrier-pigeon" } });
+  expect(result).toEqual({ error: 'transport.kind must be "stdio", "sse", or "http"' });
+});
+
+test("parseMcpServerCreateInput rejects a non-array tools field", () => {
+  const result = parseMcpServerCreateInput({
+    id: "x",
+    label: "X",
+    transport: { kind: "stdio", command: "/bin/true" },
+    tools: "not-an-array",
+  });
+  expect(result).toEqual({ error: "tools must be an array" });
+});
+
+test("parseMcpServerCreateInput rejects a tool with an invalid trust value", () => {
+  const result = parseMcpServerCreateInput({
+    id: "x",
+    label: "X",
+    transport: { kind: "stdio", command: "/bin/true" },
+    tools: [{ name: "foo", trust: "yolo" }],
+  });
+  expect(result).toEqual({ error: 'tool "foo".trust must be "auto" or "approval-required"' });
 });

@@ -321,6 +321,13 @@
   .hm-tools:last-child { border-bottom: none; }
   .hm-tools .hm-row { padding: 6px 0; }
   .hm-tools-empty { font-size: 11px; color: var(--ink-muted); padding: 4px 0; }
+  /* "Add MCP server" form, nested at the top of #mcpPanel — one row per
+     declared tool (a name field + a trust <select>), same repeatable-row
+     idea as the harness/mcp panels' own per-tool list above, just
+     editable instead of read-only. */
+  .mcp-add-tool-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .mcp-add-tool-row input[type="text"] { flex: 1; margin-bottom: 0; }
+  .mcp-add-tool-row select { flex: 0 0 auto; }
 
   .decision-head { font-size: 13px; color: var(--ink-2); margin: 0 0 12px; }
   .decision-head b { color: var(--ink-1); }
@@ -795,6 +802,49 @@
   <div class="drawer-body">
     <section class="drawer-section">
       <p class="drawer-desc">Every registered MCP server — the external tool surfaces (Slack, a ticketing system, a database) an agent can reach once it's running, orthogonal to the harnesses above. Enable/disable a server, or flip a tool's trust tier between auto (safe to call unattended) and approval-required (blocked until a human approves).</p>
+    </section>
+    <section class="drawer-section">
+      <p class="eyebrow">Add MCP server</p>
+      <form id="mcpAddForm">
+        <div class="field">
+          <label for="mcpAddId">Server id</label>
+          <input id="mcpAddId" type="text" required autocomplete="off" placeholder="my-server">
+        </div>
+        <div class="field">
+          <label for="mcpAddLabel">Label</label>
+          <input id="mcpAddLabel" type="text" required autocomplete="off" placeholder="My Server">
+        </div>
+        <div class="field">
+          <label for="mcpAddTransportKind">Transport</label>
+          <select id="mcpAddTransportKind">
+            <option value="stdio">stdio (command)</option>
+            <option value="http">http (URL)</option>
+            <option value="sse">sse (URL)</option>
+          </select>
+        </div>
+        <div class="field" id="mcpAddStdioFields">
+          <label for="mcpAddCommand">Command</label>
+          <input id="mcpAddCommand" type="text" autocomplete="off" placeholder="/usr/local/bin/my-mcp-server">
+        </div>
+        <div class="field" id="mcpAddArgsField">
+          <label for="mcpAddArgs">Args (comma-separated, optional)</label>
+          <input id="mcpAddArgs" type="text" autocomplete="off" placeholder="--flag, value">
+        </div>
+        <div class="field" id="mcpAddUrlFields" hidden>
+          <label for="mcpAddUrl">URL</label>
+          <input id="mcpAddUrl" type="text" autocomplete="off" placeholder="https://example.internal/mcp">
+        </div>
+        <div class="field">
+          <label>Tools</label>
+          <div id="mcpAddTools"></div>
+          <button type="button" id="mcpAddToolRowBtn">Add tool</button>
+        </div>
+        <div class="form-actions">
+          <span id="mcpAddStatus" class="form-status" hidden></span>
+          <span id="mcpAddError" class="field-error" hidden></span>
+          <button type="submit" id="mcpAddSubmit">Add server</button>
+        </div>
+      </form>
     </section>
     <section class="drawer-section" id="mcpList"></section>
   </div>
@@ -1973,6 +2023,137 @@
   document.getElementById("mcpOpenBtn").addEventListener("click", openMcpPanel);
   document.getElementById("mcpClose").addEventListener("click", closeMcpPanel);
   document.getElementById("mcpOverlay").addEventListener("click", closeMcpPanel);
+
+  // "Add MCP server" form — mirrors #projLocalForm/#projCloneForm's own
+  // structure and inline-error-rendering convention (a .field-error span
+  // next to the submit button), just with one extra wrinkle neither
+  // Projects form has: a transport-kind switch that shows/hides the
+  // right fields, and a repeatable tools list built with plain DOM
+  // manipulation (no framework/templating in this file, same as every
+  // other dynamic list here).
+  function mcpAddUpdateTransportFields() {
+    var kind = document.getElementById("mcpAddTransportKind").value;
+    document.getElementById("mcpAddStdioFields").hidden = kind !== "stdio";
+    document.getElementById("mcpAddArgsField").hidden = kind !== "stdio";
+    document.getElementById("mcpAddUrlFields").hidden = kind === "stdio";
+  }
+  document.getElementById("mcpAddTransportKind").addEventListener("change", mcpAddUpdateTransportFields);
+  mcpAddUpdateTransportFields();
+
+  function mcpAddToolRow() {
+    var row = document.createElement("div");
+    row.className = "mcp-add-tool-row";
+
+    var name = document.createElement("input");
+    name.type = "text";
+    name.placeholder = "tool_name";
+    name.className = "mcp-add-tool-name";
+    row.appendChild(name);
+
+    var trust = document.createElement("select");
+    trust.className = "mcp-add-tool-trust";
+    ["approval-required", "auto"].forEach(function (v) {
+      var opt = document.createElement("option");
+      opt.value = v;
+      opt.textContent = v;
+      trust.appendChild(opt);
+    });
+    row.appendChild(trust);
+
+    var remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", function () { row.remove(); });
+    row.appendChild(remove);
+
+    document.getElementById("mcpAddTools").appendChild(row);
+  }
+  document.getElementById("mcpAddToolRowBtn").addEventListener("click", mcpAddToolRow);
+
+  // Reads every non-blank tool row into the `tools` array the endpoint
+  // expects — a row left with a blank name is silently dropped rather
+  // than rejected, so a user who clicked "Add tool" and changed their
+  // mind doesn't have to explicitly remove the row before submitting.
+  function mcpAddCollectTools() {
+    var tools = [];
+    document.querySelectorAll("#mcpAddTools .mcp-add-tool-row").forEach(function (row) {
+      var name = row.querySelector(".mcp-add-tool-name").value.trim();
+      if (!name) return;
+      var trust = row.querySelector(".mcp-add-tool-trust").value;
+      tools.push({ name: name, trust: trust });
+    });
+    return tools;
+  }
+
+  document.getElementById("mcpAddForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var idEl = document.getElementById("mcpAddId");
+    var labelEl = document.getElementById("mcpAddLabel");
+    var kindEl = document.getElementById("mcpAddTransportKind");
+    var commandEl = document.getElementById("mcpAddCommand");
+    var argsEl = document.getElementById("mcpAddArgs");
+    var urlEl = document.getElementById("mcpAddUrl");
+    var errorEl = document.getElementById("mcpAddError");
+    var statusEl = document.getElementById("mcpAddStatus");
+    var submitBtn = document.getElementById("mcpAddSubmit");
+
+    var id = idEl.value.trim();
+    var label = labelEl.value.trim();
+    var kind = kindEl.value;
+    errorEl.hidden = true;
+    statusEl.hidden = true;
+
+    if (!id) { errorEl.textContent = "Server id is required."; errorEl.hidden = false; return; }
+    if (!label) { errorEl.textContent = "Label is required."; errorEl.hidden = false; return; }
+
+    var transport;
+    if (kind === "stdio") {
+      var command = commandEl.value.trim();
+      if (!command) { errorEl.textContent = "Command is required for a stdio server."; errorEl.hidden = false; return; }
+      var args = argsEl.value.split(",").map(function (a) { return a.trim(); }).filter(Boolean);
+      transport = { kind: "stdio", command: command, args: args };
+    } else {
+      var url = urlEl.value.trim();
+      if (!url) { errorEl.textContent = "URL is required for a " + kind + " server."; errorEl.hidden = false; return; }
+      transport = { kind: kind, url: url };
+    }
+
+    var body = { id: id, label: label, transport: transport, tools: mcpAddCollectTools() };
+
+    submitBtn.disabled = true;
+    statusEl.hidden = false;
+    statusEl.textContent = "registering…";
+
+    fetch("/mcp-servers", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+        return r.json();
+      })
+      .then(function (server) {
+        statusEl.textContent = "Added “" + server.label + "”.";
+        idEl.value = "";
+        labelEl.value = "";
+        commandEl.value = "";
+        argsEl.value = "";
+        urlEl.value = "";
+        document.getElementById("mcpAddTools").textContent = "";
+        return refetchTasks();
+      })
+      .then(function () {
+        renderMcpPanel();
+      })
+      .catch(function (err) {
+        errorEl.textContent = err.message;
+        errorEl.hidden = false;
+        statusEl.hidden = true;
+      })
+      .finally(function () {
+        submitBtn.disabled = false;
+      });
+  });
 
   // --- Live output panel ----------------------------------------------
   //

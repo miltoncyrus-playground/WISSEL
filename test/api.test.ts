@@ -472,6 +472,152 @@ test("POST /mcp-servers/:id/tools/:tool/trust 400s on an invalid trust value and
   }
 });
 
+// --- POST /mcp-servers (create) ---
+
+test("POST /mcp-servers registers a well-formed stdio entry — persists, shows up in GET, survives a fresh load from disk", async () => {
+  const { dir, path } = await mcpServersFixture("mcp-servers: []\n");
+  try {
+    const mcpServers = McpServerPool.from([]);
+    const app = await makeApp(new SqliteBoard(), { mcpServers, mcpServersPath: path });
+
+    const res = await app(
+      req("/mcp-servers", {
+        method: "POST",
+        body: JSON.stringify({
+          id: "new-stdio",
+          label: "New Stdio Server",
+          transport: { kind: "stdio", command: "/bin/true", args: [] },
+          tools: [{ name: "do_thing", trust: "approval-required" }],
+        }),
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as McpServer;
+    expect(body.id).toBe("new-stdio");
+    expect(mcpServers.get("new-stdio")?.enabled).toBe(true);
+
+    const listRes = await app(req("/mcp-servers"));
+    const list = (await listRes.json()) as (McpServer & { activeCount: number })[];
+    expect(list.find((s) => s.id === "new-stdio")).toBeTruthy();
+
+    const reloaded = await McpServerPool.load(path);
+    expect(reloaded.get("new-stdio")?.transport).toEqual({ kind: "stdio", command: "/bin/true", args: [] });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /mcp-servers registers a well-formed sse/http entry via a mocked reachable fetch", async () => {
+  const { dir, path } = await mcpServersFixture("mcp-servers: []\n");
+  try {
+    const mcpServers = McpServerPool.from([]);
+    const fetchImpl = (async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const app = await makeApp(new SqliteBoard(), {
+      mcpServers,
+      mcpServersPath: path,
+      mcpServerReachabilityOpts: { fetchImpl },
+    });
+
+    const res = await app(
+      req("/mcp-servers", {
+        method: "POST",
+        body: JSON.stringify({
+          id: "new-http",
+          label: "New HTTP Server",
+          transport: { kind: "http", url: "https://example.internal/mcp" },
+        }),
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    expect(mcpServers.get("new-http")?.transport).toEqual({ kind: "http", url: "https://example.internal/mcp" });
+    const onDisk = parse(await readFile(path, "utf8")) as { "mcp-servers": McpServer[] };
+    expect(onDisk["mcp-servers"].find((s) => s.id === "new-http")).toBeTruthy();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /mcp-servers 400s on a malformed body (missing transport.command for stdio) and never touches mcp-servers.yaml", async () => {
+  const { dir, path } = await mcpServersFixture("mcp-servers: []\n");
+  const before = await readFile(path, "utf8");
+  try {
+    const mcpServers = McpServerPool.from([]);
+    const app = await makeApp(new SqliteBoard(), { mcpServers, mcpServersPath: path });
+
+    const res = await app(
+      req("/mcp-servers", {
+        method: "POST",
+        body: JSON.stringify({ id: "bad", label: "Bad", transport: { kind: "stdio" } }),
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("transport.command is required for a stdio server");
+    expect(mcpServers.get("bad")).toBeUndefined();
+    expect(await readFile(path, "utf8")).toBe(before);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /mcp-servers 400s on a duplicate id and never touches mcp-servers.yaml", async () => {
+  const { dir, path } = await mcpServersFixture(
+    "mcp-servers:\n  - id: a\n    label: A\n    enabled: true\n    transport:\n      kind: stdio\n      command: /bin/true\n      args: []\n    tools: []\n",
+  );
+  const before = await readFile(path, "utf8");
+  try {
+    const mcpServers = McpServerPool.from([
+      { id: "a", label: "A", transport: { kind: "stdio", command: "/bin/true", args: [] }, tools: [], enabled: true },
+    ]);
+    const app = await makeApp(new SqliteBoard(), { mcpServers, mcpServersPath: path });
+
+    const res = await app(
+      req("/mcp-servers", {
+        method: "POST",
+        body: JSON.stringify({ id: "a", label: "A (again)", transport: { kind: "stdio", command: "/bin/true", args: [] } }),
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("already registered");
+    expect(await readFile(path, "utf8")).toBe(before);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /mcp-servers 400s when the stdio command isn't reachable (not on PATH) and never persists it — proves creation re-validates, doesn't just trust the body", async () => {
+  const { dir, path } = await mcpServersFixture("mcp-servers: []\n");
+  const before = await readFile(path, "utf8");
+  try {
+    const mcpServers = McpServerPool.from([]);
+    const app = await makeApp(new SqliteBoard(), { mcpServers, mcpServersPath: path });
+
+    const res = await app(
+      req("/mcp-servers", {
+        method: "POST",
+        body: JSON.stringify({
+          id: "unreachable",
+          label: "Unreachable",
+          transport: { kind: "stdio", command: "/no/such/binary", args: [] },
+        }),
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain("/no/such/binary");
+    expect(mcpServers.get("unreachable")).toBeUndefined();
+    expect(await readFile(path, "utf8")).toBe(before);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("POST /tasks then GET /tasks round-trips, defaulting dependsOn to []", async () => {
   const app = await makeApp();
   const create = await app(
