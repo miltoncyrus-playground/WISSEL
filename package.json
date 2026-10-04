@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test test/",
     "test:e2e": "playwright test",
+    "test:e2e:affected": "bun run scripts/e2e-affected.ts --run",
     "eval:readonly": "bun run eval/readonly.eval.ts",
     "eval:implementer-reviewer": "bun run eval/implementer-reviewer.eval.ts",
     "eval:planner-subtask-plan": "bun run eval/planner-subtask-plan.eval.ts",
