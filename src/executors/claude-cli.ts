@@ -34,22 +34,36 @@ export interface CommandResult {
  *  purely an observability tap: `stdout` on the resolved CommandResult
  *  is still the full accumulated text either way, so a caller that
  *  never passes onChunk sees byte-for-byte the same behavior as before
- *  streaming existed. */
+ *  streaming existed. `stdin`, when given, is written to the spawned
+ *  process's stdin and the pipe is closed before its exit is awaited —
+ *  see runClaude's own `cmd` construction for why the prompt is piped in
+ *  this way rather than passed as an argv element: a long prompt (e.g.
+ *  memory-curator's, which grows with session volume) can exceed the
+ *  kernel's posix_spawn argv size limit (ARG_MAX), crashing the spawn
+ *  with E2BIG — confirmed live in production. Undefined (every caller
+ *  before this option existed, and every git/worktree command this same
+ *  CommandRunner type also serves) means no stdin is written at all —
+ *  byte-identical to before this option existed. */
 export type CommandRunner = (
   cmd: string[],
-  opts: { cwd: string; env?: Record<string, string>; onChunk?: (line: unknown) => void },
+  opts: { cwd: string; env?: Record<string, string>; onChunk?: (line: unknown) => void; stdin?: string },
 ) => Promise<CommandResult>;
 
 export async function runViaBun(
   cmd: string[],
-  opts: { cwd: string; env?: Record<string, string>; onChunk?: (line: unknown) => void },
+  opts: { cwd: string; env?: Record<string, string>; onChunk?: (line: unknown) => void; stdin?: string },
 ): Promise<CommandResult> {
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
     env: opts.env ? { ...process.env, ...opts.env } : undefined,
+    stdin: opts.stdin !== undefined ? "pipe" : undefined,
     stdout: "pipe",
     stderr: "pipe",
   });
+  if (opts.stdin !== undefined) {
+    proc.stdin.write(opts.stdin);
+    await proc.stdin.end();
+  }
   const [stdout, stderr, exitCode] = await Promise.all([
     opts.onChunk ? readStreamingText(proc.stdout, opts.onChunk) : new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
@@ -308,7 +322,11 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // streaming still only turns on when the caller passes onChunk,
   // exactly as before.
   const useStreaming = Boolean(onChunk) || auto.length > 0;
-  const cmd = ["claude", "-p", prompt, "--output-format", useStreaming ? "stream-json" : "json", "--permission-mode", permissionMode];
+  // `prompt` is deliberately never an argv element — see CommandRunner's
+  // own `stdin` doc comment for the confirmed-live E2BIG this avoids.
+  // Confirmed empirically: `claude -p` with no positional prompt argument
+  // reads the prompt from stdin instead, producing the identical result.
+  const cmd = ["claude", "-p", "--output-format", useStreaming ? "stream-json" : "json", "--permission-mode", permissionMode];
   if (useStreaming) cmd.push("--include-partial-messages", "--verbose");
   if (model) cmd.push("--model", model);
   if (mcpConfig) cmd.push("--mcp-config", JSON.stringify(mcpConfig), "--strict-mcp-config");
@@ -341,7 +359,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
 
   let cmdResult: CommandResult;
   try {
-    cmdResult = await runner(cmd, { cwd, env: scopedEnv, onChunk });
+    cmdResult = await runner(cmd, { cwd, env: scopedEnv, onChunk, stdin: prompt });
   } catch (e) {
     return fail(task, agent, `failed to spawn claude: ${(e as Error).message}`);
   }

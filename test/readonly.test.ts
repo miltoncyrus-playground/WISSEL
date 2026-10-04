@@ -123,13 +123,15 @@ test("carries a failed subagent count through even when some spawned successfull
   expect(result.subagents).toEqual({ count: 3, failed: 1, byType: { "general-purpose": 3 } });
 });
 
-test("passes cwd, plan mode, and the task/agent framing into the prompt", async () => {
+test("passes cwd, plan mode, and the task/agent framing into the prompt via stdin, never argv", async () => {
   let seenCmd: string[] = [];
   let seenCwd = "";
+  let seenStdin: string | undefined;
   const executor = new ReadOnlyExecutor({
     runner: async (cmd, opts) => {
       seenCmd = cmd;
       seenCwd = opts.cwd;
+      seenStdin = opts.stdin;
       return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
     },
   });
@@ -139,7 +141,10 @@ test("passes cwd, plan mode, and the task/agent framing into the prompt", async 
   expect(seenCmd[0]).toBe("claude");
   expect(seenCmd).toContain("--permission-mode");
   expect(seenCmd[seenCmd.indexOf("--permission-mode") + 1]).toBe("plan");
-  const prompt = seenCmd[seenCmd.indexOf("-p") + 1]!;
+  // The prompt is never an argv element — see CommandRunner's `stdin`
+  // doc comment (claude-cli.ts) for the E2BIG this avoids.
+  expect(seenCmd).not.toContain(agent.description);
+  const prompt = seenStdin!;
   expect(prompt).toContain(agent.description);
   expect(prompt).toContain(task.title);
   expect(prompt).toContain(task.body);

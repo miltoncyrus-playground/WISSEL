@@ -138,12 +138,14 @@ test("runs claude inside the worktree, not task.repo directly — the whole poin
   try {
     let seenCmd: string[] = [];
     let seenCwd = "";
+    let seenStdin: string | undefined;
     const executor = new WriteExecutor({
       homeDir: home,
       runner: async (cmd, opts) => {
         if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
         seenCmd = cmd;
         seenCwd = opts.cwd;
+        seenStdin = opts.stdin;
         return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
       },
     });
@@ -155,8 +157,11 @@ test("runs claude inside the worktree, not task.repo directly — the whole poin
     expect(seenCmd).toContain("--permission-mode");
     expect(seenCmd[seenCmd.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
     // The prompt still describes the task itself, not the worktree path
-    // it happens to run in — buildAgentPrompt never reads task.repo.
-    const prompt = seenCmd[seenCmd.indexOf("-p") + 1]!;
+    // it happens to run in — buildAgentPrompt never reads task.repo. It's
+    // piped via stdin, never an argv element (see CommandRunner's
+    // `stdin` doc comment in claude-cli.ts for the E2BIG this avoids).
+    expect(seenCmd).not.toContain(agent.description);
+    const prompt = seenStdin!;
     expect(prompt).toContain(agent.description);
     expect(prompt).toContain(task.title);
     expect(prompt).toContain(task.body);
