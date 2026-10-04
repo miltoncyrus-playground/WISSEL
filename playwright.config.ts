@@ -95,8 +95,25 @@ export default defineConfig({
     // shows the empty state" and "a curation run shows exactly 1 history
     // entry"). readMemoryLessons/readResultEvents already treat a missing
     // file as empty/no-events, so deleting (not recreating) is correct.
+    //
+    // /tmp/wissel-e2e-repo is the fake repo path every e2e test fills
+    // into a `repo` field, but almost none of them actually spawn an
+    // agent into it — they only ever create inert TaskCards for
+    // UI-rendering assertions, so a nonexistent cwd never got exercised.
+    // e2e/pipeline-editor.spec.ts is the one real exception: it drives a
+    // genuine POST /pipelines/:id/run, which dispatches triager's
+    // ReadOnlyExecutor (src/executors/readonly.ts) straight into
+    // `Bun.spawn(cmd, { cwd: task.repo })` (src/executors/claude-cli.ts).
+    // A nonexistent cwd makes that spawn throw ENOENT immediately,
+    // caught and returned as `ok: false` ("failed to spawn claude: ...")
+    // — which fails both of that test's entry steps and, by
+    // handlePipelineStepResult's own design (src/core/pipeline-runner.ts:
+    // a failed predecessor never activates a join), the join step never
+    // even gets created. `mkdir -p` once here, same as the fixture
+    // copies above, so the directory exists before any test (not just
+    // this one) ever spawns into it.
     command:
-      "rm -f /tmp/wissel-e2e-memory-lessons.md /tmp/wissel-e2e-telemetry.jsonl && cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
+      "mkdir -p /tmp/wissel-e2e-repo && rm -f /tmp/wissel-e2e-memory-lessons.md /tmp/wissel-e2e-telemetry.jsonl && cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
     url: `http://localhost:${PORT}/health`,
     reuseExistingServer: false,
     env: {
