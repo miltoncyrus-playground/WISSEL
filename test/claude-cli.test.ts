@@ -462,6 +462,46 @@ test("runViaBun without onChunk behaves exactly as before — full buffered stdo
   expect(result.exitCode).toBe(0);
 });
 
+// --- E2BIG regression (memory-curator crash: `failed to spawn claude:
+// E2BIG: argument list too long, posix_spawn 'claude'`) ---------------
+
+test("documents the real vulnerability this fix avoids: a single argv element over the kernel's ~128KiB-per-argument limit crashes a real spawn with E2BIG", async () => {
+  // Confirmed empirically on this machine (Linux, MAX_ARG_STRLEN = 32
+  // pages = 131072 bytes): 100_000 bytes spawns fine, 131_072 throws.
+  // This is exactly the failure mode the real scheduled memory-curation
+  // run hit in production, reproduced here as proof the limit is real
+  // and not just a theoretical concern.
+  expect(() => Bun.spawn(["true", "x".repeat(100_000)], { stdout: "pipe", stderr: "pipe" })).not.toThrow();
+  expect(() => Bun.spawn(["true", "x".repeat(131_072)], { stdout: "pipe", stderr: "pipe" })).toThrow(/E2BIG/);
+});
+
+test("runViaBun with a multi-MB stdin payload — far larger than any argv element could survive — completes via a real spawn with no E2BIG", async () => {
+  const huge = "x".repeat(5_000_000); // 5MB: well past the ~128KiB single-argv-element limit proven above
+  const result = await runViaBun(["cat"], { cwd: "/tmp", stdin: huge });
+  expect(result.exitCode).toBe(0);
+  expect(result.stdout).toBe(huge);
+});
+
+test("runClaude never puts the prompt in argv, even for a multi-MB prompt — it goes to the runner's stdin option instead", async () => {
+  const hugeBody = "y".repeat(5_000_000);
+  let seenCmd: string[] = [];
+  let seenStdin: string | undefined;
+  await runClaude({
+    runner: async (cmd, opts) => {
+      seenCmd = cmd;
+      seenStdin = opts.stdin;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+    task: { ...task, body: hugeBody },
+    agent: plainAgent,
+    permissionMode: "plan",
+  });
+  expect(seenCmd.join("\n").length).toBeLessThan(1000); // cmd carries only flags, never the 5MB body
+  expect(seenCmd.some((c) => c.length > 1000)).toBe(false);
+  expect(seenStdin).toBeDefined();
+  expect(seenStdin).toContain(hugeBody);
+});
+
 // --- MCP grants (docs/SDD-mcp-orchestration.md §3.2/§3.4) ---------------
 
 function mcpServer(overrides: Partial<McpServer> & Pick<McpServer, "id">): McpServer {
@@ -708,8 +748,8 @@ test("an agent with zero approval-required grants (every existing agent today) s
   const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "auto" }] })]);
   let seenPrompt = "";
   const result = await runClaude({
-    runner: async (cmd) => {
-      seenPrompt = cmd[2]!;
+    runner: async (_cmd, opts) => {
+      seenPrompt = opts.stdin!;
       return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
     },
     task,
@@ -727,8 +767,8 @@ test("an agent with a pending-approval grant gets the prompt instruction naming 
   const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
   let seenPrompt = "";
   await runClaude({
-    runner: async (cmd) => {
-      seenPrompt = cmd[2]!;
+    runner: async (_cmd, opts) => {
+      seenPrompt = opts.stdin!;
       return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
     },
     task,
@@ -827,8 +867,8 @@ test("mcpAccessPreApproved: true also skips the pending-approval prompt instruct
   const pool = McpServerPool.from([mcpServer({ id: "slack", tools: [{ name: "send_message", trust: "approval-required" }] })]);
   let seenPrompt = "";
   const result = await runClaude({
-    runner: async (cmd) => {
-      seenPrompt = cmd[2]!;
+    runner: async (_cmd, opts) => {
+      seenPrompt = opts.stdin!;
       return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
     },
     task,

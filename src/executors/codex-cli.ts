@@ -177,7 +177,19 @@ export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
   const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
   const cmd = ["codex", "exec", "--json", "-s", sandbox];
   if (model) cmd.push("-m", model);
-  cmd.push(buildAgentPrompt(task, agent, memory));
+  // `prompt` is deliberately never an argv element — mirrors runClaude's
+  // own E2BIG fix (see CommandRunner's `stdin` doc comment, claude-cli.ts)
+  // for the same reason: a long prompt can exceed the kernel's argv size
+  // limit (confirmed live: a single argv element over ~128KiB crashes a
+  // real spawn with E2BIG). Confirmed empirically against the real
+  // installed codex-cli v0.155.1 binary that this is safe to mirror, not
+  // guessed: `codex exec --help`'s own `[PROMPT]` argument text states
+  // "If not provided as an argument ..., instructions are read from
+  // stdin," and a live `codex exec --json -s read-only` run with a
+  // ~150KB prompt piped via stdin and no positional argument printed
+  // "Reading prompt from stdin..." to stderr and completed successfully
+  // end to end (exit 0, real model response).
+  const prompt = buildAgentPrompt(task, agent, memory);
 
   // Same fallback runClaude's own cwd resolution uses — see its doc
   // comment. CodexWriteExecutor always hands this function a task whose
@@ -187,7 +199,7 @@ export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
 
   let cmdResult: CommandResult;
   try {
-    cmdResult = await runner(cmd, { cwd, env, onChunk });
+    cmdResult = await runner(cmd, { cwd, env, onChunk, stdin: prompt });
   } catch (e) {
     return fail(task, agent, `failed to spawn codex: ${(e as Error).message}`);
   }

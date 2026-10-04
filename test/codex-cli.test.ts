@@ -55,12 +55,14 @@ const SANDBOX_DENIED_WRITE_STDOUT = [
   '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0}}',
 ].join("\n");
 
-test("builds `codex exec --json -s <sandbox> \"<prompt>\"`, with -m only when a model is given", async () => {
+test("builds `codex exec --json -s <sandbox>`, with -m only when a model is given, and pipes the prompt via stdin rather than argv", async () => {
   let seenCmd: string[] = [];
   let seenCwd = "";
-  const runner = async (cmd: string[], opts: { cwd: string }) => {
+  let seenStdin: string | undefined;
+  const runner = async (cmd: string[], opts: { cwd: string; stdin?: string }) => {
     seenCmd = cmd;
     seenCwd = opts.cwd;
+    seenStdin = opts.stdin;
     return { stdout: CLEAN_RUN_STDOUT, stderr: "", exitCode: 0 };
   };
 
@@ -73,7 +75,11 @@ test("builds `codex exec --json -s <sandbox> \"<prompt>\"`, with -m only when a 
   expect(seenCmd).toContain("-s");
   expect(seenCmd[seenCmd.indexOf("-s") + 1]).toBe("workspace-write");
   expect(seenCmd).not.toContain("-m");
-  const prompt = seenCmd.at(-1)!;
+  // The prompt is never an argv element — see runCodex's own doc comment
+  // on `prompt` for the confirmed-live E2BIG this avoids (mirrors
+  // runClaude's identical fix).
+  expect(seenCmd.some((c) => c.includes(agent.description))).toBe(false);
+  const prompt = seenStdin!;
   expect(prompt).toContain(agent.description);
   expect(prompt).toContain(task.title);
   expect(prompt).toContain(task.body);
@@ -100,6 +106,26 @@ test("uses -s read-only for the readonly sandbox and -s workspace-write for the 
     await runCodex({ runner, task, agent, sandbox });
     expect(seenCmd[seenCmd.indexOf("-s") + 1]).toBe(sandbox);
   }
+});
+
+// --- E2BIG regression (mirrors runClaude's own fix — see
+// claude-cli.test.ts's own E2BIG section for the real spawn proof of the
+// underlying ~128KiB argv-element limit) ----------------------------
+
+test("runCodex never puts the prompt in argv, even for a multi-MB prompt — it goes to the runner's stdin option instead", async () => {
+  const hugeBody = "y".repeat(5_000_000);
+  let seenCmd: string[] = [];
+  let seenStdin: string | undefined;
+  const runner = async (cmd: string[], opts: { stdin?: string }) => {
+    seenCmd = cmd;
+    seenStdin = opts.stdin;
+    return { stdout: CLEAN_RUN_STDOUT, stderr: "", exitCode: 0 };
+  };
+  await runCodex({ runner, task: { ...task, body: hugeBody }, agent, sandbox: "read-only" });
+  expect(seenCmd.join("\n").length).toBeLessThan(1000); // cmd carries only flags, never the 5MB body
+  expect(seenCmd.some((c) => c.length > 1000)).toBe(false);
+  expect(seenStdin).toBeDefined();
+  expect(seenStdin).toContain(hugeBody);
 });
 
 test("parses a clean run: summary is the last agent_message, ok is true", async () => {

@@ -219,9 +219,9 @@ test("data/note handed off to the next step is wrapped in a nonce fence that dif
   let secondCallBody: string | undefined;
   function runnerCapturingBody(): CommandRunner {
     let i = 0;
-    return async (cmd) => {
+    return async (_cmd, opts) => {
       i++;
-      if (i === 2) secondCallBody = cmd[2] as string; // buildAgentPrompt embeds task.body
+      if (i === 2) secondCallBody = opts.stdin; // buildAgentPrompt embeds task.body
       const raw = i === 1 ? handoff({ next: "b", data: { files: ["a.ts"] }, note: "be careful" }) : handoff({});
       return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: raw }), stderr: "", exitCode: 0 };
     };
