@@ -63,6 +63,58 @@ export async function setMcpServerEnabled(path: string, server: McpServer, enabl
 }
 
 /**
+ * Persists a brand-new MCP server registration to `mcp-servers.yaml` —
+ * the disk half of `POST /mcp-servers` (board's "Add MCP server" form),
+ * mirroring `setMcpServerEnabled`'s own Document-API round-trip contract
+ * (comments/formatting survive, empty-flow-seq guard,
+ * missing-file-reads-as-empty). Unlike `setMcpServerEnabled`/
+ * `setMcpServerToolTrust`, there's no "existing vs. promote" branch here
+ * — the caller (the `POST /mcp-servers` handler) already confirmed via
+ * the live pool that `server.id` is new before calling this.
+ *
+ * Still guards against a same-`id` entry already present *on disk* (not
+ * just in the in-memory pool the caller checked) — the narrow race where
+ * `mcp-servers.yaml` was hand-edited after the pool was last loaded.
+ * Throws loudly rather than writing a second, duplicate-`id` YAML entry,
+ * which would otherwise make the *next* `McpServerPool.load()` throw at
+ * startup (`McpServerPool.from`'s own duplicate-id guard).
+ */
+export async function addMcpServer(path: string, server: Omit<McpServer, "disabledReason">): Promise<void> {
+  const raw = await readFile(path, "utf8").catch((e) => {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "mcp-servers: []\n";
+    throw e;
+  });
+
+  const doc = parseDocument(raw);
+  let seq = doc.getIn(["mcp-servers"]) as YAMLSeq | undefined;
+  if (!seq) {
+    doc.setIn(["mcp-servers"], []);
+    seq = doc.getIn(["mcp-servers"]) as YAMLSeq;
+  }
+  if (seq.items.length === 0) seq.flow = false;
+
+  const alreadyOnDisk = seq.items.some((item) => {
+    const map = item as { get?: (key: string) => unknown };
+    return typeof map.get === "function" && map.get("id") === server.id;
+  });
+  if (alreadyOnDisk) {
+    throw new Error(`mcp server id "${server.id}" already exists in ${path}`);
+  }
+
+  const toStore: Omit<McpServer, "disabledReason"> = {
+    id: server.id,
+    label: server.label,
+    transport: server.transport,
+    tools: server.tools,
+    enabled: server.enabled,
+    ...(server.env ? { env: server.env } : {}),
+  };
+  seq.add(doc.createNode(toStore));
+
+  await writeFile(path, doc.toString());
+}
+
+/**
  * Persists a human's trust-tier edit for one named tool on one MCP
  * server back to `mcp-servers.yaml` — same Document-API round-trip
  * contract `setMcpServerEnabled` above holds (comments/formatting

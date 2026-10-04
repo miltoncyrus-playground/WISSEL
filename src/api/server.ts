@@ -9,8 +9,8 @@ import type { ProjectStore } from "../services/projects.ts";
 import { SqliteProjectStore } from "../services/projects.ts";
 import { TelemetryLog } from "../services/telemetry.ts";
 import { HarnessPool } from "../core/harness-pool.ts";
-import { McpServerPool, checkMcpServerReachable, type CheckMcpServerReachableOptions } from "../core/mcp-server-pool.ts";
-import { setMcpServerEnabled, setMcpServerToolTrust } from "../core/mcp-manifest.ts";
+import { McpServerPool, checkMcpServerReachable, parseMcpServerCreateInput, type CheckMcpServerReachableOptions } from "../core/mcp-server-pool.ts";
+import { setMcpServerEnabled, setMcpServerToolTrust, addMcpServer } from "../core/mcp-manifest.ts";
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
@@ -511,6 +511,31 @@ export function createApp(
       // docs/SDD-mcp-orchestration.md §3.1/§6.
       if (url.pathname === "/mcp-servers" && req.method === "GET") {
         return json(mcpServers.all().map((s) => ({ ...s, activeCount: mcpServers.activeCount(s.id) })));
+      }
+
+      // Registers a brand-new MCP server live, through the board's "Add
+      // MCP server" form — mirrors POST /projects/local's own
+      // validate-then-persist shape (docs/SDD-mcp-server-registration.md
+      // §3.1), not harnesses' hand-edit-the-YAML-and-restart precedent.
+      // A malformed body or an unreachable transport both refuse to
+      // persist anything (§3.2/§3.3); a duplicate id 400s rather than
+      // silently overwriting (§3.4).
+      if (url.pathname === "/mcp-servers" && req.method === "POST") {
+        const body = await req.json();
+        const parsed = parseMcpServerCreateInput(body);
+        if ("error" in parsed) return json({ error: parsed.error }, 400);
+
+        if (mcpServers.get(parsed.server.id)) {
+          return json({ error: `mcp server id "${parsed.server.id}" is already registered` }, 400);
+        }
+
+        const { reachable, reason } = await checkMcpServerReachable(parsed.server, mcpServerReachabilityOpts);
+        if (!reachable) {
+          return json({ error: reason ?? "not reachable" }, 400);
+        }
+
+        await addMcpServer(mcpServersPath, parsed.server);
+        return json(mcpServers.add(parsed.server), 201);
       }
 
       if (parts[0] === "mcp-servers" && parts.length === 3) {

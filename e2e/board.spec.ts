@@ -1039,6 +1039,91 @@ test.describe("Board view", () => {
     await expect(toolRowAfterReload.locator(".hm-toggle")).toHaveText("Require approval");
   });
 
+  // The new "Add MCP server" form (docs/SDD-mcp-server-registration.md)
+  // — same real-request discipline as every other form-to-endpoint test
+  // in this project: asserts the actual outgoing POST /mcp-servers body,
+  // not just that the button is clickable (see e2e/projects.spec.ts's
+  // own local-folder test for the established convention this mirrors).
+  // `/bin/true` is used as the stdio command for the same reason the
+  // fixture server does (see e2e/fixtures/mcp-servers.yaml's own
+  // comment) — deterministically reachable on every machine and in CI.
+  test("adding a new MCP server via the panel's form posts the exact request body and shows the new row", async ({ page }) => {
+    await page.goto("/board");
+    await page.locator("#mcpOpenBtn").click();
+
+    const panel = page.locator("#mcpPanel");
+    await expect(panel).toBeVisible();
+
+    await panel.locator("#mcpAddId").fill("e2e-new-stdio");
+    await panel.locator("#mcpAddLabel").fill("E2E New Stdio Server");
+    await panel.locator("#mcpAddCommand").fill("/bin/true");
+    await panel.locator("#mcpAddArgs").fill("--flag, value");
+    await panel.locator("#mcpAddToolRowBtn").click();
+    await panel.locator(".mcp-add-tool-row .mcp-add-tool-name").fill("do_thing");
+
+    const [addResponse] = await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith("/mcp-servers") && r.request().method() === "POST"),
+      panel.locator("#mcpAddForm button[type=submit]").click(),
+    ]);
+    expect(addResponse.request().postDataJSON()).toEqual({
+      id: "e2e-new-stdio",
+      label: "E2E New Stdio Server",
+      transport: { kind: "stdio", command: "/bin/true", args: ["--flag", "value"] },
+      tools: [{ name: "do_thing", trust: "approval-required" }],
+    });
+    expect(addResponse.status()).toBe(201);
+
+    const newRow = panel.locator(".hm-row", { hasText: "E2E New Stdio Server" });
+    await expect(newRow).toBeVisible();
+    await expect(panel.getByText("do_thing")).toBeVisible();
+
+    // Reload and confirm the new server survives a real GET
+    // /mcp-servers, not just the optimistic client-side render.
+    await page.reload();
+    await page.locator("#mcpOpenBtn").click();
+    await expect(page.locator("#mcpPanel .hm-row", { hasText: "E2E New Stdio Server" })).toBeVisible();
+
+    const onDisk = await readFile(MCP_SERVERS_FIXTURE_PATH, "utf8");
+    expect(onDisk).toContain("id: e2e-new-stdio");
+  });
+
+  test("submitting the add-server form with a blank required field shows an inline error and sends no request", async ({ page }) => {
+    await page.goto("/board");
+    await page.locator("#mcpOpenBtn").click();
+
+    const panel = page.locator("#mcpPanel");
+    await panel.locator("#mcpAddId").fill("e2e-incomplete");
+    // Label deliberately left blank.
+
+    let sawRequest = false;
+    page.on("request", (r) => {
+      if (r.url().endsWith("/mcp-servers") && r.method() === "POST") sawRequest = true;
+    });
+
+    await panel.locator("#mcpAddForm button[type=submit]").click();
+    await expect(panel.locator("#mcpAddError")).toBeVisible();
+    await expect(panel.locator("#mcpAddError")).toHaveText("Label is required.");
+    expect(sawRequest).toBe(false);
+  });
+
+  test("submitting the add-server form with an id that's already registered renders the endpoint's error inline", async ({ page }) => {
+    await page.goto("/board");
+    await page.locator("#mcpOpenBtn").click();
+
+    const panel = page.locator("#mcpPanel");
+    await panel.locator("#mcpAddId").fill("e2e-fixture-mcp");
+    await panel.locator("#mcpAddLabel").fill("Duplicate Attempt");
+    await panel.locator("#mcpAddCommand").fill("/bin/true");
+
+    await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith("/mcp-servers") && r.request().method() === "POST"),
+      panel.locator("#mcpAddForm button[type=submit]").click(),
+    ]);
+
+    await expect(panel.locator("#mcpAddError")).toBeVisible();
+    await expect(panel.locator("#mcpAddError")).toContainText("already registered");
+  });
+
   test("an empty column collapses to just its header instead of reserving full card space", async ({ page }) => {
     await page.goto("/board");
     // "No match" is reliably empty in a fresh fixture board — nothing in

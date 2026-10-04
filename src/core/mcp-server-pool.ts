@@ -79,6 +79,25 @@ export class McpServerPool {
     else this.inFlight.set(id, n - 1);
   }
 
+  /** Adds a brand-new server to the live pool — the in-memory half of a
+   *  human registering a new MCP server via the board's "Manage MCP
+   *  servers" panel (`POST /mcp-servers`). The disk half is
+   *  `addMcpServer` in mcp-manifest.ts, always called first by the
+   *  caller, mirroring setEnabled/setToolTrust's own "disk first, then
+   *  this" convention. Throws on a duplicate id, mirroring `from`'s own
+   *  contract — the caller (the `POST /mcp-servers` handler) already
+   *  checked `get(id)` and 400'd before ever reaching here, so a throw
+   *  here is a caller bug, not a reachable runtime case (same "unknown
+   *  id is a caller bug" discipline `acquire`'s own doc comment states
+   *  for a different method). */
+  add(server: McpServer): McpServer {
+    if (this.servers.has(server.id)) {
+      throw new Error(`duplicate mcp server id: ${server.id}`);
+    }
+    this.servers.set(server.id, server);
+    return server;
+  }
+
   /** Mutates the live pool's copy of a server in place — the in-memory
    *  half of a human enable/disable decision, mirroring
    *  HarnessPool.setEnabled exactly (the disk half is
@@ -176,4 +195,102 @@ async function commandExistsOnPath(command: string, env: Record<string, string |
     if (ok) return true;
   }
   return false;
+}
+
+/** Raw, not-yet-validated shape of a `POST /mcp-servers` request body —
+ *  every field `unknown` at this layer since it comes straight off the
+ *  wire. */
+export interface McpServerCreateInput {
+  id?: unknown;
+  label?: unknown;
+  transport?: unknown;
+  tools?: unknown;
+  env?: unknown;
+}
+
+/**
+ * Validates a raw `POST /mcp-servers` body into a real `McpServer`
+ * (minus `disabledReason`, which is never settable at creation — a
+ * derived/runtime annotation, never hand-written, same rule
+ * `setMcpServerEnabled`'s own comment states for the YAML side). Mirrors
+ * the discipline `POST /projects/local`'s own body validation holds
+ * (required-field 400s with a clear message) but goes one level deeper:
+ * unlike a project's `path` (a bare string), `McpServer.transport` is a
+ * tagged union whose required fields differ by `kind`, so `kind` itself
+ * has to be checked before anything inside it can be validated.
+ *
+ * Pure and synchronous — no I/O, no reachability check. Reachability is
+ * `checkMcpServerReachable`'s job, called separately by the `POST
+ * /mcp-servers` handler only after this succeeds (see
+ * docs/SDD-mcp-server-registration.md §3.2/§3.3 for why creation reuses
+ * that check's existing cheap scope instead of a real MCP handshake, and
+ * refuses to persist anything when it fails).
+ */
+export function parseMcpServerCreateInput(body: McpServerCreateInput): { server: Omit<McpServer, "disabledReason"> } | { error: string } {
+  if (typeof body.id !== "string" || !body.id.trim()) return { error: "id is required" };
+  if (typeof body.label !== "string" || !body.label.trim()) return { error: "label is required" };
+
+  const transport = parseMcpTransportInput(body.transport);
+  if ("error" in transport) return transport;
+
+  const tools = parseMcpToolsInput(body.tools);
+  if ("error" in tools) return tools;
+
+  if (body.env !== undefined) {
+    if (typeof body.env !== "object" || body.env === null || Array.isArray(body.env)) {
+      return { error: "env must be an object mapping names to env var names" };
+    }
+    for (const [key, value] of Object.entries(body.env as Record<string, unknown>)) {
+      if (typeof value !== "string") return { error: `env.${key} must be a string (an env var name, never a secret value)` };
+    }
+  }
+
+  return {
+    server: {
+      id: body.id.trim(),
+      label: body.label.trim(),
+      transport: transport.transport,
+      tools: tools.tools,
+      enabled: true,
+      ...(body.env ? { env: body.env as Record<string, string> } : {}),
+    },
+  };
+}
+
+function parseMcpTransportInput(input: unknown): { transport: McpServer["transport"] } | { error: string } {
+  if (typeof input !== "object" || input === null) return { error: "transport is required" };
+  const t = input as Record<string, unknown>;
+
+  if (t.kind === "stdio") {
+    if (typeof t.command !== "string" || !t.command.trim()) return { error: "transport.command is required for a stdio server" };
+    if (t.args !== undefined && !(Array.isArray(t.args) && t.args.every((a) => typeof a === "string"))) {
+      return { error: "transport.args must be an array of strings" };
+    }
+    return { transport: { kind: "stdio", command: t.command.trim(), args: (t.args as string[] | undefined) ?? [] } };
+  }
+
+  if (t.kind === "sse" || t.kind === "http") {
+    if (typeof t.url !== "string" || !t.url.trim()) return { error: `transport.url is required for a ${t.kind} server` };
+    return { transport: { kind: t.kind, url: t.url.trim() } };
+  }
+
+  return { error: 'transport.kind must be "stdio", "sse", or "http"' };
+}
+
+function parseMcpToolsInput(input: unknown): { tools: McpServer["tools"] } | { error: string } {
+  if (input === undefined) return { tools: [] };
+  if (!Array.isArray(input)) return { error: "tools must be an array" };
+
+  const tools: McpServer["tools"] = [];
+  for (const item of input) {
+    if (typeof item !== "object" || item === null) return { error: "each tool must be an object with a name" };
+    const t = item as Record<string, unknown>;
+    if (typeof t.name !== "string" || !t.name.trim()) return { error: "each tool.name is required" };
+    const trust = t.trust ?? "approval-required";
+    if (trust !== "auto" && trust !== "approval-required") {
+      return { error: `tool "${t.name}".trust must be "auto" or "approval-required"` };
+    }
+    tools.push({ name: t.name.trim(), trust });
+  }
+  return { tools };
 }
