@@ -140,6 +140,8 @@ interface TaskRow {
   pipelineStepId: string | null;
   mcpAccessOverride: string | null;
   pendingMcpApproval: string | null;
+  extraAllowedDirs: string | null;
+  extraAllowedTools: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -174,6 +176,8 @@ function rowToCard(row: TaskRow): TaskCard {
     pipelineStepId: row.pipelineStepId ?? undefined,
     mcpAccessOverride: row.mcpAccessOverride ? (JSON.parse(row.mcpAccessOverride) as { server: string; tools: string[] }[]) : undefined,
     pendingMcpApproval: row.pendingMcpApproval ? (JSON.parse(row.pendingMcpApproval) as McpApprovalRequest) : undefined,
+    extraAllowedDirs: row.extraAllowedDirs ? (JSON.parse(row.extraAllowedDirs) as string[]) : undefined,
+    extraAllowedTools: row.extraAllowedTools ? (JSON.parse(row.extraAllowedTools) as string[]) : undefined,
   };
 }
 
@@ -222,7 +226,9 @@ export class SqliteBoard implements Board {
         pipelineRunId TEXT,
         pipelineStepId TEXT,
         mcpAccessOverride TEXT,
-        pendingMcpApproval TEXT
+        pendingMcpApproval TEXT,
+        extraAllowedDirs TEXT,
+        extraAllowedTools TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -251,6 +257,8 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN pipelineStepId TEXT;",
       "ALTER TABLE tasks ADD COLUMN mcpAccessOverride TEXT;",
       "ALTER TABLE tasks ADD COLUMN pendingMcpApproval TEXT;",
+      "ALTER TABLE tasks ADD COLUMN extraAllowedDirs TEXT;",
+      "ALTER TABLE tasks ADD COLUMN extraAllowedTools TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -440,7 +448,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -462,6 +470,8 @@ export class SqliteBoard implements Board {
         full.pipelineRunId ?? null,
         full.pipelineStepId ?? null,
         full.mcpAccessOverride ? JSON.stringify(full.mcpAccessOverride) : null,
+        full.extraAllowedDirs ? JSON.stringify(full.extraAllowedDirs) : null,
+        full.extraAllowedTools ? JSON.stringify(full.extraAllowedTools) : null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);

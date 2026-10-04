@@ -13,6 +13,7 @@ wall-clock time. Run explicitly before ship, and nightly.
 | `eval/pipeline-full-lifecycle.eval.ts` | `bun run eval:pipeline-full-lifecycle` | The full task lifecycle `PipelineDef` (`src/core/full-lifecycle-pipeline.ts` — triager in front of the same review-handoff loop) actually converges end to end against real `triager`/`implementer`/`pipeline-reviewer` agents — see docs/SDD-pipelines.md §10. |
 | `eval/pipeline-mcp-integration.eval.ts` | `bun run eval:pipeline-mcp-integration` | A heterogeneous pipeline (a file-editing coding step bound to `implementer`, then an MCP-tool-calling step bound to `mcp-tool-caller`) actually composes end to end through `startPipelineRun` against a real, attached MCP server — see docs/SDD-mcp-orchestration.md §6 Subtask 7. |
 | `eval/live-task-output.eval.ts` | `bun run eval:live-task-output` | A real `claude -p` call's streamed stdout actually lands in the durable task-output store and is deliverable live over a real HTTP SSE connection, end to end — spawn -> stream -> store -> SSE -> render — see docs/SDD-live-task-output.md §6 Subtask 5. |
+| `eval/conflict-integrator.eval.ts` | `bun run eval:conflict-integrator` | The real `integrator` agent, pointed at a real two-branch git conflict shaped like this session's own two real ones (both additive, same file), actually resolves it correctly end to end — not just that a follow-up task got created. See docs/SDD-crash-recovery.md §6 Subtask 3. |
 
 ## implementer-reviewer eval
 
@@ -331,4 +332,101 @@ once it's been observed.
 
 Same pattern as the other evals above — add a nightly cron line and a
 required CI step for `bun run eval:live-task-output`, same `timeout
+1800`, same real-authenticated-`claude` requirement.
+
+## conflict-integrator eval
+
+The gate tests for `maybeSpawnConflictIntegrator`
+(test/orchestrator.test.ts, test/orchestrator-review-lifecycle.test.ts)
+already prove the trigger/idempotency/fallback wiring against real git
+— but every write-tier call in those tests is a faked `claude`. None of
+them prove the one claim that actually matters: that the real
+`integrator` agent, pointed at a real conflicted repo, produces a
+*correct* resolution. This eval drives exactly that, with a real
+two-branch conflict shaped like this session's own two real ones (both
+additive, same file) and a single real, paid `claude` call — the
+integrator's own attempt.
+
+### Pass bar
+
+After the real integrator run: no unresolved conflict markers, no
+unmerged paths in `git status`, both branches' content present in the
+file, and a real merge commit landed. Any single miss fails the eval.
+
+### A real design gap this eval's own first draft caught
+
+Writing this eval surfaced a structural problem with the mechanism
+before it was ever run for real: the conflict-resolution follow-up task
+gets a *fresh* worktree of its own (same as every other write-tier
+task — see `createTaskWorktree`), a different absolute path from the
+original repo where the real conflict lives. `claude`'s own sandbox was
+already confirmed, in this project's own prior live smoke test (see
+docs/SDD-pipeline-automation.md's Subtask 3 notes: "a `cat` on a file
+outside the worktree was correctly denied"), to deny file/Bash access
+outside a run's own worktree. Telling the agent in its task body to `git
+-C <original-repo>` was not going to be enough — the sandbox would deny
+it regardless of instructions.
+
+Fixed, not just flagged: `claude`'s own `--add-dir <dir>` flag grants a
+run's subprocess access to directories beyond its cwd. Added
+`TaskCard.extraAllowedDirs` (src/core/types.ts), threaded through
+`RunClaudeOptions.addDir` (src/executors/claude-cli.ts) and
+`WriteExecutor` (src/executors/write.ts), and `maybeSpawnConflictIntegrator`
+now sets `extraAllowedDirs: [originalTask.repo]` on the follow-up it
+creates. Gate-tested in test/claude-cli.test.ts (the flag builds
+correctly, and is absent — byte-identical argv — for every real agent
+when omitted), test/write-executor.test.ts (the task field reaches the
+flag), and test/orchestrator.test.ts (the follow-up task actually
+carries the grant).
+
+### Status — confirmed PASS after a second gap was found and fixed
+
+A reviewer with real `claude`-subprocess-spawn access ran this eval for
+real, 3 independent times, after first fixing a blocking bug in the
+script itself (`writeFileSync(join(repo, FILE), BASE)` threw `ENOENT`
+because nothing ever `mkdirSync`'d `src/` first — fixed, now in the
+script). All 3 real runs ended with `git status --porcelain` showing `UU
+src/features.ts` and no merge commit landed. In 2/3 runs the model's own
+file-content resolution was actually correct (both branches combined, no
+markers); in all 3, the finishing `git add`/`git commit` step never
+completed — one run's own summary explicitly reported 7 Bash permission
+denials on `git -C <repo> status/add/commit`.
+
+Root cause: `extraAllowedDirs`/`--add-dir` only grants file-system
+access to the original repo path; it does **not** make `acceptEdits`'
+own Bash gating reliably allow a specific command against that path —
+confirmed by this exact live failure, not a guess. `--add-dir` and
+`--allowedTools` are separate gates (see RunClaudeOptions.allowedTools'
+own doc comment for the same finding on a different pair of commands).
+
+Fixed: added `TaskCard.extraAllowedTools` (src/core/types.ts), threaded
+through `WriteExecutor` (src/executors/write.ts, appended after its
+fixed `Bash(bun test:*)`/`Bash(bun run typecheck:*)` pair —
+`RunClaudeOptions.allowedTools` itself needed no change, it already
+accepted an array). `maybeSpawnConflictIntegrator` now also sets
+`extraAllowedTools: ["Bash(git -C <repo> status:*)", "...diff:*)",
+"...add:*)", "...commit:*)"]` on the follow-up — the exact commands
+`buildConflictIntegratorBody`'s own instructions tell the agent to run.
+Gate-tested in test/board.test.ts (the field round-trips through SQLite
+and heals a legacy on-disk DB predating it, same pattern as
+`extraAllowedDirs`), test/write-executor.test.ts (the task field reaches
+`--allowedTools`, appended after the fixed pair; a task without it gets
+byte-identical argv to before the field existed), test/orchestrator.test.ts
+and test/orchestrator-review-lifecycle.test.ts (the follow-up task
+carries the grant, and it reaches the real spawned command through a
+real `sweep()`, not just the task field).
+
+**This specific fix has been confirmed live.** A reviewer with real
+`claude`-subprocess-spawn access ran `bun run eval:conflict-integrator`
+twice: 2/2 PASS. Each run ended with a clean `git status --porcelain`,
+a real merge commit landed, and the resolved `src/features.ts` contained
+both features' content with no leftover conflict markers. This directly
+refutes the earlier 3/3 failure above — the `extraAllowedTools` grant on
+`git -C <repo> status/diff/add/commit` closes the Bash-gating gap
+`extraAllowedDirs` alone left open.
+
+### Scheduling
+
+Same pattern as the other evals above — add a nightly cron line and a
+required CI step for `bun run eval:conflict-integrator`, same `timeout
 1800`, same real-authenticated-`claude` requirement.

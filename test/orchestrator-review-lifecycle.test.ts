@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +11,7 @@ import { WriteExecutor } from "../src/executors/write.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import { runViaBun } from "../src/executors/claude-cli.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
-import type { AgentDef, ReviewVerdict } from "../src/core/types.ts";
+import type { AgentDef, ReviewVerdict, TaskCard } from "../src/core/types.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import { formatMcpTranscript } from "../src/services/mcp-transcript.ts";
 
@@ -74,10 +74,54 @@ function realGitFakeClaude(verdicts: ReviewVerdict[]): CommandRunner & { worktre
   return Object.assign(runner, { worktreeAddCount: () => worktreeAdds });
 }
 
+/**
+ * Same as `realGitFakeClaude`, except the write-tier ("acceptEdits")
+ * branch also writes `relPath`/`content` into the worktree it's handed
+ * (`opts.cwd` — WriteExecutor.run overrides `task.repo` to
+ * `worktree.path` before calling runClaude, see write.ts) instead of
+ * leaving the worktree untouched. Needed because `Orchestrator.process`
+ * always calls `finishResult` with `runner` left as its default
+ * (`runViaBun`, see orchestrator.ts's own `finishResult` calls) —
+ * `tryAutoMerge`'s own `git merge` always runs for real, never through
+ * whatever CommandRunner the executors were given, so the only way to
+ * script a *real* conflict is a real divergent commit on each side, not
+ * a faked exit code on the merge call itself. Every `realGitFakeClaude`
+ * test elsewhere never needed this because none of them exercise an
+ * actual content conflict — their merges are genuine no-ops (no file
+ * was ever written), which is also real git, just never conflicting
+ * git.
+ */
+function realGitFakeClaudeWritingFile(
+  verdicts: ReviewVerdict[],
+  relPath: string,
+  content: string,
+): CommandRunner & { worktreeAddCount(): number; writeCmds(): string[][] } {
+  let reviewerCalls = 0;
+  let worktreeAdds = 0;
+  const writeCmds: string[][] = [];
+  const runner: CommandRunner = async (cmd, opts) => {
+    if (cmd[0] === "git") {
+      if (cmd[1] === "worktree" && cmd[2] === "add") worktreeAdds++;
+      return runViaBun(cmd, opts);
+    }
+    const mode = cmd[cmd.indexOf("--permission-mode") + 1];
+    if (mode === "plan") {
+      const v = verdicts[reviewerCalls++];
+      if (!v) throw new Error(`reviewer invoked a ${reviewerCalls}th time — test only scripted ${verdicts.length} verdict(s)`);
+      const result = `Reviewed the diff.\n\n\`\`\`review-verdict\n${JSON.stringify(v)}\n\`\`\``;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result }), stderr: "", exitCode: 0 };
+    }
+    writeCmds.push(cmd);
+    writeFileSync(join(opts.cwd, relPath), content);
+    return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "implemented" }), stderr: "", exitCode: 0 };
+  };
+  return Object.assign(runner, { worktreeAddCount: () => worktreeAdds, writeCmds: () => writeCmds });
+}
+
 interface Fixture {
   repo: string;
   home: string;
-  runner: CommandRunner & { worktreeAddCount(): number };
+  runner: CommandRunner & { worktreeAddCount(): number; writeCmds?(): string[][] };
   board: SqliteBoard;
   orchestrator: Orchestrator;
 }
@@ -93,9 +137,41 @@ async function setup(verdicts: ReviewVerdict[], agents?: AgentDef[]): Promise<Fi
   return { repo, home, runner, board, orchestrator };
 }
 
+/** Same as `setup`, except the implementer's fake "claude" call writes
+ *  real content into its worktree (see realGitFakeClaudeWritingFile) —
+ *  needed to set up a real conflict later. Always uses the real,
+ *  manifest-loaded registry (never a synthetic `agents` override) so
+ *  the real `implementer` (autoMerge:true) and the real `integrator`
+ *  are both present, the same way the "approve verdict, real
+ *  implementer" test above does. */
+async function setupWritingFile(verdicts: ReviewVerdict[], relPath: string, content: string): Promise<Fixture> {
+  const repo = await realRepo();
+  const home = await mkdtemp(join(tmpdir(), "wissel-review-lifecycle-home-"));
+  const runner = realGitFakeClaudeWritingFile(verdicts, relPath, content);
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  const executors = [new WriteExecutor({ runner, homeDir: home }), new ReadOnlyExecutor({ runner })];
+  const orchestrator = new Orchestrator(board, registry, new Router(registry), executors, undefined, { executeWriteTier: true });
+  return { repo, home, runner, board, orchestrator };
+}
+
 async function cleanup(fixture: Pick<Fixture, "repo" | "home">): Promise<void> {
   await rm(fixture.repo, { recursive: true, force: true });
   await rm(fixture.home, { recursive: true, force: true });
+}
+
+/** `runNow` returns once the run is in flight, not once it's done (see
+ *  its own doc comment, src/core/orchestrator.ts) — needed only for the
+ *  idempotency test below, which re-runs an already-approved task via
+ *  `runNow` rather than the sweep-driven `driveRounds`. Mirrors
+ *  `waitForStatus` in test/orchestrator.test.ts. */
+async function waitForStatus(board: SqliteBoard, taskId: string, status: TaskCard["status"]): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    if ((await board.get(taskId))!.status === status) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`task ${taskId} never reached status ${status}`);
 }
 
 /** One full round = the pending implementer attempt runs (spawning its
@@ -268,6 +344,160 @@ test("approve verdict, real implementer (autoMerge:true) resumes straight to don
     expect(existsSync(worktreePath)).toBe(false);
     const branches = Bun.spawnSync(["git", "branch", "--list"], { cwd: fixture.repo, stdout: "pipe" }).stdout.toString("utf8");
     expect(branches).not.toContain(`wissel/${task.id}`);
+  } finally {
+    await cleanup(fixture);
+  }
+});
+
+test("a fresh merge conflict on approve auto-spawns exactly one integrator-routed follow-up, with the existing review fallback unchanged — real git, real divergent commits, real sweep, real implementer/integrator", async () => {
+  const relPath = "feature.txt";
+  const fixture = await setupWritingFile([{ verdict: "approve", feedback: "looks good" }], relPath, "line from implementer\n");
+  try {
+    const task = await fixture.board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: fixture.repo });
+
+    // Round 1, sweep 1: the implementer runs, writes feature.txt into
+    // its own worktree (uncommitted so far — mergeTaskWorktree commits
+    // it later, at merge time), spawns its reviewer task.
+    await fixture.orchestrator.sweep();
+
+    // Diverges fixture.repo's own checked-out branch on the exact same
+    // file *after* the worktree already branched off it — the one
+    // thing that turns the later merge into a real conflict instead of
+    // a clean fast-forward: both sides independently created the same
+    // file with different content, from the same common ancestor.
+    writeFileSync(join(fixture.repo, relPath), "line from repo HEAD\n");
+    git(["add", "-A"], fixture.repo);
+    git(["commit", "-q", "-m", "diverge on repo HEAD"], fixture.repo);
+
+    // Round 1, sweep 2: the reviewer approves -> resumeAfterApproval ->
+    // tryAutoMerge -> mergeTaskWorktree commits the worktree's own
+    // feature.txt for real, then a real `git merge --no-ff` into
+    // fixture.repo genuinely conflicts.
+    await fixture.orchestrator.sweep();
+
+    // The existing fallback is completely unchanged: a conflicted
+    // auto-merge still lands the original task on "review" for a
+    // human, exactly as it did before this feature existed (see the
+    // synthetic-agent conflict test in test/orchestrator.test.ts).
+    expect((await fixture.board.get(task.id))!.status).toBe("review");
+    const reviewerTask = (await fixture.board.list()).find((t) => t.parentTaskId === task.id);
+    expect(reviewerTask!.status).toBe("done");
+
+    // The worktree is untouched (removeTaskWorktree only ever runs on a
+    // successful merge) — the conflict sits in fixture.repo's own
+    // working tree, left exactly as git produced it.
+    const worktreePath = (await fixture.board.getResult(task.id))!.worktree!.path;
+    expect(existsSync(worktreePath)).toBe(true);
+    const repoStatus = Bun.spawnSync(["git", "status", "--porcelain"], { cwd: fixture.repo, stdout: "pipe" }).stdout.toString("utf8");
+    expect(repoStatus).toContain("feature.txt");
+
+    // Exactly one integrator-routed follow-up, carrying the repo, the
+    // worktree branch, and the real conflict output.
+    const followUps = (await fixture.board.list()).filter((t) => t.labels.includes("conflict"));
+    expect(followUps).toHaveLength(1);
+    const followUp = followUps[0]!;
+    expect(followUp.title).toBe(`Resolve merge conflict: ${task.id}`);
+    expect(followUp.repo).toBe(fixture.repo);
+    expect(followUp.body).toContain(`wissel/${task.id}`);
+    expect(followUp.body).toContain("CONFLICT");
+    expect(followUp.body).toContain("feature.txt");
+    // Grants the follow-up's own write-tier run (a fresh worktree of
+    // its own, a different absolute path from fixture.repo) access to
+    // fixture.repo directly — without this, claude's own sandbox denies
+    // the out-of-worktree access the body above instructs it to use.
+    expect(followUp.extraAllowedDirs).toEqual([fixture.repo]);
+    // extraAllowedDirs alone only grants file-system access (--add-dir);
+    // it does not make acceptEdits' own Bash gating allow the git
+    // commands the body above instructs — extraAllowedTools is the
+    // separate grant for that (see TaskCard.extraAllowedTools).
+    expect(followUp.extraAllowedTools).toEqual([
+      `Bash(git -C ${fixture.repo} status:*)`,
+      `Bash(git -C ${fixture.repo} diff:*)`,
+      `Bash(git -C ${fixture.repo} add:*)`,
+      `Bash(git -C ${fixture.repo} commit:*)`,
+    ]);
+
+    // Routed to "integrator" for real, through the orchestrator's own
+    // sweep (not a Router.route() call made in isolation) — and its own
+    // run lands on the same human review gate every other write-tier
+    // success without a reviewer handoff gets.
+    await fixture.orchestrator.sweep();
+    const routed = await fixture.board.get(followUp.id);
+    expect(routed!.routedTo).toBe("integrator");
+    expect(routed!.status).toBe("review");
+
+    // The integrator's own real dispatch (the 2nd write-tier call this
+    // fixture makes — the implementer's own call is the 1st) actually
+    // carried --add-dir <fixture.repo>, not just that the task field was
+    // set — proves the wiring reaches all the way to the spawned
+    // command, through a real sweep(), not just through WriteExecutor's
+    // own isolated unit tests.
+    const integratorCmd = fixture.runner.writeCmds!()[1]!;
+    const addDirIdx = integratorCmd.indexOf("--add-dir");
+    expect(addDirIdx).toBeGreaterThan(-1);
+    expect(integratorCmd[addDirIdx + 1]).toBe(fixture.repo);
+    // Same proof for --allowedTools: the git grants reach the real
+    // spawned command, not just the task field.
+    const allowedToolsIdx = integratorCmd.indexOf("--allowedTools");
+    expect(allowedToolsIdx).toBeGreaterThan(-1);
+    expect(integratorCmd.slice(allowedToolsIdx + 1, addDirIdx)).toEqual([
+      "Bash(bun test:*)",
+      "Bash(bun run typecheck:*)",
+      `Bash(git -C ${fixture.repo} status:*)`,
+      `Bash(git -C ${fixture.repo} diff:*)`,
+      `Bash(git -C ${fixture.repo} add:*)`,
+      `Bash(git -C ${fixture.repo} commit:*)`,
+    ]);
+  } finally {
+    await cleanup(fixture);
+  }
+});
+
+test("a second conflict for the same task, driven through a second real approve-resume, creates no duplicate follow-up", async () => {
+  // Reuses the exact same lineage's worktree across two separate
+  // conflicted merge attempts — the realistic version of "a second
+  // conflict event for a task that already has a follow-up integrator
+  // task": a human (or a failed integrator attempt) leaves the task in
+  // "review" with the repo still genuinely diverged from the worktree,
+  // and a later retry hits the exact same conflict again.
+  const relPath = "feature.txt";
+  const fixture = await setupWritingFile(
+    [
+      { verdict: "approve", feedback: "ship it" },
+      { verdict: "approve", feedback: "ship it, second look" },
+    ],
+    relPath,
+    "line from implementer\n",
+  );
+  try {
+    const task = await fixture.board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: fixture.repo });
+
+    await fixture.orchestrator.sweep();
+    writeFileSync(join(fixture.repo, relPath), "line from repo HEAD\n");
+    git(["add", "-A"], fixture.repo);
+    git(["commit", "-q", "-m", "diverge on repo HEAD"], fixture.repo);
+    await fixture.orchestrator.sweep();
+
+    expect((await fixture.board.get(task.id))!.status).toBe("review");
+    expect((await fixture.board.list()).filter((t) => t.labels.includes("conflict"))).toHaveLength(1);
+
+    // Re-run the same implementer task for real (runNow bypasses the
+    // sweep's "already routed" skip — same escape hatch "a human's
+    // per-task decision overrides the blanket gate" in
+    // test/orchestrator.test.ts exercises). Reuses the exact same
+    // worktree/branch (createTaskWorktree's own idempotent reuse, keyed
+    // off task.id since this task was never pushed back) and feature.txt
+    // ends up with byte-identical content again, so there's nothing new
+    // to commit — the worktree branch and fixture.repo's own branch are
+    // exactly as diverged as they were a moment ago, and a second
+    // reviewer pass hits the exact same real conflict again.
+    await fixture.orchestrator.runNow(task.id, [new WriteExecutor({ runner: fixture.runner, homeDir: fixture.home }), new ReadOnlyExecutor({ runner: fixture.runner })]);
+    await waitForStatus(fixture.board, task.id, "pending-review");
+    await fixture.orchestrator.sweep();
+
+    expect((await fixture.board.get(task.id))!.status).toBe("review");
+    const followUps = (await fixture.board.list()).filter((t) => t.labels.includes("conflict"));
+    expect(followUps).toHaveLength(1);
   } finally {
     await cleanup(fixture);
   }

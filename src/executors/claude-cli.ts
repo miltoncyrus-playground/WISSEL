@@ -240,6 +240,14 @@ export interface RunClaudeOptions {
    *  hands this function a task whose `repo` is already its worktree
    *  path, so this option has zero effect on a write-tier run. */
   homeDir?: string;
+  /** Passed straight through as `--add-dir` — grants the spawned
+   *  subprocess file/Bash access to directories beyond its own `cwd`,
+   *  which `claude`'s own sandbox otherwise denies (confirmed live, see
+   *  docs/SDD-pipeline-automation.md's Subtask 3 smoke-test notes).
+   *  Undefined/empty means no `--add-dir` at all — byte-identical argv
+   *  to before this option existed. See TaskCard.extraAllowedDirs for
+   *  the one caller that sets this. */
+  addDir?: string[];
 }
 
 /**
@@ -249,7 +257,7 @@ export interface RunClaudeOptions {
  * tiers is `--permission-mode`, which the caller picks.
  */
 export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
-  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath, onChunk, mcpAccess, mcpServers, homeDir, mcpAccessPreApproved } =
+  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath, onChunk, mcpAccess, mcpServers, homeDir, mcpAccessPreApproved, addDir } =
     opts;
   const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
 
@@ -306,6 +314,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   if (mcpConfig) cmd.push("--mcp-config", JSON.stringify(mcpConfig), "--strict-mcp-config");
   const combinedAllowedTools = [...(allowedTools ?? []), ...mcpAllowedToolNames(auto)];
   if (combinedAllowedTools.length > 0) cmd.push("--allowedTools", ...combinedAllowedTools);
+  if (addDir && addDir.length > 0) cmd.push("--add-dir", ...addDir);
 
   // Always force these two empty, harness or no harness — confirmed
   // live (not just for the auth-status probe): an ambient

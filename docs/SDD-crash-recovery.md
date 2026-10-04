@@ -260,6 +260,49 @@ conflict path, the integrator task's own body/instructions per §3.3.
   test proves the claimed behavior" precedent in this project's own
   eval suite.
 
+**Revision callout — built with one corrected assumption, found before
+the first real run.** §3.3 and §4 above describe the follow-up task's
+body as telling the agent to reach `originalTask.repo` directly via
+Bash (`git -C <repo> status`, etc.) from inside its own separate
+worktree. Building the live smoke test for this (`eval/conflict-
+integrator.eval.ts`) surfaced a problem with that plan before it was
+ever run for real: `claude`'s own sandbox was already confirmed, in
+this project's prior live smoke test for a different subtask (see
+docs/SDD-pipeline-automation.md's Subtask 3 notes — "a `cat` on a file
+outside the worktree was correctly denied"), to deny file/Bash access
+outside a run's own worktree. Instructions alone were never going to be
+enough. Fixed before shipping: `claude`'s own `--add-dir <dir>` flag
+grants exactly this kind of outside-worktree access; added
+`TaskCard.extraAllowedDirs`, threaded through `RunClaudeOptions.addDir`
+and `WriteExecutor`, and `maybeSpawnConflictIntegrator` now sets
+`extraAllowedDirs: [originalTask.repo]` on every follow-up it creates.
+See eval/README.md's "conflict-integrator eval" section for the full
+account, including why the live smoke test itself (and the fix's own
+final empirical confirmation) is still an open item — the implementer
+session that built this had no `claude`-subprocess-spawn access to
+actually run it.
+
+**Second revision callout — the first live run found `extraAllowedDirs`
+alone isn't sufficient.** A reviewer with real `claude`-subprocess-spawn
+access ran `eval/conflict-integrator.eval.ts` for real 3 times: all 3
+left the conflict unresolved (`git status --porcelain` showing `UU
+src/features.ts`, no merge commit), with one run's own summary reporting
+7 Bash permission denials on `git -C <repo> status/add/commit`.
+`extraAllowedDirs`/`--add-dir` only grants file-system access to the
+outside-worktree path — it does not make `acceptEdits`' own Bash gating
+reliably allow a specific command against that path, the same
+"`acceptEdits` Bash gating is evidently inconsistent" finding
+`RunClaudeOptions.allowedTools`'s own doc comment already names for a
+different pair of commands. Fixed: added `TaskCard.extraAllowedTools`
+(mirrors `extraAllowedDirs`'s shape), threaded through `WriteExecutor`
+(appended after its fixed `Bash(bun test:*)`/`Bash(bun run
+typecheck:*)` pair), and `maybeSpawnConflictIntegrator` now also sets
+`extraAllowedTools` granting exactly the `git -C <repo>
+status/diff/add/commit` commands its own task body instructs. This
+second fix has since been confirmed against a real `claude` run: 2/2
+PASS (clean git status, merge commit landed, both features present
+each run) — see eval/README.md's updated status note.
+
 ## 7. Sequencing
 
 1 and 2 are fully independent of each other and of 3 — all three can run

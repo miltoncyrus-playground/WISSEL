@@ -7,7 +7,7 @@ import type { Registry } from "./registry.ts";
 import type { Router } from "./router.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import { runViaBun } from "../executors/claude-cli.ts";
-import { mergeTaskWorktree } from "../services/worktree.ts";
+import { mergeTaskWorktree, type TaskWorktree } from "../services/worktree.ts";
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
 import { handlePipelineStepResult } from "./pipeline-runner.ts";
 import { formatMcpTranscript } from "../services/mcp-transcript.ts";
@@ -243,7 +243,7 @@ export async function finishResult(
     return;
   }
 
-  if (agent.autoMerge && agent.trustLevel === "high" && (await tryAutoMerge(board, result, runner))) {
+  if (agent.autoMerge && agent.trustLevel === "high" && (await tryAutoMerge(board, registry, result, runner))) {
     await board.move(result.taskId, "done");
     return;
   }
@@ -397,7 +397,7 @@ async function resumeAfterApproval(board: Board, registry: Registry, implementer
   const agent = implementerTask.routedTo ? registry.get(implementerTask.routedTo) : undefined;
   const originalResult = await board.getResult(implementerTask.id);
 
-  if (agent?.autoMerge && agent.trustLevel === "high" && originalResult && (await tryAutoMerge(board, originalResult, runner))) {
+  if (agent?.autoMerge && agent.trustLevel === "high" && originalResult && (await tryAutoMerge(board, registry, originalResult, runner))) {
     await board.move(implementerTask.id, "done");
     return;
   }
@@ -464,8 +464,17 @@ async function buildEscalationContext(board: Board, reviewLineageId: string): Pr
  *  `done` unattended: no worktree to merge (nothing to reconcile — e.g.
  *  an external report with no local execution behind it), or a worktree
  *  whose merge genuinely succeeded (git merge --no-ff, same as a human
- *  clicking Merge — never a bare status change masquerading as one). */
-async function tryAutoMerge(board: Board, result: TaskResult, runner: CommandRunner): Promise<boolean> {
+ *  clicking Merge — never a bare status change masquerading as one).
+ *
+ *  A fresh conflict (merge.ok === false) is the one moment
+ *  docs/SDD-crash-recovery.md §3.3 identifies as safe to attempt
+ *  automatic resolution in — see maybeSpawnConflictIntegrator below —
+ *  so it's fired here, right where the conflict is first discovered,
+ *  not deferred to some later check. Either way this still returns
+ *  `false`: the caller's own existing fallback (land on `review` for a
+ *  human) is unchanged, now just running alongside whatever the spawned
+ *  integrator task produces instead of a bare conflict. */
+async function tryAutoMerge(board: Board, registry: Registry, result: TaskResult, runner: CommandRunner): Promise<boolean> {
   if (!result.worktree) return true;
   const task = await board.get(result.taskId);
   if (!task) return false;
@@ -473,7 +482,174 @@ async function tryAutoMerge(board: Board, result: TaskResult, runner: CommandRun
   // `repo` at creation time (see POST /tasks' validation) — never
   // reachable for a repo-less readonly task.
   const merge = await mergeTaskWorktree(task.repo!, result.worktree, task, runner);
+  if (!merge.ok) {
+    try {
+      await maybeSpawnConflictIntegrator(board, registry, task, result.worktree, merge.message);
+    } catch (e) {
+      console.error(`orchestrator: failed to check/spawn conflict integrator for ${task.id}: ${(e as Error).message}`);
+    }
+  }
   return merge.ok;
+}
+
+/** Tag the auto-spawned conflict follow-up carries — the exact string
+ *  "conflict" is also one of `integrator`'s own declared tags in
+ *  agents/manifest.yaml (`tags: [merge, rebase, conflict, integration]`),
+ *  and no other agent's tags include it, so a task labeled with only
+ *  this one tag routes to `integrator` with full confidence (1/1 tag
+ *  overlap, no tie). Reused below as the idempotency marker too. */
+const CONFLICT_LABEL = "conflict";
+
+/** Deterministic title for the conflict follow-up spawned under
+ *  `originalTask` — doubles as the idempotency key `maybeSpawnConflict
+ *  Integrator` searches for (see below), so it's built from `task.id`
+ *  rather than `task.title`, which could in principle collide across
+ *  two different tasks or change after the follow-up was created. */
+function conflictIntegratorTitle(originalTask: TaskCard): string {
+  return `Resolve merge conflict: ${originalTask.id}`;
+}
+
+/**
+ * Auto-creates a single `integrator`-routed follow-up the moment
+ * `tryAutoMerge` detects a *fresh* merge conflict — see
+ * docs/SDD-crash-recovery.md §3.3 for why this specific moment (and
+ * only this moment) is safe to auto-resolve in: nothing else has had a
+ * chance to touch a conflict that didn't exist an instant ago, so
+ * there's no risk of racing a human's own in-progress manual
+ * resolution — unlike reacting to a conflict found lingering at an
+ * arbitrary later startup (the separate dangling-merge *visibility*
+ * work, which deliberately does not auto-resolve, for exactly that
+ * reason).
+ *
+ * Deliberately does **not** set `parentTaskId` to `originalTask.id`,
+ * even though that's the obvious-looking way to link the two cards.
+ * `resolveHandoffAllowlist` (above) restricts a follow-up's routing
+ * candidates to its parent's routed agent's own declared `handoffs`
+ * when `parentTaskId` is set — correct for a real handoff relationship
+ * (a reviewer task under an implementer, a pushback re-attempt under a
+ * reviewer), but wrong here: `originalTask` is very often routed to
+ * `implementer`, whose `handoffs` is `[reviewer]` — setting
+ * `parentTaskId` would restrict this follow-up to *only* "reviewer",
+ * silently stranding it exactly the way a planner subtask once was
+ * (see resolveHandoffAllowlist's own doc comment, and the identical
+ * deliberate omission in `POST /tasks/:id/mcp-approval/approve`,
+ * src/api/server.ts, which hit this exact trap first). Idempotency and
+ * display linkage are instead carried by a deterministic title (see
+ * conflictIntegratorTitle) built from `originalTask.id`, plus the id
+ * spelled out again in the body for a human reading the card.
+ *
+ * Idempotent: a second conflict for a task that already has a
+ * follow-up (e.g. a retried merge attempt hitting the same conflict
+ * twice) creates no duplicate — mirrors maybeSpawnIntegrator's own
+ * "check before create" discipline, just keyed by title instead of
+ * parentTaskId+label for the reason above.
+ *
+ * Deliberately does NOT add `handoffs: [reviewer]` to `integrator`'s
+ * own manifest entry (agents/manifest.yaml) to put this follow-up's own
+ * attempt through the automated reviewer pushback loop before it lands.
+ * `integrator` is shared with a second, unrelated trigger
+ * (maybeSpawnIntegrator's subtask-set-completion check above) —
+ * `handoffs` is a static per-agent field (see AgentDef.handoffs), so
+ * adding it here would turn on the pushback loop for *that* use case
+ * too, a behavior change well beyond this one trigger's scope (and the
+ * same reasoning `pipeline-reviewer` was given its own separate agent
+ * id over, rather than widening `reviewer`, for a similar "two callers
+ * want different behavior off one id" shape — see its own manifest
+ * comment). The safety net this follow-up actually gets is the
+ * existing one every write-tier task without a reviewer handoff
+ * already has: it lands on the human `review` queue, where a bad
+ * resolution is caught before anyone clicks Merge — same gate, not a
+ * weaker one, just not the extra automated pass. Worth revisiting as a
+ * dedicated `handoffs`-enabled agent id if conflict-resolution quality
+ * in practice ever calls for it.
+ *
+ * Sets `extraAllowedDirs: [originalTask.repo]` on the created task —
+ * not optional decoration. This follow-up's own write-tier run gets a
+ * *fresh* worktree of its own (WriteExecutor/createTaskWorktree, same
+ * as every other write-tier task), a different absolute path from
+ * `originalTask.repo`, where the real conflict actually lives (that's
+ * where `mergeTaskWorktree`'s `git merge` ran). Without this grant, the
+ * `--add-dir`-gated sandbox that confirmed-live denies file/Bash access
+ * outside a run's own worktree (see TaskCard.extraAllowedDirs's own doc
+ * comment, docs/SDD-pipeline-automation.md's Subtask 3 smoke-test
+ * notes) would make every instruction below to touch
+ * `originalTask.repo` directly fail closed instead of actually
+ * resolving anything — a task that *looks* actionable but structurally
+ * can't do the one thing it was spawned to do.
+ *
+ * Also sets `extraAllowedTools` granting the exact `git -C
+ * <originalTask.repo> status/diff/add/commit` invocations
+ * `buildConflictIntegratorBody` below instructs the agent to run —
+ * `extraAllowedDirs` alone only grants file-system access to the path
+ * (`--add-dir`), it does NOT make `acceptEdits`' own Bash gating
+ * reliably allow those specific commands (confirmed live: a real run
+ * with only `extraAllowedDirs` set hit repeated Bash permission denials
+ * on exactly these commands and never completed the merge — see
+ * TaskCard.extraAllowedTools' own doc comment). Without this, the
+ * follow-up could read/inspect the conflict but could never actually
+ * finish it.
+ */
+export async function maybeSpawnConflictIntegrator(
+  board: Board,
+  registry: Registry,
+  originalTask: TaskCard,
+  worktree: TaskWorktree,
+  conflictMessage: string,
+): Promise<void> {
+  const integratorAgent = registry.get("integrator");
+  if (!integratorAgent) return; // no integrator agent registered — nothing to route this to
+
+  const title = conflictIntegratorTitle(originalTask);
+  const existing = (await board.list()).some((t) => t.title === title && t.labels.includes(CONFLICT_LABEL));
+  if (existing) return;
+
+  const repo = originalTask.repo!;
+  await board.create({
+    title,
+    body: buildConflictIntegratorBody(originalTask, worktree, conflictMessage),
+    labels: [CONFLICT_LABEL],
+    repo: originalTask.repo,
+    extraAllowedDirs: [repo],
+    extraAllowedTools: [
+      `Bash(git -C ${repo} status:*)`,
+      `Bash(git -C ${repo} diff:*)`,
+      `Bash(git -C ${repo} add:*)`,
+      `Bash(git -C ${repo} commit:*)`,
+    ],
+  });
+}
+
+function buildConflictIntegratorBody(originalTask: TaskCard, worktree: TaskWorktree, conflictMessage: string): string {
+  return [
+    `Auto-merging "${originalTask.title}" (task ${originalTask.id}) hit a conflict merging worktree branch`,
+    `\`${worktree.branch}\` into \`${originalTask.repo}\`. The worktree itself (${worktree.path}) is untouched;`,
+    `the conflict is sitting in ${originalTask.repo}'s own working tree right now, left exactly as git produced`,
+    "it — nothing has been committed, aborted, or otherwise cleaned up.",
+    "",
+    "IMPORTANT — your own working directory for this task is a fresh, separate git worktree checked out clean",
+    `from the current HEAD of ${originalTask.repo}. It does NOT contain the conflict — your own files will look`,
+    "untouched and your own `git status` will come back clean. The actual conflict markers live only at",
+    `${originalTask.repo} itself (an absolute path, not your own working directory). You've been granted explicit`,
+    `access to that path (--add-dir) specifically so this works — use Bash with that absolute path — e.g.`,
+    "`git -C " + originalTask.repo + " status`, `git -C " + originalTask.repo + " diff`, editing files" +
+      ` by their full path under ${originalTask.repo} — to actually inspect and resolve the conflict there. Do not`,
+    "trust or edit your own working directory's copy of the file; it reflects a different, unrelated commit.",
+    "",
+    "Real git conflict output:",
+    "```",
+    conflictMessage,
+    "```",
+    "",
+    "The common case for a conflict here is two features additively touching the same section or file — both",
+    "sides added real content, nothing contradictory. If that's what this is, resolve it directly in",
+    `${originalTask.repo}'s own working tree by combining both sides faithfully: keep everything either side`,
+    "added, drop nothing from either, then `git add`/`git commit` there to finish the merge.",
+    "",
+    "But if this looks like a genuine semantic contradiction instead — not just two additions near each other,",
+    "but two changes that actually disagree about what the code should do — stop. Leave the conflict exactly as",
+    "found. Never guess, and never silently pick one side and discard the other. Report what you found and why",
+    "it isn't safely combinable; a human will resolve it from there.",
+  ].join("\n");
 }
 
 /**

@@ -870,3 +870,36 @@ test("every real agent in agents/manifest.yaml that doesn't declare mcpAccess se
     expect(withPool).toEqual(withoutPool);
   }
 });
+
+test("addDir builds --add-dir with exactly the given paths", async () => {
+  const cmd = await captureCmd({ addDir: ["/some/other/repo"] });
+  const addDirIndex = cmd.indexOf("--add-dir");
+  expect(addDirIndex).toBeGreaterThan(-1);
+  expect(cmd[addDirIndex + 1]).toBe("/some/other/repo");
+});
+
+test("addDir with multiple paths passes every one of them to --add-dir", async () => {
+  const cmd = await captureCmd({ addDir: ["/repo/a", "/repo/b"] });
+  const addDirIndex = cmd.indexOf("--add-dir");
+  expect(cmd.slice(addDirIndex + 1, addDirIndex + 3)).toEqual(["/repo/a", "/repo/b"]);
+});
+
+test("omitting addDir (every call before this option existed) never adds --add-dir — byte-identical argv", async () => {
+  const withoutAddDir = await captureCmd({});
+  expect(withoutAddDir).not.toContain("--add-dir");
+});
+
+test("addDir: [] (present but empty) is treated the same as omitted — no --add-dir, not an empty flag", async () => {
+  const cmd = await captureCmd({ addDir: [] });
+  expect(cmd).not.toContain("--add-dir");
+});
+
+test("every real agent in agents/manifest.yaml gets byte-identical argv when addDir is omitted, proving this option changes nothing for the default case", async () => {
+  const { Registry } = await import("../src/core/registry.ts");
+  const registry = await Registry.load();
+  for (const agent of registry.all()) {
+    const withoutAddDirOption = await captureCmd({ agent, permissionMode: "plan" });
+    const withAddDirExplicitlyUndefined = await captureCmd({ agent, permissionMode: "plan", addDir: undefined });
+    expect(withAddDirExplicitlyUndefined).toEqual(withoutAddDirOption);
+  }
+});
