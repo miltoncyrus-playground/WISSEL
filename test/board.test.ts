@@ -936,6 +936,42 @@ test("create round-trips mcpAccessOverride, and leaves it undefined when omitted
   expect(bare.mcpAccessOverride).toBeUndefined();
 });
 
+// --- extraAllowedDirs (docs/SDD-crash-recovery.md §3.3) -----------------
+
+test("create round-trips extraAllowedDirs, and leaves it undefined when omitted", async () => {
+  const board = new SqliteBoard();
+  const scoped = await board.create({
+    title: "resolve conflict",
+    body: "",
+    labels: ["conflict"],
+    repo: "r",
+    extraAllowedDirs: ["/original/repo"],
+  });
+  expect(scoped.extraAllowedDirs).toEqual(["/original/repo"]);
+  expect((await board.get(scoped.id))!.extraAllowedDirs).toEqual(["/original/repo"]);
+
+  const bare = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  expect(bare.extraAllowedDirs).toBeUndefined();
+});
+
+// --- extraAllowedTools (docs/SDD-crash-recovery.md §3.3) -----------------
+
+test("create round-trips extraAllowedTools, and leaves it undefined when omitted", async () => {
+  const board = new SqliteBoard();
+  const scoped = await board.create({
+    title: "resolve conflict",
+    body: "",
+    labels: ["conflict"],
+    repo: "r",
+    extraAllowedTools: ["Bash(git -C /original/repo status:*)", "Bash(git -C /original/repo commit:*)"],
+  });
+  expect(scoped.extraAllowedTools).toEqual(["Bash(git -C /original/repo status:*)", "Bash(git -C /original/repo commit:*)"]);
+  expect((await board.get(scoped.id))!.extraAllowedTools).toEqual(["Bash(git -C /original/repo status:*)", "Bash(git -C /original/repo commit:*)"]);
+
+  const bare = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  expect(bare.extraAllowedTools).toBeUndefined();
+});
+
 test("requestMcpApproval moves a task to review and records pendingMcpApproval atomically, emits task.moved, rejects unknown ids", async () => {
   const board = new SqliteBoard();
   const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
@@ -999,6 +1035,20 @@ test("opens and heals a real pre-existing on-disk DB from before mcpAccessOverri
     const approved = await board.requestMcpApproval(task.id, { server: "slack", tool: "send_message", args: {}, reason: "x" });
     expect(approved.status).toBe("review");
     expect((await board.get(task.id))!.pendingMcpApproval).toEqual({ server: "slack", tool: "send_message", args: {}, reason: "x" });
+
+    // Same healing covers extraAllowedDirs, added later still — this
+    // legacy DB predates it too (no column for it in the CREATE TABLE
+    // above).
+    const conflictTask = await board.create({ title: "t2", body: "", labels: [], repo: "r", extraAllowedDirs: ["/original/repo"] });
+    expect(conflictTask.extraAllowedDirs).toEqual(["/original/repo"]);
+    expect((await board.get(conflictTask.id))!.extraAllowedDirs).toEqual(["/original/repo"]);
+
+    // Same healing covers extraAllowedTools, added in the same change as
+    // extraAllowedDirs's own Bash-allowlist counterpart — this legacy DB
+    // predates both.
+    const toolsTask = await board.create({ title: "t3", body: "", labels: [], repo: "r", extraAllowedTools: ["Bash(git -C /original/repo status:*)"] });
+    expect(toolsTask.extraAllowedTools).toEqual(["Bash(git -C /original/repo status:*)"]);
+    expect((await board.get(toolsTask.id))!.extraAllowedTools).toEqual(["Bash(git -C /original/repo status:*)"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

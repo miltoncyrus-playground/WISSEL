@@ -106,8 +106,13 @@ export class WriteExecutor implements Executor {
       // was found live to be inconsistent (see RunClaudeOptions.allowedTools'
       // own doc comment for the smoke-test evidence), so this doesn't
       // widen access, it makes these two specific commands reliable.
-      // See docs/SDD-pipeline-automation.md §3.4.
-      allowedTools: ["Bash(bun test:*)", "Bash(bun run typecheck:*)"],
+      // See docs/SDD-pipeline-automation.md §3.4. task.extraAllowedTools
+      // (see its own doc comment, TaskCard.extraAllowedTools) appends any
+      // task-specific grants beyond this fixed pair — undefined/empty for
+      // every task before that field existed, so this is byte-identical
+      // to the fixed two-entry array for every caller that doesn't set it.
+      allowedTools: ["Bash(bun test:*)", "Bash(bun run typecheck:*)", ...(task.extraAllowedTools ?? [])],
+      addDir: task.extraAllowedDirs,
       memoryPath: this.memoryPath,
       mcpAccess: task.mcpAccessOverride ?? agent.mcpAccess,
       mcpServers: this.mcpServers,

@@ -438,6 +438,43 @@ export interface TaskCard {
    *  instance of. Undefined on the root task (which isn't a step
    *  instance itself). */
   pipelineStepId?: string;
+  /** Absolute directory paths a write-tier run grants its `claude`
+   *  subprocess access to, beyond its own isolated worktree — passed
+   *  straight through as `--add-dir` (see WriteExecutor,
+   *  src/executors/claude-cli.ts's `runClaude`). Every write-tier task
+   *  otherwise only ever touches its own worktree path (`task.repo` is
+   *  overridden to it before the subprocess spawns — see
+   *  createTaskWorktree's own doc comment on why: isolating from a
+   *  live, possibly-watched source tree); `claude`'s own sandbox denies
+   *  file/Bash access to anything outside that, confirmed live (see
+   *  docs/SDD-pipeline-automation.md's Subtask 3 smoke-test notes: "a
+   *  `cat` on a file outside the worktree was correctly denied"). The
+   *  one task that genuinely needs to reach outside its own worktree is
+   *  the auto-spawned conflict-resolution follow-up
+   *  (`maybeSpawnConflictIntegrator`, src/core/orchestrator.ts): the
+   *  real conflict it's resolving sits in the *original* repo's own
+   *  working tree (where `mergeTaskWorktree`'s `git merge` actually
+   *  ran), a different absolute path from this follow-up's own fresh
+   *  worktree. Undefined (every task before this field existed) passes
+   *  no `--add-dir` at all — byte-identical argv to today. */
+  extraAllowedDirs?: string[];
+  /** Extra `--allowedTools` entries (Bash command-prefix grants, e.g.
+   *  `"Bash(git -C /some/repo status:*)"`) a write-tier run gets beyond
+   *  WriteExecutor's own fixed `Bash(bun test:*)`/`Bash(bun run
+   *  typecheck:*)` pair — see src/executors/write.ts. `extraAllowedDirs`
+   *  (above) only grants file-system/`--add-dir` access to a path
+   *  outside a run's own worktree; it does NOT make `claude`'s own
+   *  `acceptEdits` Bash gating reliably allow a specific command against
+   *  that path — confirmed live (see RunClaudeOptions.allowedTools' own
+   *  doc comment): `--add-dir` and `--allowedTools` are separate gates,
+   *  and granting one never implies the other. `maybeSpawnConflictIntegrator`
+   *  (src/core/orchestrator.ts) is the one caller that sets this today —
+   *  its follow-up task's entire job is to run `git -C <originalRepo>
+   *  status/diff/add/commit` against a path outside its own worktree,
+   *  which needs both grants together to actually succeed. Undefined
+   *  (every task before this field existed) adds nothing to
+   *  `allowedTools` — byte-identical argv to today. */
+  extraAllowedTools?: string[];
 }
 
 /** A named execution backend wissel can run work under — a tool (which

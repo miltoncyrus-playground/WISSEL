@@ -428,6 +428,99 @@ test("task.mcpAccessOverride naming an approval-required tool actually reaches -
   }
 });
 
+// --- extraAllowedDirs / --add-dir (docs/SDD-crash-recovery.md §3.3) ----
+
+test("task.extraAllowedDirs reaches runClaude as --add-dir — the mechanism maybeSpawnConflictIntegrator relies on to let the integrator touch the original repo outside its own worktree", async () => {
+  const home = await fakeHome();
+  try {
+    const grantedTask: TaskCard = { ...task, extraAllowedDirs: ["/some/other/repo"] };
+    let seenCmd: string[] = [];
+    const executor = new WriteExecutor({
+      homeDir: home,
+      runner: async (cmd) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenCmd = cmd;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(grantedTask, agent);
+    const idx = seenCmd.indexOf("--add-dir");
+    expect(idx).toBeGreaterThan(-1);
+    expect(seenCmd[idx + 1]).toBe("/some/other/repo");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a task with no extraAllowedDirs gets identical argv to before this field existed — no --add-dir at all", async () => {
+  const home = await fakeHome();
+  try {
+    let seenCmd: string[] = [];
+    const executor = new WriteExecutor({
+      homeDir: home,
+      runner: async (cmd) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenCmd = cmd;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(task, agent);
+    expect(seenCmd).not.toContain("--add-dir");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+// --- extraAllowedTools / --allowedTools (docs/SDD-crash-recovery.md §3.3) ----
+
+test("task.extraAllowedTools reaches runClaude's --allowedTools, appended after the fixed Bash(bun ...) pair", async () => {
+  const home = await fakeHome();
+  try {
+    const grantedTask: TaskCard = { ...task, extraAllowedTools: ["Bash(git -C /some/other/repo status:*)", "Bash(git -C /some/other/repo commit:*)"] };
+    let seenCmd: string[] = [];
+    const executor = new WriteExecutor({
+      homeDir: home,
+      runner: async (cmd) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenCmd = cmd;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(grantedTask, agent);
+    const idx = seenCmd.indexOf("--allowedTools");
+    expect(idx).toBeGreaterThan(-1);
+    expect(seenCmd.slice(idx + 1)).toEqual([
+      "Bash(bun test:*)",
+      "Bash(bun run typecheck:*)",
+      "Bash(git -C /some/other/repo status:*)",
+      "Bash(git -C /some/other/repo commit:*)",
+    ]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a task with no extraAllowedTools gets identical --allowedTools to before this field existed — just the fixed Bash(bun ...) pair", async () => {
+  const home = await fakeHome();
+  try {
+    let seenCmd: string[] = [];
+    const executor = new WriteExecutor({
+      homeDir: home,
+      runner: async (cmd) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenCmd = cmd;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(task, agent);
+    const idx = seenCmd.indexOf("--allowedTools");
+    expect(idx).toBeGreaterThan(-1);
+    expect(seenCmd.slice(idx + 1)).toEqual(["Bash(bun test:*)", "Bash(bun run typecheck:*)"]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("an agent's own regular mcpAccess grant for an approval-required tool stays gated even with a pool wired up — only task.mcpAccessOverride bypasses the gate", async () => {
   const home = await fakeHome();
   try {
