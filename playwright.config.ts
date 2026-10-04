@@ -1,6 +1,50 @@
+import { existsSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 
 const PORT = 8790;
+
+/** The hardcoded `/opt/pw-browsers/chromium` path this config used to
+ *  point at has never actually existed on this machine (confirmed live —
+ *  `/opt` is root-owned, so no session, sandboxed or not, could have
+ *  provisioned it without sudo) — every e2e run was failing with
+ *  "executable doesn't exist at /opt/pw-browsers/chromium" regardless of
+ *  sandbox, not because of a sandbox restriction. Real Chromium installs
+ *  already exist at the normal Playwright cache location instead.
+ *
+ *  Picking the *newest* cached revision isn't enough, confirmed live the
+ *  hard way: the newest one present here (1243, matching what the
+ *  installed `@playwright/test` nominally wants) launches `--version`
+ *  fine but fails every real headless launch with "FATAL:
+ *  gin/v8_initializer.cc: Error loading V8 startup snapshot file" — its
+ *  `v8_context_snapshot.bin` is missing entirely (an install left
+ *  incomplete, almost certainly by one of this session's own power
+ *  outages interrupting a `playwright install` download mid-write). The
+ *  older 1234 revision has that file and launches real tests cleanly.
+ *  So this checks for `v8_context_snapshot.bin` alongside `chrome` as the
+ *  "actually complete, not just present" signal, newest-complete-first —
+ *  not just file existence, which 1243's own broken install still
+ *  passes. Falls back to Playwright's own default resolution
+ *  (`undefined`) if no complete cached revision is found at all, rather
+ *  than hardcoding a path that might not exist either. This will need
+ *  revisiting again whenever a *genuinely* complete newer revision lands
+ *  (e.g. a successful `playwright install` finishes without another
+ *  outage interrupting it) — same fragility named here, not hidden. */
+function resolveChromiumExecutable(): string | undefined {
+  const cacheRoot = join(homedir(), ".cache", "ms-playwright");
+  if (!existsSync(cacheRoot)) return undefined;
+  const revisions = readdirSync(cacheRoot)
+    .filter((name) => name.startsWith("chromium-"))
+    .sort()
+    .reverse();
+  for (const revision of revisions) {
+    const dir = join(cacheRoot, revision, "chrome-linux64");
+    const candidate = join(dir, "chrome");
+    if (existsSync(candidate) && existsSync(join(dir, "v8_context_snapshot.bin"))) return candidate;
+  }
+  return undefined;
+}
 
 /**
  * Smoke-test only — wissel has no broader e2e suite. Boots a real
@@ -18,15 +62,14 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     trace: "retain-on-failure",
   },
-  // This environment ships a pinned Chromium build that doesn't always
-  // match whatever revision the installed @playwright/test version
-  // wants to download (it's blocked from downloading anyway) — point
-  // straight at the pre-installed binary instead of letting Playwright
-  // resolve its own.
+  // Points straight at whatever real Chromium is actually cached on disk
+  // instead of letting Playwright demand an exact-revision download that's
+  // blocked anyway — see resolveChromiumExecutable's own doc comment.
+  // `undefined` falls through to Playwright's own default resolution.
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"], launchOptions: { executablePath: "/opt/pw-browsers/chromium" } },
+      use: { ...devices["Desktop Chrome"], launchOptions: { executablePath: resolveChromiumExecutable() } },
     },
   ],
   webServer: {
