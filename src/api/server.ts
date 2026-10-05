@@ -14,7 +14,7 @@ import { setMcpServerEnabled, setMcpServerToolTrust, addMcpServer } from "../cor
 import { Registry } from "../core/registry.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
-import { reconcileOrphanedTasks } from "../core/crash-recovery.ts";
+import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts } from "../core/crash-recovery.ts";
 import { startPipelineRun } from "../core/pipeline-runner.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
@@ -297,15 +297,25 @@ export function createApp(
   // nothing left to trigger a follow-up sweep. The returned fetch
   // handler itself also awaits this below, so a request can never
   // observe a still-orphaned task as "running" post-boot.
-  const crashRecoveryReady = reconcileOrphanedTasks(board)
-    .then((count) => {
-      console.log(`crash recovery: reset ${count} orphaned running task(s) back to inbox`);
-      return count;
-    })
-    .catch((e) => {
+  const crashRecoveryReady = (async () => {
+    const orphanedCount = await reconcileOrphanedTasks(board).catch((e) => {
       console.error(`crash recovery: reconciliation failed: ${(e as Error).message}`);
       return 0;
     });
+    console.log(`crash recovery: reset ${orphanedCount} orphaned running task(s) back to inbox`);
+
+    // Sequenced strictly after the above, not raced against it — a
+    // "running" implementer that's also somehow its own reviewer's
+    // parent (impossible today, but this ordering costs nothing and
+    // avoids ever having to reason about the two passes interleaving).
+    // See docs/SDD-crash-recovery.md's interrupted-review-verdict
+    // section and reconcileInterruptedReviewVerdicts's own doc comment.
+    const recoveredCount = await reconcileInterruptedReviewVerdicts(board as Board, registry, commandRunner).catch((e) => {
+      console.error(`crash recovery: review-verdict reconciliation failed: ${(e as Error).message}`);
+      return 0;
+    });
+    console.log(`crash recovery: recovered ${recoveredCount} interrupted review verdict(s)`);
+  })();
   if (opts.orchestratorEnabled) void crashRecoveryReady.then(() => orchestrator.start());
   // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
   // subtask set should get its integrator card queued the moment it

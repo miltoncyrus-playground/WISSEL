@@ -322,3 +322,92 @@ produces a plausible-looking resolution" and "the agent produces a
 *correct* one" are different claims and only the second is worth
 anything; `bun run typecheck` + `bun test test/` green before any of this
 is called done.
+
+## 9. Revision — crash recovery 4/4: interrupted review verdicts
+("approved-but-not-done")
+
+Confirmed live, 2026-10-05: card `bf6fe7fe` (Memory injection 1/2) was
+approved, its merge landed for real (`git merge --no-ff`, commit
+`337d7b5`), and `bun run dev`'s own `--watch` restarted the server one
+second later — the merge touched `src/`, same mechanism §4's original
+worktree-isolation fix was built to avoid for a run's own subprocess,
+just never checked for the *merge* step itself (see README.md's updated
+warning). The restart landed in the gap between `mergeTaskWorktree`
+finishing and `handleReviewVerdict`'s own `board.move(implementerTask.id,
+"done")` — a window neither §3.1 (only resets `"running"`, and this card
+was `"pending-review"`, a status that window never touches) nor §3.2/3.3
+(both about a dangling git merge, not a dangling board status) covers.
+The result: a real, fully-merged card stuck at `"pending-review"`
+forever, and every `dependsOn` follower blocked with it (`resolveLiveTip`
+only unblocks once the dependency's live tip reaches `"done"`) — not
+reconciled until a human manually ran `POST /tasks/:id/move
+{"status":"done"}`.
+
+**Fix.** `reconcileInterruptedReviewVerdicts`
+(`src/core/crash-recovery.ts`), wired into the same unconditional
+startup sequence as `reconcileOrphanedTasks` (`src/api/server.ts`,
+right after it, still before the first `sweep()`). Finds every
+implementer task still `"pending-review"`, not superseded, not archived,
+whose own reviewer child is `"done"` with a recorded verdict — exactly
+the state `handleReviewVerdict` leaves behind the instant after its own
+first `board.move(reviewerTask.id, "done")`, before anything it does
+next. Re-drives that "anything next" through `resumeAfterReviewVerdict`
+(`src/core/orchestrator.ts`) — extracted out of `handleReviewVerdict`
+itself, not a parallel copy, so the live path and the recovery path are
+provably the same decision.
+
+**The idempotency problem this surfaced.** Re-driving an approve verdict
+through the existing `resumeAfterApproval` naively would try to
+`tryAutoMerge` a worktree that, in the real incident, had already been
+fully committed, merged, and removed before the crash — `git status
+--porcelain` against a worktree path that's no longer there just fails.
+`resumeAfterApproval` now gates on `determineWorktreeMergeState`
+(`src/services/worktree.ts`) before ever calling `tryAutoMerge`:
+
+- Branch and worktree both still present: checked for uncommitted
+  content first (`git status --porcelain`) — a branch that was created
+  off HEAD and never advanced is trivially its own ancestor, so checking
+  `git merge-base --is-ancestor` *before* checking for real, uncommitted
+  work would misread "never touched" as "already merged" (caught by this
+  project's own test suite: it broke the two existing live-conflict
+  tests in test/orchestrator-review-lifecycle.test.ts before the
+  ordering was fixed). Only once clean does the ancestor check decide
+  `"merged"` vs `"not-merged"`.
+- Branch and worktree both gone: `removeTaskWorktree` only ever deletes
+  both together, right after a successful merge — but a discarded,
+  never-merged worktree ends the same way, so gone-ness alone proves
+  nothing. The deterministic, exact-match merge commit message
+  `mergeTaskWorktree` always writes (`Merge <branch>: <title>`) is
+  grepped for in history; found means the merge genuinely landed before
+  cleanup, not found means `"unknown"`.
+- Exactly one of branch/worktree present: a state the paired create/
+  remove calls never produce on their own — `"unknown"`, not guessed.
+
+`"merged"` skips straight to `done` (running `removeTaskWorktree`'s own
+cleanup first, in case the crash landed before *that* step specifically)
+— no second `git merge`, ever. `"unknown"` fails closed: the card stays
+exactly as found at `"pending-review"`, logged for a human, never
+counted as recovered. This is also why `resumeAfterApproval`'s own
+return type grew a third outcome (`"unresolved"`, alongside the existing
+`"done"`/`"review"`) — a case the live path can never actually produce
+(a reviewer verdict only ever reaches this function once, against a
+worktree branch that was only ever just created), so this costs the live
+path two extra cheap `git` calls per approve and changes nothing else
+there.
+
+**Acceptance criteria**
+- Approve verdict, branch already merged pre-crash: moves to `done`, no
+  second merge commit, a `dependsOn` follower becomes eligible on the
+  next `sweep()`.
+- Approve verdict, branch not merged yet: gets merged for real and moved
+  to `done`.
+- `changes_requested` with no pushback card yet: exactly one pushback
+  attempt created; a second reconciliation run creates no duplicate.
+- Untouched: a `pending-review` card whose reviewer is still running or
+  still in inbox, a superseded card, an archived card.
+- Running reconciliation twice in a row changes nothing the second time.
+- Unprovable state (worktree and branch both gone, no matching merge
+  commit in history): left exactly as found, logged, never moved to
+  `done`.
+- `bun run typecheck` and `bun test test/` both green — see
+  test/crash-recovery-review-verdict.test.ts.
