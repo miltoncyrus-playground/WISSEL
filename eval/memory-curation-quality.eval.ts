@@ -174,7 +174,11 @@ async function main() {
     // tmp file so it matches the same EXISTING_MEMORY text embedded in
     // the task body below — otherwise it falls through to
     // DEFAULT_MEMORY_PATH ("memory/lessons.md") and leaks this repo's
-    // real, unrelated lessons file into the prompt.
+    // real, unrelated lessons file into the prompt. Belt and braces as of
+    // docs/SDD-memory-injection-toggle.md: injection is off by default
+    // (WISSEL_MEMORY_INJECTION), so nothing here actually injects memory
+    // today — this pin is what protects the eval if that flag is ever on
+    // in the environment it runs in. Left in place rather than removed.
     const memoryPath = join(dir, "lessons.md");
     await writeFile(memoryPath, EXISTING_MEMORY.trim());
 

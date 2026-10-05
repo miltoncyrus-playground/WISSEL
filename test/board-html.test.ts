@@ -131,6 +131,32 @@ test("buildKanbanCard stamps a stable data-task-id attribute on every kanban car
 // field" test failed deterministically on every run for exactly this
 // reason, confirmed by reading the submit handler against the form's
 // own markup.
+// docs/SDD-memory-injection-toggle.md §3.4/§4 test 7 — the Memory tab's
+// description must track GET /memory's `injected` field rather than
+// unconditionally claiming lessons reach every agent prompt, since
+// injection is off by default (WISSEL_MEMORY_INJECTION).
+test("the Memory tab's lede reflects GET /memory's injected field instead of assuming injection is on", async () => {
+  const html = await readFile(BOARD_HTML_PATH, "utf8");
+
+  const start = html.indexOf("function memoryLedeText(");
+  const end = html.indexOf("function loadMemoryTab(", start);
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  const memoryLedeText = new Function(`${html.slice(start, end)}\nreturn memoryLedeText;`)() as (injected: boolean) => string;
+
+  expect(memoryLedeText(false)).toMatch(/not currently sent to agent prompts/i);
+  expect(memoryLedeText(true)).toMatch(/folded into every agent's prompt/i);
+
+  // loadMemoryTab must actually wire the fetched field through, not just
+  // define the helper unused.
+  const loadStart = html.indexOf("function loadMemoryTab(");
+  const loadEnd = html.indexOf("fetch(\"/memory/history\")", loadStart);
+  expect(loadStart).toBeGreaterThan(-1);
+  expect(loadEnd).toBeGreaterThan(loadStart);
+  const loadBody = html.slice(loadStart, loadEnd);
+  expect(loadBody).toContain("ledeEl.textContent = memoryLedeText(!!data.injected);");
+});
+
 test("the MCP add-server form opts out of native constraint validation so its own inline error can render", async () => {
   const html = await readFile(BOARD_HTML_PATH, "utf8");
   expect(html).toMatch(/<form id="mcpAddForm" novalidate>/);

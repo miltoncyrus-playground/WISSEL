@@ -128,6 +128,19 @@ test("GET /memory returns undefined content when nothing has been curated yet, a
   }
 });
 
+// docs/SDD-memory-injection-toggle.md §3.4/§4 test 5 — GET /memory's
+// `injected` field mirrors createApp's own `injectMemory` flag exactly,
+// not whether curation has produced any content.
+test("GET /memory reports injected: false by default and injected: true when createApp gets injectMemory: true", async () => {
+  const defaultApp = await makeApp();
+  const defaultBody = (await (await defaultApp(req("/memory"))).json()) as { injected: boolean };
+  expect(defaultBody.injected).toBe(false);
+
+  const injectingApp = await makeApp(new SqliteBoard(), { injectMemory: true });
+  const injectingBody = (await (await injectingApp(req("/memory"))).json()) as { injected: boolean };
+  expect(injectingBody.injected).toBe(true);
+});
+
 test("GET /memory/history returns [] with no telemetry configured, and real runs most-recent-first once it is", async () => {
   const { TelemetryLog } = await import("../src/services/telemetry.ts");
   const noTelemetryApp = await makeApp();
