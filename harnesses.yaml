@@ -25,10 +25,27 @@ harnesses:
   - id: codex-personal
     tool: codex-cli
     label: "Codex — personal"
-    enabled: true
+    enabled: false
     env:
       # Absolute, not "~/.codex" — env vars passed to a spawned process
       # never get shell tilde-expansion, so a literal "~" doesn't resolve
       # and validateHarness disables the entry as unauthenticated. Same
       # convention claude-personal's CLAUDE_CONFIG_DIR above already uses.
       CODEX_HOME: "/home/mcyrus/.codex"
+  - id: claude-adevinta
+    tool: claude-cli
+    label: Claude — milton.cyrus@adevinta.com
+    enabled: false
+    env:
+      CLAUDE_CONFIG_DIR: /home/mcyrus/.claude-adevinta
+  - id: anthropic-api
+    tool: anthropic-api
+    label: Anthropic API
+    enabled: false
+    apiKeyEnv: ANTHROPIC_API_KEY
+  - id: codex
+    tool: codex-cli
+    label: codex
+    enabled: true
+    env:
+      CODEX_HOME: /home/mcyrus/.codex
