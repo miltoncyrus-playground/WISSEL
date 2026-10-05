@@ -30,6 +30,14 @@ test("handles every hour/minute/am-pm combination correctly, not just the one fi
   expect(parseSessionLimitReset("resets 3:10PM (UTC)", now)).toEqual(new Date("2026-01-01T15:10:00.000Z"));
 });
 
+test("parses an on-the-hour reset with no minutes (real shape, task 2bfbe1ac)", () => {
+  const now = new Date("2026-10-04T20:00:00.000Z");
+  expect(parseSessionLimitReset("You've hit your session limit · resets 1am (UTC)", now)).toEqual(new Date("2026-10-05T01:00:00.000Z"));
+  expect(parseSessionLimitReset("resets 12pm (UTC)", now)).toEqual(new Date("2026-10-05T12:00:00.000Z"));
+  expect(parseSessionLimitReset("resets 13pm (UTC)", now)).toBeNull();
+  expect(parseSessionLimitReset("resets 3: pm (UTC)", now)).toBeNull();
+});
+
 test("returns null for malformed or missing reset text, never a guessed time", () => {
   expect(parseSessionLimitReset("")).toBeNull();
   expect(parseSessionLimitReset("You've hit your session limit")).toBeNull();

@@ -2,7 +2,9 @@
  * Parses the reset time out of a claude-cli session-limit (429) error's
  * `result` text, e.g. "You've hit your session limit · resets 3:10pm
  * (UTC)" -> today (or tomorrow, if that clock time has already passed)
- * at 15:10 UTC. Pure and deterministic on purpose (see CLAUDE.md's
+ * at 15:10 UTC. On-the-hour resets drop the minutes entirely ("resets
+ * 1am (UTC)", confirmed live on task 2bfbe1ac), so `:mm` is optional.
+ * Pure and deterministic on purpose (see CLAUDE.md's
  * latent-vs-deterministic-space rule) — this is exactly the kind of
  * same-input-same-output text parsing that has no business being
  * re-derived by an LLM call.
@@ -16,11 +18,11 @@
  * clock time — real callers omit it.
  */
 export function parseSessionLimitReset(resultText: string, now: Date = new Date()): Date | null {
-  const match = /resets\s+(\d{1,2}):(\d{2})\s*(am|pm)\s*\(UTC\)/i.exec(resultText);
+  const match = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(UTC\)/i.exec(resultText);
   if (!match) return null;
 
   const hour12 = Number(match[1]);
-  const minute = Number(match[2]);
+  const minute = match[2] === undefined ? 0 : Number(match[2]);
   const meridiem = match[3]!.toLowerCase();
   if (hour12 < 1 || hour12 > 12 || minute < 0 || minute > 59) return null;
 

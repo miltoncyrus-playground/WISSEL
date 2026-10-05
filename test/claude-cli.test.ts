@@ -145,6 +145,73 @@ test("a 429 session-limit failure surfaces retryAfter and the real actualCost, i
   expect(new Date(result.retryAfter!).toISOString().endsWith("Z")).toBe(true);
 });
 
+// Regression: the exact stdout shape reviewer task 0d8a648c produced live
+// (2026-10-04) — a stream-json run whose background Bash task was killed
+// AFTER the 429 result line, so the result wasn't the last line. Before
+// the fix this parsed the trailing task_notification, missed
+// api_error_status, and stranded the task on `failed`.
+const trailingSystemLines = [
+  JSON.stringify({ type: "system", subtype: "background_tasks_changed", tasks: [] }),
+  JSON.stringify({ type: "system", subtype: "task_updated", task_id: "bl371u24a", patch: { status: "killed" } }),
+  JSON.stringify({ type: "system", subtype: "task_notification", task_id: "bl371u24a", status: "stopped" }),
+];
+
+test("a stream-json 429 whose result line is followed by trailing system lines still surfaces retryAfter", async () => {
+  const stdout = [
+    JSON.stringify({ type: "system", subtype: "init", cwd: "/tmp/wt" }),
+    JSON.stringify({ type: "assistant", message: { content: [] } }),
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      result: "You've hit your session limit · resets 12:50am (UTC)",
+      total_cost_usd: 0.31,
+      api_error_status: 429,
+    }),
+    ...trailingSystemLines,
+    "",
+  ].join("\n");
+  const result = await runClaude({
+    runner: stub({ stdout, stderr: "", exitCode: 1 }),
+    task,
+    agent: plainAgent,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(false);
+  expect(result.actualCost).toBe(0.31);
+  expect(result.retryAfter).toBeDefined();
+  expect(result.summary).toContain("session limit hit");
+});
+
+test("a stream-json success whose result line is followed by trailing system lines still parses the real result", async () => {
+  const raw = ['Reviewed the diff.', '', '```review-verdict', '{"verdict": "approve", "feedback": "Looks good."}', '```'].join("\n");
+  const stdout = [
+    JSON.stringify({ type: "system", subtype: "init" }),
+    JSON.stringify({ type: "result", subtype: "success", is_error: false, result: raw, total_cost_usd: 0.2 }),
+    ...trailingSystemLines,
+  ].join("\n");
+  const result = await runClaude({
+    runner: stub({ stdout, stderr: "", exitCode: 0 }),
+    task,
+    agent: reviewerAgent,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(true);
+  expect(result.actualCost).toBe(0.2);
+  expect(result.summary).toContain("Reviewed the diff.");
+});
+
+test("stream-json stdout with no result line at all still fails cleanly, never crashes", async () => {
+  const result = await runClaude({
+    runner: stub({ stdout: [JSON.stringify({ type: "system", subtype: "init" }), '{"type":"assis'].join("\n"), stderr: "", exitCode: 0 }),
+    task,
+    agent: plainAgent,
+    permissionMode: "plan",
+  });
+  expect(result.ok).toBe(false);
+  expect(result.summary).toContain("could not parse claude output");
+});
+
 test("a non-429 non-zero exit with valid JSON still captures actualCost, but never sets retryAfter", async () => {
   const result = await runClaude({
     runner: stub({

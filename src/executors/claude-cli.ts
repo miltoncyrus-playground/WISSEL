@@ -120,21 +120,40 @@ async function readStreamingText(stream: ReadableStream<Uint8Array>, onChunk: (l
 }
 
 /**
- * Isolates the final non-blank line of a (possibly multi-line, streamed
- * JSONL) stdout blob — the one carrying the terminal `type: "result"`
- * object. Under today's non-streaming `--output-format json`, stdout is
- * already exactly one line, so this returns the whole string unchanged
- * (see docs/SDD-live-task-output.md §3.1's "the exact same input"
- * claim). Returns `text` itself, untrimmed, when there's no non-blank
- * line at all (empty/whitespace-only stdout) — preserves the exact
- * JSON.parse error today's callers already see for that case.
+ * Isolates the line of a (possibly multi-line, streamed JSONL) stdout
+ * blob that carries the terminal `type: "result"` object. Under
+ * non-streaming `--output-format json`, stdout is exactly one line, so
+ * this returns the whole string unchanged (see
+ * docs/SDD-live-task-output.md §3.1's "the exact same input" claim).
+ *
+ * Under `stream-json` the result object is NOT always the last line —
+ * confirmed live (reviewer task 0d8a648c, 2026-10-04): a session that
+ * still had a background Bash task when it hit a 429 emitted
+ * `background_tasks_changed` / `task_updated` / `task_notification`
+ * system lines *after* the result. Parsing only the last line then
+ * yielded a `type: "system"` object with no `api_error_status`, so the
+ * 429 skipped scheduleRetry and stranded the task on `failed`. So this
+ * scans backward for the last line that parses as `type: "result"`.
+ *
+ * Falls back to the last non-blank line when no result line exists,
+ * and to `text` itself, untrimmed, when there's no non-blank line at
+ * all — preserves the exact JSON.parse error callers already see for
+ * truncated or empty stdout.
  */
-function lastNonBlankLine(text: string): string {
+function resultLine(text: string): string {
   const lines = text.split("\n");
+  let lastNonBlank: string | undefined;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i]!.trim() !== "") return lines[i]!;
+    const line = lines[i]!;
+    if (line.trim() === "") continue;
+    lastNonBlank ??= line;
+    try {
+      if ((JSON.parse(line) as { type?: unknown })?.type === "result") return line;
+    } catch {
+      // not JSON (or a partial line) — keep scanning
+    }
   }
-  return text;
+  return lastNonBlank ?? text;
 }
 
 interface ClaudeResultJson {
@@ -244,7 +263,7 @@ export interface RunClaudeOptions {
    *  --output-format stream-json` to actually emit the intermediate
    *  `stream_event` lines rather than just the final result). The final
    *  `TaskResult` this function returns is unaffected either way — see
-   *  lastNonBlankLine's own doc comment. Omitted (the default) keeps
+   *  resultLine's own doc comment. Omitted (the default) keeps
    *  today's exact buffered-json behavior, byte for byte. */
   onChunk?: (line: unknown) => void;
   /** Where a repo-less task's scratch workspace lives, passed straight
@@ -382,18 +401,17 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // exitCode branch below falls back to raw stderr/stdout exactly like
   // before when there's nothing to parse.
   //
-  // Parses only the LAST non-blank line, not the whole stdout blob —
+  // Parses only the `type: "result"` line, not the whole stdout blob —
   // under non-streaming `--output-format json`, stdout is already
-  // exactly one line, so this is a no-op change there (see
-  // lastNonBlankLine's own doc comment); under streaming
+  // exactly one line, so this is a no-op there; under streaming
   // (`stream-json`), stdout is many JSONL lines and the terminal
-  // `type: "result"` object (byte-identical in shape to the
-  // non-streaming response — see docs/SDD-live-task-output.md §2) is
-  // always the last one.
+  // result object (byte-identical in shape to the non-streaming
+  // response — see docs/SDD-live-task-output.md §2) is usually, but
+  // not always, the last one (see resultLine's own doc comment).
   let parsed: ClaudeResultJson | undefined;
   let parseError: Error | undefined;
   try {
-    parsed = JSON.parse(lastNonBlankLine(stdout)) as ClaudeResultJson;
+    parsed = JSON.parse(resultLine(stdout)) as ClaudeResultJson;
   } catch (e) {
     parseError = e as Error;
   }

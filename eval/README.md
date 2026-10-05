@@ -15,6 +15,7 @@ wall-clock time. Run explicitly before ship, and nightly.
 | `eval/live-task-output.eval.ts` | `bun run eval:live-task-output` | A real `claude -p` call's streamed stdout actually lands in the durable task-output store and is deliverable live over a real HTTP SSE connection, end to end — spawn -> stream -> store -> SSE -> render — see docs/SDD-live-task-output.md §6 Subtask 5. |
 | `eval/conflict-integrator.eval.ts` | `bun run eval:conflict-integrator` | The real `integrator` agent, pointed at a real two-branch git conflict shaped like this session's own two real ones (both additive, same file), actually resolves it correctly end to end — not just that a follow-up task got created. See docs/SDD-crash-recovery.md §6 Subtask 3. |
 | `eval/memory-curation-quality.eval.ts` | `bun run eval:memory-curation-quality` | The real `memory-curator` agent, handed a realistic mixed batch of durable-lesson and noise session entries, actually applies the selectivity bar in its `outputContract` (`agents/manifest.yaml`) — keeps the durable ones, drops the noise. See docs/SDD-memory-curator.md §10. |
+| `eval/claude-cli-429-replay.eval.ts` | `bun run eval:claude-cli-429-replay` | Every real 429 failure ever recorded on the local board (`~/.wissel/board.sqlite`), replayed byte for byte through `runClaude`, is classified correctly: session-limit 429s with a stated reset time get `retryAfter` (auto-retry), rate-limit 429s with none fail plainly. Zero spend, no `claude` process; SKIPs on a board with no 429 history. |
 
 ## implementer-reviewer eval
 
