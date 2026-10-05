@@ -249,12 +249,21 @@ export interface RunClaudeOptions {
    *  ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN empty before spawning — see
    *  the comment in runClaude itself. */
   env?: Record<string, string>;
-  /** Path to the global memory/lessons.md file, read fresh on every call
-   *  and folded into the prompt when present (see buildAgentPrompt,
-   *  docs/SDD-memory-curator.md §9). Defaults to the repo-root
+  /** Path to the global memory/lessons.md file. Defaults to the repo-root
    *  "memory/lessons.md" path; overridable so tests never depend on
-   *  whatever's actually on disk. */
+   *  whatever's actually on disk. Only actually read when `injectMemory`
+   *  is true — see that option's own doc comment. */
   memoryPath?: string;
+  /** Gates whether `memoryPath` is read and folded into the prompt at all
+   *  (see buildAgentPrompt, docs/SDD-memory-injection-toggle.md §3.2).
+   *  Defaults to **false** — memory curation (the scheduler, the
+   *  curator's own dispatch, `writeMemoryLessons`) keeps running
+   *  regardless of this flag; this only controls whether the result ever
+   *  reaches an agent's prompt. Every caller threads this through
+   *  explicitly from `WISSEL_MEMORY_INJECTION` (src/api/server.ts
+   *  bootstrap) down through its executor's own constructor option of
+   *  the same name — never read from `process.env` here. */
+  injectMemory?: boolean;
   /** Fires once per parsed JSONL line, in order, as claude's stdout
    *  streams in — see docs/SDD-live-task-output.md §3.1/§3.2. When
    *  given, the spawned command switches from `--output-format json` to
@@ -290,9 +299,24 @@ export interface RunClaudeOptions {
  * tiers is `--permission-mode`, which the caller picks.
  */
 export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
-  const { runner, task, agent, permissionMode, model, env, allowedTools, memoryPath, onChunk, mcpAccess, mcpServers, homeDir, mcpAccessPreApproved, addDir } =
-    opts;
-  const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
+  const {
+    runner,
+    task,
+    agent,
+    permissionMode,
+    model,
+    env,
+    allowedTools,
+    memoryPath,
+    injectMemory,
+    onChunk,
+    mcpAccess,
+    mcpServers,
+    homeDir,
+    mcpAccessPreApproved,
+    addDir,
+  } = opts;
+  const memory = injectMemory ? await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH) : undefined;
 
   // Resolving against the pool happens once, up front — every other MCP
   // decision below (the --mcp-config payload, the --allowedTools

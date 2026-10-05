@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ReadOnlyExecutor, type CommandResult } from "../src/executors/readonly.ts";
@@ -442,6 +442,49 @@ test("task.mcpAccessOverride naming an approval-required tool actually reaches -
   await executor.run(overriddenTask, agent);
   expect(seenCmd).toContain("--mcp-config");
   expect(seenCmd.join(" ")).toContain("mcp__slack__send_message");
+});
+
+// --- memory injection toggle (docs/SDD-memory-injection-toggle.md) -----
+
+test("injectMemory omitted on the constructor: a real memoryPath's content never reaches the prompt", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-readonly-memory-test-"));
+  try {
+    const memoryPath = join(dir, "lessons.md");
+    await writeFile(memoryPath, "SENTINEL-SESSION-LESSON-abc123");
+    let seenStdin: string | undefined;
+    const executor = new ReadOnlyExecutor({
+      memoryPath,
+      runner: async (_cmd, opts) => {
+        seenStdin = opts.stdin;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(task, agent);
+    expect(seenStdin).not.toContain("SENTINEL-SESSION-LESSON-abc123");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("injectMemory: true on the constructor folds the memoryPath's content into the prompt", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-readonly-memory-test-"));
+  try {
+    const memoryPath = join(dir, "lessons.md");
+    await writeFile(memoryPath, "SENTINEL-SESSION-LESSON-abc123");
+    let seenStdin: string | undefined;
+    const executor = new ReadOnlyExecutor({
+      memoryPath,
+      injectMemory: true,
+      runner: async (_cmd, opts) => {
+        seenStdin = opts.stdin;
+        return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(task, agent);
+    expect(seenStdin).toContain("SENTINEL-SESSION-LESSON-abc123");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("an agent's own regular mcpAccess grant for an approval-required tool stays gated even when the executor also has a pool wired up — only task.mcpAccessOverride bypasses the gate", async () => {

@@ -16,8 +16,14 @@ export interface CodexReadOnlyExecutorOptions {
   model?: string;
   /** Passed straight through to runCodex's option of the same name —
    *  see its own doc comment. Overridable so tests never fall back to
-   *  this repo's real memory/lessons.md. */
+   *  this repo's real memory/lessons.md. Only actually read when
+   *  `injectMemory` is true. */
   memoryPath?: string;
+  /** Passed straight through to runCodex's option of the same name —
+   *  see its own doc comment. Defaults to **false**; this executor never
+   *  reads `process.env` itself, so the caller (src/api/server.ts) must
+   *  thread `WISSEL_MEMORY_INJECTION` through explicitly. */
+  injectMemory?: boolean;
   /** The live MCP server registry — see ReadOnlyExecutorOptions.mcpServers's
    *  doc comment for the general contract. Note runCodex's own doc
    *  comment: a non-empty resolved grant currently fails the run loud
@@ -51,6 +57,7 @@ export class CodexReadOnlyExecutor implements Executor {
   private runner: CommandRunner;
   private model?: string;
   private memoryPath?: string;
+  private injectMemory?: boolean;
   private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
   private homeDir?: string;
@@ -59,6 +66,7 @@ export class CodexReadOnlyExecutor implements Executor {
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
     this.memoryPath = opts.memoryPath;
+    this.injectMemory = opts.injectMemory;
     this.mcpServers = opts.mcpServers;
     this.onChunk = opts.onChunk;
     this.homeDir = opts.homeDir;
@@ -77,6 +85,7 @@ export class CodexReadOnlyExecutor implements Executor {
       model: this.model ?? resolveModel(task, agent, harness),
       env: harness?.env,
       memoryPath: this.memoryPath,
+      injectMemory: this.injectMemory,
       mcpAccess: task.mcpAccessOverride ?? agent.mcpAccess,
       mcpServers: this.mcpServers,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,

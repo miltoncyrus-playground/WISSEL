@@ -101,8 +101,13 @@ export interface RunCodexOptions {
    *  runner (e.g. CODEX_HOME). Undefined when no harness was picked. */
   env?: Record<string, string>;
   /** Path to the global memory/lessons.md file — see
-   *  RunClaudeOptions.memoryPath's own doc comment, identical contract. */
+   *  RunClaudeOptions.memoryPath's own doc comment, identical contract:
+   *  only actually read when `injectMemory` is true. */
   memoryPath?: string;
+  /** Gates whether `memoryPath` is read and folded into the prompt at
+   *  all — see RunClaudeOptions.injectMemory's own doc comment,
+   *  identical contract (and identical default of **false**). */
+  injectMemory?: boolean;
   /** This run's agent-declared MCP grants — see RunClaudeOptions.mcpAccess's
    *  own doc comment for the general contract. Undefined/empty means zero
    *  effect on the invocation, same as claude-cli's own invariant.
@@ -161,7 +166,7 @@ export interface RunCodexOptions {
  * concrete follow-up this leaves open.
  */
 export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
-  const { runner, task, agent, sandbox, model, env, memoryPath, onChunk, mcpAccess, mcpServers, homeDir } = opts;
+  const { runner, task, agent, sandbox, model, env, memoryPath, injectMemory, onChunk, mcpAccess, mcpServers, homeDir } = opts;
 
   const grants = resolveMcpGrants(mcpAccess, mcpServers);
   if (grants.length > 0) {
@@ -174,7 +179,7 @@ export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
     );
   }
 
-  const memory = await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH);
+  const memory = injectMemory ? await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH) : undefined;
   const cmd = ["codex", "exec", "--json", "-s", sandbox];
   if (model) cmd.push("-m", model);
   // `prompt` is deliberately never an argv element — mirrors runClaude's

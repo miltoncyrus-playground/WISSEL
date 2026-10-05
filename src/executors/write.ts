@@ -18,8 +18,14 @@ export interface WriteExecutorOptions {
   homeDir?: string;
   /** Passed straight through to runClaude's option of the same name —
    *  see its own doc comment. Overridable so tests never fall back to
-   *  this repo's real memory/lessons.md. */
+   *  this repo's real memory/lessons.md. Only actually read when
+   *  `injectMemory` is true. */
   memoryPath?: string;
+  /** Passed straight through to runClaude's option of the same name —
+   *  see its own doc comment. Defaults to **false**; this executor never
+   *  reads `process.env` itself, so the caller (src/api/server.ts) must
+   *  thread `WISSEL_MEMORY_INJECTION` through explicitly. */
+  injectMemory?: boolean;
   /** The live MCP server registry — see ReadOnlyExecutorOptions.mcpServers's
    *  own doc comment, identical contract. Undefined (the default) means
    *  no MCP grant on any agent routed through this executor can ever
@@ -63,6 +69,7 @@ export class WriteExecutor implements Executor {
   private model?: string;
   private homeDir?: string;
   private memoryPath?: string;
+  private injectMemory?: boolean;
   private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
 
@@ -71,6 +78,7 @@ export class WriteExecutor implements Executor {
     this.model = opts.model;
     this.homeDir = opts.homeDir;
     this.memoryPath = opts.memoryPath;
+    this.injectMemory = opts.injectMemory;
     this.mcpServers = opts.mcpServers;
     this.onChunk = opts.onChunk;
   }
@@ -114,6 +122,7 @@ export class WriteExecutor implements Executor {
       allowedTools: ["Bash(bun test:*)", "Bash(bun run typecheck:*)", ...(task.extraAllowedTools ?? [])],
       addDir: task.extraAllowedDirs,
       memoryPath: this.memoryPath,
+      injectMemory: this.injectMemory,
       mcpAccess: task.mcpAccessOverride ?? agent.mcpAccess,
       mcpServers: this.mcpServers,
       // Only true for a human-approved MCP follow-up task (`task
