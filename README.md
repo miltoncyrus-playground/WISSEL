@@ -80,10 +80,25 @@ Earlier versions of this ran write-tier subprocesses directly against
 wissel's own source) editing files could trigger `bun run dev`'s
 `--watch` mid-run and orphan its own subprocess — hit for real while
 building the `codex-cli` harness. Worktree isolation (above) fixes this
-structurally: a write-tier task never touches `task.repo` at all until a
-human merges it, so `bun run dev` is safe to use even with tasks
-running. `bun run serve` (no `--watch`) still exists if you want it, but
-isn't required for this anymore.
+structurally for the run itself: a write-tier task never touches
+`task.repo` at all until a human merges it, so `bun run dev` is safe to
+use while tasks are running.
+
+The merge step is a different story. An auto-merge (`autoMerge: true` +
+`trustLevel: "high"`, or a human's own `POST /tasks/:id/merge`) does
+write into `task.repo` for real — that's the whole point — and when
+`task.repo` is wissel's own self-hosted source, a merge touching
+anything under `src/` restarts `bun run dev`'s `--watch` process mid-
+merge, same as the old direct-subprocess bug, just moved to a later
+step. Confirmed live: a real auto-merge landed (`git merge --no-ff`
+succeeded) and the restart hit in the gap between that and the next
+`board.move(..., "done")`, stranding the card at `pending-review`
+forever and blocking every task that depended on it — see
+docs/SDD-crash-recovery.md's interrupted-review-verdict section, which
+this now recovers from automatically on the next start. The strand
+itself isn't fatal anymore, but it's still a restart you don't need: run
+`bun run serve` (no `--watch`) instead of `bun run dev` whenever
+`WISSEL_EXECUTE_WRITE_TIER=1` is set on a self-hosted checkout.
 
 Each execution harness (see `harnesses.yaml`) can be turned on or off by
 hand from the board — the strip at the top only ever shows what's usable

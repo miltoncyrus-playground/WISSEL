@@ -7,7 +7,7 @@ import type { Registry } from "./registry.ts";
 import type { Router } from "./router.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import { runViaBun } from "../executors/claude-cli.ts";
-import { mergeTaskWorktree, type TaskWorktree } from "../services/worktree.ts";
+import { determineWorktreeMergeState, mergeTaskWorktree, removeTaskWorktree, type TaskWorktree } from "../services/worktree.ts";
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
 import { handlePipelineStepResult } from "./pipeline-runner.ts";
 import { formatMcpTranscript } from "../services/mcp-transcript.ts";
@@ -362,14 +362,43 @@ async function handleReviewVerdict(board: Board, registry: Registry, result: Tas
   if (!reviewerTask) return; // vanished mid-run — nothing left to resolve
 
   await board.move(reviewerTask.id, "done");
+  await resumeAfterReviewVerdict(board, registry, reviewerTask, result, runner);
+}
 
-  if (!reviewerTask.parentTaskId) return;
+/** Every outcome `resumeAfterReviewVerdict`/`resumeAfterApproval` can
+ *  leave a card in. `"unresolved"` is the one crash-recovery-only
+ *  outcome (see resumeAfterApproval's own doc comment) — the live path
+ *  (handleReviewVerdict, just above) can never actually produce it,
+ *  since it always calls this with a worktree branch that was only ever
+ *  just created, never already merged. `"no-op"` covers a reviewer or
+ *  implementer task that vanished (deleted) mid-flight — nothing left to
+ *  resolve either way. */
+export type ReviewVerdictOutcome = "done" | "review" | "unresolved" | "pushback" | "escalated" | "no-op";
+
+/**
+ * Everything `handleReviewVerdict` does once its reviewer task is
+ * already marked `done` — split out so `src/core/crash-recovery.ts`'s
+ * startup reconciliation (see docs/SDD-crash-recovery.md's interrupted-
+ * review-verdict section) can re-drive exactly this same
+ * approve/pushback/escalate decision for a reviewer that reached `done`
+ * with a recorded verdict just before a crash, instead of a parallel
+ * copy of this logic. `reviewerTask` is assumed already `done` by the
+ * time this runs — the live caller just moved it there; the recovery
+ * caller finds it already there from before the crash.
+ */
+export async function resumeAfterReviewVerdict(
+  board: Board,
+  registry: Registry,
+  reviewerTask: TaskCard,
+  result: TaskResult,
+  runner: CommandRunner,
+): Promise<ReviewVerdictOutcome> {
+  if (!reviewerTask.parentTaskId) return "no-op";
   const implementerTask = await board.get(reviewerTask.parentTaskId);
-  if (!implementerTask) return; // the implementer task it was reviewing is gone
+  if (!implementerTask) return "no-op"; // the implementer task it was reviewing is gone
 
   if (result.verdict === "approve") {
-    await resumeAfterApproval(board, registry, implementerTask, runner);
-    return;
+    return resumeAfterApproval(board, registry, implementerTask, runner);
   }
 
   const pushbackCount = implementerTask.pushbackCount ?? 0;
@@ -377,10 +406,11 @@ async function handleReviewVerdict(board: Board, registry: Registry, result: Tas
     const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
     const escalationContext = await buildEscalationContext(board, lineageId);
     await board.escalate(implementerTask.id, escalationContext);
-    return;
+    return "escalated";
   }
 
   await spawnPushbackImplementer(board, implementerTask, reviewerTask, result);
+  return "pushback";
 }
 
 /**
@@ -392,17 +422,46 @@ async function handleReviewVerdict(board: Board, registry: Registry, result: Tas
  * the implementer's own recorded result (for its `worktree`, if any) and
  * its routed agent (for `autoMerge`/`trustLevel`) rather than re-deriving
  * either from the reviewer's result, which carries neither.
+ *
+ * Idempotent against a crash that already ran the real git merge to
+ * completion before stopping (src/core/crash-recovery.ts's interrupted-
+ * review-verdict reconciliation is the only caller that can ever
+ * actually hit this): before calling `tryAutoMerge`, checks whether
+ * `originalResult.worktree`'s own branch is already merged
+ * (`determineWorktreeMergeState`). Already merged — crash landed between
+ * `mergeTaskWorktree` finishing and this function's own `board.move` —
+ * skips straight to `done` (running `removeTaskWorktree`'s own cleanup
+ * first, in case the crash also landed before *that*), never re-running
+ * `git merge`. Unprovable (worktree and branch both gone, no matching
+ * merge commit in history either — a discarded worktree looks identical
+ * to this from the outside) — returns `"unresolved"` rather than
+ * guessing; the card stays exactly as found for a human. On the live
+ * path this gate is always `"not-merged"`: a reviewer verdict only ever
+ * reaches this function once, with a worktree branch that was only ever
+ * just created, never already merged — so this costs two extra cheap
+ * `git` calls there and changes nothing else.
  */
-async function resumeAfterApproval(board: Board, registry: Registry, implementerTask: TaskCard, runner: CommandRunner): Promise<void> {
+export async function resumeAfterApproval(board: Board, registry: Registry, implementerTask: TaskCard, runner: CommandRunner): Promise<ReviewVerdictOutcome> {
   const agent = implementerTask.routedTo ? registry.get(implementerTask.routedTo) : undefined;
   const originalResult = await board.getResult(implementerTask.id);
 
+  if (agent?.autoMerge && agent.trustLevel === "high" && originalResult?.worktree) {
+    const mergeState = await determineWorktreeMergeState(implementerTask.repo!, originalResult.worktree, implementerTask, runner);
+    if (mergeState === "unknown") return "unresolved";
+    if (mergeState === "merged") {
+      await removeTaskWorktree(implementerTask.repo!, originalResult.worktree, runner);
+      await board.move(implementerTask.id, "done");
+      return "done";
+    }
+  }
+
   if (agent?.autoMerge && agent.trustLevel === "high" && originalResult && (await tryAutoMerge(board, registry, originalResult, runner))) {
     await board.move(implementerTask.id, "done");
-    return;
+    return "done";
   }
 
   await board.move(implementerTask.id, "review");
+  return "review";
 }
 
 /**

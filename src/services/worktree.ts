@@ -156,3 +156,66 @@ export async function mergeTaskWorktree(
   await removeTaskWorktree(repo, worktree, runner);
   return { ok: true, message: `merged ${worktree.branch} into ${repo}` };
 }
+
+/**
+ * Answers "did `mergeTaskWorktree` already land this branch?" without
+ * ever calling it again — the crash-recovery question for an implementer
+ * found `pending-review` with an already-`done`, already-approved
+ * reviewer (see docs/SDD-crash-recovery.md's interrupted-review-verdict
+ * section, resumeAfterApproval's own caller). A crash can land anywhere
+ * in or after `mergeTaskWorktree`'s own sequence, so this has to handle
+ * every state that sequence can leave behind:
+ *
+ * - Branch and worktree both still there: `mergeTaskWorktree` never ran,
+ *   or crashed before finishing. `git status --porcelain` at
+ *   `worktree.path` is checked *first* and short-circuits straight to
+ *   `"not-merged"` when dirty — `mergeTaskWorktree` always commits
+ *   whatever's uncommitted before it ever merges, so real, not-yet-
+ *   committed content sitting in the worktree proves the merge can't
+ *   have landed yet, no matter what the branch ref's *current* tip
+ *   looks like relative to HEAD (a branch that was created off HEAD and
+ *   never advanced is trivially its own ancestor — checking ancestry
+ *   before checking for uncommitted content would misread "never
+ *   touched" as "already merged"). Only once the worktree is clean does
+ *   `git merge-base --is-ancestor <branch> HEAD` decide it: ancestor
+ *   means the merge commit landed and the crash hit before
+ *   `removeTaskWorktree` ran — `"merged"`; not an ancestor is the
+ *   ordinary not-yet-reviewed case — `"not-merged"`.
+ * - Branch and worktree both gone: `removeTaskWorktree` already deleted
+ *   both, which only ever happens right after a successful merge — but a
+ *   discarded (never-merged) worktree also deletes both the same way, so
+ *   this alone doesn't prove anything either way. The merge commit
+ *   `mergeTaskWorktree` creates carries a deterministic, exact-match
+ *   message (`Merge <branch>: <title>`) — found in history, it proves
+ *   the merge really landed before cleanup; not found, there's no way to
+ *   tell "cleaned up after a real merge" apart from "discarded before
+ *   ever merging," so this doesn't guess either way — `"unknown"`.
+ * - Exactly one of branch/worktree exists: a state the paired create
+ *   (`createTaskWorktree`) / remove (`removeTaskWorktree`) calls never
+ *   produce on their own — can't be trusted either way — `"unknown"`.
+ */
+export async function determineWorktreeMergeState(
+  repo: string,
+  worktree: TaskWorktree,
+  task: TaskCard,
+  runner: CommandRunner,
+): Promise<"merged" | "not-merged" | "unknown"> {
+  const branchCheck = await runner(["git", "rev-parse", "--verify", "--quiet", worktree.branch], { cwd: repo });
+  const branchExists = branchCheck.exitCode === 0;
+  const worktreeExists = existsSync(worktree.path);
+
+  if (branchExists && worktreeExists) {
+    const status = await runner(["git", "status", "--porcelain"], { cwd: worktree.path });
+    if (status.stdout.trim()) return "not-merged";
+    const ancestor = await runner(["git", "merge-base", "--is-ancestor", worktree.branch, "HEAD"], { cwd: repo });
+    return ancestor.exitCode === 0 ? "merged" : "not-merged";
+  }
+
+  if (!branchExists && !worktreeExists) {
+    const commitMessage = `Merge ${worktree.branch}: ${task.title}`;
+    const log = await runner(["git", "log", "--all", "--fixed-strings", `--grep=${commitMessage}`, "--format=%H"], { cwd: repo });
+    return log.exitCode === 0 && log.stdout.trim() ? "merged" : "unknown";
+  }
+
+  return "unknown";
+}
