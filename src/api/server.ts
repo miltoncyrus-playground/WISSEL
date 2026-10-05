@@ -441,14 +441,17 @@ export function createApp(
         );
       }
 
-      // Current curated memory — what's actually injected into every
-      // agent's prompt right now (see buildAgentPrompt/readMemoryLessons).
+      // Current curated memory — curation (gatherSessionLessons,
+      // writeMemoryLessons) always runs regardless of injection; whether
+      // it's actually folded into an agent's prompt is reported here as
+      // `injected`, which mirrors createApp's own `injectMemory` flag
+      // (see docs/SDD-memory-injection-toggle.md §3.4, off by default).
       // `content: undefined` (never an error) means curation hasn't
       // produced a file yet — the board UI's Memory tab shows that as an
       // empty state, not a fetch failure.
       if (url.pathname === "/memory" && req.method === "GET") {
         const content = await readMemoryLessons(opts.memoryPath ?? DEFAULT_MEMORY_PATH);
-        return json({ content, path: opts.memoryPath ?? DEFAULT_MEMORY_PATH });
+        return json({ content, path: opts.memoryPath ?? DEFAULT_MEMORY_PATH, injected: opts.injectMemory ?? false });
       }
 
       // Every past curation run, most recent first, each carrying the

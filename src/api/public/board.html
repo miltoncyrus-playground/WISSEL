@@ -652,7 +652,7 @@
 
   <section class="panel" id="memoryPanel" hidden>
     <p class="eyebrow">Memory</p>
-    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">What wissel has learned from its own session history — folded into every agent's prompt before it runs. Wholesale-replaced by each curation pass; the history below is what survives.</p>
+    <p class="lede" id="memoryLede" style="margin-top: -8px; margin-bottom: 20px;">What wissel has learned from its own session history — curated but not currently sent to agent prompts. Wholesale-replaced by each curation pass; the history below is what survives.</p>
 
     <section class="panel-flush section-gap">
       <div class="panel-head"><h2>Current lessons</h2><span class="count" id="memoryPath"></span></div>
@@ -3718,14 +3718,25 @@
     });
   }
 
+  // docs/SDD-memory-injection-toggle.md §3.4 — the lede reflects
+  // GET /memory's `injected` field rather than assuming injection is on,
+  // since it's off by default (WISSEL_MEMORY_INJECTION).
+  function memoryLedeText(injected) {
+    return injected
+      ? "What wissel has learned from its own session history — folded into every agent's prompt before it runs. Wholesale-replaced by each curation pass; the history below is what survives."
+      : "What wissel has learned from its own session history — curated but not currently sent to agent prompts. Wholesale-replaced by each curation pass; the history below is what survives.";
+  }
+
   function loadMemoryTab() {
     var contentEl = document.getElementById("memoryContent");
     var pathEl = document.getElementById("memoryPath");
+    var ledeEl = document.getElementById("memoryLede");
     var historyEl = document.getElementById("memoryHistory");
     var countEl = document.getElementById("memoryHistoryCount");
 
     fetch("/memory").then(function (r) { return r.json(); }).then(function (data) {
       pathEl.textContent = data.path || "";
+      ledeEl.textContent = memoryLedeText(!!data.injected);
       if (!data.content) {
         contentEl.textContent = "No curated memory yet — memory-curator hasn't run, or WISSEL_MEMORY_CURATION is off.";
         return;
