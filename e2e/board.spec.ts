@@ -182,7 +182,7 @@ test.describe("Board view", () => {
     await expect(page.locator("#agentsBox")).toContainText("implementer");
     await expect(page.locator("#agentsBox .tier-chip.write").first()).toContainText("handed off");
     await expect(page.locator("#skillsBox")).toContainText("lint-fixer");
-    await expect(page.locator("#agentsCount")).toContainText("8 agents");
+    await expect(page.locator("#agentsCount")).toContainText("10 agents");
     await expect(page.locator("#skillsCount")).toContainText("5 skills");
 
     // No cost figure anywhere in the fleet boxes — replaced by the active dot.
@@ -245,7 +245,7 @@ test.describe("Board view", () => {
     });
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(task.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer).toBeVisible();
@@ -278,7 +278,7 @@ test.describe("Board view", () => {
     await request.post(`/tasks/${task.id}/result`, { data: { agentId: "fixer", ok: true, summary: "opened a PR" } });
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(task.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.locator("#tdMeta")).toContainText("Review");
@@ -313,7 +313,7 @@ test.describe("Board view", () => {
     });
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(task.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.getByRole("button", { name: "Merge" })).toBeVisible();
@@ -352,7 +352,7 @@ test.describe("Board view", () => {
     });
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(task.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.locator("#tdResult")).toContainText("Spawned 2 subagents");
@@ -379,7 +379,7 @@ test.describe("Board view", () => {
     await request.post(`/tasks/${task.id}/result`, { data: { agentId: "implementer", ok: true, summary: "did the thing" } });
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(task.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.locator("#tdMeta")).toContainText("Pending review");
@@ -470,7 +470,7 @@ test.describe("Board view", () => {
     expect(escalated).toBeDefined();
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(escalated.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.locator("#tdMeta")).toContainText("Escalated");
@@ -520,7 +520,7 @@ test.describe("Board view", () => {
     expect(escalated).toBeDefined();
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(escalated.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.getByRole("button", { name: "Approve anyway" })).toBeVisible();
@@ -554,7 +554,7 @@ test.describe("Board view", () => {
     expect(escalated).toBeDefined();
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(escalated.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     let promptCount = 0;
@@ -586,7 +586,7 @@ test.describe("Board view", () => {
     expect(escalated).toBeDefined();
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(escalated.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     const retryForm = drawer.locator("#tdRetryForm");
@@ -623,7 +623,7 @@ test.describe("Board view", () => {
     expect(escalated).toBeDefined();
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(escalated.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await drawer.getByRole("button", { name: "Retry" }).click();
@@ -668,7 +668,7 @@ test.describe("Board view", () => {
     expect(pending.status).toBe("review");
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(pending.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${pending.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.locator("#tdMeta")).toContainText("Review");
@@ -693,7 +693,7 @@ test.describe("Board view", () => {
     expect(pending).toBeDefined();
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(pending.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${pending.id}"]`).click();
     const drawer = page.locator("#taskDrawer");
 
     page.on("dialog", (dialog) => dialog.accept());
@@ -721,7 +721,7 @@ test.describe("Board view", () => {
     const before = await (await request.get("/tasks")).json();
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(pending.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${pending.id}"]`).click();
     const drawer = page.locator("#taskDrawer");
 
     page.on("dialog", (dialog) => dialog.accept());
@@ -743,7 +743,7 @@ test.describe("Board view", () => {
     const task = await created.json();
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(task.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await drawer.getByRole("button", { name: "View diff" }).click();
@@ -775,7 +775,7 @@ test.describe("Board view", () => {
     });
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(reviewer.title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${reviewer.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.getByRole("button", { name: "View diff" })).toBeVisible();
@@ -1124,7 +1124,23 @@ test.describe("Board view", () => {
     await expect(panel.locator("#mcpAddError")).toContainText("already registered");
   });
 
-  test("an empty column collapses to just its header instead of reserving full card space", async ({ page }) => {
+  test("an empty column collapses to just its header instead of reserving full card space", async ({ page, request }) => {
+    // Drives its own task to "done" rather than relying on some earlier
+    // test in this file happening to have left one behind — the server
+    // backing this whole spec file shares one long-lived in-memory DB
+    // (see playwright.config.ts's WISSEL_DB_PATH), so state really does
+    // accumulate across tests, but asserting against that accumulation
+    // makes this test's pass/fail depend on execution order instead of
+    // on the thing it's actually testing. Reported by review as
+    // reproducing in total isolation (run alone, no earlier test's
+    // leftover Done task to lean on) — this branch's sandbox has no
+    // Chromium/subprocess access to re-run that isolation check directly.
+    const created = await request.post("/tasks", {
+      data: { title: `Done column test ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" },
+    });
+    const task = await created.json();
+    await request.post(`/tasks/${task.id}/move`, { data: { status: "done" } });
+
     await page.goto("/board");
     // "No match" is reliably empty in a fresh fixture board — nothing in
     // this file's other tests routes a task there without a human/sweep
@@ -1133,9 +1149,7 @@ test.describe("Board view", () => {
     await expect(noMatchCol).toHaveClass(/kcol-empty/);
     await expect(noMatchCol.locator(".kcard")).toHaveCount(0);
 
-    // A column that does have cards (Board view's own default state
-    // always has at least one, per the earlier "is the default view..."
-    // test) never gets the collapsed treatment.
+    // A column that does have cards never gets the collapsed treatment.
     const doneCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: /^Done/ }) });
     await expect(doneCol).not.toHaveClass(/kcol-empty/);
   });
@@ -1268,10 +1282,11 @@ test.describe("Swimlanes view", () => {
 test.describe("Archive tab", () => {
   test("archiving a task from its drawer removes it from Board and Swimlanes, and it shows up in the Archive tab", async ({ page, request }) => {
     const title = `Drawer archive test ${Date.now()}`;
-    await request.post("/tasks", { data: { title, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+    const created = await request.post("/tasks", { data: { title, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+    const task = await created.json();
 
     await page.goto("/board");
-    await page.locator("#kanbanBody").getByText(title).click();
+    await page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.getByRole("button", { name: "Archive", exact: true })).toBeVisible();
@@ -1288,7 +1303,7 @@ test.describe("Archive tab", () => {
 
     // Gone from Board (kanban card count), the stat tile agrees, and
     // it's gone from Swimlanes membership too.
-    await expect(page.locator("#kanbanBody").getByText(title, { exact: true })).toHaveCount(0);
+    await expect(page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`)).toHaveCount(0);
 
     const allTasks = await (await request.get("/tasks")).json();
     const realInboxCount = allTasks.filter(

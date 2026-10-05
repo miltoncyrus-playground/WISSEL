@@ -805,7 +805,17 @@
     </section>
     <section class="drawer-section">
       <p class="eyebrow">Add MCP server</p>
-      <form id="mcpAddForm">
+      <!-- novalidate: the submit handler below already does its own
+           required-field checks and renders them into #mcpAddError
+           (consistent styling with every other inline error on this
+           page). Without novalidate, Chromium's native constraint
+           validation intercepts the submit click before that handler
+           ever runs whenever a `required` input (id, label) is blank,
+           so #mcpAddError never appears — a real, previously-
+           uncharacterized bug, confirmed by reading the submit handler
+           (board.html, below) against the native `required` attributes
+           on #mcpAddId/#mcpAddLabel. -->
+      <form id="mcpAddForm" novalidate>
         <div class="field">
           <label for="mcpAddId">Server id</label>
           <input id="mcpAddId" type="text" required autocomplete="off" placeholder="my-server">
@@ -2313,6 +2323,13 @@
     card.tabIndex = 0;
     card.setAttribute("role", "button");
     card.setAttribute("aria-label", t.title + ", " + statusLabel + (t.supersededBy ? ", superseded" : "") + ", show task details");
+    // A stable handle for anything (tests, in particular) that needs to
+    // find *this* task's card specifically — title text alone can't do
+    // that once a pushback/retry/approve lineage produces multiple cards
+    // sharing byte-identical full title text across different statuses
+    // (e.g. an auto-spawned "Review: <title>" card, or a superseded
+    // original sitting right next to its own re-attempt).
+    card.dataset.taskId = t.id;
 
     var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
 
@@ -2814,6 +2831,17 @@
     tasks = selectedProjectPath ? allTasks.filter(function (t) { return t.repo === selectedProjectPath; }) : allTasks;
   }
 
+  // Every SSE message (source.onmessage below) calls this with no
+  // debounce — a burst of task mutations fires a burst of overlapping
+  // calls, each racing its own 4 fetches. Without a sequence check, a
+  // slower-to-resolve response from an *earlier* call can land after a
+  // faster one from a *later* call and clobber already-applied fresher
+  // state with stale data, with nothing left to correct it once the
+  // burst settles (no further SSE event will fire to trigger another
+  // refetch).
+  var refetchSeq = 0;
+  var appliedRefetchSeq = 0;
+
   function refetchTasks() {
     // /harnesses and /mcp-servers are both refetched alongside /tasks
     // (not just once at startup) because their activeCount is live
@@ -2822,18 +2850,36 @@
     // /merge-health is refetched here too, unlike /projects below (fetched
     // once only) — a dangling merge can appear or get resolved by a human
     // at any time, not just at page load, and the banner should track that.
+    var seq = ++refetchSeq;
     return Promise.all([
       fetch("/tasks").then(function (r) { return r.json(); }),
       fetch("/harnesses").then(function (r) { return r.json(); }),
       fetch("/mcp-servers").then(function (r) { return r.json(); }),
       fetch("/merge-health").then(function (r) { return r.json(); }),
     ]).then(function (results) {
+      // Discards a response older than the last one actually applied.
+      // Deliberately compares against the latest *applied* response, not
+      // the latest *started* request (the pattern this project tried and
+      // reverted for loadDrawerResult — see its own comment — because
+      // comparing against an in-flight request's counter can make every
+      // response look stale under sustained traffic and nothing ever
+      // renders). Comparing against what's already applied instead means
+      // the true last-to-resolve response can never be blocked by one
+      // that hasn't resolved yet, so this can't starve.
+      if (seq < appliedRefetchSeq) return;
+      appliedRefetchSeq = seq;
       allTasks = results[0];
       harnesses = results[1];
       mcpServers = results[2];
       mergeHealth = results[3];
       applyProjectFilter();
       render();
+    }).catch(function (err) {
+      // A rejected fetch here must never become a silent, unhandled
+      // promise rejection that leaves the board frozen on stale data
+      // until the next SSE event happens to land and succeed — the boot
+      // fetch above already affords itself this same visibility.
+      console.error("refetchTasks failed:", err);
     });
   }
 

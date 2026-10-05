@@ -137,6 +137,32 @@ export default defineConfig({
       // "e2e-fixture-mcp" is deterministically reachable across every
       // machine.
       WISSEL_MCP_SERVERS_PATH: "/tmp/wissel-e2e-mcp-servers.yaml",
+      // Pinned off regardless of whatever's ambient in the shell this
+      // config runs under — Playwright's webServer.env merges on top of
+      // process.env rather than replacing it, so a developer machine
+      // with any of these six exported for their own real work (all are
+      // off-by-default background-automation loops gated by
+      // src/api/server.ts:1281-1324) leaks straight into the e2e server
+      // and makes it a live participant instead of a hermetic fixture.
+      // Reproduced via a controlled A/B (reviewer pass, this card's own
+      // history): with WISSEL_ORCHESTRATOR leaked in, the real
+      // Orchestrator.sweep() loop (src/core/orchestrator.ts) actually
+      // routes and dispatches e2e fixture tasks mid-run — real
+      // wissel-e2e-repo-* agent sessions spawning against junk fixture
+      // titles, a "memory-scheduler: tick failed" log line, and a
+      // different subset of tests failing on every run because the
+      // sweep loop races test assertions non-deterministically; this
+      // environment's sandbox blocks the subprocess/Chromium spawns
+      // needed to re-run that A/B independently. An explicit falsy
+      // override here beats merely "not setting" these,
+      // since not setting a key still lets an ambient exported value of
+      // the same name pass through untouched.
+      WISSEL_ORCHESTRATOR: "0",
+      WISSEL_EXECUTE_WRITE_TIER: "0",
+      WISSEL_MEMORY_CURATION: "0",
+      WISSEL_AUTO_ARCHIVE: "0",
+      WISSEL_MODEL_REFRESH: "0",
+      WISSEL_MERGE_HEALTH: "0",
     },
   },
 });
