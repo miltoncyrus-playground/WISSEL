@@ -163,6 +163,13 @@ export default defineConfig({
       WISSEL_AUTO_ARCHIVE: "0",
       WISSEL_MODEL_REFRESH: "0",
       WISSEL_MERGE_HEALTH: "0",
+      // Not a background loop like the six above — it only gates
+      // whether a run's prompt includes memory/lessons.md — but pinned
+      // off for the same hermetic-fixture reason: an ambient
+      // WISSEL_MEMORY_INJECTION=1 in a developer's shell would otherwise
+      // leak in and flip the Memory tab's injected-state wording e2e
+      // checks assert against (see docs/SDD-memory-injection-toggle.md).
+      WISSEL_MEMORY_INJECTION: "0",
     },
   },
 });

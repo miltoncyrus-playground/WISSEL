@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexReadOnlyExecutor } from "../src/executors/codex-readonly.ts";
@@ -176,4 +176,47 @@ test("a declared, resolvable mcpAccess grant surfaces as a loud failure, not a s
   expect(result.ok).toBe(false);
   expect(result.summary).toContain("not yet implemented");
   expect(result.summary).toContain("slack");
+});
+
+// --- memory injection toggle (docs/SDD-memory-injection-toggle.md) -----
+
+test("injectMemory omitted on the constructor: a real memoryPath's content never reaches the prompt", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-codex-readonly-memory-test-"));
+  try {
+    const memoryPath = join(dir, "lessons.md");
+    await writeFile(memoryPath, "SENTINEL-SESSION-LESSON-abc123");
+    let seenStdin: string | undefined;
+    const executor = new CodexReadOnlyExecutor({
+      memoryPath,
+      runner: async (_cmd, opts) => {
+        seenStdin = opts.stdin;
+        return { stdout: '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"triaged"}}', stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(task, agent);
+    expect(seenStdin).not.toContain("SENTINEL-SESSION-LESSON-abc123");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("injectMemory: true on the constructor folds the memoryPath's content into the prompt", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-codex-readonly-memory-test-"));
+  try {
+    const memoryPath = join(dir, "lessons.md");
+    await writeFile(memoryPath, "SENTINEL-SESSION-LESSON-abc123");
+    let seenStdin: string | undefined;
+    const executor = new CodexReadOnlyExecutor({
+      memoryPath,
+      injectMemory: true,
+      runner: async (_cmd, opts) => {
+        seenStdin = opts.stdin;
+        return { stdout: '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"triaged"}}', stderr: "", exitCode: 0 };
+      },
+    });
+    await executor.run(task, agent);
+    expect(seenStdin).toContain("SENTINEL-SESSION-LESSON-abc123");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

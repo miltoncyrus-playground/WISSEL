@@ -106,6 +106,16 @@ what this process loaded, not whatever's currently on disk — see
 startup log always includes a `version: ...` line. The board's header
 also shows a small commit badge (hover for the full commit/branch).
 
+Memory curation (`WISSEL_MEMORY_CURATION=1`) periodically distills recent
+session history into `memory/lessons.md` (see
+`docs/SDD-memory-curator.md`). Whether that file ever reaches an agent's
+prompt is a separate toggle: `WISSEL_MEMORY_INJECTION=1` (or `true`)
+folds it into every claude-cli/codex-cli prompt; unset or any other
+value means off. **Off by default** while Milton rethinks how memory
+should reach agents — curation keeps running and accumulating either
+way, nothing is lost by leaving this off. See
+`docs/SDD-memory-injection-toggle.md`.
+
 Known gaps:
 - No sandboxing beyond whatever the underlying agent CLI already does —
   not solved here, noted so it isn't assumed.

@@ -4,7 +4,11 @@ Status: **Phase 1 built and verified** (unit tests, no real `claude`/`codex`
 process spawned — see §9). Phases 2+ (per-agent filtering, growth-ceiling
 tooling) are explicitly out of scope for this pass — see §7. **Revised**:
 schedule frequency lowered and a selectivity bar added to the curation
-prompt — see §10.
+prompt — see §10. **Revised again**: prompt *injection* (§6's read side)
+is now off by default behind `WISSEL_MEMORY_INJECTION` while Milton
+rethinks how memory should reach agents — curation (this doc's trigger,
+gather and persistence/write side) is unaffected and keeps running
+exactly as described below. See `docs/SDD-memory-injection-toggle.md`.
 
 ## 1. Why
 
@@ -120,6 +124,12 @@ When a tick finds curation due, `runMemoryCurationIfDue`:
    through too.
 
 ## 6. Persistence — `finishResult` hook + prompt injection
+
+> **Revision (`docs/SDD-memory-injection-toggle.md`):** the read side
+> below is now gated behind `WISSEL_MEMORY_INJECTION`, off by default.
+> §2's goal of injecting the result "into every subsequent agent's
+> prompt" no longer holds unless that flag is explicitly set — the write
+> side (persistence) is untouched and keeps running regardless.
 
 **Write side** (`src/core/orchestrator.ts`, `finishResult`): the single
 choke point every finished task already passes through, the same one

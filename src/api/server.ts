@@ -110,6 +110,19 @@ export interface CreateAppOptions {
    *  src/services/memory.ts's DEFAULT_MEMORY_PATH. Overridable so tests
    *  never touch this repo's own real memory/lessons.md. */
   memoryPath?: string;
+  /** Gates whether `memoryPath`'s content is folded into every
+   *  claude-cli/codex-cli agent prompt — see
+   *  docs/SDD-memory-injection-toggle.md. Off by default: memory
+   *  curation (memoryCurationEnabled above, `writeMemoryLessons`, `GET
+   *  /memory`) keeps running exactly as before regardless of this flag;
+   *  this only controls whether the result ever reaches an agent's
+   *  prompt. Read once from `WISSEL_MEMORY_INJECTION` at the
+   *  `src/api/server.ts` bootstrap entrypoint (same convention as every
+   *  other `WISSEL_*` flag) and passed straight through here — threaded
+   *  into every executor built below and from there into
+   *  `runClaude`/`runCodex`; no executor or run function ever reads
+   *  `process.env` itself. */
+  injectMemory?: boolean;
   /** Starts the in-process auto-archive scheduler (see
    *  src/core/archive-scheduler.ts) — off by default, same gate pattern
    *  as memoryCurationEnabled. Unlike memory curation, needs no
@@ -232,21 +245,21 @@ export function createApp(
   // (see their canHandle), so there's no write risk to gate behind
   // executeWriteTier the way WriteExecutor/CodexWriteExecutor are.
   const autoExecutors: Executor[] = [
-    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
+    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     new ApiExecutor(),
-    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
+    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
   ];
   if (executeWriteTier)
     autoExecutors.push(
-      new WriteExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
-      new CodexWriteExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
+      new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+      new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     );
   const manualExecutors: Executor[] = opts.manualExecutors ?? [
-    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
+    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     new ApiExecutor(),
-    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
-    new WriteExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
-    new CodexWriteExecutor({ memoryPath: opts.memoryPath, mcpServers, onChunk: onTaskOutputChunk }),
+    new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+    new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+    new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
   ];
 
   // A pipeline run always executes every step in-process, the same way
@@ -1299,6 +1312,12 @@ if (import.meta.main) {
   // project's own real, git-committed memory/lessons.md with test
   // fixture content.
   const memoryPath = process.env.WISSEL_MEMORY_PATH;
+  // Off by default: whether memoryPath's content is folded into every
+  // claude-cli/codex-cli agent prompt (see
+  // docs/SDD-memory-injection-toggle.md). Memory curation above keeps
+  // running either way — this only gates whether agents actually see
+  // the result.
+  const injectMemory = ["1", "true"].includes(process.env.WISSEL_MEMORY_INJECTION ?? "");
 
   // Off by default: task cards auto-archiving 24h after they land on
   // `done` (see docs/SDD-task-archiving.md). WISSEL_ARCHIVE_CHECK_INTERVAL_HOURS
@@ -1337,6 +1356,7 @@ if (import.meta.main) {
       memoryCurationEnabled,
       memoryIntervalHours,
       memoryPath,
+      injectMemory,
       autoArchiveEnabled,
       archiveCheckIntervalHours,
       modelRefreshEnabled,
@@ -1368,6 +1388,11 @@ if (import.meta.main) {
     memoryCurationEnabled
       ? `memory curation scheduled every ${memoryIntervalHours}h (WISSEL_MEMORY_CURATION=1)`
       : "memory curation not started — set WISSEL_MEMORY_CURATION=1 to let wissel learn from its own session history",
+  );
+  console.log(
+    injectMemory
+      ? "memory injection on: lessons are folded into every agent prompt (WISSEL_MEMORY_INJECTION=1)"
+      : "memory injection off: lessons are curated but not added to agent prompts (set WISSEL_MEMORY_INJECTION=1 to re-enable)",
   );
   console.log(
     autoArchiveEnabled

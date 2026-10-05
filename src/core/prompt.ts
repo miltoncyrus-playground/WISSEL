@@ -7,8 +7,12 @@ import type { AgentDef, TaskCard } from "./types.ts";
  * caller (runClaude/runCodex) reads that file itself and passes its
  * content through here; this function stays pure and file-I/O-free.
  * Omitted or empty means no section is added at all — the common case
- * before anything has ever been curated (docs/SDD-memory-curator.md §9).
- * No per-agent filtering in v1: every agent gets the same memory,
+ * before anything has ever been curated (docs/SDD-memory-curator.md §9),
+ * and also the default case now that injection is gated off by default
+ * behind `WISSEL_MEMORY_INJECTION` (see
+ * docs/SDD-memory-injection-toggle.md §3.2): the caller only ever passes
+ * a non-empty `memory` through when that flag is on. No per-agent
+ * filtering: every agent that does get memory gets the same content,
  * verbatim (see SDD §7's non-goals).
  */
 export interface BuildAgentPromptOptions {

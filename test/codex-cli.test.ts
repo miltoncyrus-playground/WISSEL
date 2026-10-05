@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { computeCost, runCodex, type CommandResult } from "../src/executors/codex-cli.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import type { AgentDef, McpServer, TaskCard } from "../src/core/types.ts";
@@ -282,4 +285,78 @@ test("a declared, resolvable mcpAccess grant fails the run loud, naming the serv
   expect(result.summary).toContain("slack");
   expect(result.summary).toContain("not yet implemented");
   expect(codexCalled).toBe(false); // fails before ever spawning codex, not after a guessed invocation errors
+});
+
+// --- memory injection toggle (docs/SDD-memory-injection-toggle.md) -----
+
+async function tmpMemoryFile(sentinel: string): Promise<{ dir: string; memoryPath: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-codex-cli-memory-test-"));
+  const memoryPath = join(dir, "lessons.md");
+  await writeFile(memoryPath, sentinel);
+  return { dir, memoryPath };
+}
+
+async function capturePrompt(extra: Partial<Parameters<typeof runCodex>[0]> = {}): Promise<string> {
+  let seenStdin: string | undefined;
+  await runCodex({
+    runner: async (_cmd, opts) => {
+      seenStdin = opts.stdin;
+      return { stdout: CLEAN_RUN_STDOUT, stderr: "", exitCode: 0 };
+    },
+    task,
+    agent,
+    sandbox: "read-only",
+    ...extra,
+  });
+  return seenStdin ?? "";
+}
+
+test("injectMemory omitted: the memory/lessons.md sentinel never reaches the prompt, even though memoryPath points at a real file containing it", async () => {
+  const { dir, memoryPath } = await tmpMemoryFile("SENTINEL-SESSION-LESSON-abc123");
+  try {
+    const prompt = await capturePrompt({ memoryPath });
+    expect(prompt).not.toContain("SENTINEL-SESSION-LESSON-abc123");
+    expect(prompt).not.toContain("Lessons learned from prior sessions:");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("injectMemory: true folds the memory/lessons.md sentinel into the prompt", async () => {
+  const { dir, memoryPath } = await tmpMemoryFile("SENTINEL-SESSION-LESSON-abc123");
+  try {
+    const prompt = await capturePrompt({ memoryPath, injectMemory: true });
+    expect(prompt).toContain("SENTINEL-SESSION-LESSON-abc123");
+    expect(prompt).toContain("Lessons learned from prior sessions:");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("injectMemory: false is identical to omitting it — no injection", async () => {
+  const { dir, memoryPath } = await tmpMemoryFile("SENTINEL-SESSION-LESSON-abc123");
+  try {
+    const prompt = await capturePrompt({ memoryPath, injectMemory: false });
+    expect(prompt).not.toContain("SENTINEL-SESSION-LESSON-abc123");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// "Test every real config entry" lesson: every kind: agent manifest
+// entry (skills are excluded — they're not routed through runCodex the
+// way agents are) must see zero memory injection with the flag off.
+test("every real kind: agent entry in agents/manifest.yaml gets no memory section in its prompt when injectMemory is omitted", async () => {
+  const { Registry } = await import("../src/core/registry.ts");
+  const registry = await Registry.load();
+  const { dir, memoryPath } = await tmpMemoryFile("SENTINEL-SESSION-LESSON-abc123");
+  try {
+    for (const realAgent of registry.all().filter((a) => a.kind === "agent")) {
+      const prompt = await capturePrompt({ agent: realAgent, memoryPath });
+      expect(prompt).not.toContain("SENTINEL-SESSION-LESSON-abc123");
+      expect(prompt).not.toContain("Lessons learned from prior sessions:");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodexWriteExecutor } from "../src/executors/codex-write.ts";
@@ -238,5 +238,64 @@ test("a declared, resolvable mcpAccess grant surfaces as a loud failure, not a s
     expect(result.summary).toContain("not yet implemented");
   } finally {
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+// --- memory injection toggle (docs/SDD-memory-injection-toggle.md) -----
+
+test("injectMemory omitted on the constructor: a real memoryPath's content never reaches the prompt", async () => {
+  const home = await fakeHome();
+  const memDir = await mkdtemp(join(tmpdir(), "wissel-codex-write-memory-test-"));
+  try {
+    const memoryPath = join(memDir, "lessons.md");
+    await writeFile(memoryPath, "SENTINEL-SESSION-LESSON-abc123");
+    let seenStdin: string | undefined;
+    const executor = new CodexWriteExecutor({
+      homeDir: home,
+      memoryPath,
+      runner: async (cmd, opts) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenStdin = opts.stdin;
+        return {
+          stdout: '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"shipped"}}',
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+    });
+    await executor.run(task, agent);
+    expect(seenStdin).not.toContain("SENTINEL-SESSION-LESSON-abc123");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(memDir, { recursive: true, force: true });
+  }
+});
+
+test("injectMemory: true on the constructor folds the memoryPath's content into the prompt", async () => {
+  const home = await fakeHome();
+  const memDir = await mkdtemp(join(tmpdir(), "wissel-codex-write-memory-test-"));
+  try {
+    const memoryPath = join(memDir, "lessons.md");
+    await writeFile(memoryPath, "SENTINEL-SESSION-LESSON-abc123");
+    let seenStdin: string | undefined;
+    const executor = new CodexWriteExecutor({
+      homeDir: home,
+      memoryPath,
+      injectMemory: true,
+      runner: async (cmd, opts) => {
+        if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+        seenStdin = opts.stdin;
+        return {
+          stdout: '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"shipped"}}',
+          stderr: "",
+          exitCode: 0,
+        };
+      },
+    });
+    await executor.run(task, agent);
+    expect(seenStdin).toContain("SENTINEL-SESSION-LESSON-abc123");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+    await rm(memDir, { recursive: true, force: true });
   }
 });

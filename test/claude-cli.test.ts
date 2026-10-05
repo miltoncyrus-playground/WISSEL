@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runClaude, runViaBun, type CommandResult, type CommandRunner } from "../src/executors/claude-cli.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import type { AgentDef, McpServer, TaskCard } from "../src/core/types.ts";
@@ -1008,5 +1011,80 @@ test("every real agent in agents/manifest.yaml gets byte-identical argv when add
     const withoutAddDirOption = await captureCmd({ agent, permissionMode: "plan" });
     const withAddDirExplicitlyUndefined = await captureCmd({ agent, permissionMode: "plan", addDir: undefined });
     expect(withAddDirExplicitlyUndefined).toEqual(withoutAddDirOption);
+  }
+});
+
+// --- memory injection toggle (docs/SDD-memory-injection-toggle.md) -----
+
+async function tmpMemoryFile(sentinel: string): Promise<{ dir: string; memoryPath: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-claude-cli-memory-test-"));
+  const memoryPath = join(dir, "lessons.md");
+  await writeFile(memoryPath, sentinel);
+  return { dir, memoryPath };
+}
+
+async function capturePrompt(extra: Partial<Parameters<typeof runClaude>[0]> = {}): Promise<string> {
+  let seenStdin: string | undefined;
+  await runClaude({
+    runner: async (_cmd, opts) => {
+      seenStdin = opts.stdin;
+      return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+    },
+    task,
+    agent: plainAgent,
+    permissionMode: "plan",
+    ...extra,
+  });
+  return seenStdin ?? "";
+}
+
+test("injectMemory omitted: the memory/lessons.md sentinel never reaches the prompt, even though memoryPath points at a real file containing it", async () => {
+  const { dir, memoryPath } = await tmpMemoryFile("SENTINEL-SESSION-LESSON-abc123");
+  try {
+    const prompt = await capturePrompt({ memoryPath });
+    expect(prompt).not.toContain("SENTINEL-SESSION-LESSON-abc123");
+    expect(prompt).not.toContain("Lessons learned from prior sessions:");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("injectMemory: true folds the memory/lessons.md sentinel into the prompt", async () => {
+  const { dir, memoryPath } = await tmpMemoryFile("SENTINEL-SESSION-LESSON-abc123");
+  try {
+    const prompt = await capturePrompt({ memoryPath, injectMemory: true });
+    expect(prompt).toContain("SENTINEL-SESSION-LESSON-abc123");
+    expect(prompt).toContain("Lessons learned from prior sessions:");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("injectMemory: false is identical to omitting it — no injection", async () => {
+  const { dir, memoryPath } = await tmpMemoryFile("SENTINEL-SESSION-LESSON-abc123");
+  try {
+    const prompt = await capturePrompt({ memoryPath, injectMemory: false });
+    expect(prompt).not.toContain("SENTINEL-SESSION-LESSON-abc123");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// "Test every real config entry" lesson: every kind: agent manifest
+// entry (skills are excluded — they're not routed through runClaude the
+// way agents are) must see zero memory injection with the flag off,
+// regardless of its own tier/executor/outputContract.
+test("every real kind: agent entry in agents/manifest.yaml gets no memory section in its prompt when injectMemory is omitted", async () => {
+  const { Registry } = await import("../src/core/registry.ts");
+  const registry = await Registry.load();
+  const { dir, memoryPath } = await tmpMemoryFile("SENTINEL-SESSION-LESSON-abc123");
+  try {
+    for (const agent of registry.all().filter((a) => a.kind === "agent")) {
+      const prompt = await capturePrompt({ agent, memoryPath });
+      expect(prompt).not.toContain("SENTINEL-SESSION-LESSON-abc123");
+      expect(prompt).not.toContain("Lessons learned from prior sessions:");
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

@@ -32,6 +32,7 @@ test("playwright.config.ts pins every background-automation flag off in webServe
     "WISSEL_AUTO_ARCHIVE",
     "WISSEL_MODEL_REFRESH",
     "WISSEL_MERGE_HEALTH",
+    "WISSEL_MEMORY_INJECTION",
   ]) {
     expect(body).toMatch(new RegExp(`${flag}: "0",?`));
   }
