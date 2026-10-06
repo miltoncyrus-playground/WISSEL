@@ -47,5 +47,7 @@ The board and pipeline editor are opened at `http://192.168.10.25:8787`, plain H
 
 Use `newId()` (`pipeline-editor/src/id.ts`), which falls back to `crypto.getRandomValues`. Check any new browser API against MDN's "secure context" note. To reproduce the LAN case in Playwright, remove the API in `page.addInitScript` (see the randomUUID test in `e2e/pipeline-editor.spec.ts`).
 
+Don't import `src/api/public/*.js` into e2e specs. Those modules export only through a `module.exports` guard, which works in `bun test` but exports nothing under Playwright (the repo is `"type": "module"`), so the whole spec file fails to load. Call them with `page.evaluate` on the globals the board defines. `test/e2e-public-imports.test.ts` enforces this.
+
 ## Process management
 Kill processes by PID. `pkill -f <pattern>` can match the shell running it and kill your own command.

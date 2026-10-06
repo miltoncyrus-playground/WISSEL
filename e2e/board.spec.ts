@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
 import { test, expect, type APIRequestContext } from "@playwright/test";
-import { describeAgentHarnesses, formatHarnessCapacity } from "../src/api/public/render-harness-preference.js";
 
 /** Same disposable tmp path playwright.config.ts's webServer.command
  *  seeds from e2e/fixtures/harnesses.yaml before every run — read
@@ -870,7 +869,11 @@ test.describe("Board view", () => {
   // harness line must match what GET /agents + GET /harnesses say, run
   // through the same render-harness-preference.js the page loads, and the
   // fixture harness's maxConcurrent (e2e/fixtures/harnesses.yaml) must show
-  // as active/max in the panel.
+  // as active/max in the panel. The expected text is computed inside the
+  // page, from the globals the board's own <script> tag defined: importing
+  // the module here fails under Playwright, because package.json's
+  // "type": "module" makes Node load it as ESM, where its module.exports
+  // guard exports nothing.
   test("fleet rows show each agent's harness list from GET /agents + GET /harnesses; the panel shows active/max", async ({ page, request }) => {
     const agents = (await (await request.get("/agents")).json()) as { id: string; kind: string; harnesses?: string[] }[];
     const harnesses = await (await request.get("/harnesses")).json();
@@ -882,14 +885,23 @@ test.describe("Board view", () => {
     await expect(rows.first()).toBeVisible();
     const agentRows = agents.filter((a) => a.kind === "agent");
     expect(agentRows.length).toBeGreaterThan(0);
+    const escapeRegExp = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     for (const a of agentRows) {
-      const row = rows.filter({ has: page.locator(".fleet-id", { hasText: new RegExp("^" + a.id + "$") }) });
-      await expect(row.locator(".fleet-harnesses")).toHaveText(describeAgentHarnesses(a, harnesses).text);
+      const expected = await page.evaluate(
+        ([agent, pool]) => (window as unknown as { describeAgentHarnesses: (a: unknown, h: unknown) => { text: string } }).describeAgentHarnesses(agent, pool).text,
+        [a, harnesses] as const,
+      );
+      const row = rows.filter({ has: page.locator(".fleet-id", { hasText: new RegExp("^" + escapeRegExp(a.id) + "$") }) });
+      await expect(row.locator(".fleet-harnesses")).toHaveText(expected);
     }
 
     await page.locator("#hmOpenBtn").click();
     const fixtureRow = page.locator("#harnessPanel .hm-row").filter({ has: page.locator("#hmModel-e2e-fixture-harness") });
-    await expect(fixtureRow.locator(".hm-row-meta").first()).toHaveText("anthropic-api · " + formatHarnessCapacity(fixture));
+    const capacity = await page.evaluate(
+      (h) => (window as unknown as { formatHarnessCapacity: (h: unknown) => string }).formatHarnessCapacity(h),
+      fixture,
+    );
+    await expect(fixtureRow.locator(".hm-row-meta").first()).toHaveText("anthropic-api · " + capacity);
     await expect(fixtureRow.locator(".hm-row-meta").first()).toContainText(/\d+\/2 active/);
   });
 
