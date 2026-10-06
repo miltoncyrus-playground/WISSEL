@@ -106,6 +106,12 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
+      "board-new.js/.d.ts is only the \"+ New\" drawer's live-card search — verified (grep) searchLiveCards is called only by board.html's createCardSearch (#ntDependsSearch, #ntParentSearch), and only new-task.spec.ts drives those boxes.",
+    match: (p) => p === "src/api/public/board-new.js" || p === "src/api/public/board-new.d.ts",
+    resolve: () => ["new-task.spec.ts"],
+  },
+  {
+    description:
       "board.html is shared by nearly every spec (see BOARD_HTML_DEFAULT_SPECS's own comment) — defaults to that broad set, UNLESS every changed line matches the theme-only marker, which is verified to appear nowhere else in the file.",
     match: (p) => p === "src/api/public/board.html",
     resolve: (_p, changedLines) => resolveBoardHtml(changedLines),

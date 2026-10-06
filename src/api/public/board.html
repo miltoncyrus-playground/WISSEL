@@ -124,7 +124,7 @@
     padding: 6px 14px; border-radius: 7px; cursor: pointer; flex: none;
   }
   .new-btn:hover { opacity: 0.92; }
-  .new-btn[aria-current="page"] { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .new-btn[aria-expanded="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }
   .main { padding: 14px 20px 32px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   /* Below 1100px the sidebar keeps only its icons. Labels are clipped
      rather than display:none so each link keeps its accessible name;
@@ -440,9 +440,23 @@
   .suggestion-item { padding: 7px 11px; font-size: 12.5px; cursor: pointer; }
   .suggestion-item:hover, .suggestion-item.active { background: var(--accent-wash); }
 
-  .depends-list { display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
-  .depends-item { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
-  .depends-empty { color: var(--ink-muted); font-size: 12.5px; padding: 4px; }
+  /* Live-card search results and picks ("Depends on", "Follow-up of"). */
+  .suggestion-item .si-meta { color: var(--ink-muted); font-size: 11.5px; margin-left: 6px; }
+  .suggestion-empty { padding: 7px 11px; font-size: 12.5px; color: var(--ink-muted); }
+  .chip.card-chip { max-width: 100%; }
+  .chip.card-chip .chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .chips:empty { display: none; }
+
+  /* ---- "+ New" drawer: the task drawer's slide-in, wider for a form. */
+  .drawer.new-drawer { width: min(560px, 100vw); }
+  .new-tabs { display: flex; gap: 4px; padding: 10px 16px 0; border-bottom: 1px solid var(--line); }
+  .new-tabs button {
+    appearance: none; border: none; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-2);
+    font: inherit; font-size: 13px; font-weight: 600; padding: 8px 12px; margin-bottom: -1px; cursor: pointer;
+  }
+  .new-tabs button[aria-selected="true"] { color: var(--ink-1); border-bottom-color: var(--accent); }
+  .new-tabs button:not([aria-selected="true"]):hover { color: var(--ink-1); }
+  .field select { font: inherit; font-size: 13.5px; max-width: 100%; }
 
   .panel-inset { border: 1px dashed var(--border); border-radius: 10px; padding: 14px; margin: 16px 0; background: var(--page); }
 
@@ -637,7 +651,7 @@
     <span class="topbar-spacer"></span>
     <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
     <span class="version-badge" id="versionBadge"></span>
-    <button type="button" class="new-btn" id="newBtn">+ New</button>
+    <button type="button" class="new-btn" id="newBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="newDrawer">+ New</button>
   </header>
 
   <main class="main">
@@ -672,83 +686,6 @@
       <div class="panel-head"><h2>Archived tasks</h2><span class="count" id="archiveCount"></span></div>
       <div style="padding: 16px;" id="archiveBody"></div>
     </section>
-  </section>
-
-  <section class="panel" id="newTaskPanel" data-page hidden>
-    <p class="eyebrow">New task</p>
-    <form id="newTaskForm">
-      <div class="field">
-        <label for="ntTitle">Title</label>
-        <input id="ntTitle" type="text" required autocomplete="off">
-      </div>
-
-      <div class="field">
-        <label for="ntBody">Description</label>
-        <textarea id="ntBody" rows="4" required></textarea>
-      </div>
-
-      <div class="field">
-        <label for="ntRepo" id="ntRepoLabel">Repo</label>
-        <input id="ntRepo" type="text" required list="ntRepoList" autocomplete="off">
-        <datalist id="ntRepoList"></datalist>
-        <p class="field-hint" id="ntRepoProjectHint" hidden></p>
-        <p class="field-hint" id="ntRepoOptionalHint" hidden>Not required — the resolved agent has no file/bash access. Runs in a scratch workspace instead.</p>
-      </div>
-
-      <div class="field" style="position: relative;">
-        <label for="ntLabelInput">Labels</label>
-        <div class="chips" id="ntChips"></div>
-        <input id="ntLabelInput" type="text" placeholder="type a label, Enter to add…" autocomplete="off">
-        <div class="suggestions" id="ntSuggestions" hidden></div>
-        <p class="field-hint">Drives routing — the preview below updates as you add labels.</p>
-      </div>
-
-      <div class="field">
-        <label for="ntParentTask">Follow-up of</label>
-        <select id="ntParentTask">
-          <option value="">None — route normally</option>
-        </select>
-        <p class="field-hint">Restricts routing to the parent's declared handoffs, if it has any.</p>
-      </div>
-
-      <div class="panel-inset">
-        <p class="eyebrow">Routing preview</p>
-        <div id="ntPreviewBody" class="muted">Add labels to see what the router would pick.</div>
-      </div>
-
-      <div class="field">
-        <label>Depends on</label>
-        <div class="depends-list" id="ntDependsOn"><p class="depends-empty">No open tasks to depend on yet.</p></div>
-      </div>
-
-      <details id="ntAdvanced">
-        <summary>Advanced: override the router</summary>
-        <p class="field-hint" style="margin: 0 0 8px;">Skip routing and assign an agent or skill directly. Recorded as a manual decision, and as an override against the preview above if they differ.</p>
-        <div class="override-grid" id="ntOverrideGrid">
-          <button type="button" data-override="" aria-pressed="true">Auto-route</button>
-        </div>
-
-        <div class="field">
-          <label for="ntHarness">Harness</label>
-          <select id="ntHarness">
-            <option value="">Auto-pick</option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="ntModel">Model</label>
-          <select id="ntModel" disabled>
-            <option value="">Use default</option>
-          </select>
-        </div>
-      </details>
-
-      <div class="form-actions">
-        <span id="ntStatus" class="form-status" hidden></span>
-        <span id="ntError" class="field-error" hidden></span>
-        <button type="submit" id="ntSubmit" disabled>Create task</button>
-      </div>
-    </form>
   </section>
 
   <section id="memoryPanel" data-page hidden>
@@ -1013,11 +950,142 @@
   </div>
 </aside>
 
+<!-- "+ New" drawer (docs/SDD-ui-cleanup.md §3.3): a task or a pipeline
+     run, without leaving the page you're on. The old #/new URL opens it
+     on the board (BOARD_ROUTE_REDIRECTS in board-routes.js). Both forms
+     share one repo datalist (#ntRepoList) and the selected-project lock. -->
+<div class="drawer-overlay" id="newOverlay" hidden></div>
+<aside class="drawer new-drawer" id="newDrawer" role="dialog" aria-modal="true" aria-labelledby="newDrawerTitle" hidden>
+  <div class="drawer-head">
+    <h2 id="newDrawerTitle">New</h2>
+    <button type="button" class="drawer-close" id="newClose" aria-label="Close">×</button>
+  </div>
+  <div class="new-tabs" role="tablist" aria-label="What to create">
+    <button type="button" role="tab" id="newTabTask" data-new-tab="task" aria-controls="newTaskPanel" aria-selected="true">Task</button>
+    <button type="button" role="tab" id="newTabPipeline" data-new-tab="pipeline" aria-controls="newPipelinePanel" aria-selected="false">Pipeline run</button>
+  </div>
+  <div class="drawer-body">
+    <section id="newTaskPanel" role="tabpanel" aria-labelledby="newTabTask">
+      <form id="newTaskForm">
+        <div class="field">
+          <label for="ntTitle">Title</label>
+          <input id="ntTitle" type="text" required autocomplete="off">
+        </div>
+
+        <div class="field">
+          <label for="ntBody">Description</label>
+          <textarea id="ntBody" rows="4" required></textarea>
+        </div>
+
+        <div class="field">
+          <label for="ntRepo" id="ntRepoLabel">Repo</label>
+          <input id="ntRepo" type="text" required list="ntRepoList" autocomplete="off">
+          <datalist id="ntRepoList"></datalist>
+          <p class="field-hint" id="ntRepoProjectHint" hidden></p>
+          <p class="field-hint" id="ntRepoOptionalHint" hidden>Not required — the resolved agent has no file/bash access. Runs in a scratch workspace instead.</p>
+        </div>
+
+        <div class="field" style="position: relative;">
+          <label for="ntLabelInput">Labels</label>
+          <div class="chips" id="ntChips"></div>
+          <input id="ntLabelInput" type="text" placeholder="type a label, Enter to add…" autocomplete="off">
+          <div class="suggestions" id="ntSuggestions" hidden></div>
+          <p class="field-hint">Drives routing — the preview below updates as you add labels.</p>
+        </div>
+
+        <!-- Both searches cover live cards only: not done, not archived,
+             not superseded (searchLiveCards, board-new.js). -->
+        <div class="field">
+          <label for="ntParentSearch">Follow-up of</label>
+          <input id="ntParentTask" type="hidden" value="">
+          <div class="chips" id="ntParentChips"></div>
+          <input id="ntParentSearch" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="ntParentResults" placeholder="search live cards…" autocomplete="off">
+          <div class="suggestions" id="ntParentResults" role="listbox" hidden></div>
+          <p class="field-hint">Restricts routing to the parent's declared handoffs, if it has any.</p>
+        </div>
+
+        <div class="panel-inset">
+          <p class="eyebrow">Routing preview</p>
+          <div id="ntPreviewBody" class="muted">Add labels to see what the router would pick.</div>
+        </div>
+
+        <div class="field">
+          <label for="ntDependsSearch">Depends on</label>
+          <div class="chips" id="ntDependsChips"></div>
+          <input id="ntDependsSearch" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="ntDependsResults" placeholder="search live cards…" autocomplete="off">
+          <div class="suggestions" id="ntDependsResults" role="listbox" hidden></div>
+          <p class="field-hint">This task waits until every card picked here is done.</p>
+        </div>
+
+        <details id="ntAdvanced">
+          <summary>Advanced: override the router</summary>
+          <p class="field-hint" style="margin: 0 0 8px;">Skip routing and assign an agent or skill directly. Recorded as a manual decision, and as an override against the preview above if they differ.</p>
+          <div class="override-grid" id="ntOverrideGrid">
+            <button type="button" data-override="" aria-pressed="true">Auto-route</button>
+          </div>
+
+          <div class="field">
+            <label for="ntHarness">Harness</label>
+            <select id="ntHarness">
+              <option value="">Auto-pick</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="ntModel">Model</label>
+            <select id="ntModel" disabled>
+              <option value="">Use default</option>
+            </select>
+          </div>
+        </details>
+
+        <div class="form-actions">
+          <span id="ntStatus" class="form-status" hidden></span>
+          <span id="ntError" class="field-error" hidden></span>
+          <button type="submit" id="ntSubmit" disabled>Create task</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="newPipelinePanel" role="tabpanel" aria-labelledby="newTabPipeline" hidden>
+      <form id="pipelineRunForm">
+        <div class="field">
+          <label for="prPipeline">Pipeline</label>
+          <select id="prPipeline">
+            <option value="">Loading pipelines…</option>
+          </select>
+          <p class="field-hint" id="prPipelineHint" hidden></p>
+          <p class="field-hint" id="prPipelineEmpty" hidden>No saved pipelines yet. Build one from Pipelines in the sidebar.</p>
+        </div>
+
+        <div class="field">
+          <label for="prRepo">Repo</label>
+          <input id="prRepo" type="text" required list="ntRepoList" autocomplete="off">
+          <p class="field-hint" id="prRepoProjectHint" hidden></p>
+        </div>
+
+        <div class="field">
+          <label for="prInput">Input</label>
+          <textarea id="prInput" rows="5" required placeholder="What should this run do?"></textarea>
+          <p class="field-hint">Given to every entry step. The run shows on the board as soon as it starts.</p>
+        </div>
+
+        <div class="form-actions">
+          <span id="prStatus" class="form-status" hidden></span>
+          <span id="prError" class="field-error" hidden></span>
+          <button type="submit" id="prSubmit" disabled>Start run</button>
+        </div>
+      </form>
+    </section>
+  </div>
+</aside>
+
 <script src="/render-task-output.js"></script>
 <script src="/render-merge-health.js"></script>
 <script src="/render-harness-preference.js"></script>
 <script src="/board-routes.js"></script>
 <script src="/board-lanes.js"></script>
+<script src="/board-new.js"></script>
 <script>
 (function () {
   "use strict";
@@ -1040,7 +1108,7 @@
   var tasks = [];
   var agentsById = {};
 
-  // Shared by the click-to-inspect decision panel and the New Task tab's
+  // Shared by the click-to-inspect decision panel and the New Task form's
   // live routing preview — one render path, so the two can never drift
   // on what a decision means. `preview` swaps "Routed to"/"Not routed"
   // for "Would route to"/"Would not route", since a preview decision
@@ -2919,8 +2987,8 @@
     if (harnessPanelOpen) renderHarnessPanel();
     if (mcpPanelOpen) renderMcpPanel();
     renderRepoOptions();
-    renderDependsOnOptions();
-    renderParentTaskOptions();
+    dependsSearch.sync();
+    parentSearch.sync();
     renderNtHarnessOptions();
     renderMergeHealthBanner();
     refreshOpenDrawer();
@@ -2948,7 +3016,7 @@
   // split here, rather than threading a project filter through every
   // render*/select-option function individually, means renderKanban,
   // renderSwimlanes, renderArchiveTab,
-  // renderDependsOnOptions, renderParentTaskOptions, findTask, and
+  // the "+ New" drawer's live-card searches, findTask, and
   // isActive all get correct per-project scoping for free, with zero
   // changes to any of them.
   var allTasks = [];
@@ -3038,25 +3106,27 @@
   }
 
   // Enforces "cards created while a project is selected only ever apply
-  // to that project": locks the New Task repo field to the selected
-  // project's path (read-only, not just pre-filled) so it can't be
-  // retyped to something else by accident. "All projects" reverts to the
-  // normal free-text + datalist behavior, unchanged.
+  // to that project": locks both "+ New" repo fields (Task and Pipeline
+  // run) to the selected project's path (read-only, not just pre-filled)
+  // so neither can be retyped to something else by accident. "All
+  // projects" reverts to the normal free-text + datalist behavior.
   function applyProjectLockToNewTaskForm() {
-    var repoEl = document.getElementById("ntRepo");
-    var hint = document.getElementById("ntRepoProjectHint");
-    if (!repoEl || !hint) return;
-    if (selectedProjectPath) {
-      if (repoEl.value !== selectedProjectPath) repoEl.value = selectedProjectPath;
-      repoEl.readOnly = true;
-      var project = projects.filter(function (p) { return p.path === selectedProjectPath; })[0];
-      hint.textContent = "Locked to the selected project" + (project ? " (" + project.name + ")" : "") + ". Switch to “All projects” to target a different repo.";
-      hint.hidden = false;
-    } else {
-      repoEl.readOnly = false;
-      hint.hidden = true;
-    }
+    [["ntRepo", "ntRepoProjectHint"], ["prRepo", "prRepoProjectHint"]].forEach(function (ids) {
+      var repoEl = document.getElementById(ids[0]);
+      var hint = document.getElementById(ids[1]);
+      if (selectedProjectPath) {
+        if (repoEl.value !== selectedProjectPath) repoEl.value = selectedProjectPath;
+        repoEl.readOnly = true;
+        var project = projects.filter(function (p) { return p.path === selectedProjectPath; })[0];
+        hint.textContent = "Locked to the selected project" + (project ? " (" + project.name + ")" : "") + ". Switch to “All projects” to target a different repo.";
+        hint.hidden = false;
+      } else {
+        repoEl.readOnly = false;
+        hint.hidden = true;
+      }
+    });
     updateSubmitEnabled();
+    updatePrSubmitEnabled();
   }
 
   // Real git state for the selected project (GET /projects/:id/status)
@@ -3242,7 +3312,7 @@
     });
   }
 
-  // --- New Task tab ------------------------------------------------
+  // --- "+ New" drawer, Task tab ------------------------------------
 
   var allAgents = [];
   var knownTags = [];
@@ -3422,71 +3492,166 @@
     });
   }
 
-  // Preserves checked state across a rerender (new tasks arriving via
-  // SSE shouldn't uncheck what the user already picked).
-  function renderDependsOnOptions() {
-    var wrap = document.getElementById("ntDependsOn");
-    if (!wrap) return;
-    var open = tasks.filter(function (t) { return t.status !== "done" && t.status !== "failed"; });
-    var checked = {};
-    wrap.querySelectorAll("input[type=checkbox]:checked").forEach(function (cb) { checked[cb.value] = true; });
-    wrap.textContent = "";
+  // --- Live-card search ("Depends on", "Follow-up of") ---------------
+  //
+  // docs/SDD-ui-cleanup.md §3.3: a search box over live cards instead of
+  // a checkbox list of everything. searchLiveCards (board-new.js) decides
+  // what's offered; this is only the DOM glue. `multi` keeps a list of
+  // picks; otherwise a pick replaces the last one and the box hides
+  // until the chip is removed. Picks are task ids and survive SSE
+  // rerenders; a pick drops only once its card leaves `tasks` (deleted,
+  // or filtered out by the project switcher), so a dependency doesn't
+  // silently vanish just because its card moved to done meanwhile.
+  function createCardSearch(opts) {
+    var input = document.getElementById(opts.inputId);
+    var results = document.getElementById(opts.resultsId);
+    var chips = document.getElementById(opts.chipsId);
+    var picked = [];
+    var shown = [];
+    var active = -1;
 
-    if (!open.length) {
-      var empty = document.createElement("p");
-      empty.className = "depends-empty";
-      empty.textContent = "No open tasks to depend on yet.";
-      wrap.appendChild(empty);
-      return;
+    function close() {
+      results.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+      active = -1;
     }
-    open.forEach(function (t) {
-      var row = document.createElement("label");
-      row.className = "depends-item";
-      var cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.value = t.id;
-      cb.checked = !!checked[t.id];
-      row.appendChild(cb);
-      row.appendChild(document.createTextNode(t.title + " (" + t.status + ")"));
-      wrap.appendChild(row);
+
+    function drawResults() {
+      shown = searchLiveCards(tasks, input.value, { exclude: picked, routedOnly: opts.routedOnly });
+      if (active >= shown.length) active = shown.length - 1;
+      results.textContent = "";
+      if (!shown.length) {
+        var empty = document.createElement("div");
+        empty.className = "suggestion-empty";
+        empty.textContent = input.value.trim() ? "No live card matches “" + input.value.trim() + "”." : opts.emptyText;
+        results.appendChild(empty);
+      }
+      shown.forEach(function (t, i) {
+        var item = document.createElement("div");
+        item.className = "suggestion-item" + (i === active ? " active" : "");
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", i === active ? "true" : "false");
+        item.setAttribute("data-task-id", t.id);
+        item.title = t.title;
+        item.appendChild(document.createTextNode(t.title));
+        var meta = document.createElement("span");
+        meta.className = "si-meta";
+        meta.textContent = statusLabel(taskDisplayStatus(t)) + (t.routedTo ? " · " + t.routedTo : "");
+        item.appendChild(meta);
+        // mousedown, not click: it lands before the input's blur closes
+        // the list, and preventDefault keeps focus in the box.
+        item.addEventListener("mousedown", function (ev) { ev.preventDefault(); pick(t.id); });
+        results.appendChild(item);
+      });
+      results.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+    }
+
+    function drawChips() {
+      chips.textContent = "";
+      picked.forEach(function (id) {
+        var t = findTask(id);
+        var title = t ? t.title : id;
+        var chip = document.createElement("span");
+        chip.className = "chip card-chip";
+        chip.setAttribute("data-task-id", id);
+        chip.title = title;
+        var text = document.createElement("span");
+        text.className = "chip-text";
+        text.textContent = title + (t ? " (" + statusLabel(taskDisplayStatus(t)) + ")" : "");
+        chip.appendChild(text);
+        var x = document.createElement("button");
+        x.type = "button";
+        x.textContent = "×";
+        x.setAttribute("aria-label", "Remove " + title);
+        x.addEventListener("click", function () { unpick(id); input.focus(); });
+        chip.appendChild(x);
+        chips.appendChild(chip);
+      });
+      input.hidden = !opts.multi && picked.length > 0;
+    }
+
+    function changed() {
+      drawChips();
+      if (opts.onChange) opts.onChange(picked.slice());
+    }
+
+    function pick(id) {
+      if (opts.multi) { if (picked.indexOf(id) === -1) picked.push(id); }
+      else picked = [id];
+      input.value = "";
+      close();
+      changed();
+    }
+
+    function unpick(id) {
+      picked = picked.filter(function (p) { return p !== id; });
+      changed();
+    }
+
+    input.addEventListener("input", function () { active = -1; drawResults(); });
+    input.addEventListener("focus", drawResults);
+    // Skipped if focus came back meanwhile (a chip's × refocuses the box),
+    // so a stale timer never hides the list that refocus just opened.
+    input.addEventListener("blur", function () {
+      setTimeout(function () { if (document.activeElement !== input) close(); }, 100);
     });
-  }
-
-  function selectedDependsOn() {
-    var ids = [];
-    var wrap = document.getElementById("ntDependsOn");
-    if (!wrap) return ids;
-    wrap.querySelectorAll("input[type=checkbox]:checked").forEach(function (cb) { ids.push(cb.value); });
-    return ids;
-  }
-
-  // Only tasks with a routed agent are offered — an unrouted parent has
-  // no declared handoffs to restrict anything to, so listing it would
-  // just be a dead end. Preserves the current selection across
-  // rerenders the same way renderDependsOnOptions preserves checkboxes.
-  function renderParentTaskOptions() {
-    var select = document.getElementById("ntParentTask");
-    if (!select) return;
-    var current = select.value;
-    var routed = tasks.filter(function (t) { return t.routedTo; });
-
-    select.textContent = "";
-    var none = document.createElement("option");
-    none.value = ""; none.textContent = "None — route normally";
-    select.appendChild(none);
-    routed.forEach(function (t) {
-      var opt = document.createElement("option");
-      opt.value = t.id;
-      opt.textContent = t.title + " (" + t.routedTo + ")";
-      select.appendChild(opt);
+    input.addEventListener("keydown", function (ev) {
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault();
+        if (results.hidden) { drawResults(); return; }
+        if (!shown.length) return;
+        active = ev.key === "ArrowDown" ? (active + 1) % shown.length : (active <= 0 ? shown.length - 1 : active - 1);
+        drawResults();
+      } else if (ev.key === "Enter") {
+        // Never submits the form from here: Enter picks the highlighted
+        // card, or the only match.
+        ev.preventDefault();
+        var t = shown[active] || (shown.length === 1 ? shown[0] : null);
+        if (!results.hidden && t) pick(t.id);
+      } else if (ev.key === "Escape" && !results.hidden) {
+        ev.stopPropagation(); // closes the list, not the whole drawer
+        close();
+      } else if (ev.key === "Backspace" && !input.value && picked.length) {
+        unpick(picked[picked.length - 1]);
+      }
     });
-    select.value = routed.some(function (t) { return t.id === current; }) ? current : "";
+
+    return {
+      value: function () { return picked.slice(); },
+      clear: function () { picked = []; input.value = ""; close(); changed(); },
+      // Called from render() on every refetch.
+      sync: function () {
+        var before = picked.length;
+        picked = picked.filter(function (id) { return !!findTask(id); });
+        if (picked.length !== before) changed();
+        else drawChips();
+        if (!results.hidden) drawResults();
+      },
+    };
   }
+
+  var dependsSearch = createCardSearch({
+    inputId: "ntDependsSearch", resultsId: "ntDependsResults", chipsId: "ntDependsChips",
+    multi: true, emptyText: "No live cards to depend on.",
+  });
+
+  // routedOnly: the follow-up restricts routing to the parent's declared
+  // handoffs, and a card that was never routed has none. #ntParentTask
+  // (hidden) holds the pick for the submit handler and the preview.
+  var parentSearch = createCardSearch({
+    inputId: "ntParentSearch", resultsId: "ntParentResults", chipsId: "ntParentChips",
+    multi: false, routedOnly: true, emptyText: "No live routed cards to follow up on.",
+    onChange: function (ids) {
+      document.getElementById("ntParentTask").value = ids[0] || "";
+      scheduleNtPreview();
+    },
+  });
 
   // Enabled harnesses only — matches renderHarnessStrip's own filter: a
   // harness nothing is authenticated for isn't a real destination for a
   // new task. Preserves the current selection across rerenders the same
-  // way renderParentTaskOptions preserves its own, then always
+  // "preserve if still valid" way the rest of this form does, then always
   // repopulates the dependent model select below.
   function renderNtHarnessOptions() {
     var select = document.getElementById("ntHarness");
@@ -3575,13 +3740,13 @@
     renderChips();
     document.getElementById("ntLabelInput").value = "";
     document.getElementById("ntSuggestions").hidden = true;
-    document.getElementById("ntParentTask").value = "";
+    parentSearch.clear(); // also clears #ntParentTask
+    dependsSearch.clear();
     ntOverride = "";
     renderOverrideGrid();
     document.getElementById("ntHarness").value = "";
     renderNtModelOptions();
     scheduleNtPreview();
-    renderDependsOnOptions();
     updateSubmitEnabled();
   }
 
@@ -3647,14 +3812,15 @@
     } else if (ev.key === "Backspace" && !ntLabelInput.value && ntLabels.length) {
       removeLabel(ntLabels[ntLabels.length - 1]);
     } else if (ev.key === "Escape") {
-      document.getElementById("ntSuggestions").hidden = true;
+      var suggestions = document.getElementById("ntSuggestions");
+      if (!suggestions.hidden) ev.stopPropagation(); // closes the list, not the whole drawer
+      suggestions.hidden = true;
     }
   });
   ntLabelInput.addEventListener("blur", function () {
     setTimeout(function () { document.getElementById("ntSuggestions").hidden = true; }, 100);
   });
 
-  document.getElementById("ntParentTask").addEventListener("change", scheduleNtPreview);
   document.getElementById("ntHarness").addEventListener("change", renderNtModelOptions);
 
   document.getElementById("newTaskForm").addEventListener("submit", function (ev) {
@@ -3687,7 +3853,7 @@
     var harnessOverride = document.getElementById("ntHarness").value;
     var model = document.getElementById("ntModel").value;
     var payload = {
-      title: title, body: taskBody, labels: ntLabels.slice(), repo: repo || undefined, dependsOn: selectedDependsOn(),
+      title: title, body: taskBody, labels: ntLabels.slice(), repo: repo || undefined, dependsOn: dependsSearch.value(),
       parentTaskId: parentTaskId || undefined,
       harnessOverride: harnessOverride || undefined,
       model: model || undefined,
@@ -3739,6 +3905,196 @@
       });
   });
 
+  // --- Pipeline run tab (docs/SDD-ui-cleanup.md §3.3) -----------------
+  //
+  // Pick a saved pipeline, a repo (the Task tab's datalist and project
+  // lock), and the input; submit is the same POST /pipelines/:id/run the
+  // pipeline editor's Run box calls. That endpoint drives the whole run
+  // to settlement before it responds (src/api/server.ts), so the root
+  // card is on the board, via SSE, long before the response arrives.
+  // `null`: not loaded yet. Refetched every time the tab opens, so a
+  // pipeline saved in the editor a moment ago is already there.
+  var savedPipelines = null;
+  var prInFlight = false;
+
+  function selectedPipeline() {
+    var id = document.getElementById("prPipeline").value;
+    return (savedPipelines || []).filter(function (p) { return p.id === id; })[0] || null;
+  }
+
+  function updatePrSubmitEnabled() {
+    var repo = document.getElementById("prRepo").value.trim();
+    var input = document.getElementById("prInput").value.trim();
+    document.getElementById("prSubmit").disabled = prInFlight || !(selectedPipeline() && repo && input);
+  }
+
+  function renderPipelineHint() {
+    var hint = document.getElementById("prPipelineHint");
+    var p = selectedPipeline();
+    if (!p) { hint.hidden = true; return; }
+    var steps = (p.graph && p.graph.steps) || [];
+    hint.textContent = (p.description ? p.description + " · " : "") + steps.length + (steps.length === 1 ? " step" : " steps") +
+      (steps.length ? ": " + steps.map(function (s) { return s.name || s.agentId; }).join(", ") : "");
+    hint.hidden = false;
+  }
+
+  // `preselect` wins over the current pick, which wins over nothing; a
+  // pick whose pipeline was deleted meanwhile falls back to "Choose".
+  function renderPipelineOptions(preselect) {
+    var select = document.getElementById("prPipeline");
+    var current = preselect || select.value;
+    var list = savedPipelines || [];
+    select.textContent = "";
+    var none = document.createElement("option");
+    none.value = "";
+    none.textContent = savedPipelines === null ? "Loading pipelines…" : list.length ? "Choose a pipeline…" : "No saved pipelines";
+    select.appendChild(none);
+    list.forEach(function (p) {
+      var opt = document.createElement("option");
+      opt.value = p.id;
+      opt.textContent = p.name;
+      select.appendChild(opt);
+    });
+    select.value = list.some(function (p) { return p.id === current; }) ? current : "";
+    select.disabled = savedPipelines !== null && !list.length;
+    document.getElementById("prPipelineEmpty").hidden = !(savedPipelines !== null && !list.length);
+    renderPipelineHint();
+    updatePrSubmitEnabled();
+  }
+
+  // Tab flips can overlap fetches; only the newest one applies, so an
+  // older list (missing a pipeline saved since) never lands last.
+  var pipelinesFetchSeq = 0;
+
+  function loadSavedPipelines(preselect) {
+    var errorEl = document.getElementById("prError");
+    var seq = ++pipelinesFetchSeq;
+    renderPipelineOptions(preselect);
+    return fetch("/pipelines").then(function (r) {
+      if (!r.ok) throw new Error("GET /pipelines failed: HTTP " + r.status);
+      return r.json();
+    }).then(function (list) {
+      if (seq !== pipelinesFetchSeq) return;
+      errorEl.hidden = true;
+      savedPipelines = list || [];
+      // Re-read the select, not `preselect` alone: the human may have
+      // picked something while this was in flight.
+      renderPipelineOptions(preselect && document.getElementById("prPipeline").value === "" ? preselect : null);
+    }).catch(function (err) {
+      if (seq !== pipelinesFetchSeq) return;
+      errorEl.textContent = err.message;
+      errorEl.hidden = false;
+    });
+  }
+
+  document.getElementById("prPipeline").addEventListener("change", function () {
+    renderPipelineHint();
+    updatePrSubmitEnabled();
+  });
+  ["prRepo", "prInput"].forEach(function (id) {
+    document.getElementById(id).addEventListener("input", updatePrSubmitEnabled);
+  });
+
+  document.getElementById("pipelineRunForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var pipeline = selectedPipeline();
+    var repoEl = document.getElementById("prRepo");
+    var inputEl = document.getElementById("prInput");
+    var errorEl = document.getElementById("prError");
+    var statusEl = document.getElementById("prStatus");
+    var repo = repoEl.value.trim();
+    var input = inputEl.value.trim();
+
+    errorEl.hidden = true;
+    if (!pipeline || !repo || !input) {
+      errorEl.textContent = "Pipeline, repo, and input are required.";
+      errorEl.hidden = false;
+      return;
+    }
+
+    prInFlight = true;
+    updatePrSubmitEnabled();
+    statusEl.hidden = false;
+    statusEl.textContent = "Running “" + pipeline.name + "”… it's on the board now; this waits for it to finish.";
+
+    fetch("/pipelines/" + encodeURIComponent(pipeline.id) + "/run", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repo: repo, input: input }),
+    }).then(function (r) {
+      if (!r.ok) return r.json().catch(function () { return {}; }).then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return r.json();
+    }).then(function (root) {
+      statusEl.textContent = "“" + root.title + "” finished: " + statusLabel(taskDisplayStatus(root)) + ".";
+      // Sticky like the Task tab: keep the pipeline and repo, clear the input.
+      inputEl.value = "";
+      return refetchTasks();
+    }).catch(function (err) {
+      errorEl.textContent = err.message;
+      errorEl.hidden = false;
+      statusEl.hidden = true;
+    }).finally(function () {
+      prInFlight = false;
+      updatePrSubmitEnabled();
+    });
+  });
+
+  // --- "+ New" drawer -------------------------------------------------
+  //
+  // The task drawer's overlay + slide-in, holding two tabs. openNewDrawer
+  // is the one entry point: the top bar's "+ New", the old #/new URL
+  // (applyRoute below), and card A4's per-pipeline Run, which passes
+  // { pipelineId } to land on the Pipeline run tab with it preselected.
+  var newDrawerOpen = false;
+  var newDrawerHideTimer = null;
+
+  function setNewTab(tab, opts) {
+    document.querySelectorAll("#newDrawer [data-new-tab]").forEach(function (b) {
+      b.setAttribute("aria-selected", b.getAttribute("data-new-tab") === tab ? "true" : "false");
+    });
+    document.getElementById("newTaskPanel").hidden = tab !== "task";
+    document.getElementById("newPipelinePanel").hidden = tab !== "pipeline";
+    if (tab === "pipeline") loadSavedPipelines(opts && opts.pipelineId);
+  }
+
+  function openNewDrawer(tab, opts) {
+    tab = tab === "pipeline" ? "pipeline" : "task";
+    if (newDrawerHideTimer) { clearTimeout(newDrawerHideTimer); newDrawerHideTimer = null; }
+    setNewTab(tab, opts);
+    newDrawerOpen = true;
+    document.getElementById("newBtn").setAttribute("aria-expanded", "true");
+    document.getElementById("newOverlay").hidden = false;
+    document.getElementById("newDrawer").hidden = false;
+    requestAnimationFrame(function () {
+      document.getElementById("newOverlay").classList.add("open");
+      document.getElementById("newDrawer").classList.add("open");
+    });
+    var first = document.getElementById(tab === "pipeline" ? "prPipeline" : "ntTitle");
+    if (first) first.focus();
+  }
+
+  function closeNewDrawer() {
+    if (!newDrawerOpen) return;
+    newDrawerOpen = false;
+    document.getElementById("newBtn").setAttribute("aria-expanded", "false");
+    document.getElementById("newOverlay").classList.remove("open");
+    document.getElementById("newDrawer").classList.remove("open");
+    newDrawerHideTimer = setTimeout(function () {
+      newDrawerHideTimer = null;
+      document.getElementById("newOverlay").hidden = true;
+      document.getElementById("newDrawer").hidden = true;
+    }, 180);
+    document.getElementById("newBtn").focus();
+  }
+
+  document.querySelectorAll("#newDrawer [data-new-tab]").forEach(function (b) {
+    b.addEventListener("click", function () { setNewTab(b.getAttribute("data-new-tab")); });
+  });
+  document.getElementById("newClose").addEventListener("click", closeNewDrawer);
+  document.getElementById("newOverlay").addEventListener("click", closeNewDrawer);
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && newDrawerOpen) closeNewDrawer();
+  });
+
   // --- Hash routing (docs/SDD-ui-cleanup.md §3.1) ---------------------
   //
   // The URL hash names the page (#/board, #/setup/harnesses, ...; see
@@ -3751,8 +4107,9 @@
     // An unknown hash (a typo, an old bookmark) lands on the board and
     // the address bar says so. replaceState, not a hash assignment, so
     // Back doesn't return to the dead URL. An empty hash stays empty:
-    // a bare /board is already the board.
-    if (!parsed.known) history.replaceState(null, "", boardRouteHash(parsed.route));
+    // a bare /board is already the board. A redirect (the old #/new)
+    // is rewritten the same way, then opens its drawer below.
+    if (!parsed.known || parsed.redirected) history.replaceState(null, "", boardRouteHash(parsed.route));
     var route = parsed.route;
     var def = BOARD_ROUTES[route];
     currentRoute = route;
@@ -3762,8 +4119,7 @@
       if (a.getAttribute("data-route") === def.nav) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
     });
-    if (route === "new") document.getElementById("newBtn").setAttribute("aria-current", "page");
-    else document.getElementById("newBtn").removeAttribute("aria-current");
+    if (parsed.openNew) openNewDrawer(parsed.openNew);
 
     // Lanes / By feature: two views of the same Board page.
     document.getElementById("boardViewToggle").hidden = !def.boardView;
@@ -3790,9 +4146,7 @@
       location.hash = boardRouteHash(btn.getAttribute("data-board-view") === "features" ? "board/features" : "board");
     });
   });
-  document.getElementById("newBtn").addEventListener("click", function () {
-    location.hash = boardRouteHash("new");
-  });
+  document.getElementById("newBtn").addEventListener("click", function () { openNewDrawer("task"); });
   window.addEventListener("hashchange", applyRoute);
   applyRoute();
 

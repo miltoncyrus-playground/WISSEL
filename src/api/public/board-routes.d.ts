@@ -8,8 +8,14 @@ export interface BoardRouteDef {
   boardView?: "lanes" | "features";
 }
 
+export type NewDrawerTab = "task" | "pipeline";
+
 export const BOARD_ROUTES: Record<string, BoardRouteDef>;
 
-export function parseBoardRoute(hash: string | null | undefined): { route: string; known: boolean };
+export const BOARD_ROUTE_REDIRECTS: Record<string, { to: string; openNew: NewDrawerTab }>;
+
+export function parseBoardRoute(
+  hash: string | null | undefined,
+): { route: string; known: boolean; redirected?: true; openNew?: NewDrawerTab };
 
 export function boardRouteHash(route: string): string;

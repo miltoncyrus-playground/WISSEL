@@ -65,7 +65,8 @@ Still the single `board.html` and vanilla JS. No framework.
 **A1 revision notes (as built).**
 - Routes live in `src/api/public/board-routes.js` (`BOARD_ROUTES`,
   `parseBoardRoute`): `#/board`, `#/board/features` (By feature),
-  `#/archive`, `#/new`, `#/setup/{agents,harnesses,mcp,projects,memory,settings}`.
+  `#/archive`, `#/new` (a redirect since A3, see §3.3),
+  `#/setup/{agents,harnesses,mcp,projects,memory,settings}`.
   An empty hash is the board; an unknown hash falls back to the board
   and is rewritten to `#/board`. Each page is a `<section data-page>`
   in `<main>`; `test/board-routes.test.ts` and `test/board-html.test.ts`
@@ -158,6 +159,38 @@ A side drawer with two tabs.
 
 The "New task" view tab goes away; its URL redirects to the board with
 the drawer open.
+
+**A3 revision notes (as built).**
+- The drawer is `#newDrawer` (the task drawer's overlay + slide-in,
+  560px wide) with `role="tab"` buttons Task / Pipeline run. "+ New"
+  opens it over whatever page is showing and doesn't touch the URL or
+  history. `openNewDrawer(tab, { pipelineId })` in board.html is the one
+  entry point; A4's per-pipeline Run calls it with the pipeline id.
+- `#/new` is now `BOARD_ROUTE_REDIRECTS.new` in board-routes.js:
+  `parseBoardRoute` returns `{ route: "board", redirected: true,
+  openNew: "task" }`, and `applyRoute` rewrites the address bar to
+  `#/board` (replaceState) so a reload doesn't reopen the drawer.
+- "Live card" is `isLiveCard` in `src/api/public/board-new.js`: not done,
+  not archived, not superseded. Failed, escalated and no-match cards are
+  live. `searchLiveCards` matches every query word against title, id,
+  status and routed agent, newest first (GET /tasks is in creation
+  order), 8 results max; `test/board-new.test.ts` covers it.
+- "Follow-up of" additionally needs a routed card (`routedOnly`), as the
+  old dropdown did: the restriction is the parent's declared handoffs,
+  and an unrouted card has none. One parent at most; the hidden
+  `#ntParentTask` keeps the pick for the submit handler and preview.
+- A pick stays until removed or until its card leaves the project-scoped
+  list (deleted, or switched away from), not when its card changes
+  status, so a dependency doesn't vanish while the form is open.
+- Pipeline run shares the Task tab's repo datalist and project lock
+  (`applyProjectLockToNewTaskForm` locks `#ntRepo` and `#prRepo`). The
+  list is refetched from `GET /pipelines` every time the tab opens.
+  `POST /pipelines/:id/run` only responds once the run settles, so the
+  tab says the run is already on the board while it waits, then reports
+  the root's final status.
+- e2e runs the Pipeline run tab against the real endpoint with a
+  pipeline whose two steps point at each other: no entry step, so
+  `startPipelineRun` fails the root at once without spawning an agent.
 
 ### 3.4 Pipelines page (card A4)
 

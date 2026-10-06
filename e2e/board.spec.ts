@@ -82,7 +82,7 @@ test.describe("Memory tab", () => {
     await expect(page.getByRole("link", { name: "Memory", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#memoryPanel")).toBeVisible();
     await expect(page.locator("#boardPanel")).toBeHidden();
-    await expect(page.locator("#newTaskPanel")).toBeHidden();
+    await expect(page.locator("#newDrawer")).toBeHidden();
 
     // WISSEL_MEMORY_CURATION is unset in this fixture server (see
     // playwright.config.ts) — memory/lessons.md has never been written,
@@ -176,7 +176,7 @@ test.describe("Board view", () => {
     await expect(page.getByRole("link", { name: "Board", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("button", { name: "Lanes", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.locator("#boardPanel")).toBeVisible();
-    await expect(page.locator("#newTaskPanel")).toBeHidden();
+    await expect(page.locator("#newDrawer")).toBeHidden();
 
     // Four lanes, in order, each header carrying its own count
     // (docs/SDD-ui-cleanup.md §3.2). The row of count tiles is gone.
@@ -1555,10 +1555,14 @@ test.describe("Shell and navigation", () => {
     await expect(page.locator("#memoryPanel")).toBeVisible();
 
     await page.getByRole("link", { name: "Harnesses", exact: true }).click();
+    await page.getByRole("link", { name: "Archive", exact: true }).click();
+    await expect(page.locator("#archivePanel")).toBeVisible();
+    // "+ New" is a drawer over the page (card A3), not a history entry.
     await page.getByRole("button", { name: "+ New", exact: true }).click();
-    await expect(page.locator("#newTaskPanel")).toBeVisible();
-    await expect(page.getByRole("button", { name: "+ New", exact: true })).toHaveAttribute("aria-current", "page");
-    await expect(page.locator('#sidebar [aria-current="page"]')).toHaveCount(0);
+    await expect(page.locator("#newDrawer")).toBeVisible();
+    await expect(page).toHaveURL(/#\/archive$/);
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#newDrawer")).toBeHidden();
 
     await page.goBack();
     await expect(page.locator("#harnessPanel")).toBeVisible();
