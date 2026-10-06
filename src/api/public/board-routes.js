@@ -8,14 +8,12 @@
 // whose data-route is def.nav as aria-current.
 //
 // `page` is the id of the <section data-page> to show. `nav` is the
-// sidebar link to highlight (null: none, e.g. the New task view, which
-// is reached from the top bar's "+ New"). `boardView` picks the Board
-// page's Lanes / By feature switch.
+// sidebar link to highlight. `boardView` picks the Board page's Lanes /
+// By feature switch.
 var BOARD_ROUTES = {
   board: { page: "boardPage", nav: "board", boardView: "lanes" },
   "board/features": { page: "boardPage", nav: "board", boardView: "features" },
   archive: { page: "archivePanel", nav: "archive" },
-  new: { page: "newTaskPanel", nav: null },
   "setup/agents": { page: "agentsPage", nav: "setup/agents" },
   "setup/harnesses": { page: "harnessPanel", nav: "setup/harnesses" },
   "setup/mcp": { page: "mcpPanel", nav: "setup/mcp" },
@@ -24,15 +22,28 @@ var BOARD_ROUTES = {
   "setup/settings": { page: "settingsPage", nav: "setup/settings" },
 };
 
+// Old URLs that are no longer pages. `#/new` was the New task view until
+// card A3 (§3.3) turned it into the "+ New" drawer: it now lands on `to`
+// with the drawer open on the `openNew` tab, and the caller rewrites the
+// address bar to `to` so a reload doesn't reopen the drawer.
+var BOARD_ROUTE_REDIRECTS = {
+  new: { to: "board", openNew: "task" },
+};
+
 // "#/setup/harnesses", "#setup/harnesses/" and "/setup/harnesses" all
 // mean the same route. An empty hash is the board (`known: true`, so
-// the caller leaves a bare /board URL alone). Anything else falls back
-// to the board with `known: false`, so the caller can rewrite the URL
-// instead of leaving a dead hash in the address bar.
+// the caller leaves a bare /board URL alone). A redirect resolves to its
+// target with `redirected: true` and its `openNew` tab. Anything else
+// falls back to the board with `known: false`, so the caller can rewrite
+// the URL instead of leaving a dead hash in the address bar.
 function parseBoardRoute(hash) {
   var path = String(hash || "").replace(/^#/, "").replace(/^\/+|\/+$/g, "");
   if (!path) return { route: "board", known: true };
   if (Object.prototype.hasOwnProperty.call(BOARD_ROUTES, path)) return { route: path, known: true };
+  if (Object.prototype.hasOwnProperty.call(BOARD_ROUTE_REDIRECTS, path)) {
+    var r = BOARD_ROUTE_REDIRECTS[path];
+    return { route: r.to, known: true, redirected: true, openNew: r.openNew };
+  }
   return { route: "board", known: false };
 }
 
@@ -41,5 +52,10 @@ function boardRouteHash(route) {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { BOARD_ROUTES: BOARD_ROUTES, parseBoardRoute: parseBoardRoute, boardRouteHash: boardRouteHash };
+  module.exports = {
+    BOARD_ROUTES: BOARD_ROUTES,
+    BOARD_ROUTE_REDIRECTS: BOARD_ROUTE_REDIRECTS,
+    parseBoardRoute: parseBoardRoute,
+    boardRouteHash: boardRouteHash,
+  };
 }

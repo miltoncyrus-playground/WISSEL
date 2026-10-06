@@ -28,7 +28,7 @@ test.describe("Projects tab", () => {
     await expect(page.getByRole("link", { name: "Projects", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#projectsPanel")).toBeVisible();
     await expect(page.locator("#boardPanel")).toBeHidden();
-    await expect(page.locator("#newTaskPanel")).toBeHidden();
+    await expect(page.locator("#newDrawer")).toBeHidden();
     await expect(page.locator("#memoryPanel")).toBeHidden();
 
     await page.getByRole("link", { name: "Board", exact: true }).click();
@@ -46,7 +46,12 @@ test.describe("Projects tab", () => {
     await expect(page.locator("#projectSummaryBox")).toBeVisible();
     await expect(page.locator("#projSummaryBody")).not.toBeEmpty();
 
+    await page.getByRole("link", { name: "Archive", exact: true }).click();
+    await expect(page.locator("#projectSummaryBox")).toBeHidden();
+    // Nor inside the "+ New" drawer, opened over the board.
+    await page.getByRole("link", { name: "Board", exact: true }).click();
     await page.getByRole("button", { name: "+ New", exact: true }).click();
+    await expect(page.locator("#newDrawer")).toBeVisible();
     await expect(page.locator("#projectSummaryBox")).toBeHidden();
   });
 
@@ -295,9 +300,23 @@ test.describe("Project switcher", () => {
       // file's other tests already hold POST /projects/* to.
       expect(createResponse.request().postDataJSON().repo).toBe(dir);
 
+      // The Pipeline run tab's repo is the same project-aware picker
+      // (docs/SDD-ui-cleanup.md §3.3): locked to the project too.
+      await page.getByRole("tab", { name: "Pipeline run", exact: true }).click();
+      await expect(page.locator("#prRepo")).toHaveValue(dir);
+      await expect(page.locator("#prRepo")).toHaveAttribute("readonly", "");
+      await expect(page.locator("#prRepoProjectHint")).toContainText(project.name);
+
+      // The switcher sits behind the drawer's overlay: close, switch, reopen.
+      await page.keyboard.press("Escape");
+      await expect(page.locator("#newDrawer")).toBeHidden();
       await page.locator("#projectSwitcher").selectOption({ value: "" });
+      await page.getByRole("button", { name: "+ New", exact: true }).click();
       await expect(page.locator("#ntRepo")).not.toHaveAttribute("readonly", "");
       await expect(page.locator("#ntRepoProjectHint")).toBeHidden();
+      await page.getByRole("tab", { name: "Pipeline run", exact: true }).click();
+      await expect(page.locator("#prRepo")).not.toHaveAttribute("readonly", "");
+      await expect(page.locator("#prRepoProjectHint")).toBeHidden();
     } finally {
       if (projectId) await page.request.delete(`/projects/${projectId}`).catch(() => {});
       await rm(dir, { recursive: true, force: true });

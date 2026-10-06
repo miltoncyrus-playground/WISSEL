@@ -5,7 +5,7 @@ import { createApp } from "../src/api/server.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
-import { BOARD_ROUTES, boardRouteHash, parseBoardRoute } from "../src/api/public/board-routes.js";
+import { BOARD_ROUTES, BOARD_ROUTE_REDIRECTS, boardRouteHash, parseBoardRoute } from "../src/api/public/board-routes.js";
 
 // docs/SDD-ui-cleanup.md §3.1 (card A1): the board shell's hash routes.
 
@@ -16,7 +16,6 @@ test("every route the SDD names parses to itself", () => {
     "board",
     "board/features",
     "archive",
-    "new",
     "setup/agents",
     "setup/harnesses",
     "setup/mcp",
@@ -40,6 +39,23 @@ test("leading/trailing slashes and a missing slash after # don't change the rout
   expect(parseBoardRoute("/setup/harnesses")).toEqual({ route: "setup/harnesses", known: true });
 });
 
+// Card A3 (§3.3): the New task view became the "+ New" drawer. Its old
+// URL still works: it lands on the board with the drawer on the Task tab.
+test("the old #/new URL redirects to the board with the New drawer's Task tab", () => {
+  for (const hash of ["#/new", "#new", "#/new/", "/new"]) {
+    expect(parseBoardRoute(hash)).toEqual({ route: "board", known: true, redirected: true, openNew: "task" });
+  }
+  expect(Object.prototype.hasOwnProperty.call(BOARD_ROUTES, "new")).toBe(false);
+});
+
+test("every redirect targets a real route and names a real drawer tab", () => {
+  for (const [from, r] of Object.entries(BOARD_ROUTE_REDIRECTS)) {
+    expect(Object.prototype.hasOwnProperty.call(BOARD_ROUTES, from)).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(BOARD_ROUTES, r.to)).toBe(true);
+    expect(["task", "pipeline"]).toContain(r.openNew);
+  }
+});
+
 test("an unknown hash falls back to the board and says it was unknown", () => {
   for (const hash of ["#/nope", "#/setup", "#/setup/unknown", "#/Board", "#/constructor", "#/__proto__", "#/toString"]) {
     expect(parseBoardRoute(hash)).toEqual({ route: "board", known: false });
@@ -59,9 +75,7 @@ test("only Board's two views carry a boardView, and both highlight the Board nav
 // files; this is what keeps them from drifting apart.
 test("board.html has a [data-page] section for every route's page, and nothing else is a page", async () => {
   const html = await readFile(BOARD_HTML_PATH, "utf8");
-  const pageIds = [...html.matchAll(/<section id="([^"]+)"[^>]*\bdata-page\b/g)].map((m) => m[1]);
-  // newTaskPanel keeps its class attribute ahead of the id.
-  for (const m of html.matchAll(/<section class="[^"]*" id="([^"]+)"[^>]*\bdata-page\b/g)) pageIds.push(m[1]);
+  const pageIds = [...html.matchAll(/<section\b[^>]*\bid="([^"]+)"[^>]*\bdata-page\b/g)].map((m) => m[1]);
   const expected = [...new Set(Object.values(BOARD_ROUTES).map((d) => d.page))];
   expect(pageIds.sort()).toEqual(expected.sort());
 });

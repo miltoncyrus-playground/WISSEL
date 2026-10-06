@@ -444,6 +444,12 @@ export function createApp(
         return new Response(Bun.file(new URL("board-lanes.js", PUBLIC_DIR)));
       }
 
+      // The "+ New" drawer's live-card search (docs/SDD-ui-cleanup.md
+      // §3.3). Same static-sibling reasoning.
+      if (url.pathname === "/board-new.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("board-new.js", PUBLIC_DIR)));
+      }
+
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
       }

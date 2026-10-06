@@ -68,6 +68,14 @@ describe("resolveAffectedSpecs", () => {
     expect(result.fullSuite).toBe(false);
   });
 
+  test("board-new.js (the + New drawer's card search) resolves to new-task.spec.ts only", () => {
+    for (const path of ["src/api/public/board-new.js", "src/api/public/board-new.d.ts"]) {
+      const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
+      expect(result.specs).toEqual(["new-task.spec.ts"]);
+      expect(result.fullSuite).toBe(false);
+    }
+  });
+
   test("board.html change where every changed line is theme-related resolves to theme.spec.ts only", () => {
     const result = resolveAffectedSpecs(
       [
