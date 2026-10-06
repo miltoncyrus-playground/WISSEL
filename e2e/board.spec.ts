@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import { describeAgentHarnesses, formatHarnessCapacity } from "../src/api/public/render-harness-preference.js";
 
 /** Same disposable tmp path playwright.config.ts's webServer.command
  *  seeds from e2e/fixtures/harnesses.yaml before every run — read
@@ -863,6 +864,33 @@ test.describe("Board view", () => {
     await page.reload();
     await page.locator("#hmOpenBtn").click();
     await expect(page.locator("#hmModel-e2e-fixture-harness")).toHaveValue("fixture-model-a");
+  });
+
+  // docs/SDD-agent-harness-preference.md §3.7 (card 2). Every agent row's
+  // harness line must match what GET /agents + GET /harnesses say, run
+  // through the same render-harness-preference.js the page loads, and the
+  // fixture harness's maxConcurrent (e2e/fixtures/harnesses.yaml) must show
+  // as active/max in the panel.
+  test("fleet rows show each agent's harness list from GET /agents + GET /harnesses; the panel shows active/max", async ({ page, request }) => {
+    const agents = (await (await request.get("/agents")).json()) as { id: string; kind: string; harnesses?: string[] }[];
+    const harnesses = await (await request.get("/harnesses")).json();
+    const fixture = harnesses.find((h: { id: string }) => h.id === "e2e-fixture-harness");
+    expect(fixture).toMatchObject({ maxConcurrent: 2 });
+
+    await page.goto("/board");
+    const rows = page.locator("#agentsBox .fleet-row");
+    await expect(rows.first()).toBeVisible();
+    const agentRows = agents.filter((a) => a.kind === "agent");
+    expect(agentRows.length).toBeGreaterThan(0);
+    for (const a of agentRows) {
+      const row = rows.filter({ has: page.locator(".fleet-id", { hasText: new RegExp("^" + a.id + "$") }) });
+      await expect(row.locator(".fleet-harnesses")).toHaveText(describeAgentHarnesses(a, harnesses).text);
+    }
+
+    await page.locator("#hmOpenBtn").click();
+    const fixtureRow = page.locator("#harnessPanel .hm-row").filter({ has: page.locator("#hmModel-e2e-fixture-harness") });
+    await expect(fixtureRow.locator(".hm-row-meta").first()).toHaveText("anthropic-api · " + formatHarnessCapacity(fixture));
+    await expect(fixtureRow.locator(".hm-row-meta").first()).toContainText(/\d+\/2 active/);
   });
 
   // Real invalid-model rejection, not a route-intercepted stand-in: the
