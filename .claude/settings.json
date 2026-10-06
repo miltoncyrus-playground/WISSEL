@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bunx playwright test:*)",
+      "Bash(npx playwright test:*)",
+      "Bash(bun run test:e2e:*)",
+      "Bash(bun run eval:claude-cli-429-replay)"
+    ]
+  }
+}

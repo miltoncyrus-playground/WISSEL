@@ -1,7 +1,7 @@
 ## Can't run bun or tsc in your sandbox? It's the node_modules symlink
 Task worktrees symlink `node_modules` to the main checkout, which sits outside your sandbox, so `bun test`, `bun run typecheck` and Playwright often can't run. Check the change by hand, name exactly what you couldn't verify, and report `DONE_WITH_CONCERNS`, not `BLOCKED`. The reviewer or the merge step runs the real suite.
 
-`src/services/worktree.ts:101` links `<worktree>/node_modules` to `<repo>/node_modules`. An operator can grant access per card via `extraAllowedDirs` (passed as `--add-dir`, see `src/executors/write.ts:115`). Never claim "tests pass" from a sub-agent's summary or a partial run; say what you actually ran. Chromium for e2e is resolved from `~/.cache/ms-playwright` (`playwright.config.ts`); the old `/opt/pw-browsers/chromium` error is fixed.
+`src/services/worktree.ts:101` links `<worktree>/node_modules` to `<repo>/node_modules`. An operator can grant access per card via `extraAllowedDirs` (passed as `--add-dir`, see `src/executors/write.ts:115`). e2e commands are pre-approved in the repo's `.claude/settings.json` (`bunx playwright test`, `npx playwright test`, `bun run test:e2e*`), so run the specs you touch; a denial there means the settings file is missing from your worktree. Never claim "tests pass" from a sub-agent's summary or a partial run; say what you actually ran. Chromium for e2e is resolved from `~/.cache/ms-playwright` (`playwright.config.ts`); the old `/opt/pw-browsers/chromium` error is fixed.
 
 ## e2e runs are expensive; run only what changed
 A full `e2e/board.spec.ts` run inside a review cost about $2.40 against a $0.12 estimate. Use `bun run test:e2e:affected` to run only the specs your diff touches.
