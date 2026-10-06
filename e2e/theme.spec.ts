@@ -12,9 +12,21 @@ function pageBg(page: import("@playwright/test").Page) {
   return page.evaluate(() => getComputedStyle(document.body).backgroundColor);
 }
 
+// The toggle lives on the Settings page (docs/SDD-ui-cleanup.md §3.1).
+const SETTINGS_URL = "/board#/setup/settings";
+
 test.describe("Theme toggle", () => {
-  test("clicking Light/Dark/Auto sets data-theme and updates aria-pressed", async ({ page }) => {
+  test("lives on Settings, reached from the sidebar, not on the Board view", async ({ page }) => {
     await page.goto("/board");
+    await expect(page.locator("#themeToggle")).toBeHidden();
+
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect(page).toHaveURL(/#\/setup\/settings$/);
+    await expect(page.locator("#themeToggle")).toBeVisible();
+  });
+
+  test("clicking Light/Dark/Auto sets data-theme and updates aria-pressed", async ({ page }) => {
+    await page.goto(SETTINGS_URL);
 
     const light = page.locator('#themeToggle button[data-theme-choice="light"]');
     const dark = page.locator('#themeToggle button[data-theme-choice="dark"]');
@@ -41,7 +53,7 @@ test.describe("Theme toggle", () => {
   });
 
   test("choosing a theme actually changes the computed background color, not just the attribute", async ({ page }) => {
-    await page.goto("/board");
+    await page.goto(SETTINGS_URL);
     await expect(async () => expect(await pageBg(page)).toBe(LIGHT_PAGE_BG)).toPass();
 
     await page.locator('#themeToggle button[data-theme-choice="dark"]').click();
@@ -53,7 +65,7 @@ test.describe("Theme toggle", () => {
 
   test("an explicit Light choice overrides a dark OS preference (the :not([data-theme=\"light\"]) guard)", async ({ page }) => {
     await page.emulateMedia({ colorScheme: "dark" });
-    await page.goto("/board");
+    await page.goto(SETTINGS_URL);
     await expect(async () => expect(await pageBg(page)).toBe(DARK_PAGE_BG)).toPass();
 
     await page.locator('#themeToggle button[data-theme-choice="light"]').click();
@@ -61,7 +73,7 @@ test.describe("Theme toggle", () => {
   });
 
   test("the choice survives a reload, applied before first paint with no flash", async ({ page }) => {
-    await page.goto("/board");
+    await page.goto(SETTINGS_URL);
     await page.locator('#themeToggle button[data-theme-choice="dark"]').click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 

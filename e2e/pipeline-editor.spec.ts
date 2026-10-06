@@ -64,11 +64,12 @@ test.describe("pipeline-editor canvas app", () => {
   test("author a 3-step join graph, save, reload identically, run it for real, and see it land on the board", async ({ page }) => {
     test.setTimeout(120_000);
 
-    // --- board.html's nav link out to the editor ------------------------
+    // --- board.html's sidebar link out to the editor (the Pipelines nav
+    // item, until card A4 gives it a page inside the board) -------------
     await page.goto("/board");
     const editorLink = page.locator('a[href="/pipelines/edit"]');
     await expect(editorLink).toHaveCount(1);
-    await expect(editorLink).toHaveText("Pipeline editor ↗");
+    await expect(page.getByRole("link", { name: "Pipelines", exact: true })).toHaveAttribute("href", "/pipelines/edit");
     await editorLink.click();
     await expect(page).toHaveURL(/\/pipelines\/edit$/);
 
@@ -190,7 +191,7 @@ test.describe("pipeline-editor canvas app", () => {
     await page.locator(".pe-run-link").click();
     await expect(page).toHaveURL(/\/board$/);
 
-    await page.getByRole("button", { name: "Swimlanes" }).click();
+    await page.getByRole("button", { name: "By feature", exact: true }).click();
     const lane = page.locator(".swimlane", { hasText: rootTask.title });
     await expect(lane).toHaveCount(1);
     // The joined step's own card ("<pipeline>: Step 3") proves the whole

@@ -8,9 +8,13 @@ function unique(label: string): string {
 }
 
 test.describe("New Task tab", () => {
+  // Reached from the top bar's "+ New" (docs/SDD-ui-cleanup.md §3.1);
+  // card A3 turns it into a drawer.
   test.beforeEach(async ({ page }) => {
     await page.goto("/board");
-    await page.getByRole("button", { name: "New task" }).click();
+    await page.getByRole("button", { name: "+ New", exact: true }).click();
+    await expect(page).toHaveURL(/#\/new$/);
+    await expect(page.locator("#newTaskPanel")).toBeVisible();
   });
 
   test("submit stays disabled until title, description, and repo are all filled", async ({ page }) => {
@@ -113,7 +117,7 @@ test.describe("New Task tab", () => {
     await expect(page.locator("#ntRepo")).toHaveValue("/tmp/wissel-e2e-repo");
     await expect(page.locator("#ntChips")).toBeEmpty();
 
-    await page.getByRole("button", { name: "Board" }).click();
+    await page.getByRole("link", { name: "Board", exact: true }).click();
     await expect(page.locator("#kanbanBody")).toContainText(title);
   });
 
@@ -132,7 +136,7 @@ test.describe("New Task tab", () => {
     });
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "New task" }).click();
+    await page.getByRole("button", { name: "+ New", exact: true }).click();
 
     // "ci" matches fixer perfectly and would win with no restriction.
     await page.locator("#ntLabelInput").fill("ci");
@@ -163,7 +167,7 @@ test.describe("New Task tab", () => {
     });
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "New task" }).click();
+    await page.getByRole("button", { name: "+ New", exact: true }).click();
 
     const childTitle = unique("Follow-up task");
     await page.locator("#ntTitle").fill(childTitle);
@@ -286,7 +290,7 @@ test.describe("New Task tab", () => {
     expect(project.path).toBe(dir);
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "New task" }).click();
+    await page.getByRole("button", { name: "+ New", exact: true }).click();
 
     const option = page.locator(`#ntRepoList option[value="${dir}"]`);
     await expect(option).toHaveCount(1);

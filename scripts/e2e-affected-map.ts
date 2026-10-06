@@ -94,6 +94,12 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
+      "board-routes.js/.d.ts decides which board.html page shows for a URL hash, so every spec that opens /board and navigates it depends on it — the same set as a non-theme board.html change.",
+    match: (p) => p === "src/api/public/board-routes.js" || p === "src/api/public/board-routes.d.ts",
+    resolve: () => BOARD_HTML_DEFAULT_SPECS,
+  },
+  {
+    description:
       "board.html is shared by nearly every spec (see BOARD_HTML_DEFAULT_SPECS's own comment) — defaults to that broad set, UNLESS every changed line matches the theme-only marker, which is verified to appear nowhere else in the file.",
     match: (p) => p === "src/api/public/board.html",
     resolve: (_p, changedLines) => resolveBoardHtml(changedLines),
