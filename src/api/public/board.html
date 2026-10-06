@@ -87,16 +87,64 @@
   body {
     margin: 0; background: var(--page); color: var(--ink-1);
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    padding-inline: 16px; padding-block: 32px;
   }
-  .wrap { max-width: 1100px; margin-inline: auto; display: flex; flex-direction: column; gap: 22px; }
+
+  /* ---- shell: sidebar + top bar + one page at a time
+     (docs/SDD-ui-cleanup.md §3.1). minmax(0, 1fr) lets the main column
+     shrink below its content's width, so a wide kanban scrolls inside
+     its own panel instead of the whole page scrolling sideways. ---- */
+  .shell { display: grid; grid-template-columns: 200px minmax(0, 1fr); min-height: 100vh; }
+  .sidebar {
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 2px; padding: 12px 10px;
+    background: var(--surface); border-right: 1px solid var(--border);
+  }
+  .sb-brand { font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 700; font-size: 14px; padding: 4px 10px 6px; display: flex; align-items: center; gap: 10px; }
+  .sb-brand .nav-icon { color: var(--accent); }
+  .sb-group { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); margin: 14px 10px 4px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 7px;
+    color: var(--ink-2); text-decoration: none; font-size: 13px; font-weight: 600; white-space: nowrap;
+  }
+  .nav-item:hover { background: var(--accent-wash); color: var(--ink-1); }
+  .nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .nav-item[aria-current="page"] { background: var(--ink-1); color: var(--surface); }
+  .nav-icon { width: 16px; height: 16px; flex: none; display: inline-flex; }
+  .nav-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .nav-ext { margin-left: auto; font-size: 11px; opacity: 0.6; }
+  .main-col { min-width: 0; display: flex; flex-direction: column; }
+  .topbar {
+    position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px;
+    height: 48px; padding: 0 20px; background: var(--page); border-bottom: 1px solid var(--border);
+  }
+  .topbar select { font: inherit; font-size: 13px; max-width: 240px; }
+  .topbar-spacer { flex: 1; }
+  .new-btn {
+    appearance: none; border: none; background: var(--accent); color: #fff; font: inherit; font-size: 13px; font-weight: 700;
+    padding: 6px 14px; border-radius: 7px; cursor: pointer; flex: none;
+  }
+  .new-btn:hover { opacity: 0.92; }
+  .new-btn[aria-current="page"] { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .main { padding: 14px 20px 32px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  /* Below 1100px the sidebar keeps only its icons. Labels are clipped
+     rather than display:none so each link keeps its accessible name;
+     the title attribute gives a hover hint. */
+  @media (max-width: 1099px) {
+    .shell { grid-template-columns: 56px minmax(0, 1fr); }
+    .sidebar { padding: 12px 8px; }
+    .nav-item, .sb-brand { justify-content: center; padding-inline: 0; }
+    .nav-label {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
+    .nav-ext { display: none; }
+    .sb-group { font-size: 0; height: 1px; margin: 10px 6px; background: var(--line); }
+  }
 
   .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); margin: 0 0 6px; }
-  h1 { font-size: clamp(22px, 4vw, 28px); margin: 0 0 8px; letter-spacing: -0.01em; }
   .lede { color: var(--ink-2); font-size: 14px; line-height: 1.5; max-width: 62ch; margin: 0; }
-  .version-badge { color: var(--ink-muted); font-size: 11px; font-family: "IBM Plex Mono", monospace; margin: 8px 0 0; cursor: default; }
+  .version-badge { color: var(--ink-muted); font-size: 11px; font-family: "IBM Plex Mono", monospace; margin: 0; cursor: default; white-space: nowrap; }
 
-  .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; padding: 3px; gap: 2px; background: var(--surface); }
   .segmented button {
     appearance: none; border: none; background: transparent; color: var(--ink-2);
@@ -104,6 +152,8 @@
   }
   .segmented button[aria-pressed="true"] { background: var(--ink-1); color: var(--surface); }
   .segmented button:not([aria-pressed="true"]):hover { background: var(--accent-wash); color: var(--ink-1); }
+  .segmented.compact { padding: 2px; }
+  .segmented.compact button { font-size: 12.5px; padding: 4px 11px; }
   .count { font-size: 13px; color: var(--ink-muted); }
   .live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--stage-3); margin-right: 6px; }
 
@@ -265,11 +315,13 @@
   .tier-chip.write { background: rgba(208, 59, 59, 0.12); color: var(--critical); }
   .fleet-active { display: flex; justify-content: flex-end; margin-top: 8px; }
 
+  /* On the Agents & skills page the lists get the whole page, so they
+     don't need their own scroll box. */
+  #agentsPage .fleet-list { max-height: none; }
+
   /* ---- harness strip — execution backends (tool + account), not the
-     routing fleet. Sits above the toolbar so it's visible regardless of
-     which view (Board / New task) is open, since it's fleet-adjacent
-     state, not board state. ---- */
-  .harness-strip-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+     routing fleet. The "Available now" glance at the top of the
+     Harnesses setup page (docs/SDD-ui-cleanup.md §3.1). ---- */
   .harness-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .harness-pill { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; background: var(--surface); font-size: 12px; }
   .harness-pill .h-label { font-weight: 600; }
@@ -289,10 +341,11 @@
     font-size: 12.5px; color: var(--critical); background: rgba(208, 59, 59, 0.08);
     border: 1px solid rgba(208, 59, 59, 0.25); border-radius: 8px; padding: 8px 12px; margin: 0 0 12px 0;
   }
-  /* "Manage harnesses" — a separate panel (see docs/SDD-harness-enable-
-     disable.md §9), not a change to the strip above: the strip stays
-     usable-only (51904ff), this is where every configured harness,
-     including disabled ones, can be reviewed and toggled. */
+  /* The full harness list (see docs/SDD-harness-enable-disable.md §9),
+     separate from the strip above: the strip stays usable-only
+     (51904ff), this is where every configured harness, including
+     disabled ones, can be reviewed and toggled. .harness-manage-btn is
+     the small pill button (the Projects summary's Refresh uses it). */
   .harness-manage-btn {
     appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-muted);
     font: inherit; font-size: 11.5px; font-weight: 600; padding: 5px 11px; border-radius: 999px; cursor: pointer; flex: none;
@@ -493,83 +546,98 @@
 </script>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <p class="eyebrow">wissel</p>
-    <h1>Board</h1>
-    <p class="lede">Every task's status, and the fleet that can pick one up. Click a task for its full detail — routing decision, result, diff, and the actions to move it forward.</p>
-    <p class="version-badge" id="versionBadge"></p>
+<div class="shell">
+  <!-- Sidebar (docs/SDD-ui-cleanup.md §3.1): Work is what's moving, Setup
+       is how wissel is configured. Each link's data-route is a key of
+       BOARD_ROUTES (board-routes.js); test/board-html.test.ts checks the
+       two stay in sync. Pipelines links out to the editor until card A4
+       gives it a page here. -->
+  <nav class="sidebar" id="sidebar" aria-label="Main">
+    <div class="sb-brand" title="wissel">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 4h5l2 8h5"/><path d="M2 12h5l2-8h5"/></svg></span>
+      <span class="nav-label">wissel</span>
+    </div>
+    <p class="sb-group">Work</p>
+    <a class="nav-item" href="#/board" data-route="board" title="Board">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="2.5" width="3.5" height="11" rx="1"/><rect x="6.25" y="2.5" width="3.5" height="7" rx="1"/><rect x="10.5" y="2.5" width="3.5" height="9" rx="1"/></svg></span>
+      <span class="nav-label">Board</span>
+    </a>
+    <a class="nav-item" href="/pipelines/edit" data-route="pipelines" title="Pipelines (opens the pipeline editor)">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.75"/><circle cx="12.5" cy="3.75" r="1.75"/><circle cx="12.5" cy="12.25" r="1.75"/><path d="M5.25 8h2.5M7.75 8 10.75 4.5M7.75 8l3 3.5"/></svg></span>
+      <span class="nav-label">Pipelines</span>
+      <span class="nav-ext" aria-hidden="true">↗</span>
+    </a>
+    <a class="nav-item" href="#/archive" data-route="archive" title="Archive">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="3.5" rx="1"/><path d="M3 6v6.5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6M6.5 9h3"/></svg></span>
+      <span class="nav-label">Archive</span>
+    </a>
+    <p class="sb-group">Setup</p>
+    <a class="nav-item" href="#/setup/agents" data-route="setup/agents" title="Agents &amp; skills">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.75 13.5c.5-2.5 2.2-3.75 4.25-3.75s3.75 1.25 4.25 3.75"/><path d="M11 3.25a2.25 2.25 0 0 1 0 4.5M12.25 9.9c1.2.5 1.9 1.6 2.1 3.1"/></svg></span>
+      <span class="nav-label">Agents &amp; skills</span>
+    </a>
+    <a class="nav-item" href="#/setup/harnesses" data-route="setup/harnesses" title="Harnesses">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="m5 6.5 2 1.5-2 1.5M8.5 10h2.5"/></svg></span>
+      <span class="nav-label">Harnesses</span>
+    </a>
+    <a class="nav-item" href="#/setup/mcp" data-route="setup/mcp" title="MCP servers">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="4.5" rx="1"/><rect x="2.5" y="9" width="11" height="4.5" rx="1"/><path d="M5 4.75h.01M5 11.25h.01"/></svg></span>
+      <span class="nav-label">MCP servers</span>
+    </a>
+    <a class="nav-item" href="#/setup/projects" data-route="setup/projects" title="Projects">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 4.5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/></svg></span>
+      <span class="nav-label">Projects</span>
+    </a>
+    <a class="nav-item" href="#/setup/memory" data-route="setup/memory" title="Memory">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.5 2.5h7l2 2v9h-9z"/><path d="M6 7h4M6 9.5h4M6 12h2.5"/></svg></span>
+      <span class="nav-label">Memory</span>
+    </a>
+    <a class="nav-item" href="#/setup/settings" data-route="setup/settings" title="Settings">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6"/><circle cx="10" cy="4.5" r="1.5"/><circle cx="6" cy="11.5" r="1.5"/></svg></span>
+      <span class="nav-label">Settings</span>
+    </a>
+  </nav>
+
+  <div class="main-col">
+  <!-- Compact top bar: what applies to every page. The Lanes / By
+       feature switch is the Board page's own control; it sits here
+       (shown only on that page) so the board's first card stays within
+       120px of the top (SDD §2 T1). -->
+  <header class="topbar">
+    <select id="projectSwitcher" title="Filter the board to one project; new cards default to it">
+      <option value="">All projects</option>
+    </select>
+    <div class="segmented compact" id="boardViewToggle" role="group" aria-label="Board view">
+      <button type="button" data-board-view="lanes" aria-pressed="true">Lanes</button>
+      <button type="button" data-board-view="features" aria-pressed="false">By feature</button>
+    </div>
+    <span class="topbar-spacer"></span>
+    <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
+    <span class="version-badge" id="versionBadge"></span>
+    <button type="button" class="new-btn" id="newBtn">+ New</button>
   </header>
 
-  <div class="harness-strip-row">
-    <div class="harness-strip" id="harnessStrip"></div>
-    <button type="button" class="harness-manage-btn" id="hmOpenBtn">Manage harnesses</button>
-    <button type="button" class="harness-manage-btn" id="mcpOpenBtn">Manage MCP servers</button>
-  </div>
-
+  <main class="main">
   <div class="merge-health-banner" id="mergeHealthBanner" hidden></div>
 
-  <div class="toolbar">
-    <div class="segmented" id="viewToggle" role="group" aria-label="View">
-      <button type="button" data-view="board" aria-pressed="true">Board</button>
-      <button type="button" data-view="swimlanes" aria-pressed="false">Swimlanes</button>
-      <button type="button" data-view="archive" aria-pressed="false">Archive</button>
-      <button type="button" data-view="newtask" aria-pressed="false">New task</button>
-      <button type="button" data-view="memory" aria-pressed="false">Memory</button>
-      <button type="button" data-view="projects" aria-pressed="false">Projects</button>
-    </div>
-    <div style="display: flex; align-items: center; gap: 16px;">
-      <select id="projectSwitcher" title="Filter the board to one project; new cards default to it" style="font-size: 13px;">
-        <option value="">All projects</option>
-      </select>
-      <a href="/pipelines/edit" style="font-size: 13px;">Pipeline editor ↗</a>
-      <div class="segmented" id="themeToggle" role="group" aria-label="Theme">
-        <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
-        <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
-        <button type="button" data-theme-choice="" aria-pressed="true">Auto</button>
-      </div>
-      <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
-    </div>
-  </div>
-
-  <section id="projectSummaryBox" class="panel-flush section-gap">
-    <div class="panel-head">
-      <h2 id="projSummaryTitle">Projects</h2>
-      <button type="button" id="projSummaryRefreshBtn" class="harness-manage-btn" hidden>Refresh summary</button>
-    </div>
-    <div id="projSummaryBody" style="padding: 12px 16px; max-height: 160px; overflow-y: auto; font-size: 13px; line-height: 1.5;"></div>
-  </section>
-
-  <section id="boardPanel">
-    <div class="stats" id="stats"></div>
-
-    <section class="panel-flush section-gap">
-      <div class="panel-head"><h2>Tasks, by status</h2></div>
-      <div style="padding: 16px;"><div class="kanban" id="kanbanBody"></div></div>
+  <section id="boardPage" data-page>
+    <section id="boardPanel">
+      <section class="panel-flush">
+        <div style="padding: 12px 14px;"><div class="kanban" id="kanbanBody"></div></div>
+      </section>
+      <div class="stats section-gap" id="stats"></div>
     </section>
 
-    <div class="row-2 section-gap">
+    <section id="swimlanesPanel" hidden>
       <section class="panel-flush">
-        <div class="panel-head"><h2><span class="kind-dot" style="background:var(--accent)"></span>Agents</h2><span class="count" id="agentsCount"></span></div>
-        <div class="fleet-list" id="agentsBox"></div>
+        <div class="panel-head"><h2>Tasks by feature</h2><span class="count" id="swimlanesCount"></span></div>
+        <p class="muted" style="font-size: 12.5px; line-height: 1.5; margin: 0; padding: 10px 16px 0;">One lane per lineage root — every subtask, review pass, and pushback re-attempt that traces back to it, grouped together. Tags show what a card follows up on and what it depends on.</p>
+        <div style="padding: 16px;" id="swimlanesBody"></div>
       </section>
-      <section class="panel-flush">
-        <div class="panel-head"><h2><span class="kind-dot" style="background:var(--skill)"></span>Skills</h2><span class="count" id="skillsCount"></span></div>
-        <div class="fleet-list" id="skillsBox"></div>
-      </section>
-    </div>
-  </section>
-
-  <section id="swimlanesPanel" hidden>
-    <p class="eyebrow">Swimlanes</p>
-    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">One lane per lineage root — every subtask, review pass, and pushback re-attempt that traces back to it, grouped together. Tags show what a card follows up on and what it depends on.</p>
-    <section class="panel-flush section-gap">
-      <div class="panel-head"><h2>Tasks by feature</h2><span class="count" id="swimlanesCount"></span></div>
-      <div style="padding: 16px;" id="swimlanesBody"></div>
     </section>
   </section>
 
-  <section id="archivePanel" hidden>
+  <section id="archivePanel" data-page hidden>
     <p class="eyebrow">Archive</p>
     <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Archived tasks, grouped the same lineage-root way Swimlanes groups live ones — a whole archived feature still reads as one lane. Unarchive a card to bring exactly it back to Board/Swimlanes.</p>
     <section class="panel-flush section-gap">
@@ -578,7 +646,7 @@
     </section>
   </section>
 
-  <section class="panel" id="newTaskPanel" hidden>
+  <section class="panel" id="newTaskPanel" data-page hidden>
     <p class="eyebrow">New task</p>
     <form id="newTaskForm">
       <div class="field">
@@ -655,7 +723,7 @@
     </form>
   </section>
 
-  <section class="panel" id="memoryPanel" hidden>
+  <section id="memoryPanel" data-page hidden>
     <p class="eyebrow">Memory</p>
     <p class="lede" id="memoryLede" style="margin-top: -8px; margin-bottom: 20px;">What wissel has learned from its own session history — curated but not currently sent to agent prompts. Wholesale-replaced by each curation pass; the history below is what survives.</p>
 
@@ -672,9 +740,17 @@
     </section>
   </section>
 
-  <section class="panel" id="projectsPanel" hidden>
+  <section id="projectsPanel" data-page hidden>
     <p class="eyebrow">Projects</p>
     <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Register a local folder or clone a GitHub repo so it's available as a repo target elsewhere in wissel.</p>
+
+    <section id="projectSummaryBox" class="panel-flush section-gap">
+      <div class="panel-head">
+        <h2 id="projSummaryTitle">Projects</h2>
+        <button type="button" id="projSummaryRefreshBtn" class="harness-manage-btn" hidden>Refresh summary</button>
+      </div>
+      <div id="projSummaryBody" style="padding: 12px 16px; max-height: 160px; overflow-y: auto; font-size: 13px; line-height: 1.5;"></div>
+    </section>
 
     <section class="panel-flush section-gap">
       <div class="panel-head"><h2>Add local folder</h2></div>
@@ -722,6 +798,120 @@
       <div class="fleet-list" id="projectsList"></div>
     </section>
   </section>
+
+  <section id="agentsPage" data-page hidden>
+    <p class="eyebrow">Agents &amp; skills</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">The routing fleet from agents/manifest.yaml: what each one does, the tags that route work to it, and the harnesses it runs on. A pulsing dot means it's working right now.</p>
+    <div class="row-2">
+      <section class="panel-flush">
+        <div class="panel-head"><h2><span class="kind-dot" style="background:var(--accent)"></span>Agents</h2><span class="count" id="agentsCount"></span></div>
+        <div class="fleet-list" id="agentsBox"></div>
+      </section>
+      <section class="panel-flush">
+        <div class="panel-head"><h2><span class="kind-dot" style="background:var(--skill)"></span>Skills</h2><span class="count" id="skillsCount"></span></div>
+        <div class="fleet-list" id="skillsBox"></div>
+      </section>
+    </div>
+  </section>
+
+  <section id="harnessPanel" data-page hidden aria-labelledby="hmTitle">
+    <p class="eyebrow" id="hmTitle">Harnesses</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Execution backends (tool + account) that agents run under. "Available now" is what wissel can use at this moment; the list below is every configured harness, enabled, manually disabled, or not authenticated, with a toggle and a default model.</p>
+    <section class="panel-flush">
+      <div class="panel-head"><h2>Available now</h2></div>
+      <div style="padding: 12px 16px;"><div class="harness-strip" id="harnessStrip"></div></div>
+    </section>
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>All harnesses</h2></div>
+      <div style="padding: 4px 16px;" id="hmList"></div>
+    </section>
+  </section>
+
+  <section id="mcpPanel" data-page hidden aria-labelledby="mcpTitle">
+    <p class="eyebrow" id="mcpTitle">MCP servers</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Every registered MCP server: the external tool surfaces (Slack, a ticketing system, a database) an agent can reach once it's running, separate from harnesses. Enable/disable a server, or flip a tool's trust tier between auto (safe to call unattended) and approval-required (blocked until a human approves).</p>
+    <section class="panel-flush">
+      <div class="panel-head"><h2>Registered servers</h2></div>
+      <div style="padding: 4px 16px;" id="mcpList"></div>
+    </section>
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Add MCP server</h2></div>
+      <div style="padding: 16px;">
+      <!-- novalidate: the submit handler below already does its own
+           required-field checks and renders them into #mcpAddError
+           (consistent styling with every other inline error on this
+           page). Without novalidate, Chromium's native constraint
+           validation intercepts the submit click before that handler
+           ever runs whenever a `required` input (id, label) is blank,
+           so #mcpAddError never appears — a real, previously-
+           uncharacterized bug, confirmed by reading the submit handler
+           (board.html, below) against the native `required` attributes
+           on #mcpAddId/#mcpAddLabel. -->
+      <form id="mcpAddForm" novalidate>
+        <div class="field">
+          <label for="mcpAddId">Server id</label>
+          <input id="mcpAddId" type="text" required autocomplete="off" placeholder="my-server">
+        </div>
+        <div class="field">
+          <label for="mcpAddLabel">Label</label>
+          <input id="mcpAddLabel" type="text" required autocomplete="off" placeholder="My Server">
+        </div>
+        <div class="field">
+          <label for="mcpAddTransportKind">Transport</label>
+          <select id="mcpAddTransportKind">
+            <option value="stdio">stdio (command)</option>
+            <option value="http">http (URL)</option>
+            <option value="sse">sse (URL)</option>
+          </select>
+        </div>
+        <div class="field" id="mcpAddStdioFields">
+          <label for="mcpAddCommand">Command</label>
+          <input id="mcpAddCommand" type="text" autocomplete="off" placeholder="/usr/local/bin/my-mcp-server">
+        </div>
+        <div class="field" id="mcpAddArgsField">
+          <label for="mcpAddArgs">Args (comma-separated, optional)</label>
+          <input id="mcpAddArgs" type="text" autocomplete="off" placeholder="--flag, value">
+        </div>
+        <div class="field" id="mcpAddUrlFields" hidden>
+          <label for="mcpAddUrl">URL</label>
+          <input id="mcpAddUrl" type="text" autocomplete="off" placeholder="https://example.internal/mcp">
+        </div>
+        <div class="field">
+          <label>Tools</label>
+          <div id="mcpAddTools"></div>
+          <button type="button" id="mcpAddToolRowBtn">Add tool</button>
+        </div>
+        <div class="form-actions">
+          <span id="mcpAddStatus" class="form-status" hidden></span>
+          <span id="mcpAddError" class="field-error" hidden></span>
+          <button type="submit" id="mcpAddSubmit">Add server</button>
+        </div>
+      </form>
+      </div>
+    </section>
+  </section>
+
+  <section id="settingsPage" data-page hidden>
+    <p class="eyebrow">Settings</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">How this board looks in this browser.</p>
+    <section class="panel-flush">
+      <div class="panel-head"><h2>Theme</h2></div>
+      <div style="padding: 14px 16px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+        <div class="segmented" id="themeToggle" role="group" aria-label="Theme">
+          <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+          <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+          <button type="button" data-theme-choice="" aria-pressed="true">Auto</button>
+        </div>
+        <span class="muted" style="font-size: 12.5px;">Auto follows your OS setting. Saved in this browser only.</span>
+      </div>
+    </section>
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Version</h2></div>
+      <p class="mono" id="settingsVersion" style="margin: 0; padding: 14px 16px; font-size: 12px; color: var(--ink-2);">Loading…</p>
+    </section>
+  </section>
+  </main>
+  </div>
 </div>
 
 <div class="drawer-overlay" id="drawerOverlay" hidden></div>
@@ -784,87 +974,6 @@
   </div>
 </aside>
 
-<div class="drawer-overlay" id="hmOverlay" hidden></div>
-<aside class="drawer" id="harnessPanel" role="dialog" aria-modal="true" aria-labelledby="hmTitle" hidden>
-  <div class="drawer-head">
-    <h2 id="hmTitle">Manage harnesses</h2>
-    <button type="button" class="drawer-close" id="hmClose" aria-label="Close">×</button>
-  </div>
-  <div class="drawer-body">
-    <section class="drawer-section">
-      <p class="drawer-desc">Every configured harness — enabled, manually disabled, or not authenticated right now. The strip above only ever shows what's usable at a glance; this is everything, with a toggle.</p>
-    </section>
-    <section class="drawer-section" id="hmList"></section>
-  </div>
-</aside>
-
-<div class="drawer-overlay" id="mcpOverlay" hidden></div>
-<aside class="drawer" id="mcpPanel" role="dialog" aria-modal="true" aria-labelledby="mcpTitle" hidden>
-  <div class="drawer-head">
-    <h2 id="mcpTitle">Manage MCP servers</h2>
-    <button type="button" class="drawer-close" id="mcpClose" aria-label="Close">×</button>
-  </div>
-  <div class="drawer-body">
-    <section class="drawer-section">
-      <p class="drawer-desc">Every registered MCP server — the external tool surfaces (Slack, a ticketing system, a database) an agent can reach once it's running, orthogonal to the harnesses above. Enable/disable a server, or flip a tool's trust tier between auto (safe to call unattended) and approval-required (blocked until a human approves).</p>
-    </section>
-    <section class="drawer-section">
-      <p class="eyebrow">Add MCP server</p>
-      <!-- novalidate: the submit handler below already does its own
-           required-field checks and renders them into #mcpAddError
-           (consistent styling with every other inline error on this
-           page). Without novalidate, Chromium's native constraint
-           validation intercepts the submit click before that handler
-           ever runs whenever a `required` input (id, label) is blank,
-           so #mcpAddError never appears — a real, previously-
-           uncharacterized bug, confirmed by reading the submit handler
-           (board.html, below) against the native `required` attributes
-           on #mcpAddId/#mcpAddLabel. -->
-      <form id="mcpAddForm" novalidate>
-        <div class="field">
-          <label for="mcpAddId">Server id</label>
-          <input id="mcpAddId" type="text" required autocomplete="off" placeholder="my-server">
-        </div>
-        <div class="field">
-          <label for="mcpAddLabel">Label</label>
-          <input id="mcpAddLabel" type="text" required autocomplete="off" placeholder="My Server">
-        </div>
-        <div class="field">
-          <label for="mcpAddTransportKind">Transport</label>
-          <select id="mcpAddTransportKind">
-            <option value="stdio">stdio (command)</option>
-            <option value="http">http (URL)</option>
-            <option value="sse">sse (URL)</option>
-          </select>
-        </div>
-        <div class="field" id="mcpAddStdioFields">
-          <label for="mcpAddCommand">Command</label>
-          <input id="mcpAddCommand" type="text" autocomplete="off" placeholder="/usr/local/bin/my-mcp-server">
-        </div>
-        <div class="field" id="mcpAddArgsField">
-          <label for="mcpAddArgs">Args (comma-separated, optional)</label>
-          <input id="mcpAddArgs" type="text" autocomplete="off" placeholder="--flag, value">
-        </div>
-        <div class="field" id="mcpAddUrlFields" hidden>
-          <label for="mcpAddUrl">URL</label>
-          <input id="mcpAddUrl" type="text" autocomplete="off" placeholder="https://example.internal/mcp">
-        </div>
-        <div class="field">
-          <label>Tools</label>
-          <div id="mcpAddTools"></div>
-          <button type="button" id="mcpAddToolRowBtn">Add tool</button>
-        </div>
-        <div class="form-actions">
-          <span id="mcpAddStatus" class="form-status" hidden></span>
-          <span id="mcpAddError" class="field-error" hidden></span>
-          <button type="submit" id="mcpAddSubmit">Add server</button>
-        </div>
-      </form>
-    </section>
-    <section class="drawer-section" id="mcpList"></section>
-  </div>
-</aside>
-
 <div class="drawer-overlay" id="loOverlay" hidden></div>
 <aside class="drawer" id="liveOutputPanel" role="dialog" aria-modal="true" aria-labelledby="loTitle" hidden>
   <div class="drawer-head">
@@ -879,6 +988,7 @@
 <script src="/render-task-output.js"></script>
 <script src="/render-merge-health.js"></script>
 <script src="/render-harness-preference.js"></script>
+<script src="/board-routes.js"></script>
 <script>
 (function () {
   "use strict";
@@ -985,8 +1095,14 @@
   // than closing under the user while a run is in flight.
 
   var drawerTaskId = null;
+  // True while the Harnesses / MCP servers setup page is the one showing
+  // (set by applyRoute), so render() only rebuilds those lists when
+  // someone can see them.
   var harnessPanelOpen = false;
   var mcpPanelOpen = false;
+  // The BOARD_ROUTES key showing right now (board-routes.js); applyRoute
+  // keeps it current.
+  var currentRoute = "board";
   // Real bug found live: refreshOpenDrawer() fires on every SSE event
   // (any task moving, anywhere — not just this one), and used to call
   // renderDrawerActions(task) with no result, which reset a review-gated
@@ -1699,38 +1815,15 @@
   });
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && drawerTaskId) closeTaskDrawer();
-    if (ev.key === "Escape" && harnessPanelOpen) closeHarnessPanel();
-    if (ev.key === "Escape" && mcpPanelOpen) closeMcpPanel();
     if (ev.key === "Escape" && liveOutputTaskId) closeLiveOutput();
   });
 
-  // "Manage harnesses" — a separate panel from the glance strip on
-  // purpose (docs/SDD-harness-enable-disable.md §2/§9): the strip stays
-  // usable-only, this shows every configured harness (enabled,
-  // manually disabled, or not authenticated) with a toggle. Reuses the
-  // task drawer's own overlay/slide-in mechanism and CSS verbatim —
-  // same open/close shape as openTaskDrawer/closeTaskDrawer above, just
-  // a second independent instance rather than sharing state with it.
-  function openHarnessPanel() {
-    harnessPanelOpen = true;
-    renderHarnessPanel();
-    document.getElementById("hmOverlay").hidden = false;
-    document.getElementById("harnessPanel").hidden = false;
-    requestAnimationFrame(function () {
-      document.getElementById("hmOverlay").classList.add("open");
-      document.getElementById("harnessPanel").classList.add("open");
-    });
-  }
-
-  function closeHarnessPanel() {
-    harnessPanelOpen = false;
-    document.getElementById("hmOverlay").classList.remove("open");
-    document.getElementById("harnessPanel").classList.remove("open");
-    setTimeout(function () {
-      document.getElementById("hmOverlay").hidden = true;
-      document.getElementById("harnessPanel").hidden = true;
-    }, 180);
-  }
+  // Harnesses setup page — the full list, separate from the "Available
+  // now" strip on purpose (docs/SDD-harness-enable-disable.md §2/§9):
+  // the strip stays usable-only, this shows every configured harness
+  // (enabled, manually disabled, or not authenticated) with a toggle.
+  // Was a slide-in panel off the board header until
+  // docs/SDD-ui-cleanup.md §3.1 made it a page (#/setup/harnesses).
 
   var hmActionError = null;
 
@@ -1738,7 +1831,7 @@
   // unfiltered — only renderHarnessStrip() ever hides disabled ones),
   // so this stays live across the normal SSE-driven refetch cycle with
   // no separate fetch of its own. Guarded by harnessPanelOpen in
-  // render() below, same "only do the work if it's actually open"
+  // render() below, same "only do the work if it's actually showing"
   // pattern refreshOpenDrawer() already uses for the task drawer.
   function renderHarnessPanel() {
     var list = document.getElementById("hmList");
@@ -1864,35 +1957,11 @@
     });
   }
 
-  document.getElementById("hmOpenBtn").addEventListener("click", openHarnessPanel);
-  document.getElementById("hmClose").addEventListener("click", closeHarnessPanel);
-  document.getElementById("hmOverlay").addEventListener("click", closeHarnessPanel);
-
-  // "Manage MCP servers" — a sibling panel to "Manage harnesses" above,
-  // same open/close/render shape, just listing the registered MCP server
-  // surfaces (docs/SDD-mcp-orchestration.md §6 Subtask 6) instead of
-  // harnesses: enable/disable per server, plus a per-tool trust toggle
-  // (auto vs approval-required) nested under each server row.
-  function openMcpPanel() {
-    mcpPanelOpen = true;
-    renderMcpPanel();
-    document.getElementById("mcpOverlay").hidden = false;
-    document.getElementById("mcpPanel").hidden = false;
-    requestAnimationFrame(function () {
-      document.getElementById("mcpOverlay").classList.add("open");
-      document.getElementById("mcpPanel").classList.add("open");
-    });
-  }
-
-  function closeMcpPanel() {
-    mcpPanelOpen = false;
-    document.getElementById("mcpOverlay").classList.remove("open");
-    document.getElementById("mcpPanel").classList.remove("open");
-    setTimeout(function () {
-      document.getElementById("mcpOverlay").hidden = true;
-      document.getElementById("mcpPanel").hidden = true;
-    }, 180);
-  }
+  // MCP servers setup page (#/setup/mcp) — a sibling of the Harnesses
+  // page above, same render shape, just listing the registered MCP
+  // server surfaces (docs/SDD-mcp-orchestration.md §6 Subtask 6) instead
+  // of harnesses: enable/disable per server, plus a per-tool trust
+  // toggle (auto vs approval-required) nested under each server row.
 
   var mcpActionError = null;
 
@@ -2040,10 +2109,6 @@
     });
   }
 
-  document.getElementById("mcpOpenBtn").addEventListener("click", openMcpPanel);
-  document.getElementById("mcpClose").addEventListener("click", closeMcpPanel);
-  document.getElementById("mcpOverlay").addEventListener("click", closeMcpPanel);
-
   // "Add MCP server" form — mirrors #projLocalForm/#projCloneForm's own
   // structure and inline-error-rendering convention (a .field-error span
   // next to the submit button), just with one extra wrinkle neither
@@ -2177,8 +2242,8 @@
 
   // --- Live output panel ----------------------------------------------
   //
-  // Reuses the drawer's own overlay/slide-in mechanism (see
-  // openHarnessPanel's own comment on the same pattern). Live via SSE
+  // Reuses the task drawer's own overlay/slide-in mechanism (see
+  // openTaskDrawer), as a second independent instance. Live via SSE
   // for a task whose display column is running/reviewing/dispatched —
   // matching exactly the three statuses docs/SDD-live-task-output.md
   // §3.6/§6 names — snapshot fetch (one-shot, no live connection) for
@@ -2818,7 +2883,10 @@
 
   function render() {
     renderProjectSwitcher();
-    renderProjectSummaryBox();
+    // Only on the Projects page (docs/SDD-ui-cleanup.md §3.1): rendering
+    // it also generates any missing project ELI5, an LLM call, so it
+    // shouldn't run just because the board loaded.
+    if (currentRoute === "setup/projects") renderProjectSummaryBox();
     renderStats();
     renderKanban();
     renderSwimlanes();
@@ -3037,7 +3105,7 @@
     return line;
   }
 
-  // Top box: an ELI5 of the selected project (or, with none selected, a
+  // Projects page summary box: an ELI5 of the selected project (or, with none selected, a
   // compact one-line-each list across every registered project), plus —
   // for a single selected project only, since git state is inherently
   // per-repo — its current branch/dirty state and latest checkout. See
@@ -3055,7 +3123,7 @@
       refreshBtn.hidden = true;
       body.textContent = "";
       if (projects.length === 0) {
-        body.textContent = "No projects registered yet — add one in the Projects tab.";
+        body.textContent = "No projects registered yet — add one below.";
         return;
       }
       projects.forEach(function (p) {
@@ -3510,7 +3578,10 @@
     var badge = document.getElementById("versionBadge");
     badge.textContent = "wissel " + v.commitShort + (v.dirty ? " (dirty)" : "");
     badge.title = "commit " + v.commit + (v.dirty ? " (dirty)" : "") + " on " + v.branch + ", pkg " + v.packageVersion;
-  }).catch(function () {});
+    document.getElementById("settingsVersion").textContent = badge.textContent + " · " + badge.title;
+  }).catch(function () {
+    document.getElementById("settingsVersion").textContent = "Version unavailable (GET /version failed).";
+  });
 
   Promise.all([
     fetch("/agents").then(function (r) { return r.json(); }),
@@ -3645,30 +3716,61 @@
       });
   });
 
-  var boardPanel = document.getElementById("boardPanel");
-  var swimlanesPanel = document.getElementById("swimlanesPanel");
-  var archivePanel = document.getElementById("archivePanel");
-  var newTaskPanel = document.getElementById("newTaskPanel");
-  var memoryPanel = document.getElementById("memoryPanel");
-  var projectsPanel = document.getElementById("projectsPanel");
-  document.querySelectorAll("#viewToggle button").forEach(function (btn) {
+  // --- Hash routing (docs/SDD-ui-cleanup.md §3.1) ---------------------
+  //
+  // The URL hash names the page (#/board, #/setup/harnesses, ...; see
+  // BOARD_ROUTES in board-routes.js), so reload and back/forward work.
+  // Sidebar links are plain href="#/..." anchors and the browser's own
+  // hashchange drives everything; nothing here pushes history itself.
+  // Exactly one [data-page] section shows at a time.
+  function applyRoute() {
+    var parsed = parseBoardRoute(location.hash);
+    // An unknown hash (a typo, an old bookmark) lands on the board and
+    // the address bar says so. replaceState, not a hash assignment, so
+    // Back doesn't return to the dead URL. An empty hash stays empty:
+    // a bare /board is already the board.
+    if (!parsed.known) history.replaceState(null, "", boardRouteHash(parsed.route));
+    var route = parsed.route;
+    var def = BOARD_ROUTES[route];
+    currentRoute = route;
+
+    document.querySelectorAll("[data-page]").forEach(function (el) { el.hidden = el.id !== def.page; });
+    document.querySelectorAll("#sidebar [data-route]").forEach(function (a) {
+      if (a.getAttribute("data-route") === def.nav) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+    if (route === "new") document.getElementById("newBtn").setAttribute("aria-current", "page");
+    else document.getElementById("newBtn").removeAttribute("aria-current");
+
+    // Lanes / By feature: two views of the same Board page.
+    document.getElementById("boardViewToggle").hidden = !def.boardView;
+    document.getElementById("boardPanel").hidden = def.boardView !== "lanes";
+    document.getElementById("swimlanesPanel").hidden = def.boardView !== "features";
+    document.querySelectorAll("#boardViewToggle button").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-board-view") === def.boardView ? "true" : "false");
+    });
+
+    harnessPanelOpen = route === "setup/harnesses";
+    mcpPanelOpen = route === "setup/mcp";
+    if (harnessPanelOpen) renderHarnessPanel();
+    if (mcpPanelOpen) renderMcpPanel();
+    // Refetched on every visit, not cached — a curation run since the
+    // last time this page was open should show up without a manual
+    // page reload, and this is cheap (two small local reads).
+    if (route === "setup/memory") loadMemoryTab();
+    if (route === "setup/projects") { loadProjectsTab(); renderProjectSummaryBox(); }
+  }
+
+  document.querySelectorAll("#boardViewToggle button").forEach(function (btn) {
     btn.addEventListener("click", function () {
-      document.querySelectorAll("#viewToggle button").forEach(function (b) { b.setAttribute("aria-pressed", "false"); });
-      btn.setAttribute("aria-pressed", "true");
-      var view = btn.getAttribute("data-view");
-      boardPanel.hidden = view !== "board";
-      swimlanesPanel.hidden = view !== "swimlanes";
-      archivePanel.hidden = view !== "archive";
-      newTaskPanel.hidden = view !== "newtask";
-      memoryPanel.hidden = view !== "memory";
-      projectsPanel.hidden = view !== "projects";
-      // Refetched on every visit, not cached — a curation run since the
-      // last time this tab was open should show up without a manual
-      // page reload, and this is cheap (two small local reads).
-      if (view === "memory") loadMemoryTab();
-      if (view === "projects") loadProjectsTab();
+      location.hash = boardRouteHash(btn.getAttribute("data-board-view") === "features" ? "board/features" : "board");
     });
   });
+  document.getElementById("newBtn").addEventListener("click", function () {
+    location.hash = boardRouteHash("new");
+  });
+  window.addEventListener("hashchange", applyRoute);
+  applyRoute();
 
   // --- Memory tab ----------------------------------------------------
   function formatMemoryRunHead(run) {

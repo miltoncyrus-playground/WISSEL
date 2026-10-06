@@ -55,6 +55,19 @@ describe("resolveAffectedSpecs", () => {
     expect(result.fullSuite).toBe(false);
   });
 
+  test("board-routes.js resolves to every spec that navigates the board, not the full suite", () => {
+    const result = resolveAffectedSpecs([{ path: "src/api/public/board-routes.js" }], ALL_SPECS);
+    expect(result.specs).toEqual([
+      "board.spec.ts",
+      "live-task-output.spec.ts",
+      "new-task.spec.ts",
+      "pipeline-editor.spec.ts",
+      "projects.spec.ts",
+      "theme.spec.ts",
+    ]);
+    expect(result.fullSuite).toBe(false);
+  });
+
   test("board.html change where every changed line is theme-related resolves to theme.spec.ts only", () => {
     const result = resolveAffectedSpecs(
       [

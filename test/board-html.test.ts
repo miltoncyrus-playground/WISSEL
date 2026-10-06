@@ -225,6 +225,32 @@ test("fleet rows render the agent's harness list in order with live state; the h
   expect(panel).toContain('if (harnessPreferenceState(h) === "full") metaBits.push("at capacity");');
 });
 
+// docs/SDD-ui-cleanup.md §3.1: every page is a [data-page] section that
+// applyRoute shows one at a time. A stray or missing closing tag would
+// nest one page inside another (so showing the outer one shows both, or
+// hiding it hides a page that should be visible); browsers repair the
+// markup silently, so nothing else would catch it.
+test("board.html's container tags balance, and every [data-page] section sits directly in <main>", async () => {
+  const html = await readFile(BOARD_HTML_PATH, "utf8");
+  const body = html.slice(html.indexOf("<body>"), html.indexOf('<script src="/render-task-output.js">'));
+  const stack: { tag: string; open: string }[] = [];
+  const pageParents: Record<string, string> = {};
+  for (const m of body.replace(/<!--[\s\S]*?-->/g, "").matchAll(/<(\/?)(div|section|main|nav|header|aside|form|details)\b[^>]*>/g)) {
+    const [open, closing, tag] = m as unknown as [string, string, string];
+    if (closing) {
+      const top = stack.pop();
+      expect(top?.tag, `closing </${tag}> after ${top?.open}`).toBe(tag);
+      continue;
+    }
+    const id = /\bid="([^"]+)"/.exec(open)?.[1];
+    if (id && /\bdata-page\b/.test(open)) pageParents[id] = stack[stack.length - 1]?.tag ?? "";
+    stack.push({ tag, open });
+  }
+  expect(stack).toEqual([]);
+  expect(Object.keys(pageParents).length).toBeGreaterThan(0);
+  for (const [id, parent] of Object.entries(pageParents)) expect(`${id} in <${parent}>`).toBe(`${id} in <main>`);
+});
+
 test("the MCP add-server form opts out of native constraint validation so its own inline error can render", async () => {
   const html = await readFile(BOARD_HTML_PATH, "utf8");
   expect(html).toMatch(/<form id="mcpAddForm" novalidate>/);

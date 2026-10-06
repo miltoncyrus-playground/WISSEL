@@ -24,16 +24,30 @@ test.describe("Projects tab", () => {
   test("switches to Projects from Board and back", async ({ page }) => {
     await page.goto("/board");
 
-    await page.getByRole("button", { name: "Projects", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Projects", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("link", { name: "Projects", exact: true }).click();
+    await expect(page.getByRole("link", { name: "Projects", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#projectsPanel")).toBeVisible();
     await expect(page.locator("#boardPanel")).toBeHidden();
     await expect(page.locator("#newTaskPanel")).toBeHidden();
     await expect(page.locator("#memoryPanel")).toBeHidden();
 
-    await page.getByRole("button", { name: "Board", exact: true }).click();
+    await page.getByRole("link", { name: "Board", exact: true }).click();
     await expect(page.locator("#projectsPanel")).toBeHidden();
     await expect(page.locator("#boardPanel")).toBeVisible();
+  });
+
+  // docs/SDD-ui-cleanup.md §3.1 / T6: the Projects summary renders only
+  // on the Projects page, not above every view.
+  test("the Projects summary shows on the Projects page and nowhere else", async ({ page }) => {
+    await page.goto("/board");
+    await expect(page.locator("#projectSummaryBox")).toBeHidden();
+
+    await page.getByRole("link", { name: "Projects", exact: true }).click();
+    await expect(page.locator("#projectSummaryBox")).toBeVisible();
+    await expect(page.locator("#projSummaryBody")).not.toBeEmpty();
+
+    await page.getByRole("button", { name: "+ New", exact: true }).click();
+    await expect(page.locator("#projectSummaryBox")).toBeHidden();
   });
 
   test("adding a local folder posts the exact request body and shows the new row", async ({ page }) => {
@@ -42,7 +56,7 @@ test.describe("Projects tab", () => {
       git(["init", "-q"], dir);
 
       await page.goto("/board");
-      await page.getByRole("button", { name: "Projects", exact: true }).click();
+      await page.getByRole("link", { name: "Projects", exact: true }).click();
 
       await page.locator("#projLocalPath").fill(dir);
       await page.locator("#projLocalInitGit").check();
@@ -67,7 +81,7 @@ test.describe("Projects tab", () => {
       // Reload and confirm the row survives a real GET /projects fetch,
       // not just the client-side state from the POST response.
       await page.reload();
-      await page.getByRole("button", { name: "Projects", exact: true }).click();
+      await page.getByRole("link", { name: "Projects", exact: true }).click();
       await expect(page.locator("#projectsList .fleet-row", { hasText: expectedName })).toBeVisible();
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -78,7 +92,7 @@ test.describe("Projects tab", () => {
     const dir = await tmp("notgit");
     try {
       await page.goto("/board");
-      await page.getByRole("button", { name: "Projects", exact: true }).click();
+      await page.getByRole("link", { name: "Projects", exact: true }).click();
 
       await page.locator("#projLocalPath").fill(dir);
       // Leave "git init if needed" unchecked — addLocalProject rejects
@@ -105,7 +119,7 @@ test.describe("Projects tab", () => {
       git(["init", "--bare", "-q"], bareDir);
 
       await page.goto("/board");
-      await page.getByRole("button", { name: "Projects", exact: true }).click();
+      await page.getByRole("link", { name: "Projects", exact: true }).click();
 
       await page.locator("#projCloneUrl").fill(url);
       await page.locator("#projCloneName").fill(name);
@@ -148,7 +162,7 @@ test.describe("Projects tab", () => {
 
   test("cloning an unreachable URL renders the endpoint's error inline", async ({ page }) => {
     await page.goto("/board");
-    await page.getByRole("button", { name: "Projects", exact: true }).click();
+    await page.getByRole("link", { name: "Projects", exact: true }).click();
 
     // A file:// URL pointing at a path that was never `git init`'d —
     // git clone fails immediately with no network involved.
@@ -173,7 +187,7 @@ test.describe("Projects tab", () => {
       const created = await page.request.post("/projects/local", { data: { path: dir, initGit: false } });
       expect(created.status()).toBe(201);
 
-      await page.getByRole("button", { name: "Projects", exact: true }).click();
+      await page.getByRole("link", { name: "Projects", exact: true }).click();
       const row = page.locator("#projectsList .fleet-row", { hasText: name });
       await expect(row).toBeVisible();
 
@@ -200,7 +214,7 @@ test.describe("Projects tab", () => {
       const created = await page.request.post("/projects/local", { data: { path: dir, initGit: false } });
       expect(created.status()).toBe(201);
 
-      await page.getByRole("button", { name: "Projects", exact: true }).click();
+      await page.getByRole("link", { name: "Projects", exact: true }).click();
       const row = page.locator("#projectsList .fleet-row", { hasText: name });
       await expect(row).toBeVisible();
 
@@ -262,7 +276,7 @@ test.describe("Project switcher", () => {
       await page.goto("/board");
       await page.locator("#projectSwitcher").selectOption({ value: dir });
 
-      await page.getByRole("button", { name: "New task" }).click();
+      await page.getByRole("button", { name: "+ New", exact: true }).click();
       await expect(page.locator("#ntRepo")).toHaveValue(dir);
       await expect(page.locator("#ntRepo")).toHaveAttribute("readonly", "");
       await expect(page.locator("#ntRepoProjectHint")).toBeVisible();

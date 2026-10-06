@@ -65,8 +65,8 @@ test.describe("Memory tab", () => {
   test("switches from Board, shows the empty state (no curation has run in this fixture server), and back", async ({ page }) => {
     await page.goto("/board");
 
-    await page.getByRole("button", { name: "Memory", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Memory", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("link", { name: "Memory", exact: true }).click();
+    await expect(page.getByRole("link", { name: "Memory", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#memoryPanel")).toBeVisible();
     await expect(page.locator("#boardPanel")).toBeHidden();
     await expect(page.locator("#newTaskPanel")).toBeHidden();
@@ -83,7 +83,7 @@ test.describe("Memory tab", () => {
     await expect(page.locator("#memoryHistory")).toContainText("No curation runs yet.");
     await expect(page.locator("#memoryHistory details")).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Board" }).click();
+    await page.getByRole("link", { name: "Board", exact: true }).click();
     await expect(page.locator("#boardPanel")).toBeVisible();
     await expect(page.locator("#memoryPanel")).toBeHidden();
   });
@@ -99,7 +99,7 @@ test.describe("Memory tab", () => {
     });
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "Memory", exact: true }).click();
+    await page.getByRole("link", { name: "Memory", exact: true }).click();
 
     await expect(page.locator("#memoryHistory details")).toHaveCount(1);
     const entry = page.locator("#memoryHistory details").first();
@@ -125,7 +125,7 @@ test.describe("Memory tab", () => {
     await request.post(`/tasks/${taskId}/result`, { data: { agentId: "memory-curator", ok: true, summary: content } });
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "Memory", exact: true }).click();
+    await page.getByRole("link", { name: "Memory", exact: true }).click();
 
     const topics = page.locator("#memoryContent details.memory-topic");
     await expect(topics).toHaveCount(2);
@@ -157,10 +157,11 @@ test.describe("Board view", () => {
     await expect(badge).toHaveAttribute("title", /pkg 0\.0\.0/);
   });
 
-  test("is the default view and shows status stats, task-by-status, and both fleet boxes", async ({ page }) => {
+  test("is the default view and shows task-by-status and status stats; both fleet boxes are on Agents & skills", async ({ page }) => {
     await page.goto("/board");
 
-    await expect(page.getByRole("button", { name: "Board" })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("link", { name: "Board", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("button", { name: "Lanes", exact: true })).toHaveAttribute("aria-pressed", "true");
     await expect(page.locator("#boardPanel")).toBeVisible();
     await expect(page.locator("#newTaskPanel")).toBeHidden();
 
@@ -172,10 +173,17 @@ test.describe("Board view", () => {
       "Inbox", "Ready", "Running", "Dispatched", "Pending review", "Reviewing", "Review", "Escalated", "Done", "Failed", "No match", "Superseded",
     ]);
 
-    // Task-by-status sits above the fleet boxes.
+    // Task-by-status comes first; the fleet is setup, not work, so it's
+    // off the Board view entirely (docs/SDD-ui-cleanup.md §3.1, T6).
     const kanbanTop = await page.locator("#kanbanBody").boundingBox();
-    const agentsTop = await page.locator("#agentsBox").boundingBox();
-    expect(kanbanTop!.y).toBeLessThan(agentsTop!.y);
+    const statsTop = await page.locator("#stats").boundingBox();
+    expect(kanbanTop!.y).toBeLessThan(statsTop!.y);
+    await expect(page.locator("#agentsBox")).toBeHidden();
+    await expect(page.locator("#skillsBox")).toBeHidden();
+
+    await page.getByRole("link", { name: "Agents & skills", exact: true }).click();
+    await expect(page).toHaveURL(/#\/setup\/agents$/);
+    await expect(page.locator("#boardPanel")).toBeHidden();
 
     // Fleet boxes are populated from the real manifest, not a mock.
     await expect(page.locator("#agentsBox")).toContainText("triager");
@@ -221,7 +229,7 @@ test.describe("Board view", () => {
     });
     await request.post(`/tasks/${task.id}/move`, { data: { status: "running" } });
 
-    await page.goto("/board");
+    await page.goto("/board#/setup/agents");
     await expect(busyRow().locator(".active-dot")).toBeVisible();
     await expect(idleRow().locator(".active-dot")).toHaveCount(0);
 
@@ -788,14 +796,23 @@ test.describe("Board view", () => {
   // every other test in this file reads from. This test only exercises
   // open/close/render — real DOM wiring a syntax check can't catch —
   // without asserting on, or mutating, machine-specific harness content.
-  test("Manage harnesses panel opens from the strip, renders coherently, and closes via X/Escape/overlay", async ({ page }) => {
+  // Was a slide-in panel opened from the board header; it's now the
+  // Harnesses setup page (docs/SDD-ui-cleanup.md §3.1), so "closes" means
+  // navigating away (sidebar or Back), not X/Escape/overlay.
+  test("Harnesses page opens from the sidebar, renders coherently, and hides when you navigate away or go Back", async ({ page }) => {
     await page.goto("/board");
 
     const panel = page.locator("#harnessPanel");
     await expect(panel).toBeHidden();
 
-    await page.locator("#hmOpenBtn").click();
+    await page.getByRole("link", { name: "Harnesses", exact: true }).click();
+    await expect(page).toHaveURL(/#\/setup\/harnesses$/);
     await expect(panel).toBeVisible();
+    // The "Available now" strip moved here with it: either real pills or
+    // its explicit empty state.
+    const pillCount = await page.locator("#harnessStrip .harness-pill").count();
+    const stripEmptyCount = await page.locator("#harnessStrip .harness-strip-empty").count();
+    expect(pillCount + stripEmptyCount).toBeGreaterThan(0);
     // Whatever this machine's real harnesses.yaml/auth state produces,
     // the panel renders either real rows or the explicit empty state —
     // never a blank list, which would mean rendering silently failed.
@@ -809,18 +826,15 @@ test.describe("Board view", () => {
       expect(["Enable", "Disable"]).toContain(label);
     }
 
-    await page.keyboard.press("Escape");
+    await page.getByRole("link", { name: "Board", exact: true }).click();
     await expect(panel).toBeHidden();
+    await expect(page.locator("#boardPanel")).toBeVisible();
 
-    await page.locator("#hmOpenBtn").click();
+    await page.goBack();
     await expect(panel).toBeVisible();
-    await page.locator("#hmClose").click();
+    await page.goBack();
     await expect(panel).toBeHidden();
-
-    await page.locator("#hmOpenBtn").click();
-    await expect(panel).toBeVisible();
-    await page.locator("#hmOverlay").click({ position: { x: 5, y: 5 } });
-    await expect(panel).toBeHidden();
+    await expect(page.locator("#boardPanel")).toBeVisible();
   });
 
   // Unlike the panel-render test above, this one *does* mutate the real
@@ -833,8 +847,7 @@ test.describe("Board view", () => {
   // harness-manifest.ts round trip, including that the fixture's leading
   // comment block survives the yaml Document-API rewrite.
   test("selecting a model for a harness persists it to harnesses.yaml (comments preserved) and reflects after refetch", async ({ page }) => {
-    await page.goto("/board");
-    await page.locator("#hmOpenBtn").click();
+    await page.goto("/board#/setup/harnesses");
 
     const panel = page.locator("#harnessPanel");
     await expect(panel).toBeVisible();
@@ -859,9 +872,9 @@ test.describe("Board view", () => {
 
     // Reload — a fresh GET /harnesses on page load, not the optimistic
     // client-side render from the fetch above — still shows the
-    // persisted value.
+    // persisted value. The hash keeps the reload on this page.
     await page.reload();
-    await page.locator("#hmOpenBtn").click();
+    await expect(page.locator("#harnessPanel")).toBeVisible();
     await expect(page.locator("#hmModel-e2e-fixture-harness")).toHaveValue("fixture-model-a");
   });
 
@@ -880,7 +893,7 @@ test.describe("Board view", () => {
     const fixture = harnesses.find((h: { id: string }) => h.id === "e2e-fixture-harness");
     expect(fixture).toMatchObject({ maxConcurrent: 2 });
 
-    await page.goto("/board");
+    await page.goto("/board#/setup/agents");
     const rows = page.locator("#agentsBox .fleet-row");
     await expect(rows.first()).toBeVisible();
     const agentRows = agents.filter((a) => a.kind === "agent");
@@ -895,7 +908,7 @@ test.describe("Board view", () => {
       await expect(row.locator(".fleet-harnesses")).toHaveText(expected);
     }
 
-    await page.locator("#hmOpenBtn").click();
+    await page.getByRole("link", { name: "Harnesses", exact: true }).click();
     const fixtureRow = page.locator("#harnessPanel .hm-row").filter({ has: page.locator("#hmModel-e2e-fixture-harness") });
     const capacity = await page.evaluate(
       (h) => (window as unknown as { formatHarnessCapacity: (h: unknown) => string }).formatHarnessCapacity(h),
@@ -913,8 +926,7 @@ test.describe("Board view", () => {
   // appending one extra <option> and selecting it, which fires the exact
   // same real change listener/fetch/server round trip a live race would.
   test("an invalid model attempt surfaces the inline error and leaves harnesses.yaml untouched", async ({ page }) => {
-    await page.goto("/board");
-    await page.locator("#hmOpenBtn").click();
+    await page.goto("/board#/setup/harnesses");
 
     const panel = page.locator("#harnessPanel");
     await expect(panel).toBeVisible();
@@ -948,19 +960,20 @@ test.describe("Board view", () => {
     expect(after).toBe(before);
   });
 
-  // Mirrors the "Manage harnesses" open/close/render smoke test above,
-  // but for the sibling "Manage MCP servers" panel — this one *can*
-  // assert on specific content, unlike the harness panel's own
-  // deliberate abstention, because e2e/fixtures/mcp-servers.yaml is a
-  // disposable fixture this suite fully controls, not a developer's
-  // real machine-dependent harnesses.yaml.
-  test("Manage MCP servers panel opens from the strip, renders the fixture server and its tools, and closes via X/Escape/overlay", async ({ page }) => {
+  // Mirrors the Harnesses page open/render/navigate-away smoke test
+  // above, but for the sibling MCP servers page — this one *can* assert
+  // on specific content, unlike the harness page's own deliberate
+  // abstention, because e2e/fixtures/mcp-servers.yaml is a disposable
+  // fixture this suite fully controls, not a developer's real
+  // machine-dependent harnesses.yaml.
+  test("MCP servers page opens from the sidebar, renders the fixture server and its tools, and hides when you navigate away or go Back", async ({ page }) => {
     await page.goto("/board");
 
     const panel = page.locator("#mcpPanel");
     await expect(panel).toBeHidden();
 
-    await page.locator("#mcpOpenBtn").click();
+    await page.getByRole("link", { name: "MCP servers", exact: true }).click();
+    await expect(page).toHaveURL(/#\/setup\/mcp$/);
     await expect(panel).toBeVisible();
 
     const serverRow = panel.locator(".hm-row", { hasText: "E2E Fixture MCP Server" });
@@ -974,18 +987,15 @@ test.describe("Board view", () => {
     await expect(panel.locator(".hm-row", { hasText: "read_thing" }).locator(".hm-toggle")).toHaveText("Require approval");
     await expect(panel.locator(".hm-row", { hasText: "write_thing" }).locator(".hm-toggle")).toHaveText("Allow auto");
 
-    await page.keyboard.press("Escape");
+    await page.getByRole("link", { name: "Harnesses", exact: true }).click();
     await expect(panel).toBeHidden();
+    await expect(page.locator("#harnessPanel")).toBeVisible();
 
-    await page.locator("#mcpOpenBtn").click();
+    await page.goBack();
     await expect(panel).toBeVisible();
-    await page.locator("#mcpClose").click();
+    await page.goBack();
     await expect(panel).toBeHidden();
-
-    await page.locator("#mcpOpenBtn").click();
-    await expect(panel).toBeVisible();
-    await page.locator("#mcpOverlay").click({ position: { x: 5, y: 5 } });
-    await expect(panel).toBeHidden();
+    await expect(page.locator("#boardPanel")).toBeVisible();
   });
 
   // Unlike the render-only test above, this one mutates real state —
@@ -998,8 +1008,7 @@ test.describe("Board view", () => {
   // this project's own lessons after a past bug shipped a button wired
   // to nothing.
   test("disabling the fixture MCP server fires the real POST /mcp-servers/:id/disable request and persists", async ({ page }) => {
-    await page.goto("/board");
-    await page.locator("#mcpOpenBtn").click();
+    await page.goto("/board#/setup/mcp");
 
     const panel = page.locator("#mcpPanel");
     await expect(panel).toBeVisible();
@@ -1037,8 +1046,7 @@ test.describe("Board view", () => {
   // GET /mcp-servers (i.e. it actually persisted to mcp-servers.yaml,
   // not just an optimistic client-side render).
   test("changing a tool's trust fires the real POST .../tools/:tool/trust request with the right body, and persists across reload", async ({ page }) => {
-    await page.goto("/board");
-    await page.locator("#mcpOpenBtn").click();
+    await page.goto("/board#/setup/mcp");
 
     const panel = page.locator("#mcpPanel");
     const toolRow = panel.locator(".hm-row", { hasText: "read_thing" });
@@ -1064,7 +1072,7 @@ test.describe("Board view", () => {
     // client-side render from the click above — still shows the
     // persisted value.
     await page.reload();
-    await page.locator("#mcpOpenBtn").click();
+    await expect(page.locator("#mcpPanel")).toBeVisible();
     await expect(page.locator("#mcpPanel .hm-row", { hasText: "read_thing" }).locator(".hm-toggle")).toHaveText("Allow auto");
 
     // Flip it back so this test doesn't leave the fixture mutated for
@@ -1088,8 +1096,7 @@ test.describe("Board view", () => {
   // fixture server does (see e2e/fixtures/mcp-servers.yaml's own
   // comment) — deterministically reachable on every machine and in CI.
   test("adding a new MCP server via the panel's form posts the exact request body and shows the new row", async ({ page }) => {
-    await page.goto("/board");
-    await page.locator("#mcpOpenBtn").click();
+    await page.goto("/board#/setup/mcp");
 
     const panel = page.locator("#mcpPanel");
     await expect(panel).toBeVisible();
@@ -1120,7 +1127,7 @@ test.describe("Board view", () => {
     // Reload and confirm the new server survives a real GET
     // /mcp-servers, not just the optimistic client-side render.
     await page.reload();
-    await page.locator("#mcpOpenBtn").click();
+    await expect(page.locator("#mcpPanel")).toBeVisible();
     await expect(page.locator("#mcpPanel .hm-row", { hasText: "E2E New Stdio Server" })).toBeVisible();
 
     const onDisk = await readFile(MCP_SERVERS_FIXTURE_PATH, "utf8");
@@ -1128,8 +1135,7 @@ test.describe("Board view", () => {
   });
 
   test("submitting the add-server form with a blank required field shows an inline error and sends no request", async ({ page }) => {
-    await page.goto("/board");
-    await page.locator("#mcpOpenBtn").click();
+    await page.goto("/board#/setup/mcp");
 
     const panel = page.locator("#mcpPanel");
     await panel.locator("#mcpAddId").fill("e2e-incomplete");
@@ -1147,8 +1153,7 @@ test.describe("Board view", () => {
   });
 
   test("submitting the add-server form with an id that's already registered renders the endpoint's error inline", async ({ page }) => {
-    await page.goto("/board");
-    await page.locator("#mcpOpenBtn").click();
+    await page.goto("/board#/setup/mcp");
 
     const panel = page.locator("#mcpPanel");
     await panel.locator("#mcpAddId").fill("e2e-fixture-mcp");
@@ -1233,8 +1238,12 @@ test.describe("Swimlanes view", () => {
     await request.post("/tasks", { data: { title, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Swimlanes", exact: true })).toHaveAttribute("aria-pressed", "true");
+    // Swimlanes is the Board page's "By feature" view (docs/SDD-ui-cleanup.md §3.1).
+    await page.getByRole("button", { name: "By feature", exact: true }).click();
+    await expect(page.getByRole("button", { name: "By feature", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Lanes", exact: true })).toHaveAttribute("aria-pressed", "false");
+    await expect(page).toHaveURL(/#\/board\/features$/);
+    await expect(page.getByRole("link", { name: "Board", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#swimlanesPanel")).toBeVisible();
     await expect(page.locator("#boardPanel")).toBeHidden();
 
@@ -1244,7 +1253,10 @@ test.describe("Swimlanes view", () => {
     await expect(lane.locator(".slcard")).toHaveCount(1);
     await expect(lane.locator(".slcard .sl-relations")).toHaveCount(0); // nothing to tag — no parent, no dependsOn
 
-    await page.getByRole("button", { name: "Board", exact: true }).click();
+    // Reload keeps the By feature view (it's in the hash), then Lanes goes back.
+    await page.reload();
+    await expect(page.locator("#swimlanesPanel")).toBeVisible();
+    await page.getByRole("button", { name: "Lanes", exact: true }).click();
     await expect(page.locator("#boardPanel")).toBeVisible();
     await expect(page.locator("#swimlanesPanel")).toBeHidden();
   });
@@ -1256,7 +1268,7 @@ test.describe("Swimlanes view", () => {
     await request.post(`/tasks/${originalId}/result`, { data: { agentId: "implementer", ok: true, summary: "did the thing" } });
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+    await page.getByRole("button", { name: "By feature", exact: true }).click();
 
     const lane = page.locator(".swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
     await expect(lane.locator(".swimlane-head .sl-count")).toHaveText("2 cards");
@@ -1276,7 +1288,7 @@ test.describe("Swimlanes view", () => {
     await request.post("/tasks", { data: { title, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo", dependsOn: [depId] } });
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+    await page.getByRole("button", { name: "By feature", exact: true }).click();
 
     // Two separate lanes — dependsOn is a blocking relationship, not a
     // lineage one, so it doesn't merge the two into the same lane.
@@ -1306,7 +1318,7 @@ test.describe("Swimlanes view", () => {
     await request.post(`/tasks/${reviewer.id}/move`, { data: { status: "running" } });
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+    await page.getByRole("button", { name: "By feature", exact: true }).click();
 
     const laneHeads = page.locator("#swimlanesBody .swimlane-head");
     const idleIndex = await laneHeads.filter({ hasText: idleTitle }).evaluate((el) =>
@@ -1352,12 +1364,12 @@ test.describe("Archive tab", () => {
     const inboxStatTile = page.locator("#stats .stat", { has: page.locator(".l", { hasText: "Inbox" }) });
     await expect(inboxStatTile.locator(".n")).toHaveText(String(realInboxCount));
 
-    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+    await page.getByRole("button", { name: "By feature", exact: true }).click();
     await expect(page.locator("#swimlanesBody").getByText(title, { exact: true })).toHaveCount(0);
 
     // Present in the Archive tab, grouped into its own lane.
-    await page.getByRole("button", { name: "Archive", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Archive", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await page.getByRole("link", { name: "Archive", exact: true }).click();
+    await expect(page.getByRole("link", { name: "Archive", exact: true })).toHaveAttribute("aria-current", "page");
     await expect(page.locator("#archivePanel")).toBeVisible();
     const archiveLane = page.locator("#archiveBody .swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
     await expect(archiveLane).toBeVisible();
@@ -1374,7 +1386,7 @@ test.describe("Archive tab", () => {
     await request.post(`/tasks/${originalId}/result`, { data: { agentId: "implementer", ok: true, summary: "did the thing" } });
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+    await page.getByRole("button", { name: "By feature", exact: true }).click();
 
     const lane = page.locator(".swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
     await expect(lane.locator(".slcard")).toHaveCount(2);
@@ -1387,7 +1399,7 @@ test.describe("Archive tab", () => {
     // (hidden) in the Archive tab's own #archiveBody.
     await expect(page.locator("#swimlanesBody .swimlane", { has: page.locator(".swimlane-head", { hasText: title }) })).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Archive", exact: true }).click();
+    await page.getByRole("link", { name: "Archive", exact: true }).click();
     const archiveLane = page.locator("#archiveBody .swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
     await expect(archiveLane).toBeVisible();
     await expect(archiveLane.locator(".slcard")).toHaveCount(2);
@@ -1409,7 +1421,7 @@ test.describe("Archive tab", () => {
     await request.post(`/tasks/${originalId}/archive`);
 
     await page.goto("/board");
-    await page.getByRole("button", { name: "Archive", exact: true }).click();
+    await page.getByRole("link", { name: "Archive", exact: true }).click();
     const archiveLane = page.locator("#archiveBody .swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
     await expect(archiveLane.locator(".slcard")).toHaveCount(2);
 
@@ -1423,7 +1435,132 @@ test.describe("Archive tab", () => {
 
     // The restored reviewer card is live again in Swimlanes — its own
     // lane, since its lineage root (the implementer) is still archived.
-    await page.getByRole("button", { name: "Swimlanes", exact: true }).click();
+    // The Lanes / By feature switch lives on the Board page only.
+    await page.getByRole("link", { name: "Board", exact: true }).click();
+    await page.getByRole("button", { name: "By feature", exact: true }).click();
     await expect(page.locator("#swimlanesBody").getByText(`Review: ${title}`, { exact: true })).toBeVisible();
+  });
+});
+
+// docs/SDD-ui-cleanup.md §3.1 (card A1): sidebar + top bar + Setup pages.
+// Targets T1 (≤ 120px of controls above the first board card) and T6 (no
+// setup items on the Board view), both measured at 1440x900 as §2 asks.
+test.describe("Shell and navigation", () => {
+  const SIDEBAR_PAGES: { name: string; hash: string; page: string }[] = [
+    { name: "Archive", hash: "#/archive", page: "#archivePanel" },
+    { name: "Agents & skills", hash: "#/setup/agents", page: "#agentsPage" },
+    { name: "Harnesses", hash: "#/setup/harnesses", page: "#harnessPanel" },
+    { name: "MCP servers", hash: "#/setup/mcp", page: "#mcpPanel" },
+    { name: "Projects", hash: "#/setup/projects", page: "#projectsPanel" },
+    { name: "Memory", hash: "#/setup/memory", page: "#memoryPanel" },
+    { name: "Settings", hash: "#/setup/settings", page: "#settingsPage" },
+    { name: "Board", hash: "#/board", page: "#boardPage" },
+  ];
+
+  test.describe("at 1440x900", () => {
+    test.use({ viewport: { width: 1440, height: 900 } });
+
+    test("T1: the first board card starts within 120px of the top of the page", async ({ page, request }) => {
+      await request.post("/tasks", { data: { title: `T1 measure ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+      await page.goto("/board");
+      const first = page.locator("#kanbanBody .kcard").first();
+      await expect(first).toBeVisible();
+      const box = await first.boundingBox();
+      // Logged so the measured value shows up in the run output, not
+      // just pass/fail.
+      console.log(`T1: first board card top = ${box!.y}px (goal ≤ 120)`);
+      expect(box!.y).toBeLessThanOrEqual(120);
+      await page.screenshot({ path: "test-results/ui-a1/board-1440x900.png" });
+    });
+
+    test("T6: no setup items on the Board view", async ({ page }) => {
+      await page.goto("/board");
+      await expect(page.locator("#boardPanel")).toBeVisible();
+      // Agents, Skills, Projects summary, harness chips (SDD §2 T6), plus
+      // the theme toggle and the MCP list the old header also carried.
+      for (const sel of ["#agentsBox", "#skillsBox", "#projectSummaryBox", "#harnessStrip", "#hmList", "#mcpList", "#themeToggle"]) {
+        await expect(page.locator(sel), sel).toBeHidden();
+      }
+      // The old header buttons and page title are gone, not just hidden.
+      await expect(page.locator("#hmOpenBtn")).toHaveCount(0);
+      await expect(page.locator("#mcpOpenBtn")).toHaveCount(0);
+      await expect(page.locator("h1")).toHaveCount(0);
+    });
+
+    test("every sidebar link shows exactly its page, marks itself current, and updates the hash", async ({ page }) => {
+      await page.goto("/board");
+      for (const { name, hash, page: pageSel } of SIDEBAR_PAGES) {
+        const link = page.getByRole("link", { name, exact: true });
+        await link.click();
+        await expect(page).toHaveURL(new RegExp(hash.replace(/[/]/g, "\\/") + "$"));
+        await expect(page.locator(pageSel)).toBeVisible();
+        await expect(page.locator("main [data-page]:visible")).toHaveCount(1);
+        await expect(link).toHaveAttribute("aria-current", "page");
+        await expect(page.locator('#sidebar [aria-current="page"]')).toHaveCount(1);
+        // The Lanes / By feature switch only belongs to the Board page.
+        await expect(page.locator("#boardViewToggle")).toBeVisible({ visible: name === "Board" });
+      }
+    });
+  });
+
+  test("reload keeps the page, and back/forward walk the visited pages", async ({ page }) => {
+    await page.goto("/board#/setup/memory");
+    await expect(page.locator("#memoryPanel")).toBeVisible();
+    await page.reload();
+    await expect(page.locator("#memoryPanel")).toBeVisible();
+
+    await page.getByRole("link", { name: "Harnesses", exact: true }).click();
+    await page.getByRole("button", { name: "+ New", exact: true }).click();
+    await expect(page.locator("#newTaskPanel")).toBeVisible();
+    await expect(page.getByRole("button", { name: "+ New", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(page.locator('#sidebar [aria-current="page"]')).toHaveCount(0);
+
+    await page.goBack();
+    await expect(page.locator("#harnessPanel")).toBeVisible();
+    await page.goBack();
+    await expect(page.locator("#memoryPanel")).toBeVisible();
+    await page.goForward();
+    await expect(page.locator("#harnessPanel")).toBeVisible();
+  });
+
+  test("an unknown hash lands on the board and rewrites the URL", async ({ page }) => {
+    await page.goto("/board#/no-such-page");
+    await expect(page.locator("#boardPanel")).toBeVisible();
+    await expect(page).toHaveURL(/\/board#\/board$/);
+    await expect(page.getByRole("link", { name: "Board", exact: true })).toHaveAttribute("aria-current", "page");
+  });
+
+  test("Pipelines in the sidebar links out to the editor until it gets its own page", async ({ page }) => {
+    await page.goto("/board");
+    await expect(page.getByRole("link", { name: "Pipelines", exact: true })).toHaveAttribute("href", "/pipelines/edit");
+  });
+
+  test("below 1100px the sidebar collapses to icons, and its links keep their names", async ({ page }) => {
+    await page.setViewportSize({ width: 1000, height: 800 });
+    await page.goto("/board");
+    const sidebar = await page.locator("#sidebar").boundingBox();
+    expect(sidebar!.width).toBeLessThanOrEqual(64);
+    const label = await page.locator('#sidebar a[data-route="setup/harnesses"] .nav-label').boundingBox();
+    expect(label!.width).toBeLessThanOrEqual(1);
+    // Still reachable by name (screen readers, getByRole), not just by icon.
+    await page.getByRole("link", { name: "Harnesses", exact: true }).click();
+    await expect(page.locator("#harnessPanel")).toBeVisible();
+
+    await page.setViewportSize({ width: 1100, height: 800 });
+    await expect(async () => {
+      expect((await page.locator("#sidebar").boundingBox())!.width).toBeGreaterThan(150);
+    }).toPass();
+  });
+
+  test("no horizontal scroll at 1280px on any page", async ({ page, request }) => {
+    // A long unbroken title is the likeliest thing to push a page wide.
+    await request.post("/tasks", { data: { title: "x".repeat(300), body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    for (const { hash, page: pageSel } of [...SIDEBAR_PAGES, { name: "", hash: "#/board/features", page: "#swimlanesPanel" }, { name: "", hash: "#/new", page: "#newTaskPanel" }]) {
+      await page.goto("/board" + hash);
+      await expect(page.locator(pageSel)).toBeVisible();
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(overflow, hash).toBeLessThanOrEqual(0);
+    }
   });
 });

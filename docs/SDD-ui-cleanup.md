@@ -62,6 +62,27 @@ Still the single `board.html` and vanilla JS. No framework.
 - The sidebar collapses to icons below 1100px. No horizontal scroll at
   1280px.
 
+**A1 revision notes (as built).**
+- Routes live in `src/api/public/board-routes.js` (`BOARD_ROUTES`,
+  `parseBoardRoute`): `#/board`, `#/board/features` (By feature),
+  `#/archive`, `#/new`, `#/setup/{agents,harnesses,mcp,projects,memory,settings}`.
+  An empty hash is the board; an unknown hash falls back to the board
+  and is rewritten to `#/board`. Each page is a `<section data-page>`
+  in `<main>`; `test/board-routes.test.ts` and `test/board-html.test.ts`
+  keep the table, the sidebar links and the markup in sync.
+- The Lanes / By feature switch sits in the top bar, shown only on the
+  Board page, rather than in a toolbar row inside the page. A row inside
+  the page costs ~40px and pushes the first card past T1's 120px.
+- The count tiles moved below the kanban instead of being deleted, so
+  A1 doesn't do A2's job; A2 still removes them.
+- Harness and MCP pages keep the old panel element ids (`#harnessPanel`,
+  `#mcpPanel`, `#hmList`, `#mcpList`, `#mcpAddForm`), so their render
+  code and endpoints are unchanged. The "Available now" harness strip
+  moved to the top of the Harnesses page.
+- The Projects summary renders only while the Projects page is showing.
+  That also stops the board from requesting a project ELI5 (an LLM call)
+  on every page load.
+
 ### 3.2 Board: "Needs you" and four lanes (card A2)
 
 - **"Needs you" strip** at the top. It holds every card whose status is
