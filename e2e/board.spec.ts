@@ -1628,7 +1628,7 @@ test.describe("Shell and navigation", () => {
 // needing a human in one place), measured at 1440x900 as §2 asks.
 test.describe("Needs you and four lanes", () => {
   const NEEDS_YOU_STATUSES = ["review", "escalated", "failed", "no-match"];
-  type ApiTask = { id: string; title: string; status: string; supersededBy?: string; archivedAt?: string };
+  type ApiTask = { id: string; title: string; status: string; supersededBy?: string; archivedAt?: string; pipelineRunId?: string };
 
   test.describe("at 1440x900", () => {
     test.use({ viewport: { width: 1440, height: 900 } });
@@ -1653,20 +1653,30 @@ test.describe("Needs you and four lanes", () => {
       await expect(page.locator(`#needsYou .kcard[data-task-id="${noMatchId}"]`)).toBeVisible();
 
       // Every card the API says needs a human, compared against what the
-      // strip shows. Polled: other specs share this server.
-      const expected = async () =>
-        ((await (await request.get("/tasks")).json()) as ApiTask[])
-          .filter((t) => NEEDS_YOU_STATUSES.includes(t.status) && !t.supersededBy && !t.archivedAt)
-          .map((t) => t.id)
-          .sort();
+      // strip shows. Polled: other specs share this server. A pipeline
+      // step never draws on its own (docs/SDD-ui-cleanup.md §4.1, B1): it
+      // counts as its run's card, unless its root is gone or it was
+      // unarchived out of an archived run.
+      const expected = async () => {
+        const all = (await (await request.get("/tasks")).json()) as ApiTask[];
+        const byId = new Map(all.map((t) => [t.id, t]));
+        const out = new Set<string>();
+        for (const t of all) {
+          if (!NEEDS_YOU_STATUSES.includes(t.status) || t.supersededBy || t.archivedAt) continue;
+          const root = t.pipelineRunId ? byId.get(t.pipelineRunId) : undefined;
+          out.add(root && !root.archivedAt ? root.id : t.id);
+        }
+        return [...out].sort();
+      };
       const shown = async () => (await page.locator("#needsYou .kcard").evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.taskId!))).sort();
       await expect.poll(async () => JSON.stringify(await shown()) === JSON.stringify(await expected())).toBe(true);
       const ids = await shown();
       console.log(`T4: ${ids.length}/${(await expected()).length} cards needing a human shown in Needs you (goal 100%)`);
       await expect(page.locator("#needsYouCount")).toHaveText(`(${ids.length})`);
 
-      // None of them also sits in a lane.
-      const inLanes = await page.locator("#kanbanBody .kcard").evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.taskId!));
+      // None of them also sits in a lane, except a run whose own status
+      // is fine but has a step needing a human: §4.1 shows it in both.
+      const inLanes = await page.locator("#kanbanBody .kcard:not(.run-card)").evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.taskId!));
       expect(inLanes.filter((id) => ids.includes(id))).toEqual([]);
 
       const reason = (id: string) => page.locator(`#needsYou .kcard[data-task-id="${id}"] .kreason`);

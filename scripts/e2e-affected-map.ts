@@ -114,9 +114,15 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
-      "board-pipelines.js/.d.ts is only the Pipelines page's rows — verified (grep) pipelineRows/formatStepCount are called only by board.html's renderPipelinesPage (#pipelinesList), and only pipelines.spec.ts asserts on that list (pipeline-editor.spec.ts only follows the static #newPipelineLink).",
+      "board-pipelines.js/.d.ts was only the Pipelines page's rows, but since B1 its isPipelineRunRoot also decides which board cards are run cards (board-runs.js, board.html's isRunRootCard), so it reaches every spec that finds a card on /board — the same set as a non-theme board.html change.",
     match: (p) => p === "src/api/public/board-pipelines.js" || p === "src/api/public/board-pipelines.d.ts",
-    resolve: () => ["pipelines.spec.ts"],
+    resolve: () => BOARD_HTML_DEFAULT_SPECS,
+  },
+  {
+    description:
+      "board-runs.js/.d.ts folds pipeline step cards into their run's card (partitionRunBoard), and renderKanban draws every board card through it, so every spec that finds a card on /board depends on it — the same set as a non-theme board.html change.",
+    match: (p) => p === "src/api/public/board-runs.js" || p === "src/api/public/board-runs.d.ts",
+    resolve: () => BOARD_HTML_DEFAULT_SPECS,
   },
   {
     description:

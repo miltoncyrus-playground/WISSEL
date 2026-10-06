@@ -87,10 +87,12 @@ test.describe("Pipelines page", () => {
     await expect(last.locator(".pl-last-input")).toHaveText("second");
     await expect(last.locator(".pl-last-open")).toHaveAttribute("title", `Open the last run: ${second.title}`);
 
+    // Since B1 (docs/SDD-ui-cleanup.md §4.1) a run opens in the run
+    // drawer, the same place its board card leads.
     await last.locator(".pl-last-open").click();
-    await expect(page.locator("#taskDrawer")).toBeVisible();
-    await expect(page.locator("#tdTitle")).toHaveText(second.title);
-    await expect(page.locator("#tdDescription")).toHaveText("second");
+    await expect(page.locator("#runDrawer")).toBeVisible();
+    await expect(page.locator("#rdTitle")).toHaveText(second.title);
+    await expect(page.locator("#rdInput")).toHaveText("second");
   });
 
   // T3: Pipelines (1), Run (2), Start run (3). Repo and input are typed,
@@ -203,5 +205,255 @@ test.describe("Pipelines page", () => {
     await page.route("**/pipelines", (route) => route.fulfill({ status: 500, body: "boom" }));
     await page.goto("/board#/pipelines");
     await expect(page.locator("#pipelinesList")).toHaveText("Failed to load: GET /pipelines failed: HTTP 500");
+  });
+});
+
+// docs/SDD-ui-cleanup.md §4.1 (card B1). Target T5 (§2): one board card
+// per pipeline run, and clicking it shows the full run detail.
+
+// Two entry steps whose agents don't exist, joined into a third: the
+// real POST /pipelines/:id/run creates both step cards and fails each at
+// once (runStepAndSuccessors, src/core/pipeline-runner.ts: "references
+// unknown agent") without spawning anything, so the join never runs and
+// the root fails. No paid call.
+async function createTwoStepRunPipeline(request: APIRequestContext, name: string) {
+  const res = await request.post("/pipelines", {
+    data: {
+      name, description: "e2e: two entry steps with unknown agents",
+      graph: {
+        steps: [
+          { id: "a", name: "Plan", agentId: "e2e-no-such-planner", transition: "all" },
+          { id: "b", name: "Notify", agentId: "e2e-no-such-notifier", transition: "all" },
+          { id: "c", name: "Ship", agentId: "e2e-no-such-shipper", transition: "all", joinMode: "all" },
+        ],
+        edges: [{ id: "ac", from: "a", to: "c" }, { id: "bc", from: "b", to: "c" }],
+      },
+    },
+  });
+  expect(res.status()).toBe(201);
+  return (await res.json()) as { id: string; name: string };
+}
+
+type ApiTask = { id: string; title: string; status: string; pipelineRunId?: string };
+
+async function startTwoStepRun(request: APIRequestContext, label: string) {
+  const pipeline = await createTwoStepRunPipeline(request, unique(label));
+  const input = unique(`${label} input`);
+  const root = await runViaApi(request, pipeline.id, "/tmp/wissel-e2e-repo", input);
+  const tasks = (await (await request.get("/tasks")).json()) as ApiTask[];
+  const steps = tasks.filter((t) => t.pipelineRunId === root.id);
+  return { pipeline, input, root, steps };
+}
+
+const ids = (locator: Locator) => locator.evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.taskId!));
+
+test.describe("Pipeline runs on the board", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("T5: a real run is exactly one board card with step progress; its drawer lists every step and expands one into the full task detail", async ({ page, request }) => {
+    const { root, steps, input } = await startTwoStepRun(request, "T5 run");
+    expect(root.status).toBe("failed");
+    expect(steps.map((s) => s.status)).toEqual(["failed", "failed"]);
+    const [plan, notify] = steps as [ApiTask, ApiTask];
+
+    await page.goto("/board");
+    const card = page.locator(`#boardPage .kcard[data-task-id="${root.id}"]`);
+    await expect(card).toHaveCount(1);
+    for (const s of steps) await expect(page.locator(`#boardPage .kcard[data-task-id="${s.id}"]`), s.title).toHaveCount(0);
+    const runCards = await page.locator("#boardPage .kcard").evaluateAll(
+      (els, runIds) => els.filter((el) => runIds.includes((el as HTMLElement).dataset.taskId!)).length,
+      [root.id, ...steps.map((s) => s.id)],
+    );
+    console.log(`T5: ${runCards} board card(s) for a run with ${steps.length} step cards (goal 1)`);
+    expect(runCards).toBe(1);
+
+    // A failed run needs a human: it's in Needs you, naming the step.
+    await expect(page.locator(`#needsYou .kcard[data-task-id="${root.id}"]`)).toBeVisible();
+    await expect(card.locator(".kreason")).toHaveText("step Plan: failed (+1 more)");
+    await expect(card.locator(".run-progress")).toHaveText("0/3 steps · failed at: Plan");
+    expect(await card.locator(".run-bar .run-seg").evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.status))).toEqual(["failed", "failed", "pending"]);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/t5-run-card-1440x900.png` });
+
+    // The drawer: every step in order, the run's own card first, and it
+    // opens on the step the Needs you card is there for.
+    await card.click();
+    const drawer = page.locator("#runDrawer");
+    await expect(drawer).toBeVisible();
+    await expect(page.locator("#taskDrawer")).toBeHidden();
+    await expect(page.locator("#rdTitle")).toHaveText(root.title);
+    await expect(page.locator("#rdInput")).toHaveText(input);
+    await expect(page.locator("#rdProgress")).toHaveText("0/3 steps · failed at: Plan");
+    expect(await ids(page.locator("#rdSteps .rd-step"))).toEqual([root.id, plan.id, notify.id]);
+    const planRow = page.locator(`#rdSteps .rd-step[data-task-id="${plan.id}"]`);
+    const notifyRow = page.locator(`#rdSteps .rd-step[data-task-id="${notify.id}"]`);
+    await expect(planRow.locator(".rd-step-name")).toHaveText("Plan");
+    await expect(planRow.locator(".status-pill")).toHaveText("Failed");
+    await expect(planRow.locator('[data-fact="agent"] .mono')).toHaveText("e2e-no-such-planner");
+    await expect(notifyRow.locator('[data-fact="agent"] .mono')).toHaveText("e2e-no-such-notifier");
+    for (const fact of ["harness", "model", "duration", "cost"]) await expect(planRow.locator(`[data-fact="${fact}"] .mono`), fact).toHaveText("—");
+
+    // Expanded: the task drawer's own sections, moved here, not copied.
+    await expect(planRow).toHaveClass(/expanded/);
+    await expect(planRow.locator("#tdDetail")).toHaveCount(1);
+    await expect(page.locator("#tdDetail")).toHaveCount(1);
+    await expect(planRow.locator("#tdDescription")).toHaveText(input);
+    await expect(planRow.locator("#tdResult")).toContainText('references unknown agent "e2e-no-such-planner"');
+    await expect(planRow.locator("#tdDecision")).toHaveText("No routing decision recorded for this task yet.");
+    for (const name of ["Run now", "Archive", "View output", "View diff", "Delete"]) {
+      await expect(planRow.getByRole("button", { name, exact: true }), name).toBeVisible();
+    }
+    await planRow.getByRole("button", { name: "View diff", exact: true }).click();
+    await expect(planRow.locator("#tdDiffSection")).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/t5-run-drawer-1440x900.png` });
+
+    // Another step takes the detail over; the first collapses.
+    await notifyRow.locator(".rd-step-head").click();
+    await expect(notifyRow.locator("#tdDetail")).toHaveCount(1);
+    await expect(planRow).not.toHaveClass(/expanded/);
+    await expect(notifyRow.locator("#tdResult")).toContainText('references unknown agent "e2e-no-such-notifier"');
+    await expect(notifyRow.locator("#tdDiffSection")).toBeHidden();
+
+    // The run's own row holds the root card's detail and actions.
+    const rootRow = page.locator(`#rdSteps .rd-step[data-task-id="${root.id}"]`);
+    await rootRow.locator(".rd-step-head").click();
+    await expect(rootRow.locator("#tdDescription")).toHaveText(input);
+    await expect(rootRow.getByRole("button", { name: "Archive", exact: true })).toBeVisible();
+    await rootRow.locator(".rd-step-head").click();
+    await expect(rootRow).not.toHaveClass(/expanded/);
+    await expect(page.locator("#taskDrawer #tdDetail")).toHaveCount(1);
+
+    // Escape closes it and hands the detail back to the task drawer.
+    await notifyRow.locator(".rd-step-head").click();
+    await page.keyboard.press("Escape");
+    await expect(drawer).toBeHidden();
+    await expect(page.locator("#taskDrawer #tdDetail")).toHaveCount(1);
+    await expect(page.locator("#taskDrawer")).toBeHidden();
+
+    // A plain card still opens the plain task drawer, detail included.
+    const plainRes = await request.post("/tasks", { data: { title: unique("B1 plain"), body: "plain body", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+    const plainCard = (await plainRes.json()) as { id: string };
+    await page.locator(`#kanbanBody .kcard[data-task-id="${plainCard.id}"]`).click();
+    await expect(page.locator("#taskDrawer")).toBeVisible();
+    await expect(page.locator("#taskDrawer #tdDescription")).toHaveText("plain body");
+  });
+
+  test("Swimlanes and Archive group a run's steps under its root, and a step opens the run drawer on that step", async ({ page, request }) => {
+    const { root, steps } = await startTwoStepRun(request, "Lanes run");
+    const [, notify] = steps as [ApiTask, ApiTask];
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "By feature", exact: true }).click();
+    const lane = page.locator(`#swimlanesBody .swimlane[data-run-id="${root.id}"]`);
+    await expect(lane).toHaveCount(1);
+    await expect(lane.locator(".swimlane-head .run-progress")).toHaveText("0/3 steps · failed at: Plan");
+    await expect(lane.locator(".swimlane-head .run-seg")).toHaveCount(3);
+    await expect(lane.locator(".slcard")).toHaveCount(3);
+    await expect(lane).toContainText(`${notify.title}`);
+
+    await lane.locator(".slcard", { hasText: notify.title }).click();
+    await expect(page.locator("#runDrawer")).toBeVisible();
+    await expect(page.locator(`#rdSteps .rd-step[data-task-id="${notify.id}"]`)).toHaveClass(/expanded/);
+    await expect(page.locator(`#rdSteps .rd-step[data-task-id="${notify.id}"] #tdResult`)).toContainText("e2e-no-such-notifier");
+    await page.keyboard.press("Escape");
+
+    // Archiving the run cascades down parentTaskId to its steps
+    // (Board.archive): the board drops the run, Archive groups it the same way.
+    expect((await request.post(`/tasks/${root.id}/archive`)).status()).toBe(200);
+    await page.getByRole("link", { name: "Archive", exact: true }).click();
+    const archived = page.locator(`#archiveBody .swimlane[data-run-id="${root.id}"]`);
+    await expect(archived).toHaveCount(1);
+    await expect(archived.locator(".slcard")).toHaveCount(3);
+    await expect(archived.locator(".swimlane-head .run-progress")).toHaveText("0/3 steps · failed at: Plan");
+    await page.getByRole("link", { name: "Board", exact: true }).click();
+    await page.getByRole("button", { name: "Lanes", exact: true }).click();
+    for (const id of [root.id, ...steps.map((s) => s.id)]) await expect(page.locator(`#boardPage .kcard[data-task-id="${id}"]`)).toHaveCount(0);
+  });
+
+  // A pipeline step can't be parked on an MCP approval or escalated
+  // without a live agent run, so this one serves a known board (GET
+  // /tasks) and run summary, and intercepts the actions' endpoints.
+  test("a running run with steps needing a human sits in its lane and in Needs you; MCP approve and Retry work from the expanded step", async ({ page }) => {
+    const base = { body: "stub input", labels: [], repo: "/tmp/wissel-e2e-repo", pipelineId: "p-b1-stub" };
+    const step = (id: string, name: string, status: string, extra: Record<string, unknown> = {}) => ({
+      ...base, id, title: `B1 stub: ${name}`, status, parentTaskId: "r-b1", pipelineRunId: "r-b1", pipelineStepId: id, ...extra,
+    });
+    const board = [
+      { ...base, id: "r-b1", title: "Pipeline: B1 stub", status: "running" },
+      step("s-plan", "Plan", "done", { harness: "e2e-fixture-harness" }),
+      step("s-notify", "Notify", "review", { pendingMcpApproval: { server: "slack", tool: "send_message", args: { text: "hi" }, reason: "tell the team" } }),
+      step("s-fix", "Fix", "escalated", { pushbackCount: 5, escalationContext: "Attempt 1: still wrong" }),
+    ];
+    await page.route((url) => url.pathname === "/tasks", (route) => (route.request().method() === "GET" ? route.fulfill({ json: board }) : route.fallback()));
+    const summaryStep = (taskId: string, stepName: string, status: string, extra: Record<string, unknown> = {}) => ({
+      taskId, stepId: taskId, stepName, attempt: 1, agentId: null, harness: null, model: null, modelSource: null, status, durationMs: null, cost: null, ...extra,
+    });
+    await page.route("**/pipeline-runs/r-b1", (route) => route.fulfill({
+      json: {
+        root: board[0], pipeline: null, totalCost: 0.1234,
+        steps: [
+          summaryStep("s-plan", "Plan", "done", { agentId: "planner", harness: "e2e-fixture-harness", model: "claude-opus-5-5", modelSource: "output", durationMs: 65000, cost: 0.1234 }),
+          summaryStep("s-notify", "Notify", "review", { agentId: "triager", model: "claude-sonnet-5", modelSource: "config" }),
+          summaryStep("s-fix", "Fix", "escalated"),
+        ],
+      },
+    }));
+    const posted: { url: string; body: unknown }[] = [];
+    await page.route(/\/tasks\/s-(notify|fix)\/(mcp-approval\/approve|escalation\/retry)$/, (route) => {
+      posted.push({ url: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
+      return route.fulfill({ json: {} });
+    });
+
+    await page.goto("/board");
+    const laneCard = page.locator('#kanbanBody .kcol[data-lane="working"] .kcard[data-task-id="r-b1"]');
+    const needsCard = page.locator('#needsYou .kcard[data-task-id="r-b1"]');
+    await expect(laneCard).toHaveCount(1);
+    await expect(needsCard).toHaveCount(1);
+    await expect(page.locator("#boardPage .kcard[data-task-id^='s-']")).toHaveCount(0);
+    await expect(laneCard.locator(".run-progress")).toHaveText("1/3 steps · now: Fix");
+    await expect(needsCard.locator(".kreason")).toHaveText("step Notify: MCP approval: slack · send_message (+1 more)");
+    expect(await laneCard.locator(".run-seg").evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.status))).toEqual(["done", "review", "escalated"]);
+
+    // Needs you opens the run on the step waiting for the approval.
+    await needsCard.click();
+    const notifyRow = page.locator('#rdSteps .rd-step[data-task-id="s-notify"]');
+    await expect(notifyRow).toHaveClass(/expanded/);
+    await expect(page.locator("#rdTotal")).toHaveText("Total cost $0.1234");
+    const planRow = page.locator('#rdSteps .rd-step[data-task-id="s-plan"]');
+    await expect(planRow.locator('[data-fact="agent"] .mono')).toHaveText("planner");
+    await expect(planRow.locator('[data-fact="harness"] .mono')).toHaveText("e2e-fixture-harness");
+    await expect(planRow.locator('[data-fact="model"] .mono')).toHaveText("claude-opus-5-5");
+    await expect(planRow.locator('[data-fact="duration"] .mono')).toHaveText("1m 5s");
+    await expect(planRow.locator('[data-fact="cost"] .mono')).toHaveText("$0.1234");
+    await expect(notifyRow.locator('[data-fact="model"] .mono')).toHaveText("claude-sonnet-5 (config)");
+
+    await expect(notifyRow.locator("#tdMcpApproval")).toContainText("send_message");
+    page.on("dialog", (dialog) => dialog.accept());
+    await notifyRow.getByRole("button", { name: "Approve call", exact: true }).click();
+    await expect.poll(() => posted.map((p) => p.url)).toEqual(["/tasks/s-notify/mcp-approval/approve"]);
+
+    // Retry on the escalated step: the existing inline form, from here.
+    const fixRow = page.locator('#rdSteps .rd-step[data-task-id="s-fix"]');
+    await fixRow.locator(".rd-step-head").click();
+    await expect(fixRow.locator("#tdEscalation")).toContainText("still wrong");
+    await fixRow.getByRole("button", { name: "Retry", exact: true }).click();
+    await fixRow.locator("#tdRetryBody").fill("try the other approach");
+    await fixRow.locator("#tdRetrySend").click();
+    await expect.poll(() => posted.map((p) => p.url)).toEqual(["/tasks/s-notify/mcp-approval/approve", "/tasks/s-fix/escalation/retry"]);
+    expect(posted[1]!.body).toEqual({ body: "try the other approach" });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/t5-run-drawer-actions-1440x900.png` });
+  });
+
+  test("the page's own run logic agrees with what it drew (page globals, no import)", async ({ page, request }) => {
+    const { root, steps } = await startTwoStepRun(request, "Globals run");
+    await page.goto("/board");
+    await expect(page.locator(`#needsYou .kcard[data-task-id="${root.id}"]`)).toBeVisible();
+    const folded = await page.evaluate((runId) => {
+      const w = window as unknown as { indexRuns(t: unknown[]): unknown; foldsIntoRun(t: unknown, i: unknown): boolean };
+      return fetch("/tasks").then((r) => r.json()).then((all: { id: string; pipelineRunId?: string }[]) => {
+        const index = w.indexRuns(all);
+        return all.filter((t) => t.pipelineRunId === runId).map((t) => w.foldsIntoRun(t, index));
+      });
+    }, root.id);
+    expect(folded).toEqual(steps.map(() => true));
   });
 });

@@ -78,10 +78,25 @@ describe("resolveAffectedSpecs", () => {
     }
   });
 
-  test("board-pipelines.js (the Pipelines page's rows) resolves to pipelines.spec.ts only", () => {
-    for (const path of ["src/api/public/board-pipelines.js", "src/api/public/board-pipelines.d.ts"]) {
+  // Since B1, board-pipelines.js's isPipelineRunRoot also picks the run
+  // cards on the board, and board-runs.js draws every board card.
+  test("board-pipelines.js and board-runs.js resolve to every spec that opens the board", () => {
+    for (const path of [
+      "src/api/public/board-pipelines.js",
+      "src/api/public/board-pipelines.d.ts",
+      "src/api/public/board-runs.js",
+      "src/api/public/board-runs.d.ts",
+    ]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
-      expect(result.specs).toEqual(["pipelines.spec.ts"]);
+      expect(result.specs).toEqual([
+        "board.spec.ts",
+        "live-task-output.spec.ts",
+        "new-task.spec.ts",
+        "pipeline-editor.spec.ts",
+        "pipelines.spec.ts",
+        "projects.spec.ts",
+        "theme.spec.ts",
+      ]);
       expect(result.fullSuite).toBe(false);
     }
   });
