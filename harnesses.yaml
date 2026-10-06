@@ -64,6 +64,6 @@ harnesses:
   - id: claude
     tool: claude-cli
     label: Claude — milton.cyrus@gmail.com
-    enabled: false
+    enabled: true
     env:
       CLAUDE_CONFIG_DIR: /home/mcyrus/.claude
