@@ -15,6 +15,7 @@ test("every route the SDD names parses to itself", () => {
   for (const route of [
     "board",
     "board/features",
+    "pipelines",
     "archive",
     "setup/agents",
     "setup/harnesses",
@@ -80,17 +81,14 @@ test("board.html has a [data-page] section for every route's page, and nothing e
   expect(pageIds.sort()).toEqual(expected.sort());
 });
 
-test("every sidebar link's data-route is a real route (or the external Pipelines link), and every nav target has a link", async () => {
+test("every sidebar link's data-route is a real route, and every nav target has a link", async () => {
   const html = await readFile(BOARD_HTML_PATH, "utf8");
   const sidebar = html.slice(html.indexOf('<nav class="sidebar"'), html.indexOf("</nav>"));
   const links = [...sidebar.matchAll(/<a class="nav-item" href="([^"]+)" data-route="([^"]+)"/g)].map((m) => ({ href: m[1]!, route: m[2]! }));
 
+  // Card A4 (§3.4) replaced A1's link out to the editor with a page.
+  expect(sidebar).not.toContain('href="/pipelines/edit"');
   for (const { href, route } of links) {
-    if (route === "pipelines") {
-      // Placeholder until card A4: the editor, outside the shell.
-      expect(href).toBe("/pipelines/edit");
-      continue;
-    }
     expect(Object.prototype.hasOwnProperty.call(BOARD_ROUTES, route)).toBe(true);
     expect(href).toBe(boardRouteHash(route));
   }

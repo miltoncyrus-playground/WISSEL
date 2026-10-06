@@ -12,6 +12,7 @@ const ALL_SPECS = [
   "live-task-output.spec.ts",
   "new-task.spec.ts",
   "pipeline-editor.spec.ts",
+  "pipelines.spec.ts",
   "projects.spec.ts",
   "theme.spec.ts",
 ];
@@ -62,6 +63,7 @@ describe("resolveAffectedSpecs", () => {
       "live-task-output.spec.ts",
       "new-task.spec.ts",
       "pipeline-editor.spec.ts",
+      "pipelines.spec.ts",
       "projects.spec.ts",
       "theme.spec.ts",
     ]);
@@ -72,6 +74,14 @@ describe("resolveAffectedSpecs", () => {
     for (const path of ["src/api/public/board-new.js", "src/api/public/board-new.d.ts"]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
       expect(result.specs).toEqual(["new-task.spec.ts"]);
+      expect(result.fullSuite).toBe(false);
+    }
+  });
+
+  test("board-pipelines.js (the Pipelines page's rows) resolves to pipelines.spec.ts only", () => {
+    for (const path of ["src/api/public/board-pipelines.js", "src/api/public/board-pipelines.d.ts"]) {
+      const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
+      expect(result.specs).toEqual(["pipelines.spec.ts"]);
       expect(result.fullSuite).toBe(false);
     }
   });

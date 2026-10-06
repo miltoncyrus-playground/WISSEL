@@ -450,6 +450,12 @@ export function createApp(
         return new Response(Bun.file(new URL("board-new.js", PUBLIC_DIR)));
       }
 
+      // The Pipelines page's rows (docs/SDD-ui-cleanup.md §3.4). Same
+      // static-sibling reasoning.
+      if (url.pathname === "/board-pipelines.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("board-pipelines.js", PUBLIC_DIR)));
+      }
+
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
       }

@@ -201,6 +201,32 @@ drawer on the Pipeline run tab with that pipeline preselected (T3), and
 Also a "New pipeline" button that opens the editor. The editor itself
 is unchanged in phase A.
 
+**A4 revision notes (as built).**
+- The page is `#/pipelines` (`BOARD_ROUTES.pipelines`, section
+  `#pipelinesPage`); the sidebar's Pipelines link points there instead
+  of out to `/pipelines/edit`. The editor is still reachable: New
+  pipeline (`/pipelines/edit`) and each row's Edit
+  (`/pipelines/edit/<id>`), both plain links in the same tab.
+- Row logic is `src/api/public/board-pipelines.js` (`pipelineRows`,
+  `lastRunsByPipeline`), covered by `test/board-pipelines.test.ts`. The
+  list is refetched from `GET /pipelines` on every visit. The last run
+  comes from the board's own task list, not a new endpoint: a run root
+  is a card with `pipelineId` and no `parentTaskId` (the same filter as
+  `GET /pipelines/:id/runs`). A TaskCard has no creation timestamp, so
+  "last" is the latest root in `GET /tasks` order (rowid = creation
+  order), and the column shows the run's status and input instead of a
+  date. It follows SSE refetches through `render()`, and it uses the
+  project-scoped `tasks`, so with a project selected it reads "No runs
+  in this project".
+- Clicking the last run opens that root card's task drawer.
+- Run calls `openNewDrawer("pipeline", { pipelineId, repo })`. `repo`
+  is the last run's repo and only fills an empty, unlocked Repo field,
+  never over a typed repo or the project lock.
+- T3, measured by `e2e/pipelines.spec.ts` at 1440x900: 3 clicks
+  (sidebar Pipelines, Run, Start run), with repo and input typed. A
+  window marker set before the first click survives, so the document
+  never navigates.
+
 ## 4. Phase B: pipelines as part of the app
 
 ### 4.1 One card per run, with detail on click (card B1)

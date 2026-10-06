@@ -1579,9 +1579,18 @@ test.describe("Shell and navigation", () => {
     await expect(page.getByRole("link", { name: "Board", exact: true })).toHaveAttribute("aria-current", "page");
   });
 
-  test("Pipelines in the sidebar links out to the editor until it gets its own page", async ({ page }) => {
+  // Card A4 (§3.4) replaced A1's link out to the editor with a page in
+  // the shell; the editor is still one click further (New pipeline).
+  test("Pipelines in the sidebar opens the Pipelines page inside the shell, and the editor stays reachable", async ({ page }) => {
     await page.goto("/board");
-    await expect(page.getByRole("link", { name: "Pipelines", exact: true })).toHaveAttribute("href", "/pipelines/edit");
+    const link = page.getByRole("link", { name: "Pipelines", exact: true });
+    await expect(link).toHaveAttribute("href", "#/pipelines");
+    await link.click();
+    await expect(page).toHaveURL(/\/board#\/pipelines$/);
+    await expect(page.locator("#pipelinesPage")).toBeVisible();
+    await expect(page.locator("#boardPanel")).toBeHidden();
+    await expect(link).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("link", { name: "New pipeline", exact: true })).toHaveAttribute("href", "/pipelines/edit");
   });
 
   test("below 1100px the sidebar collapses to icons, and its links keep their names", async ({ page }) => {

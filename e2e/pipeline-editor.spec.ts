@@ -64,12 +64,14 @@ test.describe("pipeline-editor canvas app", () => {
   test("author a 3-step join graph, save, reload identically, run it for real, and see it land on the board", async ({ page }) => {
     test.setTimeout(120_000);
 
-    // --- board.html's sidebar link out to the editor (the Pipelines nav
-    // item, until card A4 gives it a page inside the board) -------------
+    // --- board.html into the editor: sidebar Pipelines, then the
+    // Pipelines page's New pipeline (card A4, docs/SDD-ui-cleanup.md §3.4)
     await page.goto("/board");
+    await page.getByRole("link", { name: "Pipelines", exact: true }).click();
+    await expect(page.locator("#pipelinesPage")).toBeVisible();
     const editorLink = page.locator('a[href="/pipelines/edit"]');
     await expect(editorLink).toHaveCount(1);
-    await expect(page.getByRole("link", { name: "Pipelines", exact: true })).toHaveAttribute("href", "/pipelines/edit");
+    await expect(page.getByRole("link", { name: "New pipeline", exact: true })).toHaveAttribute("href", "/pipelines/edit");
     await editorLink.click();
     await expect(page).toHaveURL(/\/pipelines\/edit$/);
 
