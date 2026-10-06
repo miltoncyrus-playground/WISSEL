@@ -24,6 +24,11 @@ export class Registry {
       if (registry.agents.has(agent.id)) {
         throw new Error(`duplicate agent id: ${agent.id}`);
       }
+      // Which harness ids exist is checked later, in createApp, once the
+      // HarnessPool is loaded; here only the shape.
+      if (agent.harnesses !== undefined && !(Array.isArray(agent.harnesses) && agent.harnesses.every((id) => typeof id === "string"))) {
+        throw new Error(`agent "${agent.id}": harnesses must be a list of harness ids, got ${JSON.stringify(agent.harnesses)}`);
+      }
       registry.agents.set(agent.id, agent);
     }
     return registry;

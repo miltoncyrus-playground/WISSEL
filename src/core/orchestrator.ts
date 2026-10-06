@@ -930,9 +930,10 @@ function startOfUtcDay(now: Date): Date {
  */
 export class Orchestrator {
   private inFlight = new Set<string>();
-  /** Tasks held because no enabled harness exists for their tool, and
-   *  which tool. Used only to log once per task, not on every sweep. */
-  private waitingForHarness = new Map<string, HarnessTool>();
+  /** Tasks held because no harness is available for them, and the reason
+   *  last logged. Used only to log once per task (per reason), not on
+   *  every sweep. */
+  private waitingForHarness = new Map<string, string>();
 
   constructor(
     private board: Board & { events: EventEmitter },
@@ -1089,18 +1090,26 @@ export class Orchestrator {
         return;
       }
 
-      // No enabled harness for this executor's tool: hold the task, don't
-      // run it. Before this check, acquire() returned undefined and the
-      // executor ran with no harness, falling back to ambient credentials
-      // (for ApiExecutor, ANTHROPIC_API_KEY from .env), so disabling a
-      // harness didn't stop work on it. Returning before recordDecision
-      // leaves the task unrouted in its column, so the next sweep retries
-      // it; the harness enable endpoint triggers that sweep. An explicit
-      // harnessOverride is excluded: acquire() already fails it loud below.
-      if (executor?.harnessTool && this.opts.harnesses && !task.harnessOverride && !this.opts.harnesses.hasEnabled(executor.harnessTool)) {
-        if (this.waitingForHarness.get(task.id) !== executor.harnessTool) {
-          this.waitingForHarness.set(task.id, executor.harnessTool);
-          console.log(`orchestrator: task ${task.id} (${agent.id}) waiting, no enabled ${executor.harnessTool} harness`);
+      // Nothing acquire() would pick right now: hold the task, don't run
+      // it. Covers a disabled harness (before this check the executor ran
+      // with no harness on ambient credentials, e.g. ANTHROPIC_API_KEY
+      // from .env), every harness at its maxConcurrent, and an agent whose
+      // own `harnesses` list has nothing available (it waits; it never
+      // moves to a harness it didn't list). Returning before
+      // recordDecision leaves the task unrouted in its column, so the next
+      // sweep retries it: the harness enable endpoint triggers one, and a
+      // finishing run frees capacity and moves its own task, whose board
+      // event triggers one. An explicit harnessOverride is excluded:
+      // acquire() fails it loud below.
+      if (executor?.harnessTool && this.opts.harnesses && !task.harnessOverride && !this.opts.harnesses.canAcquire(executor.harnessTool, agent.harnesses)) {
+        const reason = agent.harnesses?.length
+          ? `none of [${agent.harnesses.join(", ")}] enabled and under capacity`
+          : this.opts.harnesses.all().some((h) => h.enabled && h.tool === executor.harnessTool)
+            ? `every enabled ${executor.harnessTool} harness at capacity`
+            : `no enabled ${executor.harnessTool} harness`;
+        if (this.waitingForHarness.get(task.id) !== reason) {
+          this.waitingForHarness.set(task.id, reason);
+          console.log(`orchestrator: task ${task.id} (${agent.id}) waiting: ${reason}`);
         }
         return;
       }
@@ -1155,7 +1164,7 @@ export class Orchestrator {
 
       let harness: Harness | undefined;
       try {
-        harness = executor!.harnessTool ? this.opts.harnesses?.acquire(executor!.harnessTool, task.harnessOverride) : undefined;
+        harness = executor!.harnessTool ? this.opts.harnesses?.acquire(executor!.harnessTool, task.harnessOverride, agent.harnesses) : undefined;
       } catch (e) {
         if (!(e instanceof HarnessOverrideError)) throw e;
         const result: TaskResult = {
@@ -1167,9 +1176,10 @@ export class Orchestrator {
         await finishResult(this.board, this.registry, result, this.telemetry, undefined, this.opts.memoryPath);
         return;
       }
-      // The last enabled harness was disabled between the check above and
-      // here (recordDecision/telemetry awaited in between). Same rule:
-      // don't run without one. resetToInbox clears routedTo, and the
+      // What the check above saw as available is gone by now
+      // (recordDecision/telemetry awaited in between): the last harness
+      // was disabled, or another task in the same sweep took its last
+      // slot under maxConcurrent. Same rule: don't run without one. resetToInbox clears routedTo, and the
       // sweep its event triggers holds the task at the check above
       // without emitting another event, so this can't loop.
       if (executor!.harnessTool && this.opts.harnesses && !harness) {

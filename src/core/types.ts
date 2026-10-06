@@ -139,6 +139,15 @@ export interface AgentDef {
    *  Undefined means no self-verification instruction is added —
    *  today's behavior. */
   verificationContract?: string;
+  /** Harness ids (from the HarnessPool) this agent may run on, in
+   *  preference order: each run takes the first one that's enabled and
+   *  under its `maxConcurrent`. When none qualifies the task waits; it
+   *  never moves to an unlisted harness. Undefined or `[]` means no
+   *  preference (least-loaded pick across every enabled harness for the
+   *  executor's tool). Checked at startup by createApp: an unknown id or
+   *  a harness of the wrong tool stops the server. See
+   *  docs/SDD-agent-harness-preference.md. */
+  harnesses?: string[];
 }
 
 /** The reviewer agent's mandated final-message contract: a
@@ -526,6 +535,12 @@ export interface Harness {
    *  means "no harness-level default," falling through to
    *  costProfile.model. */
   model?: string;
+  /** Most tasks this harness runs at once. Once `HarnessPool.activeCount`
+   *  reaches it, the harness counts as busy and `acquire()` skips it (an
+   *  explicit `harnessOverride` onto it fails loud instead). Undefined
+   *  means unlimited. Must be a positive integer. See
+   *  docs/SDD-agent-harness-preference.md §3.3. */
+  maxConcurrent?: number;
 }
 
 /** An external tool surface an agent can reach once it's running — Slack,

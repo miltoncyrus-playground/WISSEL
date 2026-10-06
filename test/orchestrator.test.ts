@@ -1592,7 +1592,7 @@ test("a held task logs once, not on every sweep", async () => {
     await orchestrator.sweep();
     await orchestrator.sweep();
     await orchestrator.sweep();
-    expect(logs.filter((l) => l.includes(task.id) && l.includes("waiting, no enabled anthropic-api harness"))).toHaveLength(1);
+    expect(logs.filter((l) => l.includes(task.id) && l.includes("waiting: no enabled anthropic-api harness"))).toHaveLength(1);
   } finally {
     console.log = original;
   }
