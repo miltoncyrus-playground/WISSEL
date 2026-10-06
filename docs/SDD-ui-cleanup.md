@@ -111,6 +111,35 @@ Still the single `board.html` and vanilla JS. No framework.
   "adding a status means changing types.ts + these lists" must be
   updated to match.
 
+**A2 revision notes (as built).**
+- The status→lane table is `STATUS_DISPLAY` in
+  `src/api/public/board-lanes.js`, next to the pure placement logic
+  (`taskPlacement`, `needsYouReason`, `partitionBoard`), so bun test
+  covers it directly. `test/board-lanes.test.ts` reads
+  `TaskCard.status` out of `src/core/types.ts` and fails if any value
+  has no lane. A status the table doesn't know lands in Needs you, not
+  nowhere.
+- "Reviewing" (a reviewer's own `running` card) stays a display status:
+  it sits in Working with a "Reviewing" tag.
+- "Any card with a pending MCP approval" means `pendingMcpApproval` set
+  and status still `review`, the same gate the drawer's approval panel
+  uses (the field is never cleared). Its reason names the call:
+  "MCP approval: slack · send_message".
+- Escalated reasons read "escalated after N rejections" with N =
+  `pushbackCount + 1`: the orchestrator escalates on the rejection that
+  arrives once `pushbackCount` hits its limit.
+- Done's 24h window uses `doneAt`. A done card without one (older than
+  the field) stays visible. The header reads "Done (3 of 10)" while
+  some are hidden, with a "Show all" / "Last 24h" toggle.
+- "Show superseded" is a checkbox in the top bar (Lanes view only), so
+  it costs no height above the first card (T1). Superseded cards show
+  in their own column after Done, never in Needs you or a lane.
+- The bulk Clear moved with the statuses: Done keeps it (it clears the
+  cards Done shows), and Needs you has "Clear failed / no match" for
+  those two terminal statuses. Review and escalated get none.
+- An empty lane still collapses to its header, giving its width to the
+  lanes with cards.
+
 ### 3.3 "+ New" drawer (card A3)
 
 A side drawer with two tabs.

@@ -438,6 +438,12 @@ export function createApp(
         return new Response(Bun.file(new URL("board-routes.js", PUBLIC_DIR)));
       }
 
+      // The board's status→lane table and card placement (docs/SDD-ui-
+      // cleanup.md §3.2). Same static-sibling reasoning.
+      if (url.pathname === "/board-lanes.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("board-lanes.js", PUBLIC_DIR)));
+      }
+
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
       }

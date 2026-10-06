@@ -9,7 +9,7 @@ A full `e2e/board.spec.ts` run inside a review cost about $2.40 against a $0.12 
 `playwright.config.ts` pins every `WISSEL_*` automation flag to `"0"` in `webServer.env`. Keep it that way: if any of them leak in from the shell, the test server's real orchestrator starts paid Claude sessions against fixture tasks and makes tests fail at random. If you add a new `WISSEL_*` flag in `src/api/server.ts`, pin it there too (`test/playwright-config.test.ts` guards this).
 
 ## Adding a TaskCard status value
-Change `src/core/types.ts` and three lists in `src/api/public/board.html`: `STATUS_COLOR`, `STATUS_LABEL` and `COLUMNS`. Missing one makes cards vanish from the board or render unstyled.
+Change `src/core/types.ts` and add one entry to `STATUS_DISPLAY` in `src/api/public/board-lanes.js`: its lane (`queued`, `working`, `in-review`, `done`, or `NEEDS_YOU` if a human must act), label and colour token. That one table drives the board's lanes, the Needs you strip, every status tag and the drawer's status pill. `test/board-lanes.test.ts` reads the status union out of types.ts and fails until the table covers it. An unmapped status lands in Needs you rather than vanishing.
 
 ## SQLite schema changes
 New column on an existing table: `ALTER TABLE ... ADD COLUMN` in a try/catch at DB open, like the existing ones in `src/services/board.ts`. New table: `CREATE TABLE IF NOT EXISTS`. No migration tooling needed.

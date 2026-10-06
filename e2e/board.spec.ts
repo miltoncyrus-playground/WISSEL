@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { test, expect, type APIRequestContext } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 
 /** Same disposable tmp path playwright.config.ts's webServer.command
  *  seeds from e2e/fixtures/harnesses.yaml before every run — read
@@ -59,6 +59,19 @@ async function driveToEscalated(request: APIRequestContext, title: string, repo:
 
   const finalTasks = await (await request.get("/tasks")).json();
   return finalTasks.find((t: { title: string; status: string }) => t.title === title && t.status === "escalated");
+}
+
+/**
+ * Makes the page's `GET /tasks` return exactly `tasks`, for layout tests
+ * that need a known board rather than whatever earlier tests left on the
+ * shared one. Every other request (POST /tasks, /tasks/:id/..., SSE)
+ * still hits the real server.
+ */
+async function serveBoardTasks(page: Page, tasks: unknown[]) {
+  await page.route(
+    (url) => url.pathname === "/tasks",
+    (route) => (route.request().method() === "GET" ? route.fulfill({ json: tasks }) : route.fallback()),
+  );
 }
 
 test.describe("Memory tab", () => {
@@ -157,7 +170,7 @@ test.describe("Board view", () => {
     await expect(badge).toHaveAttribute("title", /pkg 0\.0\.0/);
   });
 
-  test("is the default view and shows task-by-status and status stats; both fleet boxes are on Agents & skills", async ({ page }) => {
+  test("is the default view and shows task-by-status in four lanes with counts in their headers; both fleet boxes are on Agents & skills", async ({ page }) => {
     await page.goto("/board");
 
     await expect(page.getByRole("link", { name: "Board", exact: true })).toHaveAttribute("aria-current", "page");
@@ -165,19 +178,16 @@ test.describe("Board view", () => {
     await expect(page.locator("#boardPanel")).toBeVisible();
     await expect(page.locator("#newTaskPanel")).toBeHidden();
 
-    // Status stat strip covers every real status, in order — including
-    // pending-review/escalated (the automated-reviewer review lifecycle;
-    // see orchestrator.ts's finishResult/handleReviewVerdict).
-    const statLabels = page.locator("#stats .l");
-    await expect(statLabels).toHaveText([
-      "Inbox", "Ready", "Running", "Dispatched", "Pending review", "Reviewing", "Review", "Escalated", "Done", "Failed", "No match", "Superseded",
+    // Four lanes, in order, each header carrying its own count
+    // (docs/SDD-ui-cleanup.md §3.2). The row of count tiles is gone.
+    await expect(page.locator("#kanbanBody .kcol .lane-label")).toHaveText([
+      /^Queued \(\d+\)$/, /^Working \(\d+\)$/, /^In review \(\d+\)$/, /^Done \(\d+( of \d+)?\)$/,
     ]);
+    await expect(page.locator("#stats")).toHaveCount(0);
+    await expect(page.locator(".stat")).toHaveCount(0);
 
-    // Task-by-status comes first; the fleet is setup, not work, so it's
-    // off the Board view entirely (docs/SDD-ui-cleanup.md §3.1, T6).
-    const kanbanTop = await page.locator("#kanbanBody").boundingBox();
-    const statsTop = await page.locator("#stats").boundingBox();
-    expect(kanbanTop!.y).toBeLessThan(statsTop!.y);
+    // The fleet is setup, not work, so it's off the Board view entirely
+    // (docs/SDD-ui-cleanup.md §3.1, T6).
     await expect(page.locator("#agentsBox")).toBeHidden();
     await expect(page.locator("#skillsBox")).toBeHidden();
 
@@ -285,8 +295,12 @@ test.describe("Board view", () => {
     // generic write-tier review UI, not implementer's auto-handoff.
     await request.post(`/tasks/${task.id}/result`, { data: { agentId: "fixer", ok: true, summary: "opened a PR" } });
 
+    // review is a human's queue, so the card is in Needs you, saying so.
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`).click();
+    const nyCard = page.locator(`#needsYou .kcard[data-task-id="${task.id}"]`);
+    await expect(nyCard.locator(".kreason")).toHaveText("review");
+    await expect(page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`)).toHaveCount(0);
+    await nyCard.click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.locator("#tdMeta")).toContainText("Review");
@@ -321,7 +335,7 @@ test.describe("Board view", () => {
     });
 
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`).click();
+    await page.locator(`#needsYou .kcard[data-task-id="${task.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.getByRole("button", { name: "Merge" })).toBeVisible();
@@ -360,7 +374,7 @@ test.describe("Board view", () => {
     });
 
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`).click();
+    await page.locator(`#needsYou .kcard[data-task-id="${task.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.locator("#tdResult")).toContainText("Spawned 2 subagents");
@@ -454,23 +468,34 @@ test.describe("Board view", () => {
     // follow-up legitimately share the substring and sit in other
     // columns), just excluded from the one column its stale status
     // would otherwise place it in.
-    const pendingReviewCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: "Pending review" }) });
-    await expect(pendingReviewCol.locator(".kcard", { hasText: title })).toHaveCount(0);
+    const pendingReviewCol = page.locator('#kanbanBody .kcol[data-lane="in-review"]');
+    await expect(pendingReviewCol.locator(`.kcard[data-task-id="${originalId}"]`)).toHaveCount(0);
+    // Not anywhere else on the board either: superseded cards are hidden
+    // by default (docs/SDD-ui-cleanup.md §3.2).
+    await expect(page.locator(`#boardPanel .kcard[data-task-id="${originalId}"]`)).toHaveCount(0);
 
-    // The stat tile agrees — its count excludes the superseded original
-    // too, matching what the API itself reports once filtered the same way.
-    const allTasks = await (await request.get("/tasks")).json();
-    const realPendingReviewCount = allTasks.filter((t: { status: string; supersededBy?: string }) => t.status === "pending-review" && !t.supersededBy).length;
-    const statTile = page.locator("#stats .stat", { has: page.locator(".l", { hasText: "Pending review" }) });
-    await expect(statTile.locator(".n")).toHaveText(String(realPendingReviewCount));
+    // The In review lane's header count agrees: it excludes the
+    // superseded original too, matching what the API itself reports
+    // once filtered the same way.
+    const inReviewCount = async () => {
+      const allTasks = await (await request.get("/tasks")).json();
+      return allTasks.filter((t: { status: string; supersededBy?: string; archivedAt?: string }) => t.status === "pending-review" && !t.supersededBy && !t.archivedAt).length;
+    };
+    await expect.poll(async () => (await pendingReviewCol.locator(".lane-label").textContent()) === `In review (${await inReviewCount()})`).toBe(true);
 
-    // It isn't hidden entirely, though — it has a dedicated home: the
-    // "Superseded" bucket, styled distinctly (dashed border, struck
-    // through title) so it reads as history, not a live card.
-    const supersededCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: "Superseded" }) });
-    const supersededCard = supersededCol.locator(".kcard", { hasText: title });
+    // It isn't gone, though: "Show superseded" brings back its dedicated
+    // home, the "Superseded" bucket, styled distinctly (dashed border,
+    // struck through title) so it reads as history, not a live card.
+    await page.locator("#showSuperseded").check();
+    const supersededCol = page.locator('#kanbanBody .kcol[data-lane="superseded"]');
+    const supersededCard = supersededCol.locator(`.kcard[data-task-id="${originalId}"]`);
     await expect(supersededCard).toHaveCount(1);
     await expect(supersededCard).toHaveClass(/superseded/);
+    await expect(supersededCard.locator(".kstatus")).toHaveText("Pending review");
+    await expect(pendingReviewCol.locator(`.kcard[data-task-id="${originalId}"]`)).toHaveCount(0);
+
+    await page.locator("#showSuperseded").uncheck();
+    await expect(supersededCol).toHaveCount(0);
   });
 
   test("an escalated task renders its full round-by-round timeline and the three resolution actions", async ({ page, request }) => {
@@ -478,7 +503,9 @@ test.describe("Board view", () => {
     expect(escalated).toBeDefined();
 
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${escalated.id}"]`).click();
+    // Needs you says why: six straight rejections.
+    await expect(page.locator(`#needsYou .kcard[data-task-id="${escalated.id}"] .kreason`)).toHaveText("escalated after 6 rejections");
+    await page.locator(`#needsYou .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.locator("#tdMeta")).toContainText("Escalated");
@@ -528,7 +555,7 @@ test.describe("Board view", () => {
     expect(escalated).toBeDefined();
 
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${escalated.id}"]`).click();
+    await page.locator(`#needsYou .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.getByRole("button", { name: "Approve anyway" })).toBeVisible();
@@ -562,7 +589,7 @@ test.describe("Board view", () => {
     expect(escalated).toBeDefined();
 
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${escalated.id}"]`).click();
+    await page.locator(`#needsYou .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     let promptCount = 0;
@@ -594,7 +621,7 @@ test.describe("Board view", () => {
     expect(escalated).toBeDefined();
 
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${escalated.id}"]`).click();
+    await page.locator(`#needsYou .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     const retryForm = drawer.locator("#tdRetryForm");
@@ -631,7 +658,7 @@ test.describe("Board view", () => {
     expect(escalated).toBeDefined();
 
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${escalated.id}"]`).click();
+    await page.locator(`#needsYou .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await drawer.getByRole("button", { name: "Retry" }).click();
@@ -676,7 +703,8 @@ test.describe("Board view", () => {
     expect(pending.status).toBe("review");
 
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${pending.id}"]`).click();
+    await expect(page.locator(`#needsYou .kcard[data-task-id="${pending.id}"] .kreason`)).toHaveText("MCP approval: slack · send_message");
+    await page.locator(`#needsYou .kcard[data-task-id="${pending.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.locator("#tdMeta")).toContainText("Review");
@@ -701,7 +729,7 @@ test.describe("Board view", () => {
     expect(pending).toBeDefined();
 
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${pending.id}"]`).click();
+    await page.locator(`#needsYou .kcard[data-task-id="${pending.id}"]`).click();
     const drawer = page.locator("#taskDrawer");
 
     page.on("dialog", (dialog) => dialog.accept());
@@ -729,7 +757,7 @@ test.describe("Board view", () => {
     const before = await (await request.get("/tasks")).json();
 
     await page.goto("/board");
-    await page.locator(`#kanbanBody .kcard[data-task-id="${pending.id}"]`).click();
+    await page.locator(`#needsYou .kcard[data-task-id="${pending.id}"]`).click();
     const drawer = page.locator("#taskDrawer");
 
     page.on("dialog", (dialog) => dialog.accept());
@@ -1185,21 +1213,29 @@ test.describe("Board view", () => {
     });
     const task = await created.json();
     await request.post(`/tasks/${task.id}/move`, { data: { status: "done" } });
+    const doneTask = await (await request.get(`/tasks/${task.id}`)).json();
 
+    // With four lanes no lane is reliably empty on the shared board, so
+    // the page gets a board holding only this real done card.
+    await serveBoardTasks(page, [doneTask]);
     await page.goto("/board");
-    // "No match" is reliably empty in a fresh fixture board — nothing in
-    // this file's other tests routes a task there without a human/sweep
-    // step this fixture never runs.
-    const noMatchCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: "No match" }) });
-    await expect(noMatchCol).toHaveClass(/kcol-empty/);
-    await expect(noMatchCol.locator(".kcard")).toHaveCount(0);
 
-    // A column that does have cards never gets the collapsed treatment.
-    const doneCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: /^Done/ }) });
+    for (const lane of ["queued", "working", "in-review"]) {
+      const col = page.locator(`#kanbanBody .kcol[data-lane="${lane}"]`);
+      await expect(col).toHaveClass(/kcol-empty/);
+      await expect(col.locator(".kcard")).toHaveCount(0);
+      await expect(col.locator(".lane-label")).toHaveText(/\(0\)$/);
+    }
+
+    // A lane that does have cards never gets the collapsed treatment.
+    const doneCol = page.locator('#kanbanBody .kcol[data-lane="done"]');
     await expect(doneCol).not.toHaveClass(/kcol-empty/);
+    await expect(doneCol.locator(".lane-label")).toHaveText("Done (1)");
+    // Nothing needs a human, so the Needs you strip isn't there at all.
+    await expect(page.locator("#needsYou")).toBeHidden();
   });
 
-  test("a reviewer task actually running lands in its own Reviewing column, not the generic Running one", async ({ page, request }) => {
+  test("a reviewer task actually running shows as Reviewing in the Working lane, not as generic Running", async ({ page, request }) => {
     const title = `Reviewing column test ${Date.now()}`;
     const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo" } });
     const implementerId = (await created.json()).id as string;
@@ -1215,20 +1251,23 @@ test.describe("Board view", () => {
     });
     // Its raw status is "running" the whole time it's actually being
     // worked — same as any other agent's in-flight task. The Reviewing
-    // column exists purely to tell this apart from those at a glance.
+    // status tag exists purely to tell this apart from those at a glance.
     await request.post(`/tasks/${reviewer.id}/move`, { data: { status: "running" } });
+    const implementer = await (await request.get(`/tasks/${implementerId}`)).json();
+    expect(implementer.status).toBe("pending-review");
 
     await page.goto("/board");
 
-    const reviewingCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: "Reviewing" }) });
-    await expect(reviewingCol.locator(".kcard", { hasText: `Review: ${title}` })).toHaveCount(1);
+    // Exactly one card for it, in Working, tagged Reviewing (not Running).
+    const reviewerCards = page.locator(`#boardPanel .kcard[data-task-id="${reviewer.id}"]`);
+    await expect(reviewerCards).toHaveCount(1);
+    const inWorking = page.locator(`#kanbanBody .kcol[data-lane="working"] .kcard[data-task-id="${reviewer.id}"]`);
+    await expect(inWorking).toHaveAttribute("data-status", "reviewing");
+    await expect(inWorking.locator(".kstatus")).toHaveText("Reviewing");
 
-    // Not double-counted in the generic Running column.
-    const runningCol = page.locator("#kanbanBody .kcol", { has: page.locator("h3", { hasText: /^Running/ }) });
-    await expect(runningCol.locator(".kcard", { hasText: `Review: ${title}` })).toHaveCount(0);
-
-    const statTile = page.locator("#stats .stat", { has: page.locator(".l", { hasText: "Reviewing" }) });
-    await expect(statTile.locator(".n")).toHaveText("1");
+    // The implementer it's reviewing waits in In review, tagged Pending review.
+    const implCard = page.locator(`#kanbanBody .kcol[data-lane="in-review"] .kcard[data-task-id="${implementerId}"]`);
+    await expect(implCard.locator(".kstatus")).toHaveText("Pending review");
   });
 });
 
@@ -1353,16 +1392,18 @@ test.describe("Archive tab", () => {
     await expect(drawer.locator("#tdMeta")).toContainText("archived");
     await page.locator("#tdClose").click();
 
-    // Gone from Board (kanban card count), the stat tile agrees, and
-    // it's gone from Swimlanes membership too.
+    // Gone from Board (kanban card count), the Queued lane's header
+    // count agrees, and it's gone from Swimlanes membership too.
     await expect(page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`)).toHaveCount(0);
 
-    const allTasks = await (await request.get("/tasks")).json();
-    const realInboxCount = allTasks.filter(
-      (t: { status: string; supersededBy?: string; archivedAt?: string }) => t.status === "inbox" && !t.supersededBy && !t.archivedAt,
-    ).length;
-    const inboxStatTile = page.locator("#stats .stat", { has: page.locator(".l", { hasText: "Inbox" }) });
-    await expect(inboxStatTile.locator(".n")).toHaveText(String(realInboxCount));
+    const realQueuedCount = async () => {
+      const allTasks = await (await request.get("/tasks")).json();
+      return allTasks.filter(
+        (t: { status: string; supersededBy?: string; archivedAt?: string }) => (t.status === "inbox" || t.status === "ready") && !t.supersededBy && !t.archivedAt,
+      ).length;
+    };
+    const queuedLabel = page.locator('#kanbanBody .kcol[data-lane="queued"] .lane-label');
+    await expect.poll(async () => (await queuedLabel.textContent()) === `Queued (${await realQueuedCount()})`).toBe(true);
 
     await page.getByRole("button", { name: "By feature", exact: true }).click();
     await expect(page.locator("#swimlanesBody").getByText(title, { exact: true })).toHaveCount(0);
@@ -1463,7 +1504,9 @@ test.describe("Shell and navigation", () => {
     test("T1: the first board card starts within 120px of the top of the page", async ({ page, request }) => {
       await request.post("/tasks", { data: { title: `T1 measure ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
       await page.goto("/board");
-      const first = page.locator("#kanbanBody .kcard").first();
+      // The first card on the board: Needs you's, when the strip shows,
+      // since it sits above the lanes (docs/SDD-ui-cleanup.md §3.2).
+      const first = page.locator("#boardPanel .kcard").first();
       await expect(first).toBeVisible();
       const box = await first.boundingBox();
       // Logged so the measured value shows up in the run output, not
@@ -1497,8 +1540,10 @@ test.describe("Shell and navigation", () => {
         await expect(page.locator("main [data-page]:visible")).toHaveCount(1);
         await expect(link).toHaveAttribute("aria-current", "page");
         await expect(page.locator('#sidebar [aria-current="page"]')).toHaveCount(1);
-        // The Lanes / By feature switch only belongs to the Board page.
+        // The Lanes / By feature switch and the Lanes view's "Show
+        // superseded" toggle only belong to the Board page.
         await expect(page.locator("#boardViewToggle")).toBeVisible({ visible: name === "Board" });
+        await expect(page.locator("#supersededToggle")).toBeVisible({ visible: name === "Board" });
       }
     });
   });
@@ -1562,5 +1607,205 @@ test.describe("Shell and navigation", () => {
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(overflow, hash).toBeLessThanOrEqual(0);
     }
+  });
+});
+
+// docs/SDD-ui-cleanup.md §3.2 (card A2): the "Needs you" strip and the
+// four lanes. Targets T2 (no truncated titles) and T4 (every card
+// needing a human in one place), measured at 1440x900 as §2 asks.
+test.describe("Needs you and four lanes", () => {
+  const NEEDS_YOU_STATUSES = ["review", "escalated", "failed", "no-match"];
+  type ApiTask = { id: string; title: string; status: string; supersededBy?: string; archivedAt?: string };
+
+  test.describe("at 1440x900", () => {
+    test.use({ viewport: { width: 1440, height: 900 } });
+
+    test("T4: every card needing a human is in Needs you with its reason, and in no lane", async ({ page, request }) => {
+      const stamp = Date.now();
+      const make = async (title: string, labels: string[] = []) =>
+        (await (await request.post("/tasks", { data: { title, body: "x", labels, repo: "/tmp/wissel-e2e-repo" } })).json()).id as string;
+      const reviewId = await make(`T4 review ${stamp}`);
+      await request.post(`/tasks/${reviewId}/result`, { data: { agentId: "fixer", ok: true, summary: "opened a PR" } });
+      const mcpId = await make(`T4 MCP approval ${stamp}`, ["intake"]);
+      await request.post(`/tasks/${mcpId}/result`, {
+        data: { agentId: "triager", ok: true, summary: "asked first", mcpApprovalRequest: { server: "slack", tool: "send_message", args: {}, reason: "notify" } },
+      });
+      const failedId = await make(`T4 failed ${stamp}`);
+      await request.post(`/tasks/${failedId}/move`, { data: { status: "failed" } });
+      const noMatchId = await make(`T4 no match ${stamp}`);
+      await request.post(`/tasks/${noMatchId}/move`, { data: { status: "no-match" } });
+
+      await page.goto("/board");
+      await expect(page.locator("#needsYou")).toBeVisible();
+      await expect(page.locator(`#needsYou .kcard[data-task-id="${noMatchId}"]`)).toBeVisible();
+
+      // Every card the API says needs a human, compared against what the
+      // strip shows. Polled: other specs share this server.
+      const expected = async () =>
+        ((await (await request.get("/tasks")).json()) as ApiTask[])
+          .filter((t) => NEEDS_YOU_STATUSES.includes(t.status) && !t.supersededBy && !t.archivedAt)
+          .map((t) => t.id)
+          .sort();
+      const shown = async () => (await page.locator("#needsYou .kcard").evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.taskId!))).sort();
+      await expect.poll(async () => JSON.stringify(await shown()) === JSON.stringify(await expected())).toBe(true);
+      const ids = await shown();
+      console.log(`T4: ${ids.length}/${(await expected()).length} cards needing a human shown in Needs you (goal 100%)`);
+      await expect(page.locator("#needsYouCount")).toHaveText(`(${ids.length})`);
+
+      // None of them also sits in a lane.
+      const inLanes = await page.locator("#kanbanBody .kcard").evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.taskId!));
+      expect(inLanes.filter((id) => ids.includes(id))).toEqual([]);
+
+      const reason = (id: string) => page.locator(`#needsYou .kcard[data-task-id="${id}"] .kreason`);
+      await expect(reason(reviewId)).toHaveText("review");
+      await expect(reason(mcpId)).toHaveText("MCP approval: slack · send_message");
+      await expect(reason(failedId)).toHaveText("failed");
+      await expect(reason(noMatchId)).toHaveText("no agent matched");
+      await expect(page.locator(`#needsYou .kcard[data-task-id="${failedId}"] .kstatus`)).toHaveText("Failed");
+
+      // Clicking a Needs you card opens the existing task drawer.
+      await page.locator(`#needsYou .kcard[data-task-id="${mcpId}"]`).click();
+      await expect(page.locator("#taskDrawer")).toBeVisible();
+      await expect(page.locator("#tdTitle")).toHaveText(`T4 MCP approval ${stamp}`);
+      await expect(page.locator("#tdMcpApproval")).toContainText("send_message");
+      await page.locator("#tdClose").click();
+
+      await page.screenshot({ path: "test-results/ui-a2/board-1440x900.png" });
+    });
+
+    test("T2: card titles wrap to at most 2 lines instead of truncating, with the full title on hover", async ({ page, request }) => {
+      // A realistic card title, long enough that the old 90px Done column
+      // cut it to a few words.
+      const title = `UI A2: board Needs you strip and four lanes ${Date.now()}`;
+      const make = async () => (await (await request.post("/tasks", { data: { title, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } })).json()).id as string;
+      const queuedId = await make();
+      const doneId = await make();
+      await request.post(`/tasks/${doneId}/move`, { data: { status: "done" } });
+      const failedId = await make();
+      await request.post(`/tasks/${failedId}/move`, { data: { status: "failed" } });
+
+      await page.goto("/board");
+      for (const [where, id] of [["kanbanBody", queuedId], ["kanbanBody", doneId], ["needsYou", failedId]] as const) {
+        const kt = page.locator(`#${where} .kcard[data-task-id="${id}"] .kt`);
+        await expect(kt).toHaveAttribute("title", title);
+        const m = await kt.evaluate((el) => {
+          const lh = parseFloat(getComputedStyle(el).lineHeight);
+          return { clipped: el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1, lines: Math.round(el.clientHeight / lh) };
+        });
+        expect(m.clipped, `${where} ${id}`).toBe(false);
+        expect(m.lines, `${where} ${id}`).toBeLessThanOrEqual(2);
+      }
+
+      // Across the whole board: every title carries its full text for
+      // hover, and the count of clamped titles is logged as T2's value.
+      const all = await page.locator("#boardPanel .kcard .kt").evaluateAll((els) =>
+        els.map((el) => ({
+          text: el.textContent || "",
+          hover: el.getAttribute("title") || "",
+          clipped: el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1,
+        })),
+      );
+      expect(all.filter((t) => t.hover !== t.text)).toEqual([]);
+      const clipped = all.filter((t) => t.clipped);
+      console.log(`T2: ${clipped.length}/${all.length} card titles clamped at 2 lines (all with the full title on hover); longest clamped: ${Math.max(0, ...clipped.map((t) => t.text.length))} chars`);
+      // Only titles too long for two lines get clamped; anything the
+      // length of a normal card title fits.
+      expect(clipped.filter((t) => t.text.length <= 60)).toEqual([]);
+    });
+  });
+
+  // A known board with one card of every status, plus the edge cases
+  // (pending MCP approval, superseded, archived, done over 24h ago), so
+  // every placement rule is checked in a real browser.
+  test("each status lands in exactly one place: Needs you or its lane, with its exact status tag", async ({ page }) => {
+    const now = Date.now();
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const t = (id: string, status: string, extra: Record<string, unknown> = {}) => ({
+      id, title: `A2 ${id}`, body: "x", labels: [], status, repo: "/tmp/wissel-e2e-repo", ...extra,
+    });
+    const board = [
+      t("inbox", "inbox"),
+      t("ready", "ready"),
+      t("running", "running", { routedTo: "implementer" }),
+      t("dispatched", "dispatched", { routedTo: "fixer" }),
+      t("reviewing", "running", { routedTo: "reviewer" }),
+      t("pending", "pending-review", { routedTo: "implementer" }),
+      t("done-new", "done", { doneAt: iso(now - 60 * 60 * 1000) }),
+      t("done-old", "done", { doneAt: iso(now - 30 * 60 * 60 * 1000) }),
+      t("review", "review"),
+      t("mcp", "review", { pendingMcpApproval: { server: "slack", tool: "send_message", args: {}, reason: "notify" } }),
+      t("escalated", "escalated", { pushbackCount: 5, escalationContext: "Attempt 1: no" }),
+      t("failed", "failed"),
+      t("nomatch", "no-match"),
+      t("superseded", "failed", { supersededBy: "inbox" }),
+      t("archived", "review", { archivedAt: iso(now) }),
+    ];
+    await serveBoardTasks(page, board);
+    await page.goto("/board");
+
+    const ids = (sel: string) => page.locator(sel).evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.taskId!));
+    await expect(page.locator("#needsYou")).toBeVisible();
+    expect(await ids("#needsYou .kcard")).toEqual(["review", "mcp", "escalated", "failed", "nomatch"]);
+    expect(await ids('#kanbanBody .kcol[data-lane="queued"] .kcard')).toEqual(["inbox", "ready"]);
+    expect(await ids('#kanbanBody .kcol[data-lane="working"] .kcard')).toEqual(["running", "dispatched", "reviewing"]);
+    expect(await ids('#kanbanBody .kcol[data-lane="in-review"] .kcard')).toEqual(["pending"]);
+    expect(await ids('#kanbanBody .kcol[data-lane="done"] .kcard')).toEqual(["done-new"]);
+    await expect(page.locator(".kcard[data-task-id=archived], .kcard[data-task-id=superseded], .kcard[data-task-id=done-old]")).toHaveCount(0);
+
+    const tag = (id: string) => page.locator(`.kcard[data-task-id="${id}"] .kstatus`);
+    for (const [id, label] of [
+      ["inbox", "Inbox"], ["ready", "Ready"], ["running", "Running"], ["dispatched", "Dispatched"], ["reviewing", "Reviewing"],
+      ["pending", "Pending review"], ["done-new", "Done"], ["review", "Review"], ["mcp", "Review"], ["escalated", "Escalated"],
+      ["failed", "Failed"], ["nomatch", "No match"],
+    ]) {
+      await expect(tag(id!), id).toHaveText(label!);
+    }
+    const reason = (id: string) => page.locator(`#needsYou .kcard[data-task-id="${id}"] .kreason`);
+    await expect(reason("review")).toHaveText("review");
+    await expect(reason("mcp")).toHaveText("MCP approval: slack · send_message");
+    await expect(reason("escalated")).toHaveText("escalated after 6 rejections");
+    await expect(reason("failed")).toHaveText("failed");
+    await expect(reason("nomatch")).toHaveText("no agent matched");
+
+    // Counts live in the lane headers.
+    await expect(page.locator("#kanbanBody .kcol .lane-label")).toHaveText(["Queued (2)", "Working (3)", "In review (1)", "Done (1 of 2)"]);
+    await expect(page.locator("#needsYouCount")).toHaveText("(5)");
+    // Bulk clear only for the terminal Needs you statuses, never review/escalated.
+    await expect(page.locator("#needsYou .ny-head .col-clear")).toHaveText("Clear failed / no match (2)");
+
+    // Done: last 24h by default, "Show all" brings back the rest.
+    const doneLane = page.locator('#kanbanBody .kcol[data-lane="done"]');
+    await doneLane.getByRole("button", { name: "Show all" }).click();
+    expect(await ids('#kanbanBody .kcol[data-lane="done"] .kcard')).toEqual(["done-new", "done-old"]);
+    await expect(doneLane.locator(".lane-label")).toHaveText("Done (2)");
+    await doneLane.getByRole("button", { name: "Last 24h" }).click();
+    expect(await ids('#kanbanBody .kcol[data-lane="done"] .kcard')).toEqual(["done-new"]);
+
+    // Superseded: hidden by default, its own bucket when asked for, and
+    // never back in Needs you even though its status is "failed".
+    await page.locator("#showSuperseded").check();
+    expect(await ids('#kanbanBody .kcol[data-lane="superseded"] .kcard')).toEqual(["superseded"]);
+    await expect(tag("superseded")).toHaveText("Failed");
+    expect(await ids("#needsYou .kcard")).not.toContain("superseded");
+    await page.locator("#showSuperseded").uncheck();
+    await expect(page.locator('#kanbanBody .kcol[data-lane="superseded"]')).toHaveCount(0);
+
+    // The page's own table agrees with what it drew (page globals, never
+    // an import of src/api/public/*.js, see test/e2e-public-imports.test.ts).
+    const placements = await page.evaluate((tasks) => tasks.map((x) => (window as unknown as { taskPlacement(t: unknown): string }).taskPlacement(x)), board);
+    expect(placements).toEqual([
+      "queued", "queued", "working", "working", "working", "in-review", "done", "done",
+      "needs-you", "needs-you", "needs-you", "needs-you", "needs-you", "needs-you", "needs-you",
+    ]);
+  });
+
+  test("the Needs you strip is hidden when nothing needs a human", async ({ page }) => {
+    await serveBoardTasks(page, [
+      { id: "q", title: "A2 queued", body: "x", labels: [], status: "inbox" },
+      { id: "s", title: "A2 superseded review", body: "x", labels: [], status: "review", supersededBy: "q" },
+    ]);
+    await page.goto("/board");
+    await expect(page.locator('#kanbanBody .kcard[data-task-id="q"]')).toBeVisible();
+    await expect(page.locator("#needsYou")).toBeHidden();
   });
 });
