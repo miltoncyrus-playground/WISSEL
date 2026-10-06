@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import { discoverApiKeyHarnesses, discoverCodexHarnesses, discoverHarnesses, validateHarness, type DiscoverHarnessesOptions } from "./harness-discovery.ts";
-import type { Harness, HarnessTool } from "./types.ts";
+import type { AgentDef, Executor, Harness, HarnessTool } from "./types.ts";
 
 /** Thrown by `HarnessPool.acquire` when a caller passes an explicit
  *  `harnessId` (a `TaskCard.harnessOverride`, not the normal automatic
@@ -15,6 +15,38 @@ export class HarnessOverrideError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "HarnessOverrideError";
+  }
+}
+
+/** Startup check for every agent's `harnesses` list
+ *  (docs/SDD-agent-harness-preference.md §3.2): each id must exist in
+ *  `pool`, and each listed harness's tool must match the `harnessTool` of
+ *  the executor that would run the agent, found with the same
+ *  `canHandle` lookup Orchestrator.process uses, in every pool given
+ *  (the automatic loop's and the manual/pipeline one). Throws on the
+ *  first violation, naming the agent and the id. A listed harness that's
+ *  disabled is fine: that's the normal "wait" case. An agent no executor
+ *  handles is skipped (it's handed off, never run here). */
+export function validateAgentHarnesses(agents: AgentDef[], pool: HarnessPool, executorPools: Executor[][]): void {
+  for (const agent of agents) {
+    if (!agent.harnesses?.length) continue;
+    const tools = new Set<HarnessTool | undefined>();
+    for (const executors of executorPools) {
+      const executor = executors.find((e) => e.canHandle(agent));
+      if (executor) tools.add(executor.harnessTool);
+    }
+    if (tools.has(undefined)) {
+      throw new Error(`agent "${agent.id}" lists harnesses [${agent.harnesses.join(", ")}] but runs on an executor with no harness tool`);
+    }
+    for (const id of agent.harnesses) {
+      const harness = pool.get(id);
+      if (!harness) throw new Error(`agent "${agent.id}" lists unknown harness id "${id}"`);
+      for (const tool of tools) {
+        if (harness.tool !== tool) {
+          throw new Error(`agent "${agent.id}" lists harness "${id}", a ${harness.tool} harness, but its executor runs ${tool}`);
+        }
+      }
+    }
   }
 }
 
@@ -47,7 +79,9 @@ export class HarnessPool {
    *  non-claude-cli tool discovery can't probe) is kept as-is. A missing
    *  `harnesses.yaml` is not an error here — unlike `load()`, which
    *  throws — since discovery alone is a complete, valid starting
-   *  point; the file only ever adds overrides.
+   *  point; the file only ever adds overrides. A file that exists but
+   *  doesn't load (bad YAML, duplicate id, invalid `maxConcurrent`)
+   *  throws.
    *
    *  Every manual entry is re-verified the same way a discovered one is
    *  (`validateHarness`) before being layered in — `harnesses.yaml` is
@@ -56,9 +90,15 @@ export class HarnessPool {
    *  manual entry that fails verification is kept but reported
    *  `enabled: false` rather than trusted at face value. */
   static async autoload(path = "harnesses.yaml", discoverOpts: DiscoverHarnessesOptions = {}): Promise<HarnessPool> {
+    // Only a missing file means "no overrides." Anything else (bad YAML,
+    // duplicate id, invalid maxConcurrent) stops startup, instead of
+    // silently dropping every manual entry and with it every disable.
     const manual = await HarnessPool.load(path).then(
       (pool) => pool.all(),
-      () => [] as Harness[],
+      (e: NodeJS.ErrnoException) => {
+        if (e.code === "ENOENT") return [] as Harness[];
+        throw e;
+      },
     );
     const [discoveredCli, discoveredCodex, validatedManual] = await Promise.all([
       discoverHarnesses(discoverOpts),
@@ -82,6 +122,9 @@ export class HarnessPool {
       if (pool.harnesses.has(harness.id)) {
         throw new Error(`duplicate harness id: ${harness.id}`);
       }
+      if (harness.maxConcurrent !== undefined && !(Number.isInteger(harness.maxConcurrent) && harness.maxConcurrent > 0)) {
+        throw new Error(`harness "${harness.id}": maxConcurrent must be a positive integer, got ${JSON.stringify(harness.maxConcurrent)}`);
+      }
       pool.harnesses.set(harness.id, harness);
     }
     return pool;
@@ -91,12 +134,14 @@ export class HarnessPool {
     return [...this.harnesses.values()];
   }
 
-  /** True when at least one enabled harness exists for `tool`. When this
-   *  is false the orchestrator holds the task instead of running it with
-   *  no harness, so disabling a harness actually stops work on it (see
-   *  Orchestrator.process). */
-  hasEnabled(tool: HarnessTool): boolean {
-    return this.all().some((h) => h.enabled && h.tool === tool);
+  /** True when `acquire(tool, undefined, preferred)` would return a
+   *  harness right now, without marking anything in flight. When this is
+   *  false the orchestrator holds the task instead of running it with no
+   *  harness (or on a harness the agent didn't list), so disabling a
+   *  harness, or filling it to `maxConcurrent`, actually stops new work
+   *  on it (see Orchestrator.process). */
+  canAcquire(tool: HarnessTool, preferred?: string[]): boolean {
+    return this.pick(tool, preferred) !== undefined;
   }
 
   get(id: string): Harness | undefined {
@@ -110,34 +155,61 @@ export class HarnessPool {
     return this.inFlight.get(id) ?? 0;
   }
 
-  /** Picks the least-loaded enabled harness for a tool (ties broken by
-   *  manifest order) and marks it in-flight until `release()` is called.
-   *  Returns undefined when no enabled harness exists for the tool —
-   *  callers fall back to running with no harness at all, identical to
-   *  wissel's behavior before harnesses existed (whatever `claude` is on
-   *  PATH, under the ambient environment).
+  /** True when `harness` has room for one more task under its
+   *  `maxConcurrent` (always true when it has none). */
+  hasCapacity(harness: Harness): boolean {
+    return harness.maxConcurrent === undefined || this.activeCount(harness.id) < harness.maxConcurrent;
+  }
+
+  /** Marks a harness in-flight until `release()` is called, choosing it
+   *  in this order (docs/SDD-agent-harness-preference.md §3.4):
    *
-   *  `harnessId`, when given, is a forced pick (`TaskCard.harnessOverride`)
-   *  rather than the automatic least-loaded selection above: looks the id
-   *  up directly and **throws** `HarnessOverrideError` if it's unknown,
-   *  disabled, or belongs to a different tool than `tool` — never falls
-   *  back to the automatic pick, since a human/API asked for this exact
-   *  harness by name. Omitted entirely (the normal case), behavior is
-   *  byte-identical to before this parameter existed. */
-  acquire(tool: HarnessTool, harnessId?: string): Harness | undefined {
+   *  1. `harnessId` (`TaskCard.harnessOverride`): a forced pick. Throws
+   *     `HarnessOverrideError` if the id is unknown, disabled, a
+   *     different tool than `tool`, or at its `maxConcurrent`. Never
+   *     falls back to an automatic pick, since a human asked for this
+   *     exact harness by name and should hear why it can't run.
+   *  2. `preferred` non-empty (`AgentDef.harnesses`): the first id in list
+   *     order that is enabled, of `tool`, and under capacity. Undefined
+   *     when none qualifies. Never falls through to an unlisted harness.
+   *  3. Otherwise: the least-loaded enabled harness for `tool` that is
+   *     under capacity (ties broken by manifest order).
+   *
+   *  Undefined means nothing is available; callers hold the task
+   *  (Orchestrator) or fail the step (pipeline-runner) rather than run
+   *  without a harness. */
+  acquire(tool: HarnessTool, harnessId?: string, preferred?: string[]): Harness | undefined {
     if (harnessId !== undefined) {
       const harness = this.harnesses.get(harnessId);
       if (!harness) throw new HarnessOverrideError(`unknown harness id "${harnessId}"`);
       if (!harness.enabled) throw new HarnessOverrideError(`harness "${harnessId}" is disabled`);
       if (harness.tool !== tool) throw new HarnessOverrideError(`harness "${harnessId}" is a ${harness.tool} harness, not ${tool}`);
+      if (!this.hasCapacity(harness)) {
+        throw new HarnessOverrideError(`harness "${harnessId}" is at capacity (${this.activeCount(harness.id)}/${harness.maxConcurrent} running)`);
+      }
       this.inFlight.set(harness.id, this.activeCount(harness.id) + 1);
       return harness;
     }
-    const candidates = this.all().filter((h) => h.enabled && h.tool === tool);
-    if (candidates.length === 0) return undefined;
-    const picked = candidates.reduce((best, h) => (this.activeCount(h.id) < this.activeCount(best.id) ? h : best));
-    this.inFlight.set(picked.id, this.activeCount(picked.id) + 1);
+    const picked = this.pick(tool, preferred);
+    if (picked) this.inFlight.set(picked.id, this.activeCount(picked.id) + 1);
     return picked;
+  }
+
+  /** Rules 2 and 3 of `acquire()`, with no side effects. Shared with
+   *  `canAcquire()` so the orchestrator's hold and the real pick can
+   *  never disagree about what's available. */
+  private pick(tool: HarnessTool, preferred?: string[]): Harness | undefined {
+    const available = (h: Harness) => h.enabled && h.tool === tool && this.hasCapacity(h);
+    if (preferred && preferred.length > 0) {
+      for (const id of preferred) {
+        const harness = this.harnesses.get(id);
+        if (harness && available(harness)) return harness;
+      }
+      return undefined;
+    }
+    const candidates = this.all().filter(available);
+    if (candidates.length === 0) return undefined;
+    return candidates.reduce((best, h) => (this.activeCount(h.id) < this.activeCount(best.id) ? h : best));
   }
 
   release(id: string): void {

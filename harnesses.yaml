@@ -15,6 +15,18 @@
 #
 # claude-personal below is kept as a demonstration of that override: it
 # pins a friendlier label than auto-detection would generate on its own.
+#
+# Optional `maxConcurrent: N` (positive integer) caps how many tasks run
+# on a harness at once; at the cap it counts as busy and isn't picked.
+# Unset means unlimited. To cap an auto-detected account, add a full
+# entry for it here (an entry replaces the detected one, it doesn't merge).
+#
+# Agents choose harnesses from this file by id: an agent's
+# `harnesses: [id, ...]` list in agents/manifest.yaml is an ordered
+# preference. When none of its harnesses is enabled and under
+# maxConcurrent, its tasks wait; they never run on an unlisted harness.
+# An id there that doesn't exist here, or has the wrong tool, stops
+# startup. See docs/SDD-agent-harness-preference.md.
 harnesses:
   - id: claude-personal
     tool: claude-cli

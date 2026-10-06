@@ -112,6 +112,24 @@ and it's `harnesses.yaml` itself that gets updated (comments preserved),
 so the decision survives a restart — see
 `docs/SDD-harness-enable-disable.md`.
 
+An agent can pin which harnesses it runs on with an ordered
+`harnesses:` list in `agents/manifest.yaml`, e.g.
+`harnesses: [claude-adevinta, claude]`. Each run takes the first listed
+harness that is enabled and under capacity. When none is, the task
+**waits** unrouted in its column (logged once as `waiting: none of
+[claude-adevinta, claude] enabled and under capacity`) and resumes on
+its own when one is enabled or a run on one finishes; it never moves to
+a harness the agent didn't list. A pipeline step can't wait, so it fails
+loud instead. A card's `harnessOverride` still wins over the list. An
+unknown id, or a harness whose tool doesn't match the agent's executor
+(a claude-cli agent listing a codex harness), stops the server at
+startup; a listed harness that's merely disabled doesn't. Agents with
+no list keep the old least-loaded pick. A harness in `harnesses.yaml`
+can set `maxConcurrent: N` (a positive integer) to cap how many tasks
+run on it at once; at the cap it counts as busy, and an override onto it
+fails loud. `GET /agents` and `GET /harnesses` report both fields. See
+`docs/SDD-agent-harness-preference.md`.
+
 Wissel reports which commit/build it's actually running, snapshotted
 once at process startup (not a live git check, so it always describes
 what this process loaded, not whatever's currently on disk — see

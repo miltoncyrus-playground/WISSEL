@@ -8,7 +8,7 @@ import { SqlitePipelineStore } from "../services/pipelines.ts";
 import type { ProjectStore } from "../services/projects.ts";
 import { SqliteProjectStore } from "../services/projects.ts";
 import { TelemetryLog } from "../services/telemetry.ts";
-import { HarnessPool } from "../core/harness-pool.ts";
+import { HarnessPool, validateAgentHarnesses } from "../core/harness-pool.ts";
 import { McpServerPool, checkMcpServerReachable, parseMcpServerCreateInput, type CheckMcpServerReachableOptions } from "../core/mcp-server-pool.ts";
 import { setMcpServerEnabled, setMcpServerToolTrust, addMcpServer } from "../core/mcp-manifest.ts";
 import { Registry } from "../core/registry.ts";
@@ -261,6 +261,11 @@ export function createApp(
     new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
   ];
+  // Fail loud before serving anything if an agent's `harnesses` list names
+  // an unknown id or a harness of the wrong tool (a typo would otherwise
+  // hold that agent's tasks forever). See
+  // docs/SDD-agent-harness-preference.md §3.2.
+  validateAgentHarnesses(registry.all(), harnesses, [autoExecutors, manualExecutors]);
 
   // A pipeline run always executes every step in-process, the same way
   // a human's manual "Run" click does — a pipeline never hands a step

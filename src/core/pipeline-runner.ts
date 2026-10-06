@@ -222,18 +222,21 @@ async function runStepAndSuccessors(
   // run does, so it needs the same in-flight accounting. No
   // harnessOverride support here: a pipeline step's TaskCard never sets
   // one (nothing in the canvas editor or PipelineStepDef exposes it),
-  // so this is always the automatic least-loaded pick, never the
-  // override-or-throw path.
-  const harness = executor.harnessTool ? ctx.harnesses?.acquire(executor.harnessTool) : undefined;
-  // No enabled harness for this step's tool: fail the step loud instead
-  // of running it with no harness on ambient credentials, matching
-  // Orchestrator.process's rule that a disabled harness stops work. A
-  // step runs immediately, so unlike a board task it can't wait.
+  // so this is always the automatic pick (the agent's own `harnesses`
+  // list when it has one), never the override-or-throw path.
+  const harness = executor.harnessTool ? ctx.harnesses?.acquire(executor.harnessTool, undefined, agent.harnesses) : undefined;
+  // Nothing available for this step: fail it loud instead of running it
+  // with no harness on ambient credentials or on a harness the agent
+  // didn't list, matching Orchestrator.process's rule. A step runs
+  // immediately, so unlike a board task it can't wait.
   if (executor.harnessTool && ctx.harnesses && !harness) {
+    const reason = agent.harnesses?.length
+      ? `none of agent "${agent.id}"'s harnesses [${agent.harnesses.join(", ")}] enabled and under capacity, step not run`
+      : `no enabled ${executor.harnessTool} harness under capacity, step not run (enable one under Manage harnesses)`;
     await finishResult(
       board,
       registry,
-      fail(created.id, agent.id, `no enabled ${executor.harnessTool} harness, step not run (enable one under Manage harnesses)`),
+      fail(created.id, agent.id, reason),
       ctx.telemetry,
       undefined,
       ctx.memoryPath,
