@@ -206,4 +206,34 @@ test.describe("pipeline-editor canvas app", () => {
     expect(task.pipelineId).toBe(pipelineId);
     expect(["done", "failed"]).toContain(task.status); // settled either way — see isJoinSatisfied's done-or-failed rule
   });
+
+  // Regression: the board is normally opened over plain HTTP on a LAN IP
+  // (http://192.168.10.25:8787), an insecure context where
+  // crypto.randomUUID doesn't exist. App.tsx called it directly for new
+  // step and edge ids, so "+ Add step" threw "crypto.randomUUID is not a
+  // function" and nothing appeared. This suite runs on localhost (a
+  // secure context), so the bug was invisible here; removing randomUUID
+  // before the app loads reproduces the LAN case.
+  test("adding and connecting steps works without crypto.randomUUID (plain-HTTP LAN access)", async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(Crypto.prototype, "randomUUID", { value: undefined, configurable: true });
+    });
+    const pageErrors: string[] = [];
+    page.on("pageerror", (e) => pageErrors.push(e.message));
+
+    await page.goto("/pipelines/edit");
+    expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
+
+    const addStep = page.getByRole("button", { name: "+ Add step" });
+    await addStep.click();
+    await addStep.click();
+    await expect(page.locator(".react-flow__node")).toHaveCount(2);
+
+    await page.getByRole("button", { name: "Fit View" }).click();
+    await page.waitForTimeout(200);
+    await connectNodes(page, 0, 1);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+
+    expect(pageErrors).toEqual([]);
+  });
 });

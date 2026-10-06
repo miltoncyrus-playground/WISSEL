@@ -42,5 +42,10 @@ Card text and docs can point at the wrong file, section or line. Grep first and 
 
 When the code deliberately differs from an SDD, add a named revision note in the doc. Word claims about verification honestly ("checked against the docs" is not "observed in a live run").
 
+## Browser code runs over plain HTTP, not a secure context
+The board and pipeline editor are opened at `http://192.168.10.25:8787`, plain HTTP on a LAN IP, so browser APIs that need a secure context are missing: `crypto.randomUUID`, `navigator.clipboard`, service workers. e2e runs on `localhost`, which counts as secure, so tests pass while the real UI breaks.
+
+Use `newId()` (`pipeline-editor/src/id.ts`), which falls back to `crypto.getRandomValues`. Check any new browser API against MDN's "secure context" note. To reproduce the LAN case in Playwright, remove the API in `page.addInitScript` (see the randomUUID test in `e2e/pipeline-editor.spec.ts`).
+
 ## Process management
 Kill processes by PID. `pkill -f <pattern>` can match the shell running it and kill your own command.

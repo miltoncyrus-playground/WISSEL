@@ -14,6 +14,7 @@ import {
 import { createPipeline, getPipeline, listAgents, listPipelines, runPipeline, updatePipeline } from "./api";
 import { flowToGraph, graphToFlow, incomingCounts, positionsOf, type StepNode as StepNodeType } from "./graph";
 import { StepNode, type StepNodeInteractive } from "./components/StepNode";
+import { newId } from "./id";
 import type { AgentDef, PipelineDef, PipelineStepDef, TaskCard } from "./types";
 
 const nodeTypes = { step: StepNode };
@@ -33,7 +34,7 @@ function pipelineIdFromLocation(): string | undefined {
 
 function newStep(index: number, agents: AgentDef[]): PipelineStepDef {
   return {
-    id: crypto.randomUUID(),
+    id: newId(),
     name: `Step ${index + 1}`,
     agentId: agents[0]?.id ?? "",
     transition: "choose",
@@ -132,7 +133,7 @@ export function App() {
   );
 
   const onConnect = useCallback(
-    (connection: Connection) => setEdges((eds) => addEdge({ ...connection, id: crypto.randomUUID() }, eds)),
+    (connection: Connection) => setEdges((eds) => addEdge({ ...connection, id: newId() }, eds)),
     [setEdges],
   );
 
