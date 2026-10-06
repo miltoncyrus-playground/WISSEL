@@ -20,7 +20,7 @@ agents:
     outputs: [task-card]
     trustLevel: low
     toolAccess: [read]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.03 }
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.03 }
 
   - id: planner
     name: Planner
@@ -43,7 +43,7 @@ agents:
     outputs: [subtask-cards, acceptance-criteria]
     trustLevel: low
     toolAccess: [read]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.08 }
+    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.08 }
     # Same mechanism as reviewer's own outputContractFormat below —
     # declaring this is what makes a run's final message get parsed by
     # parseSubtaskPlan (src/executors/parse-subtask-plan.ts) instead of
@@ -113,7 +113,7 @@ agents:
     outputs: [review-comments, approval-decision]
     trustLevel: medium
     toolAccess: [read]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.12 }
+    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.12 }
     # This isn't just documentation of the shape below — declaring
     # outputContract is what makes a run's final message get parsed by
     # parseReviewVerdict (src/executors/parse-review-verdict.ts) instead
@@ -206,7 +206,7 @@ agents:
     outputs: [review-comments, approval-decision]
     trustLevel: medium
     toolAccess: [read]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.12 }
+    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.12 }
     # A separate agent id from `reviewer` on purpose — not an oversight,
     # not an accidental duplicate. outputContractFormat is a static,
     # per-agent field (see AgentDef.outputContractFormat,
@@ -305,7 +305,7 @@ agents:
     outputs: [mcp-tool-result]
     trustLevel: medium
     toolAccess: [read]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.05 }
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.05 }
     # Points at the eval's own test-local McpServerPool fixture
     # (eval/pipeline-mcp-integration.eval.ts), not a real registered
     # entry in mcp-servers.yaml — see that eval's own doc comment for why
@@ -350,7 +350,7 @@ agents:
     outputs: [context-doc]
     trustLevel: low
     toolAccess: [read]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.15 }
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.15 }
 
   - id: memory-curator
     name: Memory curator
@@ -364,7 +364,7 @@ agents:
     outputs: [memory-entries]
     trustLevel: low
     toolAccess: [read]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.05 }
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.05 }
     # Declaring `outputs: [memory-entries]` above is what makes
     # finishResult (src/core/orchestrator.ts) write this agent's raw
     # `result.summary` to memory/lessons.md, wholesale, replacing
@@ -490,7 +490,7 @@ agents:
     # as before, this only removes the click for an already-clean pass.
     autoMerge: true
     toolAccess: [read, write, bash]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.60 }
+    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.60 }
     # verificationContract — see AgentDef.verificationContract and
     # WriteExecutor's matching --allowedTools grant
     # (src/executors/write.ts). Only takes effect together with that
@@ -535,7 +535,7 @@ agents:
     outputs: [diff]
     trustLevel: high
     toolAccess: [read, write, bash]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.35 }
+    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.35 }
 
   - id: integrator
     name: Integrator
@@ -555,7 +555,7 @@ agents:
     outputs: [merged-branch]
     trustLevel: high
     toolAccess: [read, write, bash]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.25 }
+    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.25 }
 
   # --- skills: narrower, more mechanical, cheaper than a full agent ---
 
@@ -571,7 +571,7 @@ agents:
     outputs: [commit-message]
     trustLevel: low
     toolAccess: []
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.01 }
+    costProfile: { model: claude-haiku-4-5, estUsdPerTask: 0.01 }
 
   - id: pr-description-writer
     name: PR description writer
@@ -585,7 +585,7 @@ agents:
     outputs: [pr-description]
     trustLevel: low
     toolAccess: []
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.02 }
+    costProfile: { model: claude-haiku-4-5, estUsdPerTask: 0.02 }
 
   - id: changelog-writer
     name: Changelog writer
@@ -599,7 +599,7 @@ agents:
     outputs: [changelog-entry]
     trustLevel: low
     toolAccess: []
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.03 }
+    costProfile: { model: claude-haiku-4-5, estUsdPerTask: 0.03 }
 
   - id: quick-answer
     name: Quick answer
@@ -613,7 +613,7 @@ agents:
     outputs: [answer]
     trustLevel: low
     toolAccess: []
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.01 }
+    costProfile: { model: claude-haiku-4-5, estUsdPerTask: 0.01 }
 
   - id: lint-fixer
     name: Lint fixer
@@ -627,4 +627,4 @@ agents:
     outputs: [diff]
     trustLevel: medium
     toolAccess: [read, write, bash]
-    costProfile: { model: claude-sonnet-5, estUsdPerTask: 0.05 }
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.05 }
