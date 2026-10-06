@@ -41,7 +41,7 @@ harnesses:
   - id: anthropic-api
     tool: anthropic-api
     label: Anthropic API
-    enabled: false
+    enabled: true
     apiKeyEnv: ANTHROPIC_API_KEY
   - id: codex
     tool: codex-cli

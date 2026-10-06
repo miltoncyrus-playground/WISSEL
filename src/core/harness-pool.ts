@@ -91,6 +91,14 @@ export class HarnessPool {
     return [...this.harnesses.values()];
   }
 
+  /** True when at least one enabled harness exists for `tool`. When this
+   *  is false the orchestrator holds the task instead of running it with
+   *  no harness, so disabling a harness actually stops work on it (see
+   *  Orchestrator.process). */
+  hasEnabled(tool: HarnessTool): boolean {
+    return this.all().some((h) => h.enabled && h.tool === tool);
+  }
+
   get(id: string): Harness | undefined {
     return this.harnesses.get(id);
   }

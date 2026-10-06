@@ -286,6 +286,28 @@ test("a configured HarnessPool is acquired before each step's run and released a
   expect(steps.every((s) => s.harness === "solo")).toBe(true);
 });
 
+test("a step whose tool has no enabled harness fails loud and never runs (no ambient-credential fallback)", async () => {
+  const board = new SqliteBoard();
+  const registry = Registry.from([pipelineAgent("step-a")]);
+  const graph: PipelineGraph = { steps: [{ id: "a", name: "A", agentId: "step-a", transition: "choose" }], edges: [] };
+  const harnesses = HarnessPool.from([{ id: "solo", tool: "claude-cli", label: "solo", enabled: false }]);
+  let runnerCalls = 0;
+  const runner: CommandRunner = async () => {
+    runnerCalls++;
+    return { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: handoff({}) }), stderr: "", exitCode: 0 };
+  };
+  const ctx: PipelineRunnerContext = { executors: [new ReadOnlyExecutor({ runner })], pipelines: new SqlitePipelineStore(board.db), harnesses };
+  const pipelineDef = await ctx.pipelines.create({ name: "No harness", description: "", graph });
+
+  await startPipelineRun(board, registry, pipelineDef, "/tmp/repo", "do the thing", ctx);
+
+  expect(runnerCalls).toBe(0);
+  expect(harnesses.activeCount("solo")).toBe(0);
+  const step = (await board.list()).find((t) => t.pipelineStepId === "a");
+  expect(step?.status).toBe("failed");
+  expect((await board.getResult(step!.id))?.summary).toContain("no enabled claude-cli harness");
+});
+
 // --- MCP approval-gate composition (docs/SDD-mcp-orchestration.md §6 ---
 // Subtask 7's own named, real finding) ------------------------------------
 

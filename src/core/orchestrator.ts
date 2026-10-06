@@ -11,7 +11,7 @@ import { determineWorktreeMergeState, mergeTaskWorktree, removeTaskWorktree, typ
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
 import { handlePipelineStepResult } from "./pipeline-runner.ts";
 import { formatMcpTranscript } from "../services/mcp-transcript.ts";
-import type { AgentDef, Executor, Harness, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
+import type { AgentDef, Executor, Harness, HarnessTool, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
 
 /** What finishResult needs to drive a pipeline step's own follow-up work
  *  (see the `task.pipelineId !== undefined` branch below) — passed
@@ -930,6 +930,9 @@ function startOfUtcDay(now: Date): Date {
  */
 export class Orchestrator {
   private inFlight = new Set<string>();
+  /** Tasks held because no enabled harness exists for their tool, and
+   *  which tool. Used only to log once per task, not on every sweep. */
+  private waitingForHarness = new Map<string, HarnessTool>();
 
   constructor(
     private board: Board & { events: EventEmitter },
@@ -1086,6 +1089,23 @@ export class Orchestrator {
         return;
       }
 
+      // No enabled harness for this executor's tool: hold the task, don't
+      // run it. Before this check, acquire() returned undefined and the
+      // executor ran with no harness, falling back to ambient credentials
+      // (for ApiExecutor, ANTHROPIC_API_KEY from .env), so disabling a
+      // harness didn't stop work on it. Returning before recordDecision
+      // leaves the task unrouted in its column, so the next sweep retries
+      // it; the harness enable endpoint triggers that sweep. An explicit
+      // harnessOverride is excluded: acquire() already fails it loud below.
+      if (executor?.harnessTool && this.opts.harnesses && !task.harnessOverride && !this.opts.harnesses.hasEnabled(executor.harnessTool)) {
+        if (this.waitingForHarness.get(task.id) !== executor.harnessTool) {
+          this.waitingForHarness.set(task.id, executor.harnessTool);
+          console.log(`orchestrator: task ${task.id} (${agent.id}) waiting, no enabled ${executor.harnessTool} harness`);
+        }
+        return;
+      }
+      this.waitingForHarness.delete(task.id);
+
       await this.board.recordDecision(decision);
       await this.telemetry?.record({
         type: "dispatch",
@@ -1145,6 +1165,15 @@ export class Orchestrator {
           summary: `harness override '${task.harnessOverride}' can't be honored: ${e.message}`,
         };
         await finishResult(this.board, this.registry, result, this.telemetry, undefined, this.opts.memoryPath);
+        return;
+      }
+      // The last enabled harness was disabled between the check above and
+      // here (recordDecision/telemetry awaited in between). Same rule:
+      // don't run without one. resetToInbox clears routedTo, and the
+      // sweep its event triggers holds the task at the check above
+      // without emitting another event, so this can't loop.
+      if (executor!.harnessTool && this.opts.harnesses && !harness) {
+        await this.board.resetToInbox(task.id);
         return;
       }
       if (harness) await this.board.setHarness(task.id, harness.id);

@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,6 +8,7 @@ import { createApp, servePipelineEditorAsset, type CreateAppOptions } from "../s
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
+import { Orchestrator } from "../src/core/orchestrator.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import type { AgentDef, Executor, Harness, McpServer, TaskCard, TaskResult } from "../src/core/types.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
@@ -77,7 +78,11 @@ test("GET /harnesses defaults to empty, and returns configured harnesses with a 
   expect(await (await empty(req("/harnesses"))).json()).toEqual([]);
 
   const harnesses = HarnessPool.from([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true }]);
-  const withHarness = await makeApp(new SqliteBoard(), { harnesses });
+  // An explicit, never-created cache path: the default is the real
+  // ~/.wissel/models-cache.json, which exists once WISSEL_MODEL_REFRESH
+  // has run on this machine and made this cache-miss case fail.
+  const modelsCachePath = join(tmpdir(), `wissel-no-models-cache-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  const withHarness = await makeApp(new SqliteBoard(), { harnesses, modelsCachePath });
   const res = await withHarness(req("/harnesses"));
   const body = (await res.json()) as { id: string; tool: string; label: string; enabled: boolean; activeCount: number; availableModels: string[] }[];
   // No cache configured/found for this harness id yet — a cache-miss
@@ -225,6 +230,43 @@ test("POST /harnesses/:id/enable re-validates first — succeeds and clears disa
     const onDisk = parse(await readFile(path, "utf8")) as { harnesses: Harness[] };
     expect(onDisk.harnesses.find((h) => h.id === "a")?.enabled).toBe(true);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /harnesses/:id/enable triggers a sweep when the orchestrator is on, so tasks held for lack of a harness resume", async () => {
+  const { dir, path } = await harnessesFixture("harnesses:\n  - id: a\n    tool: claude-cli\n    label: A\n    enabled: false\n");
+  const sweep = spyOn(Orchestrator.prototype, "sweep").mockImplementation(async () => {});
+  try {
+    const harnesses = HarnessPool.from([{ id: "a", tool: "claude-cli", label: "A", enabled: false }]);
+    const runner: CommandRunner = async () => ({ stdout: JSON.stringify({ loggedIn: true }), stderr: "", exitCode: 0 });
+    const app = await makeApp(new SqliteBoard(), { harnesses, harnessesPath: path, harnessRunner: runner, orchestratorEnabled: true });
+    await new Promise((r) => setTimeout(r, 20)); // let startup's own initial sweep happen first
+    const before = sweep.mock.calls.length;
+
+    const res = await app(req("/harnesses/a/enable", { method: "POST" }));
+
+    expect(res.status).toBe(200);
+    expect(sweep.mock.calls.length).toBe(before + 1);
+  } finally {
+    sweep.mockRestore();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("POST /harnesses/:id/enable doesn't sweep when the orchestrator is off", async () => {
+  const { dir, path } = await harnessesFixture("harnesses:\n  - id: a\n    tool: claude-cli\n    label: A\n    enabled: false\n");
+  const sweep = spyOn(Orchestrator.prototype, "sweep").mockImplementation(async () => {});
+  try {
+    const harnesses = HarnessPool.from([{ id: "a", tool: "claude-cli", label: "A", enabled: false }]);
+    const runner: CommandRunner = async () => ({ stdout: JSON.stringify({ loggedIn: true }), stderr: "", exitCode: 0 });
+    const app = await makeApp(new SqliteBoard(), { harnesses, harnessesPath: path, harnessRunner: runner });
+
+    await app(req("/harnesses/a/enable", { method: "POST" }));
+
+    expect(sweep).not.toHaveBeenCalled();
+  } finally {
+    sweep.mockRestore();
     await rm(dir, { recursive: true, force: true });
   }
 });

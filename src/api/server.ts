@@ -498,7 +498,12 @@ export function createApp(
             return json({ error: "still not authenticated" }, 409);
           }
           await setHarnessEnabled(harnessesPath, harness, true);
-          return json(harnesses.setEnabled(harness.id, true));
+          const enabled = harnesses.setEnabled(harness.id, true);
+          // Tasks held because no harness for this tool was enabled (see
+          // Orchestrator.process) only get re-checked on a sweep, and a
+          // harness toggle isn't a board event, so trigger one here.
+          if (opts.orchestratorEnabled) void orchestrator.sweep();
+          return json(enabled);
         }
 
         if (parts[2] === "disable" && req.method === "POST") {

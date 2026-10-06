@@ -270,3 +270,39 @@ uncertainty to spike first, the one real fork was already resolved
 
 §2's fork is resolved. Nothing else here blocks starting — confirm
 you're good with the shape above (§4–§9) and I'll build it.
+
+## Revision (2026-10-06): disabling a harness now actually stops work
+
+**What was wrong.** When no enabled harness existed for an executor's
+tool, `HarnessPool.acquire()` returned `undefined` and
+`Orchestrator.process` ran the task anyway with no harness. Executors
+then fell back to ambient credentials: `ApiExecutor` built an Anthropic
+client with no explicit key, and the SDK read `ANTHROPIC_API_KEY` from
+`.env`. Disabling `anthropic-api` under "Manage harnesses" therefore
+didn't stop API calls. Telemetry shows this never fired in practice, but
+nothing prevented it.
+
+**The rule now.** No enabled harness for a tool means no run on that
+tool:
+
+- **Board tasks wait.** `Orchestrator.process` checks
+  `HarnessPool.hasEnabled(tool)` before `recordDecision`, so a held task
+  stays unrouted in its column and the next sweep retries it. It logs
+  once per task: `orchestrator: task <id> (<agent>) waiting, no enabled
+  <tool> harness`. If the last harness is disabled between that check
+  and `acquire()`, the task is reset to inbox (`resetToInbox`) and not
+  run.
+- **Re-enabling resumes them.** `POST /harnesses/:id/enable` triggers a
+  sweep when the orchestrator is on, because a harness toggle isn't a
+  board event.
+- **Pipeline steps fail loud.** A step runs immediately and can't wait,
+  so `runStepAndSuccessors` fails it with "no enabled <tool> harness,
+  step not run".
+- **Unchanged:** an explicit `harnessOverride` still fails loud via
+  `HarnessOverrideError`; a setup with no harness pool at all still runs
+  without one.
+
+Tests: `test/orchestrator.test.ts` (held, resumes, per-tool, logs once,
+mid-dispatch race, no-pool unchanged), `test/pipeline-runner.test.ts`
+and `test/api.test.ts` (enable triggers a sweep only when the
+orchestrator is on).

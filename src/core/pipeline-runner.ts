@@ -225,6 +225,22 @@ async function runStepAndSuccessors(
   // so this is always the automatic least-loaded pick, never the
   // override-or-throw path.
   const harness = executor.harnessTool ? ctx.harnesses?.acquire(executor.harnessTool) : undefined;
+  // No enabled harness for this step's tool: fail the step loud instead
+  // of running it with no harness on ambient credentials, matching
+  // Orchestrator.process's rule that a disabled harness stops work. A
+  // step runs immediately, so unlike a board task it can't wait.
+  if (executor.harnessTool && ctx.harnesses && !harness) {
+    await finishResult(
+      board,
+      registry,
+      fail(created.id, agent.id, `no enabled ${executor.harnessTool} harness, step not run (enable one under Manage harnesses)`),
+      ctx.telemetry,
+      undefined,
+      ctx.memoryPath,
+      pipelineCtx,
+    );
+    return;
+  }
   if (harness) await board.setHarness(created.id, harness.id);
 
   let result: TaskResult;

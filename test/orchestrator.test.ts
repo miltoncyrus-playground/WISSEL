@@ -1493,3 +1493,154 @@ test("spendCeilingUsd unset (the default) behaves identically to no cap at all, 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// --- A disabled harness actually stops work (2026-10-06) -------------------
+// Before: with no enabled harness for an executor's tool, acquire()
+// returned undefined and the task ran anyway with no harness, so an
+// ApiExecutor fell back to ANTHROPIC_API_KEY from .env. Disabling the
+// anthropic-api harness under "Manage harnesses" therefore didn't stop
+// API calls. Now the task is held, unrouted, until a harness is enabled.
+
+test("no enabled harness for the executor's tool: the task is held unrouted and never run", async () => {
+  let runs = 0;
+  const harnesses = HarnessPool.from([{ id: "my-api-key", tool: "anthropic-api", label: "Anthropic API", enabled: false, apiKeyEnv: "ANTHROPIC_API_KEY" }]);
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor(
+        "readonly",
+        async (task, agent) => {
+          runs++;
+          return { taskId: task.id, agentId: agent.id, ok: true, summary: "ran" };
+        },
+        "anthropic-api",
+      ),
+    ],
+    { harnesses },
+  );
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+  await orchestrator.sweep();
+
+  const held = await board.get(task.id);
+  expect(runs).toBe(0);
+  expect(held!.status).toBe("inbox");
+  expect(held!.routedTo).toBeUndefined();
+  expect(held!.harness).toBeUndefined();
+});
+
+test("a held task runs on the next sweep once a harness for its tool is enabled", async () => {
+  const seen: (string | undefined)[] = [];
+  const harnesses = HarnessPool.from([{ id: "my-api-key", tool: "anthropic-api", label: "Anthropic API", enabled: false, apiKeyEnv: "ANTHROPIC_API_KEY" }]);
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor(
+        "readonly",
+        async (task, agent, harness) => {
+          seen.push(harness?.id);
+          return { taskId: task.id, agentId: agent.id, ok: true, summary: "ran" };
+        },
+        "anthropic-api",
+      ),
+    ],
+    { harnesses },
+  );
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+  expect(seen).toEqual([]);
+
+  harnesses.setEnabled("my-api-key", true);
+  await orchestrator.sweep();
+
+  expect(seen).toEqual(["my-api-key"]);
+  expect((await board.get(task.id))!.status).toBe("done");
+});
+
+test("holding is per tool: a disabled anthropic-api harness doesn't hold a claude-cli task", async () => {
+  const ran: string[] = [];
+  const harnesses = HarnessPool.from([
+    { id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true },
+    { id: "my-api-key", tool: "anthropic-api", label: "Anthropic API", enabled: false, apiKeyEnv: "ANTHROPIC_API_KEY" },
+  ]);
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor("readonly", async (task, agent, harness) => {
+        ran.push(harness!.id);
+        return { taskId: task.id, agentId: agent.id, ok: true, summary: "ran" };
+      }),
+    ],
+    { harnesses },
+  );
+
+  await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+  expect(ran).toEqual(["claude-personal"]);
+});
+
+test("a held task logs once, not on every sweep", async () => {
+  const harnesses = HarnessPool.from([{ id: "my-api-key", tool: "anthropic-api", label: "Anthropic API", enabled: false, apiKeyEnv: "ANTHROPIC_API_KEY" }]);
+  const { board, orchestrator } = await setup(
+    [fakeExecutor("readonly", async (task, agent) => ({ taskId: task.id, agentId: agent.id, ok: true, summary: "ran" }), "anthropic-api")],
+    { harnesses },
+  );
+  const logs: string[] = [];
+  const original = console.log;
+  console.log = (...args: unknown[]) => void logs.push(args.join(" "));
+  try {
+    const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+    await orchestrator.sweep();
+    await orchestrator.sweep();
+    await orchestrator.sweep();
+    expect(logs.filter((l) => l.includes(task.id) && l.includes("waiting, no enabled anthropic-api harness"))).toHaveLength(1);
+  } finally {
+    console.log = original;
+  }
+});
+
+test("the last harness disabled mid-dispatch (after the check, before acquire): reset to inbox, never run", async () => {
+  let runs = 0;
+  // hasEnabled says yes, then acquire finds nothing: the exact race the
+  // second guard in Orchestrator.process covers.
+  const harnesses = HarnessPool.from([{ id: "my-api-key", tool: "anthropic-api", label: "Anthropic API", enabled: true, apiKeyEnv: "ANTHROPIC_API_KEY" }]);
+  harnesses.acquire = () => undefined;
+  const { board, orchestrator } = await setup(
+    [
+      fakeExecutor(
+        "readonly",
+        async (task, agent) => {
+          runs++;
+          return { taskId: task.id, agentId: agent.id, ok: true, summary: "ran" };
+        },
+        "anthropic-api",
+      ),
+    ],
+    { harnesses },
+  );
+
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+
+  const after = await board.get(task.id);
+  expect(runs).toBe(0);
+  expect(after!.status).toBe("inbox");
+  expect(after!.routedTo).toBeUndefined();
+});
+
+test("no harness pool configured at all: unchanged, the task still runs without a harness", async () => {
+  let seen: Harness | undefined | "unset" = "unset";
+  const { board, orchestrator } = await setup([
+    fakeExecutor(
+      "readonly",
+      async (task, agent, harness) => {
+        seen = harness;
+        return { taskId: task.id, agentId: agent.id, ok: true, summary: "ran" };
+      },
+      "anthropic-api",
+    ),
+  ]);
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await orchestrator.sweep();
+  expect(seen).toBeUndefined();
+  expect((await board.get(task.id))!.status).toBe("done");
+});
