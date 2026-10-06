@@ -165,15 +165,38 @@
 
   .swatch { width: 11px; height: 11px; border-radius: 50%; flex: none; display: inline-block; }
 
-  .kanban { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px; }
-  .kcol { flex: 1 0 168px; min-width: 168px; }
+  /* Four lanes (docs/SDD-ui-cleanup.md §3.2): Queued, Working, In
+     review, Done, sharing the width evenly. Lane membership comes from
+     STATUS_DISPLAY in board-lanes.js. */
+  .kanban { display: flex; gap: 12px; padding-bottom: 4px; }
+  .kcol { flex: 1 1 0; min-width: 0; }
   .kcol h3 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); margin: 0 0 8px; display: flex; align-items: center; gap: 6px; }
-  .kcol h3 .col-clear {
+  .kcol h3 .col-clear, .kcol h3 .col-toggle, .ny-head .col-clear {
     appearance: none; border: none; background: transparent; color: var(--ink-muted); font: inherit;
     font-size: 10px; font-weight: 700; text-transform: none; letter-spacing: normal; cursor: pointer;
-    margin-left: auto; padding: 2px 4px; border-radius: 4px;
+    padding: 2px 4px; border-radius: 4px; white-space: nowrap;
   }
-  .kcol h3 .col-clear:hover { color: var(--critical); background: rgba(0,0,0,0.06); }
+  .kcol h3 .col-clear, .kcol h3 .col-toggle:first-of-type { margin-left: auto; }
+  .kcol h3 .col-toggle + .col-clear { margin-left: 0; }
+  .kcol h3 .col-clear:hover, .ny-head .col-clear:hover { color: var(--critical); background: rgba(0,0,0,0.06); }
+  .kcol h3 .col-toggle:hover { color: var(--accent); background: rgba(0,0,0,0.06); }
+  /* "Needs you": every card waiting on a human, one strip above the
+     lanes, hidden when empty. Capped at about three rows so a long
+     queue scrolls inside the strip instead of pushing the lanes off the
+     screen. */
+  .needs-you { border: 1px solid var(--no-match); border-radius: 12px; background: var(--surface); padding: 10px 14px 4px; margin-bottom: 12px; }
+  .ny-head { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
+  .ny-head h2 { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--no-match); margin: 0; display: flex; align-items: center; gap: 6px; }
+  .ny-head .col-clear { margin-left: auto; }
+  .ny-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 10px; max-height: 222px; overflow-y: auto; }
+  .kcard .kreason { font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
+  /* The card's exact status, as a small tag in its meta row. */
+  .kcard .kstatus {
+    display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 9.5px; font-weight: 700;
+    padding: 1px 6px 1px 5px; border-radius: 999px; background: var(--page); border: 1px solid var(--border); color: var(--ink-2);
+  }
+  .kcard .kstatus .swatch { width: 6px; height: 6px; }
+  .topbar .sup-toggle { font-size: 12px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 5px; cursor: pointer; white-space: nowrap; }
   /* Compact task box, styled after agetor's TaskCard: tight padding, a
      left-border accent (here: the routed fleet member's kind, agent vs
      skill — the axis wissel has that agetor's task-type border doesn't),
@@ -186,11 +209,17 @@
   }
   .kcard:hover { border-color: var(--accent); border-left-color: var(--card-accent, var(--accent)); }
   .kcard:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* Wraps to two lines, then clamps; the full title is the element's
+     title attribute (hover). overflow-wrap so one long unbroken word
+     wraps instead of being cut at the card edge. */
   .kcard .kt {
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-    font-weight: 600; margin-bottom: 5px;
+    overflow-wrap: anywhere; font-weight: 600; margin-bottom: 5px;
   }
-  .kcard .ka { display: flex; align-items: center; gap: 5px; color: var(--ink-muted); font-size: 10.5px; }
+  .kcard .ka { display: flex; align-items: center; gap: 5px; color: var(--ink-muted); font-size: 10.5px; min-width: 0; }
+  /* Agent name and repo give way (ellipsis, full repo on hover) before
+     the status tag does. */
+  .kcard .ka > span:not(.kstatus):not(.active-dot):not(.sep):not(.kind-dot) { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .kcard .ka .kind-dot { width: 6px; height: 6px; }
   .kcard .ka .sep { opacity: 0.45; }
   .kcard .ka .repo { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -281,13 +310,6 @@
   .active-dot .core { position: relative; display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--sig-done); }
   @keyframes active-ping { 0% { transform: scale(1); opacity: 0.65; } 75%, 100% { transform: scale(2.4); opacity: 0; } }
   @media (prefers-reduced-motion: reduce) { .active-dot .ping { animation: none; } }
-
-  /* ---- status stat strip ---- */
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-  .stat { background: var(--surface); padding: 12px 14px; border-top: 3px solid var(--stat-color, var(--line)); }
-  .stat .n { font-size: 20px; font-weight: 700; line-height: 1; }
-  .stat .l { font-size: 10.5px; color: var(--ink-muted); margin-top: 5px; display: flex; align-items: center; gap: 5px; }
-  .stat .l .swatch { width: 7px; height: 7px; }
 
   /* ---- fleet boxes (agents / skills) ---- */
   .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -611,6 +633,7 @@
       <button type="button" data-board-view="lanes" aria-pressed="true">Lanes</button>
       <button type="button" data-board-view="features" aria-pressed="false">By feature</button>
     </div>
+    <label class="sup-toggle" id="supersededToggle" title="Superseded cards are earlier attempts a re-attempt replaced"><input type="checkbox" id="showSuperseded"> Show superseded</label>
     <span class="topbar-spacer"></span>
     <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
     <span class="version-badge" id="versionBadge"></span>
@@ -622,10 +645,15 @@
 
   <section id="boardPage" data-page>
     <section id="boardPanel">
-      <section class="panel-flush">
+      <!-- Every card waiting on a human (docs/SDD-ui-cleanup.md §3.2);
+           renderNeedsYou keeps it hidden while empty. -->
+      <section class="needs-you" id="needsYou" aria-labelledby="needsYouTitle" hidden>
+        <div class="ny-head"><h2 id="needsYouTitle">Needs you <span id="needsYouCount"></span></h2></div>
+        <div class="ny-body" id="needsYouBody"></div>
+      </section>
+      <section class="panel-flush" id="lanesPanel">
         <div style="padding: 12px 14px;"><div class="kanban" id="kanbanBody"></div></div>
       </section>
-      <div class="stats section-gap" id="stats"></div>
     </section>
 
     <section id="swimlanesPanel" hidden>
@@ -989,58 +1017,25 @@
 <script src="/render-merge-health.js"></script>
 <script src="/render-harness-preference.js"></script>
 <script src="/board-routes.js"></script>
+<script src="/board-lanes.js"></script>
 <script>
 (function () {
   "use strict";
 
-  // Status signal colors: a real green for "done", distinct blues for
-  // ready/running (pending-review joins that blue "in progress"
-  // treatment — it's an automated reviewer pass still running, not yet
-  // waiting on a human), and a shared amber for "review"/"no-match"/
-  // "escalated" — all three mean "a human needs to look," same as a
-  // caution aspect on a signal.
-  var STATUS_COLOR = {
-    inbox: "--sig-inbox", ready: "--sig-ready", running: "--sig-running",
-    dispatched: "--accent", review: "--no-match", done: "--sig-done",
-    failed: "--critical", "no-match": "--no-match",
-    "pending-review": "--sig-running", escalated: "--no-match",
-    // Same family as "dispatched" (--accent) — both mean "a specific
-    // process actually has hands on this right now," distinct from the
-    // generic blue "running" a memory-curator or implementer also uses.
-    reviewing: "--accent",
-  };
-  var STATUS_LABEL = {
-    inbox: "Inbox", ready: "Ready", running: "Running", dispatched: "Dispatched",
-    review: "Review", done: "Done", failed: "Failed", "no-match": "No match",
-    "pending-review": "Pending review", escalated: "Escalated",
-    reviewing: "Reviewing",
-  };
-  // "reviewing" sits next to "pending-review" — the two read together as
-  // one sequence (implementer's own card waits at pending-review while
-  // the reviewer's own card, here, is what's actually running).
-  var COLUMNS = ["inbox", "ready", "running", "dispatched", "pending-review", "reviewing", "review", "escalated", "done", "failed", "no-match"];
+  // Status labels, colours and lanes all come from one table,
+  // STATUS_DISPLAY in board-lanes.js (statusLabel, statusColor,
+  // taskDisplayStatus, partitionBoard). Adding a TaskCard status means
+  // adding it there; test/board-lanes.test.ts enforces it.
 
-  // The one place raw TaskCard.status gets reinterpreted for display —
-  // never for routing/business logic, which always reads t.status
-  // directly. A reviewer agent's own task sits at status "running" the
-  // entire time it's actively working, indistinguishable at a glance
-  // from an implementer or memory-curator doing the same; this is what
-  // makes "a job being reviewed" land in its own column instead of a
-  // generic "Running" bucket. See COLUMNS/STATUS_COLOR/STATUS_LABEL's
-  // "reviewing" entries, the only display column with no matching
-  // TaskCard.status value.
-  function taskDisplayColumn(t) {
-    if (t.status === "running" && t.routedTo === "reviewer") return "reviewing";
-    return t.status;
-  }
-
-  // Which display columns mean "something is actually in flight right
-  // now" — used to sort Swimlanes' active lanes to the top. Excludes
-  // "review"/"escalated" (waiting on a human, not moving on its own)
-  // and every terminal status on purpose.
-  var ACTIVE_DISPLAY_COLUMNS = { running: true, reviewing: true, dispatched: true, "pending-review": true };
+  // "Something is actually in flight right now" — the Working and In
+  // review lanes (running, dispatched, reviewing, pending-review). Used
+  // to sort Swimlanes' active lanes to the top. Excludes the Needs you
+  // statuses (waiting on a human, not moving on their own) and done.
   function laneIsActive(members) {
-    return members.some(function (t) { return ACTIVE_DISPLAY_COLUMNS[taskDisplayColumn(t)]; });
+    return members.some(function (t) {
+      var place = taskPlacement(t);
+      return place === "working" || place === "in-review";
+    });
   }
   var tasks = [];
   var agentsById = {};
@@ -1120,9 +1115,9 @@
     var dot = document.createElement("span");
     dot.className = "swatch";
     dot.style.width = "7px"; dot.style.height = "7px";
-    dot.style.background = "var(" + STATUS_COLOR[status] + ")";
+    dot.style.background = "var(" + statusColor(status) + ")";
     pill.appendChild(dot);
-    pill.appendChild(document.createTextNode(STATUS_LABEL[status]));
+    pill.appendChild(document.createTextNode(statusLabel(status)));
     return pill;
   }
 
@@ -2259,12 +2254,12 @@
   // button; "pending-review" is added here on top of that literal list
   // — it's a real reviewer agent still running against a pushback
   // attempt (see renderDrawerActions' own comment on that status), just
-  // as "live" as dispatched, and ACTIVE_DISPLAY_COLUMNS already treats
-  // it that way for the same reason. Without this, a pending-review
-  // task's own in-flight output would be invisible until its reviewer's
-  // result lands, then only reachable as a stale snapshot.
+  // as "live" as dispatched, and laneIsActive already treats it that
+  // way for the same reason. Without this, a pending-review task's own
+  // in-flight output would be invisible until its reviewer's result
+  // lands, then only reachable as a stale snapshot.
   function taskOutputIsLive(t) {
-    var col = taskDisplayColumn(t);
+    var col = taskDisplayStatus(t);
     return col === "running" || col === "reviewing" || col === "dispatched" || col === "pending-review";
   }
 
@@ -2384,20 +2379,23 @@
     return wrap;
   }
 
-  // Shared by the flat kanban and the "Superseded" bucket — a
-  // .kcard-shaped task box, styled after agetor's TaskCard. `statusLabel`
-  // is what the card's aria-label reports (the real status name even for
-  // a superseded card, since that's still factually its status —
-  // superseded-ness is a separate, additional fact shown via styling).
-  function buildKanbanCard(t, statusLabel) {
+  // Shared by Needs you, the four lanes and the "Superseded" bucket — a
+  // .kcard-shaped task box, styled after agetor's TaskCard. The status
+  // tag and aria-label carry the card's exact status (the real status
+  // even for a superseded card, since that's still factually its status;
+  // superseded-ness is a separate fact shown via styling). `reason`,
+  // when given, is the Needs you line saying why a human is needed.
+  function buildKanbanCard(t, reason) {
     var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
+    var displayStatus = taskDisplayStatus(t);
+    var label = statusLabel(displayStatus);
 
     var card = document.createElement("div");
     card.className = "kcard" + (t.supersededBy ? " superseded" : "");
     card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
     card.tabIndex = 0;
     card.setAttribute("role", "button");
-    card.setAttribute("aria-label", t.title + ", " + statusLabel + (t.supersededBy ? ", superseded" : "") + ", show task details");
+    card.setAttribute("aria-label", t.title + ", " + label + (t.supersededBy ? ", superseded" : "") + (reason ? ", " + reason : "") + ", show task details");
     // A stable handle for anything (tests, in particular) that needs to
     // find *this* task's card specifically — title text alone can't do
     // that once a pushback/retry/approve lineage produces multiple cards
@@ -2405,10 +2403,24 @@
     // (e.g. an auto-spawned "Review: <title>" card, or a superseded
     // original sitting right next to its own re-attempt).
     card.dataset.taskId = t.id;
+    card.dataset.status = displayStatus;
 
-    var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
+    // Wraps to two lines (CSS line clamp); the full title shows on hover.
+    var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title; kt.title = t.title;
+    card.appendChild(kt);
+
+    if (reason) {
+      var kr = document.createElement("div"); kr.className = "kreason"; kr.textContent = reason;
+      card.appendChild(kr);
+    }
 
     var ka = document.createElement("div"); ka.className = "ka";
+    var tag = document.createElement("span"); tag.className = "kstatus";
+    var tagDot = document.createElement("span"); tagDot.className = "swatch";
+    tagDot.style.background = "var(" + statusColor(displayStatus) + ")";
+    tag.appendChild(tagDot);
+    tag.appendChild(document.createTextNode(label));
+    ka.appendChild(tag);
     var kindDot = document.createElement("span"); kindDot.className = "kind-dot";
     kindDot.style.background = agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--ink-muted)";
     ka.appendChild(kindDot);
@@ -2421,122 +2433,134 @@
     var sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
     ka.appendChild(sep);
     var repoSpan = document.createElement("span"); repoSpan.className = "repo"; repoSpan.textContent = t.repo || "(scratch)";
+    repoSpan.title = t.repo || "(scratch)";
     ka.appendChild(repoSpan);
     // "Live output" — only while there's something actually live to
     // watch (see docs/SDD-live-task-output.md §3.6); a finished task's
     // output is still reachable from its drawer regardless of status.
     if (!t.supersededBy && taskOutputIsLive(t)) ka.appendChild(liveOutputButton(t));
 
-    card.appendChild(kt); card.appendChild(ka);
+    card.appendChild(ka);
     card.addEventListener("click", function () { openTaskDrawer(t.id); });
     card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openTaskDrawer(t.id); } });
     return card;
   }
 
+  // Board view toggles, kept for the session only (a reload starts from
+  // the defaults: Done shows the last 24h, superseded cards hidden).
+  var showAllDone = false;
+  var showSuperseded = false;
+
+  function colButton(className, text, title, onClick) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = className;
+    btn.textContent = text;
+    if (title) btn.title = title;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  // Deletes every card in `list` after a confirm naming `what`. The bulk
+  // "Clear" each terminal bucket (Done, failed / no match) offers.
+  function confirmDeleteAll(list, what) {
+    if (!window.confirm("Delete all " + list.length + " card(s) in " + what + "? This can't be undone.")) return;
+    Promise.all(list.map(function (t) { return fetch("/tasks/" + t.id, { method: "DELETE" }); })).then(refetchTasks);
+  }
+
+  // One lane column: header (swatch, label, count, actions) and cards.
+  function buildKanbanColumn(id, labelText, color, cards, countText, actions) {
+    var col = document.createElement("div");
+    // Collapses to just its header when empty, so the lanes that do have
+    // cards get the width.
+    col.className = "kcol" + (cards.length === 0 ? " kcol-empty" : "");
+    col.dataset.lane = id;
+    var h3 = document.createElement("h3");
+    var dot = document.createElement("span");
+    dot.className = "swatch";
+    dot.style.background = "var(" + color + ")";
+    h3.appendChild(dot);
+    var label = document.createElement("span");
+    label.className = "lane-label";
+    label.textContent = labelText + " (" + countText + ")";
+    h3.appendChild(label);
+    (actions || []).forEach(function (a) { h3.appendChild(a); });
+    col.appendChild(h3);
+    cards.forEach(function (t) { col.appendChild(buildKanbanCard(t)); });
+    return col;
+  }
+
+  var LANE_COLOR = { queued: "--sig-inbox", working: "--sig-running", "in-review": "--sig-running", done: "--sig-done" };
+
+  // Needs you strip plus the four lanes (docs/SDD-ui-cleanup.md §3.2).
+  // partitionBoard (board-lanes.js) decides where every card goes:
+  // archived cards never show here (the Archive page has them), each
+  // Needs you status shows only in the strip, never in a lane, and a
+  // superseded card (a pushback re-attempt or an escalation retry
+  // replaced it, but it keeps its old status forever by design, see
+  // TaskCard.supersededBy) only shows in the Superseded bucket, and
+  // only while "Show superseded" is on.
   function renderKanban() {
+    var parts = partitionBoard(tasks, { now: Date.now(), showAllDone: showAllDone, showSuperseded: showSuperseded });
+    renderNeedsYou(parts.needsYou);
+
     var body = document.getElementById("kanbanBody");
     body.textContent = "";
-    COLUMNS.forEach(function (status) {
-      // A superseded card (supersededBy set — a pushback re-attempt or an
-      // escalation retry replaced it) keeps its old status forever by
-      // design (see TaskCard.supersededBy) — showing it as a live
-      // "Pending review"/etc. card would be misleading, so it's excluded
-      // from every real status column. It isn't hidden, though — see the
-      // dedicated "Superseded" bucket appended after this loop, which is
-      // the one place it does show up.
-      // Archived cards (TaskCard.archivedAt) are excluded the same way
-      // superseded ones are — a real, deliberate visibility filter, not
-      // hidden data. See the Archive tab (renderArchiveTab) for where
-      // they actually show up.
-      var inCol = tasks.filter(function (t) { return taskDisplayColumn(t) === status && !t.supersededBy && !t.archivedAt; });
-
-      var col = document.createElement("div");
-      // Collapses to just its header when empty — a board with many
-      // columns but few active statuses shouldn't read as mostly empty
-      // reserved space.
-      col.className = "kcol" + (inCol.length === 0 ? " kcol-empty" : "");
-      var h3 = document.createElement("h3");
-      var dot = document.createElement("span");
-      dot.className = "swatch";
-      dot.style.background = "var(" + STATUS_COLOR[status] + ")";
-      h3.appendChild(dot);
-      var label = document.createElement("span");
-      label.textContent = STATUS_LABEL[status] + " (" + inCol.length + ")";
-      h3.appendChild(label);
-      // Only terminal columns get a bulk clear — inbox/ready/running/etc.
-      // still have work to do, so wiping them is never what's meant.
-      if ((status === "done" || status === "failed" || status === "no-match") && inCol.length) {
-        var clearBtn = document.createElement("button");
-        clearBtn.type = "button";
-        clearBtn.className = "col-clear";
-        clearBtn.textContent = "Clear";
-        clearBtn.title = "Delete all " + inCol.length + " card(s) in " + STATUS_LABEL[status];
-        clearBtn.addEventListener("click", function () {
-          if (!window.confirm("Delete all " + inCol.length + " card(s) in " + STATUS_LABEL[status] + "? This can't be undone.")) return;
-          Promise.all(inCol.map(function (t) { return fetch("/tasks/" + t.id, { method: "DELETE" }); })).then(refetchTasks);
-        });
-        h3.appendChild(clearBtn);
+    BOARD_LANES.forEach(function (lane) {
+      var cards = parts.lanes[lane.id];
+      var countText = String(cards.length);
+      var actions = [];
+      if (lane.id === "done") {
+        // Last 24h by default. The count says how many are hidden, and
+        // the toggle brings them back.
+        if (parts.doneHidden > 0) countText = cards.length + " of " + parts.doneTotal;
+        if (showAllDone || parts.doneHidden > 0) {
+          actions.push(colButton("col-toggle", showAllDone ? "Last 24h" : "Show all",
+            showAllDone ? "Show only cards done in the last 24 hours" : "Show every done card, not just the last 24 hours",
+            function () { showAllDone = !showAllDone; renderKanban(); }));
+        }
+        // Clears what the lane shows, and the confirm says so.
+        if (cards.length) {
+          actions.push(colButton("col-clear", "Clear", "Delete all " + cards.length + " card(s) shown in Done",
+            function () { confirmDeleteAll(cards, "Done"); }));
+        }
       }
-      col.appendChild(h3);
-      inCol.forEach(function (t) { col.appendChild(buildKanbanCard(t, STATUS_LABEL[status])); });
-      body.appendChild(col);
+      body.appendChild(buildKanbanColumn(lane.id, lane.label, LANE_COLOR[lane.id], cards, countText, actions));
     });
 
-    // The dedicated home for every superseded card, regardless of its
-    // own underlying status — see the exclusion above. Still excludes
-    // archived ones (an archived+superseded card only shows in the
-    // Archive tab), same as every other bucket in this view.
-    var superseded = tasks.filter(function (t) { return !!t.supersededBy && !t.archivedAt; });
-    var supCol = document.createElement("div");
-    supCol.className = "kcol" + (superseded.length === 0 ? " kcol-empty" : "");
-    var supH3 = document.createElement("h3");
-    var supDot = document.createElement("span"); supDot.className = "swatch"; supDot.style.background = "var(--ink-muted)";
-    supH3.appendChild(supDot);
-    var supLabel = document.createElement("span"); supLabel.textContent = "Superseded (" + superseded.length + ")";
-    supH3.appendChild(supLabel);
-    supCol.appendChild(supH3);
-    superseded.forEach(function (t) { supCol.appendChild(buildKanbanCard(t, STATUS_LABEL[t.status])); });
-    body.appendChild(supCol);
+    // Superseded cards are history: hidden unless asked for, then shown
+    // in their own bucket after the lanes, whatever their old status.
+    if (showSuperseded) {
+      body.appendChild(buildKanbanColumn("superseded", "Superseded", "--ink-muted", parts.superseded, String(parts.superseded.length)));
+    }
   }
 
-  function renderStats() {
-    var wrap = document.getElementById("stats");
-    var counts = {};
-    COLUMNS.forEach(function (s) { counts[s] = 0; });
-    // Excludes superseded and archived cards from the count too — see
-    // renderKanban's own comment on the same filters. Otherwise the stat
-    // strip and the kanban columns below it would disagree on how many
-    // tasks are actually in a given status.
-    tasks.forEach(function (t) { if (!t.supersededBy && !t.archivedAt) { var c = taskDisplayColumn(t); counts[c] = (counts[c] || 0) + 1; } });
-    wrap.textContent = "";
-    COLUMNS.forEach(function (status) {
-      var tile = document.createElement("div");
-      tile.className = "stat";
-      tile.style.setProperty("--stat-color", "var(" + STATUS_COLOR[status] + ")");
-      var n = document.createElement("div"); n.className = "n mono"; n.textContent = counts[status];
-      var l = document.createElement("div"); l.className = "l";
-      var dot = document.createElement("span"); dot.className = "swatch"; dot.style.background = "var(" + STATUS_COLOR[status] + ")";
-      l.appendChild(dot);
-      l.appendChild(document.createTextNode(STATUS_LABEL[status]));
-      tile.appendChild(n); tile.appendChild(l);
-      wrap.appendChild(tile);
-    });
+  // Hidden when nothing needs a human. Each card says why it's here.
+  function renderNeedsYou(list) {
+    var strip = document.getElementById("needsYou");
+    var body = document.getElementById("needsYouBody");
+    var head = strip.querySelector(".ny-head");
+    strip.hidden = list.length === 0;
+    document.getElementById("needsYouCount").textContent = "(" + list.length + ")";
+    body.textContent = "";
+    list.forEach(function (t) { body.appendChild(buildKanbanCard(t, needsYouReason(t))); });
 
-    // Matches the kanban's own dedicated "Superseded" bucket — same
-    // count, same neutral color, appended after the real status tiles.
-    var supCount = tasks.filter(function (t) { return !!t.supersededBy && !t.archivedAt; }).length;
-    var supTile = document.createElement("div");
-    supTile.className = "stat";
-    supTile.style.setProperty("--stat-color", "var(--ink-muted)");
-    var supN = document.createElement("div"); supN.className = "n mono"; supN.textContent = supCount;
-    var supL = document.createElement("div"); supL.className = "l";
-    var supDot = document.createElement("span"); supDot.className = "swatch"; supDot.style.background = "var(--ink-muted)";
-    supL.appendChild(supDot);
-    supL.appendChild(document.createTextNode("Superseded"));
-    supTile.appendChild(supN); supTile.appendChild(supL);
-    wrap.appendChild(supTile);
+    // Failed and no-match are terminal, so like Done they get a bulk
+    // Clear. Review and escalated still need a decision, so never.
+    var old = head.querySelector(".col-clear");
+    if (old) old.remove();
+    var terminal = list.filter(function (t) { return t.status === "failed" || t.status === "no-match"; });
+    if (terminal.length) {
+      head.appendChild(colButton("col-clear", "Clear failed / no match (" + terminal.length + ")",
+        "Delete all " + terminal.length + " failed or no-match card(s)",
+        function () { confirmDeleteAll(terminal, "failed / no match"); }));
+    }
   }
 
+  document.getElementById("showSuperseded").addEventListener("change", function (ev) {
+    showSuperseded = ev.target.checked;
+    renderKanban();
+  });
   // "Active" means routed to a task that's currently running (readonly,
   // in-process) or dispatched (write-tier, handed off but presumably
   // being worked right now) — the two states where the agent is doing
@@ -2689,22 +2713,22 @@
   // already exists in the task drawer.
   function buildLaneCard(t, byId, opts) {
     var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
-    var displayStatus = taskDisplayColumn(t);
+    var displayStatus = taskDisplayStatus(t);
     var card = document.createElement("div");
     card.className = "slcard" + (t.supersededBy ? " superseded" : "");
     card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
     card.tabIndex = 0;
     card.setAttribute("role", "button");
-    card.setAttribute("aria-label", t.title + ", " + STATUS_LABEL[displayStatus] + (t.supersededBy ? ", superseded" : "") + ", show task details");
+    card.setAttribute("aria-label", t.title + ", " + statusLabel(displayStatus) + (t.supersededBy ? ", superseded" : "") + ", show task details");
 
-    var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title;
+    var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title; kt.title = t.title;
     card.appendChild(kt);
 
     var statusRow = document.createElement("div"); statusRow.className = "sl-status";
     var sdot = document.createElement("span"); sdot.className = "swatch";
-    sdot.style.background = "var(" + STATUS_COLOR[displayStatus] + ")";
+    sdot.style.background = "var(" + statusColor(displayStatus) + ")";
     statusRow.appendChild(sdot);
-    statusRow.appendChild(document.createTextNode(STATUS_LABEL[displayStatus]));
+    statusRow.appendChild(document.createTextNode(statusLabel(displayStatus)));
     card.appendChild(statusRow);
 
     var relations = document.createElement("div"); relations.className = "sl-relations";
@@ -2732,7 +2756,7 @@
       var dep = resolveLiveTip(byId[depId], byId);
       var depTag = document.createElement("span"); depTag.className = "sl-tag";
       depTag.textContent = "⛔ " + (dep ? dep.title : depId);
-      depTag.title = "Depends on: " + (dep ? dep.title + " (" + STATUS_LABEL[dep.status] + ")" : depId + " (not found)");
+      depTag.title = "Depends on: " + (dep ? dep.title + " (" + statusLabel(dep.status) + ")" : depId + " (not found)");
       relations.appendChild(depTag);
     });
     if (relations.childNodes.length) card.appendChild(relations);
@@ -2769,7 +2793,7 @@
     var head = document.createElement("div");
     head.className = "swimlane-head";
     var dot = document.createElement("span"); dot.className = "swatch";
-    dot.style.background = "var(" + (STATUS_COLOR[root.status] || "--ink-muted") + ")";
+    dot.style.background = "var(" + statusColor(root.status) + ")";
     head.appendChild(dot);
     var title = document.createElement("span"); title.textContent = root.title;
     head.appendChild(title);
@@ -2842,7 +2866,7 @@
   function renderSwimlanes() {
     var byId = {};
     tasks.forEach(function (t) { byId[t.id] = t; });
-    // Excludes archived cards, same as renderKanban/renderStats — see
+    // Excludes archived cards, same as renderKanban — see
     // TaskCard.archivedAt. They show up in the Archive tab instead.
     var members = tasks.filter(function (t) { return !t.archivedAt; });
     renderLanes(
@@ -2887,7 +2911,6 @@
     // it also generates any missing project ELI5, an LLM call, so it
     // shouldn't run just because the board loaded.
     if (currentRoute === "setup/projects") renderProjectSummaryBox();
-    renderStats();
     renderKanban();
     renderSwimlanes();
     renderArchiveTab();
@@ -2924,7 +2947,7 @@
   // render function already reads — see applyProjectFilter. Keeping the
   // split here, rather than threading a project filter through every
   // render*/select-option function individually, means renderKanban,
-  // renderSwimlanes, renderStats, renderArchiveTab,
+  // renderSwimlanes, renderArchiveTab,
   // renderDependsOnOptions, renderParentTaskOptions, findTask, and
   // isActive all get correct per-project scoping for free, with zero
   // changes to any of them.
@@ -3744,6 +3767,7 @@
 
     // Lanes / By feature: two views of the same Board page.
     document.getElementById("boardViewToggle").hidden = !def.boardView;
+    document.getElementById("supersededToggle").hidden = def.boardView !== "lanes";
     document.getElementById("boardPanel").hidden = def.boardView !== "lanes";
     document.getElementById("swimlanesPanel").hidden = def.boardView !== "features";
     document.querySelectorAll("#boardViewToggle button").forEach(function (b) {
