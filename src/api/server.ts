@@ -22,6 +22,7 @@ import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH 
 import { startMergeHealthScheduler } from "../core/merge-health-scheduler.ts";
 import { readMemoryLessons, DEFAULT_MEMORY_PATH } from "../services/memory.ts";
 import { appendTaskOutput, getBufferedOutput, getTaskOutput, TASK_OUTPUT_EVENTS } from "../services/task-output.ts";
+import { buildPipelineRunSummary } from "../services/pipeline-run-summary.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
 import { ApiExecutor } from "../executors/anthropic-api.ts";
@@ -456,6 +457,12 @@ export function createApp(
         return new Response(Bun.file(new URL("board-pipelines.js", PUBLIC_DIR)));
       }
 
+      // One board card per pipeline run, and the run drawer's step rows
+      // (docs/SDD-ui-cleanup.md §4.1). Same static-sibling reasoning.
+      if (url.pathname === "/board-runs.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("board-runs.js", PUBLIC_DIR)));
+      }
+
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
       }
@@ -740,6 +747,18 @@ export function createApp(
           const runs = tasks.filter((t) => t.pipelineId === parts[1] && t.parentTaskId === undefined).reverse();
           return json(runs);
         }
+      }
+
+      // One run's steps with agent, harness, model, status, duration and
+      // cost, for the board's run drawer (docs/SDD-ui-cleanup.md §4.1).
+      // Read-only. 404 for anything that isn't a run root, including a
+      // step card's own id.
+      if (parts[0] === "pipeline-runs" && parts.length === 2 && req.method === "GET") {
+        const summary = await buildPipelineRunSummary(
+          { board: board as Board, pipelines, registry, harnesses, readOutput: (taskId) => getTaskOutput(taskId, opts.taskOutputDir) },
+          parts[1]!,
+        );
+        return summary ? json(summary) : notFound();
       }
 
       if (parts[0] === "projects") {

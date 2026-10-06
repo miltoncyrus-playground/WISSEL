@@ -231,6 +231,13 @@
      or presented as equally live. */
   .kcard.superseded { opacity: 0.6; border-left-style: dashed; }
   .kcard.superseded .kt { text-decoration: line-through; text-decoration-color: var(--ink-muted); }
+  /* A pipeline run's card (docs/SDD-ui-cleanup.md §4.1): "n/m steps ·
+     now: <step>" and one bar segment per step, coloured by its status. */
+  .run-progress { font-size: 11px; color: var(--ink-2); margin-bottom: 4px; overflow-wrap: anywhere; }
+  .run-bar { display: flex; gap: 2px; height: 5px; margin-bottom: 6px; }
+  .run-bar .run-seg { flex: 1; min-width: 4px; border-radius: 2px; background: var(--line); }
+  .swimlane-head .run-progress { margin: 0; font-weight: 400; }
+  .swimlane-head .run-bar { width: 120px; margin: 0; flex: none; }
   .kcard .sl-tag { font-size: 9.5px; padding: 1px 5px; border-radius: 999px; background: var(--page); border: 1px solid var(--border); color: var(--ink-muted); white-space: nowrap; }
 
   /* --- Swimlanes -------------------------------------------------- */
@@ -467,6 +474,25 @@
 
   /* ---- "+ New" drawer: the task drawer's slide-in, wider for a form. */
   .drawer.new-drawer { width: min(560px, 100vw); }
+  /* Run detail drawer (docs/SDD-ui-cleanup.md §4.1): one row per step;
+     expanding a row moves the task drawer's own #tdDetail into it. */
+  .drawer.run-drawer { width: min(640px, 100vw); }
+  .run-drawer .run-bar { height: 6px; margin: 8px 0 0; }
+  .rd-steps { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .rd-step + .rd-step { border-top: 1px solid var(--line); }
+  .rd-step-head {
+    appearance: none; border: none; background: var(--surface); color: var(--ink-1); font: inherit; text-align: left;
+    width: 100%; cursor: pointer; padding: 9px 12px; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 4px 8px; align-items: center;
+  }
+  .rd-step-head:hover { background: var(--page); }
+  .rd-step-head .rd-caret { color: var(--ink-muted); font-size: 10px; transition: transform .12s; }
+  .rd-step.expanded .rd-caret { transform: rotate(90deg); }
+  .rd-step-name { font-size: 12.5px; font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
+  .rd-step-facts { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--ink-muted); }
+  .rd-step-facts .mono { color: var(--ink-2); }
+  .rd-step-body { padding: 4px 12px 14px 36px; border-top: 1px dashed var(--line); }
+  .rd-step-body .drawer-body { padding: 10px 0 0; overflow: visible; }
+  .rd-total { font-size: 11.5px; color: var(--ink-muted); margin: 8px 0 0; }
   .new-tabs { display: flex; gap: 4px; padding: 10px 16px 0; border-bottom: 1px solid var(--line); }
   .new-tabs button {
     appearance: none; border: none; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-2);
@@ -915,7 +941,11 @@
     <button type="button" class="drawer-close" id="tdClose" aria-label="Close">×</button>
   </div>
   <div class="drawer-meta" id="tdMeta"></div>
-  <div class="drawer-body">
+  <!-- #tdDetail is every task-detail section. The run drawer (below)
+       moves this same element into an expanded step row and back
+       (attachTaskDetail), so a step shows the real sections and actions,
+       never a copy. -->
+  <div class="drawer-body" id="tdDetail">
     <section class="drawer-section">
       <p class="eyebrow">Description</p>
       <p class="drawer-desc" id="tdDescription"></p>
@@ -963,6 +993,35 @@
     <section class="drawer-section" id="tdMcpCallsSection" hidden>
       <p class="eyebrow">Tool calls</p>
       <div id="tdMcpCalls"></div>
+    </section>
+  </div>
+</aside>
+
+<!-- Run detail drawer (docs/SDD-ui-cleanup.md §4.1): a pipeline run's
+     card opens this instead of the task drawer. One row per step card,
+     in the order they ran; the first row is the run's own root card. -->
+<div class="drawer-overlay" id="runOverlay" hidden></div>
+<aside class="drawer run-drawer" id="runDrawer" role="dialog" aria-modal="true" aria-labelledby="rdTitle" hidden>
+  <div class="drawer-head">
+    <h2 id="rdTitle"></h2>
+    <button type="button" class="drawer-close" id="rdClose" aria-label="Close">×</button>
+  </div>
+  <div class="drawer-meta" id="rdMeta"></div>
+  <div class="drawer-body">
+    <section class="drawer-section">
+      <p class="eyebrow">Progress</p>
+      <div id="rdProgress" class="run-progress"></div>
+      <div id="rdBar" class="run-bar"></div>
+      <p class="rd-total" id="rdTotal"></p>
+    </section>
+    <section class="drawer-section">
+      <p class="eyebrow">Input</p>
+      <p class="drawer-desc" id="rdInput"></p>
+    </section>
+    <section class="drawer-section">
+      <p class="eyebrow">Steps</p>
+      <div class="rd-steps" id="rdSteps"></div>
+      <p class="field-error" id="rdError" hidden></p>
     </section>
   </div>
 </aside>
@@ -1115,6 +1174,7 @@
 <script src="/board-lanes.js"></script>
 <script src="/board-new.js"></script>
 <script src="/board-pipelines.js"></script>
+<script src="/board-runs.js"></script>
 <script>
 (function () {
   "use strict";
@@ -1135,6 +1195,9 @@
     });
   }
   var tasks = [];
+  // Every run's step cards, over the unfiltered board (indexRuns,
+  // board-runs.js). Rebuilt by applyProjectFilter on every refetch.
+  var runIndex = indexRuns([]);
   var agentsById = {};
 
   // Shared by the click-to-inspect decision panel and the New Task form's
@@ -1218,8 +1281,11 @@
     return pill;
   }
 
+  // Falls back to the unfiltered board: the run drawer can expand a
+  // step the project filter left out of `tasks`.
   function findTask(taskId) {
     for (var i = 0; i < tasks.length; i++) if (tasks[i].id === taskId) return tasks[i];
+    for (var j = 0; j < allTasks.length; j++) if (allTasks[j].id === taskId) return allTasks[j];
     return null;
   }
 
@@ -1838,18 +1904,37 @@
     });
   }
 
-  function openTaskDrawer(taskId) {
-    var task = findTask(taskId);
-    if (!task) return;
-    drawerTaskId = taskId;
+  // Fills #tdDetail (wherever it currently sits) for one task. Shared by
+  // the task drawer and an expanded step in the run drawer.
+  function loadTaskDetail(task) {
+    drawerTaskId = task.id;
     drawerLastResult = null; // genuinely unknown until loadDrawerResult resolves for this task
     closeRetryForm(); // a different task's drawer must never open mid-draft from the last one
     renderDrawerHeader(task);
     renderDrawerActions(task, null);
-    loadDrawerDecision(taskId);
-    loadDrawerResult(taskId);
+    loadDrawerDecision(task.id);
+    loadDrawerResult(task.id);
     document.getElementById("tdDiffSection").hidden = true;
     document.getElementById("tdMcpCallsSection").hidden = true;
+  }
+
+  // Moves the one #tdDetail element into `host` (an expanded run step),
+  // or back into the task drawer when host is null.
+  function attachTaskDetail(host) {
+    var detail = document.getElementById("tdDetail");
+    var target = host || document.getElementById("taskDrawer");
+    if (detail.parentNode !== target) target.appendChild(detail);
+  }
+
+  function openTaskDrawer(taskId) {
+    var task = findTask(taskId);
+    if (!task) return;
+    // A run's card (and anything else that asks for a run root) opens
+    // the run drawer instead (docs/SDD-ui-cleanup.md §4.1).
+    if (isPipelineRunRoot(task) && !isPipelineStep(task)) { openRunDrawer(task.id); return; }
+    if (runDrawerId) closeRunDrawer();
+    attachTaskDetail(null);
+    loadTaskDetail(task);
     document.getElementById("drawerOverlay").hidden = false;
     document.getElementById("taskDrawer").hidden = false;
     // rAF so the hidden->visible flip lands before the transform
@@ -1861,6 +1946,9 @@
   }
 
   function closeTaskDrawer() {
+    // The detail is showing inside the run drawer (a step was deleted,
+    // or vanished from the board): collapse that step, keep the run open.
+    if (runDrawerId) { collapseRunStep(); return; }
     drawerTaskId = null;
     closeRetryForm();
     document.getElementById("drawerOverlay").classList.remove("open");
@@ -1906,9 +1994,337 @@
     });
   });
   document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && drawerTaskId) closeTaskDrawer();
-    if (ev.key === "Escape" && liveOutputTaskId) closeLiveOutput();
+    if (ev.key !== "Escape") return;
+    // Live output sits on top of the run drawer: Escape closes just it.
+    if (runDrawerId) {
+      if (liveOutputTaskId) closeLiveOutput();
+      else closeRunDrawer();
+      return;
+    }
+    if (drawerTaskId) closeTaskDrawer();
+    if (liveOutputTaskId) closeLiveOutput();
   });
+
+  // --- Pipeline runs (docs/SDD-ui-cleanup.md §4.1, card B1) ------------
+  //
+  // Saved pipeline definitions, for step names and each run's step
+  // count. Fetched once at boot, refreshed by every Pipelines page load,
+  // and refetched when a run names a pipeline not seen yet. A pipeline
+  // that's still unknown after a fetch (deleted) is not asked for again;
+  // its runs fall back to the step cards' own titles.
+  var pipelineDefs = Object.create(null);
+  var pipelineDefsWanted = Object.create(null);
+  var pipelineDefsMissing = Object.create(null);
+  var pipelineDefsLoading = false;
+
+  function rememberPipelineDefs(list) {
+    (list || []).forEach(function (p) { pipelineDefs[p.id] = p; });
+  }
+
+  function loadPipelineDefs() {
+    pipelineDefsLoading = true;
+    return fetch("/pipelines").then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (list) {
+      rememberPipelineDefs(list);
+      Object.keys(pipelineDefsWanted).forEach(function (id) { if (!pipelineDefs[id]) pipelineDefsMissing[id] = true; });
+      pipelineDefsLoading = false;
+      render();
+    }).catch(function (err) {
+      // Runs still draw from their step cards' titles; no retry storm.
+      Object.keys(pipelineDefsWanted).forEach(function (id) { if (!pipelineDefs[id]) pipelineDefsMissing[id] = true; });
+      pipelineDefsLoading = false;
+      console.error("GET /pipelines for run progress failed:", err);
+    });
+  }
+
+  function pipelineDefFor(id) {
+    if (!id) return null;
+    if (pipelineDefs[id]) return pipelineDefs[id];
+    pipelineDefsWanted[id] = true;
+    if (!pipelineDefsMissing[id] && !pipelineDefsLoading) loadPipelineDefs();
+    return null;
+  }
+
+  // A run root's steps, definition and progress (runProgress, board-runs.js).
+  function runOf(root) {
+    var steps = runStepsOf(runIndex, root.id);
+    var def = pipelineDefFor(root.pipelineId);
+    return { steps: steps, def: def, progress: runProgress(root, steps, def) };
+  }
+
+  function isRunRootCard(t) {
+    return isPipelineRunRoot(t) && !isPipelineStep(t);
+  }
+
+  // One segment per step, coloured by its status; not-yet-reached steps
+  // stay the neutral line colour.
+  function buildRunBar(progress, el) {
+    var bar = el || document.createElement("div");
+    bar.className = "run-bar";
+    bar.textContent = "";
+    bar.setAttribute("role", "img");
+    bar.setAttribute("aria-label", progress.segments.map(function (s) {
+      return s.name + ": " + (s.status === RUN_STEP_PENDING ? "not started" : statusLabel(s.status));
+    }).join(", "));
+    progress.segments.forEach(function (s) {
+      var seg = document.createElement("span");
+      seg.className = "run-seg";
+      seg.dataset.status = s.status;
+      if (s.taskId) seg.dataset.taskId = s.taskId;
+      if (s.status !== RUN_STEP_PENDING) seg.style.background = "var(" + statusColor(s.status) + ")";
+      seg.title = s.name + ": " + (s.status === RUN_STEP_PENDING ? "not started" : statusLabel(s.status));
+      bar.appendChild(seg);
+    });
+    return bar;
+  }
+
+  function formatDuration(ms) {
+    if (typeof ms !== "number") return "—";
+    if (ms < 1000) return Math.round(ms) + "ms";
+    var s = ms / 1000;
+    if (s < 60) return s.toFixed(1) + "s";
+    var m = Math.floor(s / 60);
+    return m + "m " + Math.round(s - m * 60) + "s";
+  }
+
+  function formatCost(c) {
+    return typeof c === "number" ? "$" + c.toFixed(4) : "—";
+  }
+
+  var runDrawerId = null;    // the open run's root id
+  var runExpandedId = null;  // the row whose task detail is showing (root or a step)
+  var runSummary = null;     // GET /pipeline-runs/:id for runDrawerId, null until loaded
+  var runSummarySeq = 0;
+
+  // GET /pipeline-runs/:id adds model, duration and cost per step. The
+  // rows themselves come from the board's own task list, so the drawer
+  // still works (with "—" for those) if the summary can't load.
+  function loadRunSummary() {
+    var runId = runDrawerId;
+    var seq = ++runSummarySeq;
+    fetch("/pipeline-runs/" + encodeURIComponent(runId)).then(function (r) {
+      if (!r.ok) throw new Error("GET /pipeline-runs failed: HTTP " + r.status);
+      return r.json();
+    }).then(function (summary) {
+      if (runDrawerId !== runId || seq !== runSummarySeq) return;
+      runSummary = summary;
+      document.getElementById("rdError").hidden = true;
+      renderRunDrawer();
+    }).catch(function (err) {
+      if (runDrawerId !== runId || seq !== runSummarySeq) return;
+      var el = document.getElementById("rdError");
+      el.textContent = "Model, duration and cost unavailable: " + err.message;
+      el.hidden = false;
+    });
+  }
+
+  function runSummaryStep(taskId) {
+    var steps = (runSummary && runSummary.steps) || [];
+    for (var i = 0; i < steps.length; i++) if (steps[i].taskId === taskId) return steps[i];
+    return null;
+  }
+
+  function factSpan(fact, label, value, title) {
+    var span = document.createElement("span");
+    span.dataset.fact = fact;
+    span.appendChild(document.createTextNode(label + " "));
+    var v = document.createElement("span");
+    v.className = "mono";
+    v.textContent = value;
+    span.appendChild(v);
+    if (title) span.title = title;
+    return span;
+  }
+
+  // The rows: the run's own root card first (its actions, e.g. Archive,
+  // live there), then every step card in the order it ran.
+  function runRows(root) {
+    var run = runOf(root);
+    var attempts = Object.create(null);
+    var rows = [{ task: root, name: "Run", isRoot: true }];
+    run.steps.forEach(function (s) {
+      var key = s.pipelineStepId || s.id;
+      attempts[key] = (attempts[key] || 0) + 1;
+      var name = stepDisplayName(s, root, run.def);
+      rows.push({ task: s, name: attempts[key] > 1 ? name + " (attempt " + attempts[key] + ")" : name, isRoot: false, def: run.def });
+    });
+    return rows;
+  }
+
+  function fillRunRowHead(head, row) {
+    var t = row.task;
+    head.textContent = "";
+    var caret = document.createElement("span"); caret.className = "rd-caret"; caret.textContent = "▶";
+    var name = document.createElement("span"); name.className = "rd-step-name"; name.textContent = row.name;
+    var status = document.createElement("span"); status.className = "rd-step-status";
+    status.appendChild(statusPill(taskDisplayStatus(t)));
+    if (t.status === "running" || t.status === "dispatched") status.appendChild(activeDot("actively working"));
+    head.appendChild(caret); head.appendChild(name); head.appendChild(status);
+
+    var facts = document.createElement("span"); facts.className = "rd-step-facts";
+    if (row.isRoot) {
+      facts.appendChild(factSpan("repo", "Repo", t.repo || "—"));
+      facts.appendChild(factSpan("cost", "Total cost", formatCost(runSummary ? runSummary.totalCost : null)));
+    } else {
+      var s = runSummaryStep(t.id);
+      var defStep = null;
+      ((row.def && row.def.graph && row.def.graph.steps) || []).forEach(function (d) { if (d.id === t.pipelineStepId) defStep = d; });
+      var agent = s ? s.agentId : (defStep ? defStep.agentId : t.routedTo);
+      var harness = s ? s.harness : t.harness;
+      var model = s ? s.model : null;
+      var modelTitle = s && s.modelSource === "config" ? "Not reported by the run; what the current config resolves to" : "";
+      facts.appendChild(factSpan("agent", "Agent", agent || "—"));
+      facts.appendChild(factSpan("harness", "Harness", harness || "—"));
+      facts.appendChild(factSpan("model", "Model", model ? model + (modelTitle ? " (config)" : "") : "—", modelTitle));
+      facts.appendChild(factSpan("duration", "Duration", formatDuration(s ? s.durationMs : null)));
+      facts.appendChild(factSpan("cost", "Cost", formatCost(s ? s.cost : null)));
+    }
+    head.appendChild(facts);
+    head.setAttribute("aria-expanded", runExpandedId === t.id ? "true" : "false");
+    head.setAttribute("aria-label", row.name + ", " + statusLabel(taskDisplayStatus(t)) + (runExpandedId === t.id ? ", hide details" : ", show details"));
+  }
+
+  // Keyed update, not a rebuild: the expanded row (and the #tdDetail
+  // inside it) stays where it is across SSE refreshes, so typing in it
+  // (the retry form) keeps focus. A row only moves if the order changed.
+  function renderRunSteps() {
+    var wrap = document.getElementById("rdSteps");
+    var root = runDrawerId ? findTask(runDrawerId) : null;
+    if (!root) return;
+    var existing = Object.create(null);
+    Array.prototype.forEach.call(wrap.children, function (el) { existing[el.dataset.taskId] = el; });
+    runRows(root).forEach(function (row, i) {
+      var id = row.task.id;
+      var el = existing[id];
+      delete existing[id];
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "rd-step";
+        el.dataset.taskId = id;
+        var head = document.createElement("button");
+        head.type = "button";
+        head.className = "rd-step-head";
+        head.addEventListener("click", function () {
+          if (runExpandedId === id) collapseRunStep();
+          else expandRunStep(id);
+        });
+        el.appendChild(head);
+      }
+      el.dataset.status = taskDisplayStatus(row.task);
+      fillRunRowHead(el.querySelector(".rd-step-head"), row);
+      var expanded = runExpandedId === id;
+      el.classList.toggle("expanded", expanded);
+      var body = el.querySelector(".rd-step-body");
+      if (expanded && !body) {
+        body = document.createElement("div");
+        body.className = "rd-step-body";
+        el.appendChild(body);
+      }
+      if (expanded) attachTaskDetail(body);
+      if (!expanded && body) {
+        if (body.contains(document.getElementById("tdDetail"))) attachTaskDetail(null);
+        body.remove();
+      }
+      if (wrap.children[i] !== el) wrap.insertBefore(el, wrap.children[i] || null);
+    });
+    Object.keys(existing).forEach(function (id) {
+      if (existing[id].contains(document.getElementById("tdDetail"))) attachTaskDetail(null);
+      existing[id].remove();
+    });
+  }
+
+  function renderRunDrawer() {
+    var root = runDrawerId ? findTask(runDrawerId) : null;
+    if (!root) return;
+    var run = runOf(root);
+    document.getElementById("rdTitle").textContent = root.title;
+    var meta = document.getElementById("rdMeta");
+    meta.textContent = "";
+    meta.appendChild(statusPill(root.status));
+    if (root.status === "running") meta.appendChild(activeDot("run in progress"));
+    if (root.archivedAt) {
+      var archivedTag = document.createElement("span"); archivedTag.className = "sl-tag"; archivedTag.textContent = "archived";
+      meta.appendChild(archivedTag);
+    }
+    var repo = document.createElement("span"); repo.className = "mono"; repo.textContent = root.repo || "(no repo)";
+    meta.appendChild(repo);
+    document.getElementById("rdProgress").textContent = run.progress.text;
+    buildRunBar(run.progress, document.getElementById("rdBar"));
+    document.getElementById("rdInput").textContent = root.body || "(no input)";
+    var total = document.getElementById("rdTotal");
+    total.hidden = !(runSummary && typeof runSummary.totalCost === "number");
+    total.textContent = total.hidden ? "" : "Total cost " + formatCost(runSummary.totalCost);
+    renderRunSteps();
+  }
+
+  // `expandId`, when given, opens with that row's detail showing (the
+  // step a Needs you card is there for, or a step clicked in Swimlanes).
+  function openRunDrawer(rootId, expandId) {
+    var root = findTask(rootId);
+    if (!root) return;
+    if (!runDrawerId && drawerTaskId) closeTaskDrawer();
+    if (runDrawerId !== rootId) {
+      collapseRunStep();
+      document.getElementById("rdSteps").textContent = "";
+      document.getElementById("rdError").hidden = true;
+      runSummary = null;
+    }
+    runDrawerId = rootId;
+    renderRunDrawer();
+    if (expandId && expandId !== runExpandedId) expandRunStep(expandId);
+    loadRunSummary();
+    document.getElementById("runOverlay").hidden = false;
+    document.getElementById("runDrawer").hidden = false;
+    requestAnimationFrame(function () {
+      document.getElementById("runOverlay").classList.add("open");
+      document.getElementById("runDrawer").classList.add("open");
+    });
+  }
+
+  function closeRunDrawer() {
+    collapseRunStep();
+    runDrawerId = null;
+    runSummary = null;
+    document.getElementById("runOverlay").classList.remove("open");
+    document.getElementById("runDrawer").classList.remove("open");
+    setTimeout(function () {
+      if (runDrawerId) return; // reopened meanwhile
+      document.getElementById("runOverlay").hidden = true;
+      document.getElementById("runDrawer").hidden = true;
+    }, 180);
+  }
+
+  function expandRunStep(taskId) {
+    var task = findTask(taskId);
+    if (!task || !runDrawerId) return;
+    runExpandedId = taskId;
+    renderRunSteps();
+    loadTaskDetail(task);
+  }
+
+  // Hands #tdDetail back to the task drawer and stops refreshing it.
+  function collapseRunStep() {
+    if (runExpandedId === null && document.getElementById("tdDetail").parentNode === document.getElementById("taskDrawer")) return;
+    runExpandedId = null;
+    drawerTaskId = null;
+    closeRetryForm();
+    attachTaskDetail(null);
+    renderRunSteps();
+  }
+
+  // Follows every refetch, like refreshOpenDrawer does for the task drawer.
+  function refreshRunDrawer() {
+    if (!runDrawerId) return;
+    if (!findTask(runDrawerId)) { closeRunDrawer(); return; }
+    if (runExpandedId && !findTask(runExpandedId)) collapseRunStep();
+    renderRunDrawer();
+    loadRunSummary();
+  }
+
+  document.getElementById("rdClose").addEventListener("click", closeRunDrawer);
+  document.getElementById("runOverlay").addEventListener("click", closeRunDrawer);
 
   // Harnesses setup page — the full list, separate from the "Available
   // now" strip on purpose (docs/SDD-harness-enable-disable.md §2/§9):
@@ -2482,17 +2898,23 @@
   // even for a superseded card, since that's still factually its status;
   // superseded-ness is a separate fact shown via styling). `reason`,
   // when given, is the Needs you line saying why a human is needed.
-  function buildKanbanCard(t, reason) {
+  //
+  // A pipeline run's root card (docs/SDD-ui-cleanup.md §4.1) is the whole
+  // run: it adds "n/m steps · now: <step>" and the step bar, and opens
+  // the run drawer. `expandId` is the step that drawer opens on (the one
+  // a Needs you card is there for).
+  function buildKanbanCard(t, reason, expandId) {
     var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
     var displayStatus = taskDisplayStatus(t);
     var label = statusLabel(displayStatus);
+    var run = isRunRootCard(t) ? runOf(t) : null;
 
     var card = document.createElement("div");
-    card.className = "kcard" + (t.supersededBy ? " superseded" : "");
-    card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--line)");
+    card.className = "kcard" + (t.supersededBy ? " superseded" : "") + (run ? " run-card" : "");
+    card.style.setProperty("--card-accent", agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : (run ? "var(--accent)" : "var(--line)"));
     card.tabIndex = 0;
     card.setAttribute("role", "button");
-    card.setAttribute("aria-label", t.title + ", " + label + (t.supersededBy ? ", superseded" : "") + (reason ? ", " + reason : "") + ", show task details");
+    card.setAttribute("aria-label", t.title + ", " + label + (t.supersededBy ? ", superseded" : "") + (run ? ", " + run.progress.text : "") + (reason ? ", " + reason : "") + (run ? ", show run details" : ", show task details"));
     // A stable handle for anything (tests, in particular) that needs to
     // find *this* task's card specifically — title text alone can't do
     // that once a pushback/retry/approve lineage produces multiple cards
@@ -2511,6 +2933,13 @@
       card.appendChild(kr);
     }
 
+    if (run) {
+      card.dataset.runId = t.id;
+      var rp = document.createElement("div"); rp.className = "run-progress"; rp.textContent = run.progress.text;
+      card.appendChild(rp);
+      card.appendChild(buildRunBar(run.progress));
+    }
+
     var ka = document.createElement("div"); ka.className = "ka";
     var tag = document.createElement("span"); tag.className = "kstatus";
     var tagDot = document.createElement("span"); tagDot.className = "swatch";
@@ -2521,7 +2950,7 @@
     var kindDot = document.createElement("span"); kindDot.className = "kind-dot";
     kindDot.style.background = agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--ink-muted)";
     ka.appendChild(kindDot);
-    var nameSpan = document.createElement("span"); nameSpan.textContent = t.routedTo || "unrouted";
+    var nameSpan = document.createElement("span"); nameSpan.textContent = t.routedTo || (run ? "pipeline" : "unrouted");
     ka.appendChild(nameSpan);
     // Same criterion as the fleet box's active dot: running (wissel's
     // own in-process work) or dispatched (handed off, presumably
@@ -2538,8 +2967,9 @@
     if (!t.supersededBy && taskOutputIsLive(t)) ka.appendChild(liveOutputButton(t));
 
     card.appendChild(ka);
-    card.addEventListener("click", function () { openTaskDrawer(t.id); });
-    card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openTaskDrawer(t.id); } });
+    var open = function () { if (run) openRunDrawer(t.id, expandId); else openTaskDrawer(t.id); };
+    card.addEventListener("click", open);
+    card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); } });
     return card;
   }
 
@@ -2560,9 +2990,16 @@
 
   // Deletes every card in `list` after a confirm naming `what`. The bulk
   // "Clear" each terminal bucket (Done, failed / no match) offers.
+  // A run's card stands for its step cards too, so clearing it deletes
+  // them with it rather than leaving them behind as orphans.
   function confirmDeleteAll(list, what) {
     if (!window.confirm("Delete all " + list.length + " card(s) in " + what + "? This can't be undone.")) return;
-    Promise.all(list.map(function (t) { return fetch("/tasks/" + t.id, { method: "DELETE" }); })).then(refetchTasks);
+    var ids = [];
+    list.forEach(function (t) {
+      ids.push(t.id);
+      if (isRunRootCard(t)) runStepsOf(runIndex, t.id).forEach(function (s) { ids.push(s.id); });
+    });
+    Promise.all(ids.map(function (id) { return fetch("/tasks/" + id, { method: "DELETE" }); })).then(refetchTasks);
   }
 
   // One lane column: header (swatch, label, count, actions) and cards.
@@ -2597,8 +3034,13 @@
   // replaced it, but it keeps its old status forever by design, see
   // TaskCard.supersededBy) only shows in the Superseded bucket, and
   // only while "Show superseded" is on.
+  //
+  // partitionRunBoard (board-runs.js) wraps it for pipeline runs: a step
+  // card never draws on its own, its run's root card stands for the
+  // whole run, and a run with a step needing a human also shows in Needs
+  // you (docs/SDD-ui-cleanup.md §4.1, target T5).
   function renderKanban() {
-    var parts = partitionBoard(tasks, { now: Date.now(), showAllDone: showAllDone, showSuperseded: showSuperseded });
+    var parts = partitionRunBoard(tasks, allTasks, { now: Date.now(), showAllDone: showAllDone, showSuperseded: showSuperseded });
     renderNeedsYou(parts.needsYou);
 
     var body = document.getElementById("kanbanBody");
@@ -2640,7 +3082,14 @@
     strip.hidden = list.length === 0;
     document.getElementById("needsYouCount").textContent = "(" + list.length + ")";
     body.textContent = "";
-    list.forEach(function (t) { body.appendChild(buildKanbanCard(t, needsYouReason(t))); });
+    list.forEach(function (t) {
+      if (!isRunRootCard(t)) { body.appendChild(buildKanbanCard(t, needsYouReason(t))); return; }
+      // A run: the reason names the step, and the drawer opens on it.
+      var run = runOf(t);
+      var needing = runNeedsYouSteps(run.steps);
+      var focus = needing.length ? needing[0].id : (run.progress.failedAt ? run.progress.failedAt.taskId : undefined);
+      body.appendChild(buildKanbanCard(t, runNeedsYouReason(t, run.steps, run.def), focus));
+    });
 
     // Failed and no-match are terminal, so like Done they get a bulk
     // Clear. Review and escalated still need a decision, so never.
@@ -2871,8 +3320,15 @@
       card.appendChild(actionBtn);
     }
 
-    card.addEventListener("click", function () { openTaskDrawer(t.id); });
-    card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openTaskDrawer(t.id); } });
+    // A run's cards open the run drawer, a step's on that step (the same
+    // detail the board's run card leads to, docs/SDD-ui-cleanup.md §4.1).
+    var runRoot = runRootOf(t, runIndex);
+    var open = function () {
+      if (runRoot) openRunDrawer(runRoot.id, t.id);
+      else openTaskDrawer(t.id);
+    };
+    card.addEventListener("click", open);
+    card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); } });
     return card;
   }
 
@@ -2897,6 +3353,15 @@
     var count = document.createElement("span"); count.className = "sl-count";
     count.textContent = members.length === 1 ? "1 card" : members.length + " cards";
     head.appendChild(count);
+    // A pipeline run's lane: its steps are the cards below, its progress
+    // sits in the head, same as the run's board card.
+    if (isRunRootCard(root)) {
+      var run = runOf(root);
+      lane.dataset.runId = root.id;
+      var rp = document.createElement("span"); rp.className = "run-progress"; rp.textContent = run.progress.text;
+      head.appendChild(rp);
+      head.appendChild(buildRunBar(run.progress));
+    }
     if (opts && opts.headAction) head.appendChild(opts.headAction(root, members));
     lane.appendChild(head);
 
@@ -3023,6 +3488,7 @@
     renderNtHarnessOptions();
     renderMergeHealthBanner();
     refreshOpenDrawer();
+    refreshRunDrawer();
     document.getElementById("taskCount").innerHTML = '<span class="live-dot"></span>' + tasks.length + " tasks";
   }
 
@@ -3054,8 +3520,15 @@
   var selectedProjectPath = "";
   try { selectedProjectPath = localStorage.getItem("wissel-selected-project") || ""; } catch (e) {}
 
+  // A pipeline step belongs to its run's project, whatever its own repo:
+  // a step after a write step runs in the previous step's worktree
+  // (handlePipelineStepResult, src/core/pipeline-runner.ts).
   function applyProjectFilter() {
-    tasks = selectedProjectPath ? allTasks.filter(function (t) { return t.repo === selectedProjectPath; }) : allTasks;
+    runIndex = indexRuns(allTasks);
+    tasks = selectedProjectPath ? allTasks.filter(function (t) {
+      var root = runRootOf(t, runIndex);
+      return (root ? root.repo : t.repo) === selectedProjectPath;
+    }) : allTasks;
   }
 
   // Every SSE message (source.onmessage below) calls this with no
@@ -3821,6 +4294,9 @@
     applyProjectFilter();
     render();
     renderOverrideGrid();
+    // Step names and step counts for run cards (docs/SDD-ui-cleanup.md §4.1).
+    // render() above already asked for them if a run is on the board.
+    if (!pipelineDefsLoading) loadPipelineDefs();
 
     var source = new EventSource("/events");
     source.onmessage = function () { refetchTasks(); };
@@ -4151,6 +4627,7 @@
     }).then(function (list) {
       if (seq !== pagePipelinesSeq) return;
       pagePipelines = list || [];
+      rememberPipelineDefs(pagePipelines);
       pagePipelinesError = null;
       renderPipelinesPage();
     }).catch(function (err) {

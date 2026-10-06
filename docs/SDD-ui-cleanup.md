@@ -246,6 +246,49 @@ is unchanged in phase A.
   (approve an MCP call, retry) work from there.
 - Archive and Swimlanes group a run's steps under its root the same way.
 
+**B1 revision notes (as built).**
+- The folding logic is `src/api/public/board-runs.js` (`partitionRunBoard`,
+  `runProgress`, `runNeedsYouReason`, `foldsIntoRun`), covered by
+  `test/board-runs.test.ts`. `renderKanban` calls `partitionRunBoard`,
+  which drops every step card whose root is on the board and then calls
+  A2's `partitionBoard`. Two cases keep their own card so nothing goes
+  missing: a step whose root was deleted, and a step unarchived by
+  itself while its run stays archived.
+- Progress is "n/m steps · now: <step>". m is the definition's step
+  count (from `GET /pipelines`, cached and refetched when a run names an
+  unknown pipeline) or the number of steps seen, whichever is larger. n
+  counts steps whose latest card is done. "now" is the latest step that
+  hasn't finished. A settled failed run reads "failed at: <step>". A
+  step with more than one card in the run gets "(attempt N)". A
+  "choose" transition can skip steps, so a done run can end at n < m.
+- Needs you shows a run whose root is in a lane but has a step needing a
+  human, so that run appears in both places. Its reason names the step
+  ("step Notify: MCP approval: slack · send_message (+1 more)"), and
+  clicking it opens the run drawer on that step.
+- The run drawer is `#runDrawer`. Its first row is the run's own root
+  card, which holds the root's actions (Archive, Delete, ...); the other
+  rows are the steps in creation order. Expanding a row moves the task
+  drawer's `#tdDetail` element (every existing section) into that row
+  and fills it through the same functions as the task drawer
+  (`loadTaskDetail`, `refreshOpenDrawer`). Only one row is open at a
+  time. Rows update by key, so the open row stays in place on SSE
+  refreshes and the retry form keeps focus.
+- Model, duration and cost come from the new read-only
+  `GET /pipeline-runs/:runId` (`src/services/pipeline-run-summary.ts`,
+  `test/pipeline-run-summary.test.ts`). A TaskCard has no start time, so
+  duration is claude's own `duration_ms` from the step's stored
+  stream-json output. The model is claude's init-line model, falling
+  back to `resolveModel` against current config, marked "(config)".
+  Codex/API steps show "—" for duration. These formats were checked
+  against the Agent SDK message types, not observed in a live run.
+- With a project selected, a step is scoped by its root's repo: steps
+  after a write step run in the previous step's worktree.
+- Every way into a run root (board card, Swimlanes/Archive card, the
+  Pipelines page's last run) opens the run drawer. "Clear" on Needs you
+  or Done deletes a run's step cards along with its root.
+- T5, measured by `e2e/pipelines.spec.ts` at 1440x900 against a real
+  `POST /pipelines/:id/run`: 1 board card for a run with 2 step cards.
+
 ### 4.2 Editor inside the app (card B2)
 
 - The editor opens inside the board shell (the Pipelines nav item stays

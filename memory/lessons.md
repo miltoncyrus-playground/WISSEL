@@ -13,6 +13,9 @@ A full `e2e/board.spec.ts` run inside a review cost about $2.40 against a $0.12 
 ## Adding a TaskCard status value
 Change `src/core/types.ts` and add one entry to `STATUS_DISPLAY` in `src/api/public/board-lanes.js`: its lane (`queued`, `working`, `in-review`, `done`, or `NEEDS_YOU` if a human must act), label and colour token. That one table drives the board's lanes, the Needs you strip, every status tag and the drawer's status pill. `test/board-lanes.test.ts` reads the status union out of types.ts and fails until the table covers it. An unmapped status lands in Needs you rather than vanishing.
 
+## Pipeline step cards never draw on the board by themselves
+A step card (`pipelineRunId` set) folds into its run's root card (`partitionRunBoard`, `src/api/public/board-runs.js`). A new board view must go through it, not `partitionBoard` alone. An e2e test that counts "cards needing a human" from `GET /tasks` has to count a needing step as its root (see T4 in `e2e/board.spec.ts`). To show a task's detail somewhere new, move `#tdDetail` there (`attachTaskDetail`) instead of copying sections, so the actions keep working. Run e2e specs in one command with `--workers=1` when they share global counts: with 2 workers, `board.spec.ts`'s Deny test (compares total task counts) and T2 race other spec files on the one shared server.
+
 ## SQLite schema changes
 New column on an existing table: `ALTER TABLE ... ADD COLUMN` in a try/catch at DB open, like the existing ones in `src/services/board.ts`. New table: `CREATE TABLE IF NOT EXISTS`. No migration tooling needed.
 

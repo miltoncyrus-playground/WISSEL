@@ -202,7 +202,9 @@ test("board.html has no leftover per-status tables and loads board-lanes.js befo
   const tag = html.indexOf('<script src="/board-lanes.js"></script>');
   expect(tag).toBeGreaterThan(-1);
   expect(tag).toBeLessThan(html.indexOf("function renderKanban("));
-  expect(html).toContain("partitionBoard(tasks,");
+  // Since B1 the board calls partitionBoard through partitionRunBoard
+  // (board-runs.js), which folds pipeline steps into their run first.
+  expect(html).toContain("partitionRunBoard(tasks, allTasks,");
 });
 
 test("GET /board-lanes.js serves the module the board loads", async () => {
