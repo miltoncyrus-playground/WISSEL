@@ -13,6 +13,7 @@
 var BOARD_ROUTES = {
   board: { page: "boardPage", nav: "board", boardView: "lanes" },
   "board/features": { page: "boardPage", nav: "board", boardView: "features" },
+  pipelines: { page: "pipelinesPage", nav: "pipelines" },
   archive: { page: "archivePanel", nav: "archive" },
   "setup/agents": { page: "agentsPage", nav: "setup/agents" },
   "setup/harnesses": { page: "harnessPanel", nav: "setup/harnesses" },

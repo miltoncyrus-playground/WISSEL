@@ -111,7 +111,6 @@
   .nav-item[aria-current="page"] { background: var(--ink-1); color: var(--surface); }
   .nav-icon { width: 16px; height: 16px; flex: none; display: inline-flex; }
   .nav-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-  .nav-ext { margin-left: auto; font-size: 11px; opacity: 0.6; }
   .main-col { min-width: 0; display: flex; flex-direction: column; }
   .topbar {
     position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px;
@@ -137,7 +136,6 @@
       position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
       overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
     }
-    .nav-ext { display: none; }
     .sb-group { font-size: 0; height: 1px; margin: 10px 6px; background: var(--line); }
   }
 
@@ -378,6 +376,26 @@
   .hm-row-main { flex: 1; min-width: 0; }
   .hm-row-label { font-size: 13px; font-weight: 600; color: var(--ink-1); }
   .hm-row-meta { font-size: 11px; color: var(--ink-muted); margin-top: 2px; }
+
+  /* ---- Pipelines page (docs/SDD-ui-cleanup.md §3.4): one row per saved
+     pipeline, with its last run and the Run / Edit actions. ---- */
+  .pl-row { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .pl-row:last-child { border-bottom: none; }
+  .pl-main { flex: 1; min-width: 0; }
+  .pl-last { flex: none; width: 280px; display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-muted); }
+  .pl-last-open { appearance: none; border: none; background: transparent; padding: 0; font: inherit; color: inherit; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; text-align: left; min-width: 0; max-width: 100%; }
+  .pl-last-label, .pl-last-open .status-pill { flex: none; white-space: nowrap; }
+  .pl-last-input { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pl-last-open:hover .pl-last-input { color: var(--accent); text-decoration: underline; }
+  .pl-actions { flex: none; display: flex; gap: 8px; }
+  .pl-btn {
+    appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-2); text-decoration: none;
+    font: inherit; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 7px; cursor: pointer; flex: none;
+  }
+  .pl-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .pl-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .pl-btn.primary:hover { opacity: 0.92; color: #fff; }
+  .pl-empty { padding: 16px; font-size: 12.5px; color: var(--ink-muted); }
   .hm-row-meta.reason { color: var(--critical); }
   .hm-toggle {
     appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-1);
@@ -586,8 +604,7 @@
   <!-- Sidebar (docs/SDD-ui-cleanup.md §3.1): Work is what's moving, Setup
        is how wissel is configured. Each link's data-route is a key of
        BOARD_ROUTES (board-routes.js); test/board-html.test.ts checks the
-       two stay in sync. Pipelines links out to the editor until card A4
-       gives it a page here. -->
+       two stay in sync. -->
   <nav class="sidebar" id="sidebar" aria-label="Main">
     <div class="sb-brand" title="wissel">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 4h5l2 8h5"/><path d="M2 12h5l2-8h5"/></svg></span>
@@ -598,10 +615,9 @@
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="2.5" width="3.5" height="11" rx="1"/><rect x="6.25" y="2.5" width="3.5" height="7" rx="1"/><rect x="10.5" y="2.5" width="3.5" height="9" rx="1"/></svg></span>
       <span class="nav-label">Board</span>
     </a>
-    <a class="nav-item" href="/pipelines/edit" data-route="pipelines" title="Pipelines (opens the pipeline editor)">
+    <a class="nav-item" href="#/pipelines" data-route="pipelines" title="Pipelines">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.75"/><circle cx="12.5" cy="3.75" r="1.75"/><circle cx="12.5" cy="12.25" r="1.75"/><path d="M5.25 8h2.5M7.75 8 10.75 4.5M7.75 8l3 3.5"/></svg></span>
       <span class="nav-label">Pipelines</span>
-      <span class="nav-ext" aria-hidden="true">↗</span>
     </a>
     <a class="nav-item" href="#/archive" data-route="archive" title="Archive">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="3.5" rx="1"/><path d="M3 6v6.5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6M6.5 9h3"/></svg></span>
@@ -676,6 +692,18 @@
         <p class="muted" style="font-size: 12.5px; line-height: 1.5; margin: 0; padding: 10px 16px 0;">One lane per lineage root — every subtask, review pass, and pushback re-attempt that traces back to it, grouped together. Tags show what a card follows up on and what it depends on.</p>
         <div style="padding: 16px;" id="swimlanesBody"></div>
       </section>
+    </section>
+  </section>
+
+  <section id="pipelinesPage" data-page hidden>
+    <p class="eyebrow">Pipelines</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Saved pipelines: a graph of agent steps that runs as one unit. Run opens "+ New" with the pipeline picked; Edit opens it in the pipeline editor.</p>
+    <section class="panel-flush">
+      <div class="panel-head">
+        <h2>Saved pipelines <span class="count" id="pipelinesCount"></span></h2>
+        <a class="pl-btn primary" id="newPipelineLink" href="/pipelines/edit">New pipeline</a>
+      </div>
+      <div id="pipelinesList"><p class="pl-empty">Loading pipelines…</p></div>
     </section>
   </section>
 
@@ -1086,6 +1114,7 @@
 <script src="/board-routes.js"></script>
 <script src="/board-lanes.js"></script>
 <script src="/board-new.js"></script>
+<script src="/board-pipelines.js"></script>
 <script>
 (function () {
   "use strict";
@@ -2982,6 +3011,8 @@
     renderKanban();
     renderSwimlanes();
     renderArchiveTab();
+    // Its last-run column reads `tasks`, so it follows every refetch.
+    if (currentRoute === "pipelines") renderPipelinesPage();
     renderFleetBoxes();
     renderHarnessStrip();
     if (harnessPanelOpen) renderHarnessPanel();
@@ -4043,7 +4074,8 @@
   // The task drawer's overlay + slide-in, holding two tabs. openNewDrawer
   // is the one entry point: the top bar's "+ New", the old #/new URL
   // (applyRoute below), and card A4's per-pipeline Run, which passes
-  // { pipelineId } to land on the Pipeline run tab with it preselected.
+  // { pipelineId } to land on the Pipeline run tab with it preselected,
+  // plus { repo } (its last run's repo) to fill an empty, unlocked Repo.
   var newDrawerOpen = false;
   var newDrawerHideTimer = null;
 
@@ -4053,7 +4085,12 @@
     });
     document.getElementById("newTaskPanel").hidden = tab !== "task";
     document.getElementById("newPipelinePanel").hidden = tab !== "pipeline";
-    if (tab === "pipeline") loadSavedPipelines(opts && opts.pipelineId);
+    if (tab === "pipeline") {
+      // Never over a repo the human typed, nor over the project lock.
+      var prRepo = document.getElementById("prRepo");
+      if (opts && opts.repo && !prRepo.readOnly && !prRepo.value.trim()) prRepo.value = opts.repo;
+      loadSavedPipelines(opts && opts.pipelineId);
+    }
   }
 
   function openNewDrawer(tab, opts) {
@@ -4094,6 +4131,128 @@
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && newDrawerOpen) closeNewDrawer();
   });
+
+  // --- Pipelines page (docs/SDD-ui-cleanup.md §3.4) -------------------
+  //
+  // GET /pipelines on every visit (the editor saves outside this page),
+  // paired with the board's own project-scoped `tasks` for each
+  // pipeline's last run (pipelineRows, board-pipelines.js), so render()
+  // keeps that column live over SSE with no extra request.
+  // `null`: not loaded yet.
+  var pagePipelines = null;
+  var pagePipelinesError = null;
+  var pagePipelinesSeq = 0;
+
+  function loadPipelinesPage() {
+    var seq = ++pagePipelinesSeq;
+    return fetch("/pipelines").then(function (r) {
+      if (!r.ok) throw new Error("GET /pipelines failed: HTTP " + r.status);
+      return r.json();
+    }).then(function (list) {
+      if (seq !== pagePipelinesSeq) return;
+      pagePipelines = list || [];
+      pagePipelinesError = null;
+      renderPipelinesPage();
+    }).catch(function (err) {
+      if (seq !== pagePipelinesSeq) return;
+      pagePipelinesError = err.message;
+      renderPipelinesPage();
+    });
+  }
+
+  function plEmpty(text) {
+    var p = document.createElement("p");
+    p.className = "pl-empty";
+    p.textContent = text;
+    return p;
+  }
+
+  function renderPipelinesPage() {
+    var wrap = document.getElementById("pipelinesList");
+    var count = document.getElementById("pipelinesCount");
+    if (pagePipelinesError) {
+      wrap.replaceChildren(plEmpty("Failed to load: " + pagePipelinesError));
+      count.textContent = "";
+      return;
+    }
+    if (pagePipelines === null) return;
+    var rows = pipelineRows(pagePipelines, tasks);
+    count.textContent = String(rows.length);
+    if (!rows.length) {
+      wrap.replaceChildren(plEmpty("No saved pipelines yet. New pipeline opens the editor to build one."));
+      return;
+    }
+    wrap.replaceChildren.apply(wrap, rows.map(function (row) {
+      var p = row.pipeline;
+      var el = document.createElement("div");
+      el.className = "pl-row";
+      el.setAttribute("data-pipeline-id", p.id);
+
+      var main = document.createElement("div");
+      main.className = "pl-main";
+      var name = document.createElement("div");
+      name.className = "fleet-id pl-name";
+      name.textContent = p.name;
+      main.appendChild(name);
+      if (p.description) {
+        var desc = document.createElement("div");
+        desc.className = "fleet-desc pl-desc";
+        desc.textContent = p.description;
+        main.appendChild(desc);
+      }
+      var steps = document.createElement("div");
+      steps.className = "fleet-desc pl-steps";
+      steps.textContent = formatStepCount(row.stepCount);
+      main.appendChild(steps);
+      el.appendChild(main);
+
+      // Last run: its outcome and input, opening the root card's
+      // drawer. Only runs in the project-scoped list count.
+      var last = document.createElement("div");
+      last.className = "pl-last";
+      if (row.lastRun) {
+        var run = row.lastRun;
+        var open = document.createElement("button");
+        open.type = "button";
+        open.className = "pl-last-open";
+        open.title = "Open the last run: " + run.title;
+        var lastLabel = document.createElement("span");
+        lastLabel.className = "pl-last-label";
+        lastLabel.textContent = "Last run";
+        open.appendChild(lastLabel);
+        open.appendChild(statusPill(taskDisplayStatus(run)));
+        var runInput = document.createElement("span");
+        runInput.className = "pl-last-input";
+        runInput.textContent = run.body || "";
+        open.appendChild(runInput);
+        open.addEventListener("click", function () { openTaskDrawer(run.id); });
+        last.appendChild(open);
+      } else {
+        last.textContent = selectedProjectPath ? "No runs in this project" : "No runs yet";
+      }
+      el.appendChild(last);
+
+      var actions = document.createElement("div");
+      actions.className = "pl-actions";
+      var runBtn = document.createElement("button");
+      runBtn.type = "button";
+      runBtn.className = "pl-btn primary";
+      runBtn.textContent = "Run";
+      runBtn.setAttribute("aria-label", "Run " + p.name);
+      runBtn.addEventListener("click", function () {
+        openNewDrawer("pipeline", { pipelineId: p.id, repo: row.lastRun && row.lastRun.repo });
+      });
+      actions.appendChild(runBtn);
+      var edit = document.createElement("a");
+      edit.className = "pl-btn";
+      edit.href = "/pipelines/edit/" + encodeURIComponent(p.id);
+      edit.textContent = "Edit";
+      edit.setAttribute("aria-label", "Edit " + p.name);
+      actions.appendChild(edit);
+      el.appendChild(actions);
+      return el;
+    }));
+  }
 
   // --- Hash routing (docs/SDD-ui-cleanup.md §3.1) ---------------------
   //
@@ -4138,6 +4297,7 @@
     // last time this page was open should show up without a manual
     // page reload, and this is cheap (two small local reads).
     if (route === "setup/memory") loadMemoryTab();
+    if (route === "pipelines") loadPipelinesPage();
     if (route === "setup/projects") { loadProjectsTab(); renderProjectSummaryBox(); }
   }
 

@@ -45,8 +45,9 @@ const THEME_MARKER = /theme/i;
 /** board.html is one monolithic page. Verified (grep) it contains the
  *  markup/JS for: the theme toggle, the new-task form (#ntTitle etc.),
  *  the projects panel (#projLocalForm etc.), the live-output panel
- *  (#liveOutputPanel, calls renderTaskOutputRows), and the
- *  `/pipelines/edit` nav link that pipeline-editor.spec.ts asserts on.
+ *  (#liveOutputPanel, calls renderTaskOutputRows), and the Pipelines
+ *  page (#pipelinesPage) whose New pipeline link pipeline-editor.spec.ts
+ *  follows and pipelines.spec.ts drives.
  *  So any change to the file that isn't provably confined to the theme
  *  section (see THEME_MARKER) conservatively triggers every spec that
  *  touches board.html at all. */
@@ -57,6 +58,7 @@ const BOARD_HTML_DEFAULT_SPECS: string[] = [
   "projects.spec.ts",
   "live-task-output.spec.ts",
   "pipeline-editor.spec.ts",
+  "pipelines.spec.ts",
 ];
 
 function resolveBoardHtml(changedLines: string[] | undefined): SpecList {
@@ -109,6 +111,12 @@ export const FILE_RULES: FileRule[] = [
       "board-new.js/.d.ts is only the \"+ New\" drawer's live-card search — verified (grep) searchLiveCards is called only by board.html's createCardSearch (#ntDependsSearch, #ntParentSearch), and only new-task.spec.ts drives those boxes.",
     match: (p) => p === "src/api/public/board-new.js" || p === "src/api/public/board-new.d.ts",
     resolve: () => ["new-task.spec.ts"],
+  },
+  {
+    description:
+      "board-pipelines.js/.d.ts is only the Pipelines page's rows — verified (grep) pipelineRows/formatStepCount are called only by board.html's renderPipelinesPage (#pipelinesList), and only pipelines.spec.ts asserts on that list (pipeline-editor.spec.ts only follows the static #newPipelineLink).",
+    match: (p) => p === "src/api/public/board-pipelines.js" || p === "src/api/public/board-pipelines.d.ts",
+    resolve: () => ["pipelines.spec.ts"],
   },
   {
     description:
