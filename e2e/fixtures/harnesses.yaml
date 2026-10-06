@@ -16,3 +16,7 @@ harnesses:
     tool: anthropic-api
     label: "E2E Fixture Harness"
     enabled: true
+    # Exercises the Manage harnesses panel's active/max display
+    # (board.spec.ts, docs/SDD-agent-harness-preference.md §3.7). No
+    # agent lists this harness, so it never limits a real run.
+    maxConcurrent: 2

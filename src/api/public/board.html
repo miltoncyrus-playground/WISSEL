@@ -254,6 +254,11 @@
   .fleet-desc { font-size: 11.5px; color: var(--ink-muted); margin-top: 2px; line-height: 1.4; }
   .fleet-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
   .fleet-handoffs { font-size: 10.5px; color: var(--ink-muted); margin-top: 6px; }
+  /* Preferred harness list (docs/SDD-agent-harness-preference.md §3.7):
+     a listed harness that can't take the next run is tinted, since the
+     agent waits rather than moving to an unlisted one. */
+  .fleet-harnesses { font-size: 10.5px; color: var(--ink-muted); margin-top: 4px; }
+  .fleet-harness.state-disabled, .fleet-harness.state-full, .fleet-harness.state-unknown { color: var(--critical); }
   .tag { font-size: 10px; font-weight: 600; color: var(--ink-2); background: var(--page); border-radius: 5px; padding: 2px 6px; }
   .tier-chip { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; border-radius: 5px; padding: 2px 6px; flex: none; white-space: nowrap; }
   .tier-chip.readonly { background: var(--page); color: var(--ink-muted); }
@@ -873,6 +878,7 @@
 
 <script src="/render-task-output.js"></script>
 <script src="/render-merge-health.js"></script>
+<script src="/render-harness-preference.js"></script>
 <script>
 (function () {
   "use strict";
@@ -1760,7 +1766,11 @@
       var meta = document.createElement("div");
       meta.className = "hm-row-meta";
       var metaBits = [h.tool];
-      if (h.activeCount > 0) metaBits.push(h.activeCount + " active");
+      // "1/2 active" when maxConcurrent is set, else "N active" only while
+      // busy (render-harness-preference.js).
+      var capacity = formatHarnessCapacity(h);
+      if (capacity) metaBits.push(capacity);
+      if (harnessPreferenceState(h) === "full") metaBits.push("at capacity");
       meta.textContent = metaBits.join(" · ");
       main.appendChild(meta);
 
@@ -2497,6 +2507,7 @@
       handoffsEl.textContent = a.handoffs.length ? "→ hands off to: " + a.handoffs.join(", ") : "→ hands off to no one";
       main.appendChild(handoffsEl);
     }
+    main.appendChild(fleetHarnessesEl(a));
 
     var side = document.createElement("div");
     side.style.flex = "none";
@@ -2513,6 +2524,32 @@
 
     row.appendChild(main); row.appendChild(side);
     return row;
+  }
+
+  // The agent's preferred harnesses in order, each with its live state
+  // from the same `harnesses` array refetchTasks() keeps current, or
+  // "any enabled harness" when it has no list. The text is exactly
+  // describeAgentHarnesses().text (render-harness-preference.js); the
+  // per-entry spans only add the state tint.
+  function fleetHarnessesEl(a) {
+    var desc = describeAgentHarnesses(a, harnesses);
+    var el = document.createElement("div");
+    el.className = "fleet-harnesses";
+    el.dataset.harnessMode = desc.any ? "any" : "list";
+    if (desc.any) {
+      el.textContent = desc.text;
+      return el;
+    }
+    el.appendChild(document.createTextNode("Runs on: "));
+    desc.entries.forEach(function (entry, i) {
+      if (i > 0) el.appendChild(document.createTextNode(" → "));
+      var span = document.createElement("span");
+      span.className = "fleet-harness state-" + entry.state;
+      span.dataset.harnessId = entry.id;
+      span.textContent = entry.text;
+      el.appendChild(span);
+    });
+    return el;
   }
 
   function renderFleetBoxes() {

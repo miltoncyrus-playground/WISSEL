@@ -425,6 +425,13 @@ export function createApp(
         return new Response(Bun.file(new URL("render-merge-health.js", PUBLIC_DIR)));
       }
 
+      // Harness capacity + an agent's preferred harness list for the
+      // fleet rows and the Manage harnesses panel (docs/SDD-agent-
+      // harness-preference.md §3.7). Same static-sibling reasoning.
+      if (url.pathname === "/render-harness-preference.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("render-harness-preference.js", PUBLIC_DIR)));
+      }
+
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
       }

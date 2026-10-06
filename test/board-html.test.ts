@@ -157,6 +157,74 @@ test("the Memory tab's lede reflects GET /memory's injected field instead of ass
   expect(loadBody).toContain("ledeEl.textContent = memoryLedeText(!!data.injected);");
 });
 
+// docs/SDD-agent-harness-preference.md §3.7 (card 2). Runs board.html's
+// real fleetHarnessesEl glue against a minimal stub DOM, fed by the real
+// render-harness-preference.js, so the rendered text is proven to be
+// exactly describeAgentHarnesses().text and each entry span carries its
+// id and state. Also checks the glue is actually called from fleetRow
+// and the panel uses formatHarnessCapacity.
+test("fleet rows render the agent's harness list in order with live state; the harness panel shows active/max", async () => {
+  const html = await readFile(BOARD_HTML_PATH, "utf8");
+  expect(html).toContain('<script src="/render-harness-preference.js"></script>');
+
+  const start = html.indexOf("function fleetHarnessesEl(");
+  const end = html.indexOf("function renderFleetBoxes(", start);
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+
+  type StubNode = { className?: string; dataset: Record<string, string>; children: StubNode[]; ownText: string; textContent: string; appendChild(c: StubNode): void };
+  const makeNode = (text = ""): StubNode => {
+    const node: StubNode = {
+      dataset: {},
+      children: [],
+      ownText: text,
+      get textContent() {
+        return node.ownText + node.children.map((c) => c.textContent).join("");
+      },
+      set textContent(v: string) {
+        node.ownText = v;
+        node.children = [];
+      },
+      appendChild(c) {
+        node.children.push(c);
+      },
+    };
+    return node;
+  };
+  const document = { createElement: () => makeNode(), createTextNode: (t: string) => makeNode(t) };
+  const render = await import("../src/api/public/render-harness-preference.js");
+  const harnesses = [
+    { id: "a", label: "Alpha", enabled: true, activeCount: 2, maxConcurrent: 2 },
+    { id: "b", label: "Beta", enabled: true, activeCount: 0 },
+  ];
+  const fleetHarnessesEl = new Function("document", "describeAgentHarnesses", "harnesses", `${html.slice(start, end)}\nreturn fleetHarnessesEl;`)(
+    document,
+    render.describeAgentHarnesses,
+    harnesses,
+  ) as (a: { harnesses?: string[] }) => StubNode;
+
+  const listed = fleetHarnessesEl({ harnesses: ["a", "b"] });
+  expect(listed.dataset.harnessMode).toBe("list");
+  expect(listed.textContent).toBe(render.describeAgentHarnesses({ harnesses: ["a", "b"] }, harnesses).text);
+  expect(listed.textContent).toBe("Runs on: 1. Alpha (at capacity · 2/2 active) → 2. Beta (enabled)");
+  const spans = listed.children.filter((c) => c.className);
+  expect(spans.map((s) => [s.dataset.harnessId, s.className])).toEqual([
+    ["a", "fleet-harness state-full"],
+    ["b", "fleet-harness state-available"],
+  ]);
+
+  const any = fleetHarnessesEl({});
+  expect(any.dataset.harnessMode).toBe("any");
+  expect(any.textContent).toBe("Runs on: any enabled harness");
+
+  const fleetRow = html.slice(html.indexOf("function fleetRow("), html.indexOf("function fleetHarnessesEl("));
+  expect(fleetRow).toContain("main.appendChild(fleetHarnessesEl(a));");
+
+  const panel = html.slice(html.indexOf("function renderHarnessPanel("), html.indexOf("function renderHarnessPanel(") + 3000);
+  expect(panel).toContain("var capacity = formatHarnessCapacity(h);");
+  expect(panel).toContain('if (harnessPreferenceState(h) === "full") metaBits.push("at capacity");');
+});
+
 test("the MCP add-server form opts out of native constraint validation so its own inline error can render", async () => {
   const html = await readFile(BOARD_HTML_PATH, "utf8");
   expect(html).toMatch(/<form id="mcpAddForm" novalidate>/);

@@ -88,6 +88,12 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
+      "render-harness-preference.js/.d.ts is only used by board.html's fleet rows (fleetHarnessesEl) and Manage harnesses panel — verified (grep) only board.spec.ts asserts on #agentsBox .fleet-harnesses and #harnessPanel.",
+    match: (p) => p === "src/api/public/render-harness-preference.js" || p === "src/api/public/render-harness-preference.d.ts",
+    resolve: () => ["board.spec.ts"],
+  },
+  {
+    description:
       "board.html is shared by nearly every spec (see BOARD_HTML_DEFAULT_SPECS's own comment) — defaults to that broad set, UNLESS every changed line matches the theme-only marker, which is verified to appear nowhere else in the file.",
     match: (p) => p === "src/api/public/board.html",
     resolve: (_p, changedLines) => resolveBoardHtml(changedLines),

@@ -49,6 +49,12 @@ describe("resolveAffectedSpecs", () => {
     expect(result.fullSuite).toBe(false);
   });
 
+  test("render-harness-preference.js resolves to board.spec.ts only", () => {
+    const result = resolveAffectedSpecs([{ path: "src/api/public/render-harness-preference.js" }], ALL_SPECS);
+    expect(result.specs).toEqual(["board.spec.ts"]);
+    expect(result.fullSuite).toBe(false);
+  });
+
   test("board.html change where every changed line is theme-related resolves to theme.spec.ts only", () => {
     const result = resolveAffectedSpecs(
       [
