@@ -1197,7 +1197,7 @@ test.describe("Board view", () => {
     await expect(panel.locator("#mcpAddError")).toContainText("already registered");
   });
 
-  test("an empty column collapses to just its header instead of reserving full card space", async ({ page, request }) => {
+  test("an empty lane keeps its equal width and only dims its header, so cards never stretch across the board", async ({ page, request }) => {
     // Drives its own task to "done" rather than relying on some earlier
     // test in this file happening to have left one behind — the server
     // backing this whole spec file shares one long-lived in-memory DB
@@ -1227,9 +1227,17 @@ test.describe("Board view", () => {
       await expect(col.locator(".lane-label")).toHaveText(/\(0\)$/);
     }
 
-    // A lane that does have cards never gets the collapsed treatment.
+    // A lane that does have cards never gets the dimmed treatment.
     const doneCol = page.locator('#kanbanBody .kcol[data-lane="done"]');
     await expect(doneCol).not.toHaveClass(/kcol-empty/);
+    // Empty lanes keep their width: all four lanes are the same width, so
+    // the lone Done card doesn't stretch across the board (Milton,
+    // 2026-10-07).
+    const widths = await page.locator("#kanbanBody .kcol").evaluateAll((cols) => cols.map((c) => c.getBoundingClientRect().width));
+    expect(widths.length).toBe(4);
+    for (const w of widths) expect(Math.abs(w - widths[0]!)).toBeLessThan(1);
+    const cardWidth = (await doneCol.locator(".kcard").first().boundingBox())!.width;
+    expect(cardWidth).toBeLessThanOrEqual(widths[0]! + 1);
     await expect(doneCol.locator(".lane-label")).toHaveText("Done (1)");
     // Nothing needs a human, so the Needs you strip isn't there at all.
     await expect(page.locator("#needsYou")).toBeHidden();

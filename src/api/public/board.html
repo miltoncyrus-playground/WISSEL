@@ -224,8 +224,9 @@
   /* An empty column collapses to just its header — no reserved card
      area — so a board with a lot of columns but few active statuses
      doesn't read as mostly dead space. */
-  .kcol-empty { flex: 0 0 auto; min-width: 0; }
-  .kcol-empty h3 { margin-bottom: 0; opacity: 0.55; white-space: nowrap; }
+  /* An empty lane keeps its equal share of the width (cards stay the same
+     size whatever the other lanes hold); only its header dims. */
+  .kcol-empty h3 { opacity: 0.55; white-space: nowrap; }
   /* A superseded card (TaskCard.supersededBy set) — real history, never
      "current state," so it's visually receded rather than either hidden
      or presented as equally live. */
@@ -3238,8 +3239,9 @@
   // One lane column: header (swatch, label, count, actions) and cards.
   function buildKanbanColumn(id, labelText, color, cards, countText, actions) {
     var col = document.createElement("div");
-    // Collapses to just its header when empty, so the lanes that do have
-    // cards get the width.
+    // Every lane takes an equal share of the width, empty or not, so a
+    // card's size never depends on what the other lanes hold. Empty ones
+    // just dim their header.
     col.className = "kcol" + (cards.length === 0 ? " kcol-empty" : "");
     col.dataset.lane = id;
     var h3 = document.createElement("h3");

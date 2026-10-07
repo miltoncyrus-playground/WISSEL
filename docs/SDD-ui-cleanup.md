@@ -138,8 +138,11 @@ Still the single `board.html` and vanilla JS. No framework.
 - The bulk Clear moved with the statuses: Done keeps it (it clears the
   cards Done shows), and Needs you has "Clear failed / no match" for
   those two terminal statuses. Review and escalated get none.
-- An empty lane still collapses to its header, giving its width to the
-  lanes with cards.
+- Every lane takes an equal share of the board width, empty or not, so
+  a card keeps the same size whatever the other lanes hold. An empty
+  lane only dims its header. (Revision 2026-10-07, Milton: the earlier
+  "empty lane collapses to its header" rule let a lone Done lane stretch
+  its cards across the whole screen.)
 
 ### 3.3 "+ New" drawer (card A3)
 
