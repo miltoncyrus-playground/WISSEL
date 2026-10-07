@@ -5,10 +5,22 @@ Task worktrees symlink `node_modules` to the main checkout, which sits outside y
 
 A fresh worktree has no `pipeline-editor/dist` (gitignored), and a headless agent can't `bun install` to build it, so the editor bundle `/pipelines/edit/pipeline-editor.js` returns 503, the board's editor page (`#/pipelines/new`) shows the build command, and `e2e/pipeline-editor.spec.ts` fails at "New pipeline" / "Start blank". The editor's TSX can't be typechecked there either (root `tsc` doesn't cover `pipeline-editor/`). Say so instead of calling it your regression. A board-side spec that only needs the board's half should stub the bundle with a module exporting `mountPipelineEditor`, as `e2e/pipelines.spec.ts` does. Keep editor logic you want gated in dependency-free modules (`templates.ts`, `theme.ts`) so `test/` can import them.
 
-## e2e runs are expensive; run only what changed
-A full `e2e/board.spec.ts` run inside a review cost about $2.40 against a $0.12 estimate. Use `bun run test:e2e:affected` to run only the specs your diff touches.
+## Implementers can't commit, and reviewers must not demand it
+In worktree cards the implementer has no git write access, and `mergeTaskWorktree` (`src/services/worktree.ts:145`) stages and commits everything uncommitted as `<title>\n\ntask: <id>` before the merge commit. So uncommitted changes (including untracked files) are normal at review time. Don't send a card back for "nothing is committed"; that loop can never be satisfied.
 
-`playwright.config.ts` pins every `WISSEL_*` automation flag to `"0"` in `webServer.env`. Keep it that way: if any of them leak in from the shell, the test server's real orchestrator starts paid Claude sessions against fixture tasks and makes tests fail at random. If you add a new `WISSEL_*` flag in `src/api/server.ts`, pin it there too (`test/playwright-config.test.ts` guards this).
+The task `title` is used verbatim in both the commit message and the merge-commit message, and there is no endpoint that edits a task's title or body after creation. So a wrong or overclaiming title (for example "fixes 13 of 14") is permanent. Word titles carefully at creation, and if one is wrong, a human has to amend the merge commit by hand.
+
+## e2e runs are expensive; run only what changed
+A full `e2e/board.spec.ts` run inside a review cost about $2.40 against a $0.12 estimate. Use `bun run test:e2e:affected` to run only the specs your diff touches. Touching `server.ts` or `e2e/fixtures/` resolves to the full suite, so then run just the specs you changed, such as `bunx playwright test board.spec.ts`.
+
+`playwright.config.ts` pins every `WISSEL_*` automation flag to `"0"` in `webServer.env`. Keep it that way. `webServer.env` merges on top of `process.env`, so any flag exported in your shell leaks in. The test server's real orchestrator then starts paid Claude sessions against fixture tasks, and tests fail at random with a different subset each run. That was the real cause of the "different tests fail each identical run" symptom. If you add a new `WISSEL_*` flag in `src/api/server.ts`, pin it there too and add it to the array in `test/playwright-config.test.ts`, which guards this.
+
+The config's `webServer.command` also resets `/tmp/wissel-e2e-memory-lessons.md` and `/tmp/wissel-e2e-telemetry.jsonl` before boot and creates `/tmp/wissel-e2e-repo` (`pipeline-editor.spec.ts` dispatches real agents into it; a missing cwd makes `Bun.spawn` fail with ENOENT and step 3 of the join test never appears). The e2e port 8790 is fixed, so another session's server can squat on it. Wait for it to free up rather than testing against its copy.
+
+e2e locators and forms:
+- A pushback, retry or review lineage produces several cards with byte-identical titles (and a `Review: <title>` card contains the title as a substring). `getByText(title)`, even with `exact: true`, then hits a strict-mode violation. Select cards by `#kanbanBody .kcard[data-task-id="..."]` (`buildKanbanCard` stamps it).
+- A native `required` attribute on a form without `novalidate` makes Chromium block the submit before your JS handler runs, so inline-error code never fires (`#mcpAddForm`).
+- Don't hardcode counts that drift, such as the number of agents in `agents/manifest.yaml`, and don't assume an earlier test left a Done card behind. Tests share one in-memory DB, so create what you assert on.
 
 ## Adding a TaskCard status value
 Change `src/core/types.ts` and add one entry to `STATUS_DISPLAY` in `src/api/public/board-lanes.js`: its lane (`queued`, `working`, `in-review`, `done`, or `NEEDS_YOU` if a human must act), label and colour token. That one table drives the board's lanes, the Needs you strip, every status tag and the drawer's status pill. `test/board-lanes.test.ts` reads the status union out of types.ts and fails until the table covers it. An unmapped status lands in Needs you rather than vanishing.
@@ -27,6 +39,26 @@ Copy `parseReviewVerdict`'s shape (last fenced block wins, fail to `null`), as `
 ## Calling executor.run() anywhere new
 Copy everything `orchestrator.process()` does around its `executor.run()` call, not just the call: `HarnessPool.acquire()`/`release()` in try/finally, cost tracking and harness stamping. `pipeline-runner.ts` once skipped the pool and broke concurrency limits.
 
+`acquire(tool, harnessId?, preferred?)` takes the override first, then the agent's `harnesses` list in order, then least-loaded. A non-empty list never falls through to a harness it doesn't name, and an override onto a full harness throws `HarnessOverrideError` rather than waiting. The hold in the orchestrator uses `canAcquire`, which shares `pick()` with `acquire()` so the two can't disagree. `HarnessPool.autoload` ignores only a missing `harnesses.yaml`; any other load error stops startup.
+
+## Prompts go to agents on stdin, never argv
+A long prompt passed as a command-line argument crashes the spawn with `E2BIG` (the kernel limit is about 128KB for one argv element; reproduced at 131072 bytes). `runViaBun` takes a `stdin` option, and both `runClaude` and `runCodex` send the prompt that way. Any new place that spawns `claude` or `codex` must do the same, and tests should assert on `opts.stdin`, not on the `cmd` array.
+
+## Agent processes must die with the server
+`runViaBun` (`src/executors/claude-cli.ts`) is the only agent spawn path and registers every child in `src/executors/child-processes.ts`. `installShutdownHandlers()` (the first thing in server.ts's `import.meta.main` block) kills them on SIGTERM/SIGINT. At startup, `reconcileOrphanedTasks` (`src/core/crash-recovery.ts`) reads `/proc` and kills any `claude`/`codex` whose cwd is the task's worktree before resetting the task. Otherwise a restarted server dispatches a second agent into the same worktree as the orphan. Stop the server with Ctrl-C or plain `kill`, never `kill -9`, and run `bun run serve`, not `bun run dev`, because watch mode races the merge step touching `src/`. Only the direct child gets the signal, not its process group, so a grandchild (an agent's own `bun test`) may survive. `bun run live-check:shutdown` runs the real end-to-end check.
+
+Recovery of approved-but-unmerged cards (`reconcileInterruptedReviewVerdicts`) re-drives the same `resumeAfterReviewVerdict` the live path uses. It first asks `determineWorktreeMergeState` (`src/services/worktree.ts`) whether the branch already merged. That function checks for uncommitted content before it checks ancestor status, because a never-advanced branch is trivially its own ancestor and would look "already merged". When it can't prove the state, it fails closed.
+
+## Memory injection is off by default
+Lessons from `memory/lessons.md` are put into agent prompts only when `WISSEL_MEMORY_INJECTION` is `1` or `true`. The server reads it once and threads `injectMemory` through `CreateAppOptions` into every executor, so executors never read `process.env` themselves. Capture and curation always run. `GET /memory` returns `injected`, and the Memory tab shows it.
+
+An eval or test that builds a `ReadOnlyExecutor` should still pass its own `memoryPath`. Without it, a run with injection on contaminates the fixture with this repo's real lessons. When an eval substring-matches model output, strip backticks first, because the model wraps identifiers in code spans.
+
+## Retries, supersededBy and dependsOn
+Retries reuse one worktree keyed by `reviewLineageId ?? task.id`. `supersededBy` never changes a card's `status`, so always resolve to the live card with `resolveLiveTip` (`src/core/orchestrator.ts`) before reading status.
+
+A restart after escalation creates a new `reviewLineageId`; a pushback reuses the old one. Superseded cards stay in their old board column, drawn faded.
+
 ## Parsing external CLI output
 Check the format against the tool's current docs, and fail loudly when you can't verify it. Tests whose fixtures share the code's assumption prove nothing.
 
@@ -36,11 +68,6 @@ Real misses: claude `stream-json` can print system lines after the `type: "resul
 Routing or dispatch tests must go through a real `sweep()` with `Registry.load()`, because `sweep()` sets `routedTo`, which later guards depend on. Calling `finishResult` with a hand-built object skips that.
 
 For a new opt-in field, loop over every real entry in `agents/manifest.yaml` and assert the output is unchanged (see `test/claude-cli.test.ts`). For timestamps, take a `now: Date = new Date()` parameter; never assert that two back-to-back calls give different times. For a test that compares two copies of a type (e.g. `test/pipeline-editor-types-parity.test.ts`), break one copy once to prove the test catches it. For a button wired to an endpoint, assert the actual request body with `postDataJSON()`.
-
-## Retries, supersededBy and dependsOn
-Retries reuse one worktree keyed by `reviewLineageId ?? task.id`. `supersededBy` never changes a card's `status`, so always resolve to the live card with `resolveLiveTip` (`src/core/orchestrator.ts`) before reading status.
-
-A restart after escalation creates a new `reviewLineageId`; a pushback reuses the old one. Superseded cards stay in their old board column, drawn faded.
 
 ## Verify card instructions and doc citations against the repo
 Card text and docs can point at the wrong file, section or line. Grep first and follow what the code actually has. Example: New Task e2e tests live in `e2e/new-task.spec.ts`, not `board.spec.ts`.
@@ -54,5 +81,7 @@ Use `newId()` (`pipeline-editor/src/id.ts`), which falls back to `crypto.getRand
 
 Don't import `src/api/public/*.js` into e2e specs. Those modules export only through a `module.exports` guard, which works in `bun test` but exports nothing under Playwright (the repo is `"type": "module"`), so the whole spec file fails to load. Call them with `page.evaluate` on the globals the board defines. `test/e2e-public-imports.test.ts` enforces this.
 
+Async board code: `refetchTasks()` uses a "latest applied response wins" sequence guard plus a `.catch`. Don't switch it to "latest started request wins". That version starves under sustained traffic, which is why `loadDrawerResult` reverted it.
+
 ## Process management
-Kill processes by PID. `pkill -f <pattern>` can match the shell running it and kill your own command.
+Kill processes by PID. `pkill -f <pattern>` can match the shell running it and kill your own command. Don't kill a process you didn't start, such as another session's server on the e2e port.
