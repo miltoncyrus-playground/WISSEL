@@ -463,6 +463,12 @@ export function createApp(
         return new Response(Bun.file(new URL("board-runs.js", PUBLIC_DIR)));
       }
 
+      // A run's graph with live step statuses (docs/SDD-ui-cleanup.md
+      // §4.3). Same static-sibling reasoning.
+      if (url.pathname === "/board-run-canvas.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("board-run-canvas.js", PUBLIC_DIR)));
+      }
+
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
       }

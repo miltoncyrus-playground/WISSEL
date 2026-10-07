@@ -65,7 +65,20 @@ test("the editor routes show the editor page and keep Pipelines highlighted", ()
   expect(BOARD_ROUTES["pipelines/new"]).toEqual({ page: "pipelineEditorPage", nav: "pipelines", editor: "new" });
   expect(BOARD_ROUTES["pipelines/edit/:id"]).toEqual({ page: "pipelineEditorPage", nav: "pipelines", editor: "edit" });
   const withParam = Object.keys(BOARD_ROUTES).filter((r) => r.includes(":"));
-  expect(withParam).toEqual(["pipelines/edit/:id"]);
+  expect(withParam).toEqual(["pipelines/edit/:id", "pipelines/run/:runId"]);
+});
+
+// Card B3 (§4.3): a run on its pipeline graph, under Pipelines.
+test("#/pipelines/run/<runId> parses the run id, round-trips, and shows the canvas page under Pipelines", () => {
+  const route = "pipelines/run/:runId";
+  expect(BOARD_ROUTES[route]).toEqual({ page: "runCanvasPage", nav: "pipelines" });
+  expect(parseBoardRoute("#/pipelines/run/r-123")).toEqual({ route, known: true, params: { runId: "r-123" } });
+  for (const runId of ["r-123", "a b/c?d#e", "üñí", ":runId"]) {
+    expect(parseBoardRoute(boardRouteHash(route, { runId }))).toEqual({ route, known: true, params: { runId } });
+  }
+  for (const hash of ["#/pipelines/run", "#/pipelines/run/", "#/pipelines/run/a/b"]) {
+    expect(parseBoardRoute(hash)).toEqual({ route: "board", known: false });
+  }
 });
 
 test("an empty hash is the board, and known, so a bare /board URL is left alone", () => {

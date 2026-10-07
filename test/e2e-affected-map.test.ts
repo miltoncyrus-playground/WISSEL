@@ -101,6 +101,14 @@ describe("resolveAffectedSpecs", () => {
     }
   });
 
+  test("board-run-canvas.js (the run canvas page's layout) resolves to pipelines.spec.ts only", () => {
+    for (const path of ["src/api/public/board-run-canvas.js", "src/api/public/board-run-canvas.d.ts"]) {
+      const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
+      expect(result.specs).toEqual(["pipelines.spec.ts"]);
+      expect(result.fullSuite).toBe(false);
+    }
+  });
+
   test("board.html change where every changed line is theme-related resolves to theme.spec.ts only", () => {
     const result = resolveAffectedSpecs(
       [

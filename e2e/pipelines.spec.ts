@@ -543,3 +543,168 @@ test.describe("Pipeline runs on the board", () => {
     expect(folded).toEqual(steps.map(() => true));
   });
 });
+
+// docs/SDD-ui-cleanup.md §4.3 (card B3): "View on canvas" in the run
+// drawer shows the run's pipeline graph, each step coloured by its live
+// status over the SSE stream; clicking a step opens B1's step detail.
+
+type CanvasNode = { stepId: string; status: string; taskId: string | null; taskStatus: string | null; disabled: boolean };
+
+const canvasNodes = (page: Page): Promise<CanvasNode[]> => page.locator("#rcNodes .rc-node").evaluateAll((els) => els.map((el) => {
+  const b = el as HTMLButtonElement;
+  return { stepId: b.dataset.stepId!, status: b.dataset.status!, taskId: b.dataset.taskId ?? null, taskStatus: b.dataset.taskStatus ?? null, disabled: b.disabled };
+}));
+
+// What GET /tasks says about each step of `runId`: its latest card (a
+// step activated twice has two) and that card's status.
+async function stepStatusesFromApi(request: APIRequestContext, runId: string) {
+  const all = (await (await request.get("/tasks")).json()) as (ApiTask & { pipelineStepId?: string })[];
+  const latest: Record<string, { taskId: string; taskStatus: string }> = {};
+  for (const t of all) if (t.pipelineRunId === runId) latest[t.pipelineStepId!] = { taskId: t.id, taskStatus: t.status };
+  return latest;
+}
+
+// Every node with a card names that step's latest card and its exact
+// status; every other node is a step the run hasn't reached.
+async function expectCanvasMatchesApi(page: Page, request: APIRequestContext, runId: string, stepIds: string[]) {
+  const api = await stepStatusesFromApi(request, runId);
+  const want = stepIds.map((id) => [id, api[id]?.taskId ?? null, api[id]?.taskStatus ?? null]);
+  await expect.poll(async () => (await canvasNodes(page)).map((n) => [n.stepId, n.taskId, n.taskStatus])).toEqual(want);
+  for (const n of await canvasNodes(page)) {
+    if (n.taskId) expect(n.disabled, n.stepId).toBe(false);
+    else expect([n.status, n.disabled], n.stepId).toEqual(["pending", true]);
+  }
+  return want;
+}
+
+test.describe("A run on its pipeline canvas", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("View on canvas shows the run's graph with every step's status matching GET /tasks, live over SSE, and a step opens its B1 detail", async ({ page, request }) => {
+    const { root, steps } = await startTwoStepRun(request, "Canvas run");
+    const [plan, notify] = steps as [ApiTask, ApiTask];
+    const nodeA = page.locator('#rcNodes .rc-node[data-step-id="a"]');
+
+    await page.goto("/board");
+    await page.locator(`#boardPage .kcard[data-task-id="${root.id}"]`).first().click();
+    await expect(page.locator("#runDrawer")).toBeVisible();
+    await page.getByRole("link", { name: "View on canvas", exact: true }).click();
+
+    await expect(page).toHaveURL(new RegExp(`#/pipelines/run/${encodeURIComponent(root.id)}$`));
+    await expect(page.locator("#runDrawer")).toBeHidden();
+    await expect(page.locator("#runCanvasPage")).toBeVisible();
+    await expect(page.locator('#sidebar [data-route="pipelines"]')).toHaveAttribute("aria-current", "page");
+    await expect(page.locator("#rcTitle")).toHaveText(root.title);
+    await expect(page.locator("#rcProgress")).toHaveText("0/3 steps · failed at: Plan");
+    await expect(page.locator("#rcMessage")).toBeHidden();
+
+    // Plan and Notify failed (unknown agents); Ship, the join, never ran.
+    const first = await expectCanvasMatchesApi(page, request, root.id, ["a", "b", "c"]);
+    console.log(`B3: canvas vs GET /tasks for run ${root.id}: ${JSON.stringify(first)}`);
+    expect((await canvasNodes(page)).map((n) => n.status)).toEqual(["failed", "failed", "pending"]);
+    await expect(nodeA.locator(".rc-name")).toHaveText("Plan");
+    await expect(page.locator('#rcNodes .rc-node[data-step-id="c"]')).toContainText("Not started");
+    expect(await page.locator("#rcEdgeLayer path.rc-edge").evaluateAll((els) => els.map((el) => el.getAttribute("data-edge-id")))).toEqual(["ac", "bc"]);
+
+    // The page's own model, through its globals (no import), agrees with what it drew.
+    const modelStatuses = await page.evaluate((runId) => {
+      const w = window as unknown as {
+        indexRuns(t: unknown[]): unknown;
+        runStepsOf(i: unknown, id: string): unknown[];
+        runCanvasModel(root: unknown, steps: unknown[], def: unknown): { nodes: { id: string; status: string }[] };
+      };
+      return Promise.all([fetch("/tasks").then((r) => r.json()), fetch("/pipelines").then((r) => r.json())]).then(([all, defs]) => {
+        const root = (all as { id: string; pipelineId: string }[]).find((t) => t.id === runId)!;
+        const def = (defs as { id: string }[]).find((p) => p.id === root.pipelineId);
+        return w.runCanvasModel(root, w.runStepsOf(w.indexRuns(all), runId), def).nodes.map((n) => [n.id, n.status]);
+      });
+    }, root.id);
+    expect(modelStatuses).toEqual((await canvasNodes(page)).map((n) => [n.stepId, n.status]));
+
+    // Live: moving a step's card fires the real SSE stream; the canvas follows.
+    expect((await request.post(`/tasks/${plan.id}/move`, { data: { status: "running" } })).status()).toBe(200);
+    await expect(nodeA).toHaveAttribute("data-status", "running");
+    await expect(nodeA.locator('[title="actively working"]')).toHaveCount(1);
+    await expectCanvasMatchesApi(page, request, root.id, ["a", "b", "c"]);
+    expect((await request.post(`/tasks/${plan.id}/move`, { data: { status: "done" } })).status()).toBe(200);
+    await expect(nodeA).toHaveAttribute("data-status", "done");
+    await expect(nodeA.locator('[title="actively working"]')).toHaveCount(0);
+    await expect(page.locator("#rcProgress")).toHaveText("1/3 steps · failed at: Notify");
+    await expectCanvasMatchesApi(page, request, root.id, ["a", "b", "c"]);
+    await expect(page.locator('#rcEdgeLayer path[data-edge-id="ac"]')).not.toHaveClass(/reached/);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/b3-run-canvas-1440x900.png` });
+
+    // A step opens the run drawer on that step, with B1's full task detail.
+    await page.locator('#rcNodes .rc-node[data-step-id="b"]').click();
+    const notifyRow = page.locator(`#rdSteps .rd-step[data-task-id="${notify.id}"]`);
+    await expect(page.locator("#runDrawer")).toBeVisible();
+    await expect(notifyRow).toHaveClass(/expanded/);
+    await expect(notifyRow.locator("#tdResult")).toContainText('references unknown agent "e2e-no-such-notifier"');
+    await expect(notifyRow.getByRole("button", { name: "Run now", exact: true })).toBeVisible();
+    // Past the slide-in, so the screenshot shows the drawer where it rests.
+    await expect.poll(async () => { const b = await page.locator("#runDrawer").boundingBox(); return b && b.x + b.width; }).toBe(1440);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/b3-run-canvas-step-1440x900.png` });
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#runDrawer")).toBeHidden();
+    await expect(page.locator("#runCanvasPage")).toBeVisible();
+
+    // A step the run hasn't reached has no card to open.
+    await expect(page.locator('#rcNodes .rc-node[data-step-id="c"]')).toBeDisabled();
+    // Run details opens the drawer on the run itself.
+    await page.getByRole("button", { name: "Run details", exact: true }).click();
+    await expect(page.locator("#runDrawer")).toBeVisible();
+    await expect(page.locator("#rdSteps .rd-step.expanded")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    // The canvas is a real URL: a reload lands back on it.
+    await page.reload();
+    await expect(page.locator("#runCanvasPage")).toBeVisible();
+    await expectCanvasMatchesApi(page, request, root.id, ["a", "b", "c"]);
+  });
+
+  test("a re-run step shows its latest card, a reviewer's running card reads Reviewing, and loop-back edges are drawn (served board)", async ({ page }) => {
+    const base = { body: "stub input", labels: [], repo: "/tmp/wissel-e2e-repo", pipelineId: "p-b3-stub" };
+    const step = (id: string, stepId: string, status: string, extra: Record<string, unknown> = {}) => ({
+      ...base, id, title: `B3 stub: ${stepId}`, status, parentTaskId: "r-b3", pipelineRunId: "r-b3", pipelineStepId: stepId, ...extra,
+    });
+    const board = [
+      { ...base, id: "r-b3", title: "Pipeline: B3 stub", status: "running" },
+      step("t-impl-1", "impl", "done"),
+      step("t-rev-1", "rev", "done", { routedTo: "reviewer" }),
+      step("t-impl-2", "impl", "done"),
+      step("t-rev-2", "rev", "running", { routedTo: "reviewer" }),
+    ];
+    const def = {
+      id: "p-b3-stub", name: "B3 stub", description: "",
+      graph: {
+        steps: [
+          { id: "impl", name: "Implementer", agentId: "implementer", transition: "all" },
+          { id: "rev", name: "Reviewer", agentId: "reviewer", transition: "choose" },
+          { id: "ship", name: "Ship", agentId: "shipper", transition: "all" },
+        ],
+        edges: [{ id: "ir", from: "impl", to: "rev" }, { id: "ri", from: "rev", to: "impl", label: "changes" }, { id: "rs", from: "rev", to: "ship", label: "approved" }],
+      },
+    };
+    await page.route((url) => url.pathname === "/tasks", (route) => (route.request().method() === "GET" ? route.fulfill({ json: board }) : route.fallback()));
+    await page.route((url) => url.pathname === "/pipelines", (route) => (route.request().method() === "GET" ? route.fulfill({ json: [def] }) : route.fallback()));
+
+    await page.goto("/board#/pipelines/run/r-b3");
+    await expect(page.locator("#runCanvasPage")).toBeVisible();
+    await expect.poll(() => canvasNodes(page)).toEqual([
+      { stepId: "impl", status: "done", taskId: "t-impl-2", taskStatus: "done", disabled: false },
+      { stepId: "rev", status: "reviewing", taskId: "t-rev-2", taskStatus: "running", disabled: false },
+      { stepId: "ship", status: "pending", taskId: null, taskStatus: null, disabled: true },
+    ]);
+    await expect(page.locator('#rcNodes .rc-node[data-step-id="rev"] .rc-name')).toHaveText("Reviewer (attempt 2)");
+    await expect(page.locator('#rcEdgeLayer path[data-edge-id="ri"]')).toHaveClass(/back/);
+    await expect(page.locator("#rcEdgeLayer text.rc-edge-label")).toHaveText(["changes", "approved"]);
+  });
+
+  test("a canvas URL for a run that isn't on the board says so instead of drawing nothing", async ({ page }) => {
+    await page.goto("/board#/pipelines/run/no-such-run");
+    await expect(page.locator("#runCanvasPage")).toBeVisible();
+    await expect(page.locator("#rcMessage")).toHaveText("No pipeline run no-such-run on the board. It may have been deleted.");
+    await expect(page.locator("#rcScroll")).toBeHidden();
+    await expect(page.locator("#rcDetails")).toBeHidden();
+  });
+});

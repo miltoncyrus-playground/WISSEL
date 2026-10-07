@@ -359,6 +359,46 @@ pipeline graph with each step coloured by its live status, updated over
 the existing SSE stream. Clicking a step on the canvas opens the same
 step detail as B1.
 
+**B3 revision notes (as built).**
+- Route `#/pipelines/run/<runId>` (`BOARD_ROUTES["pipelines/run/:runId"]`,
+  `nav: "pipelines"`, section `#runCanvasPage`). The run drawer's "View
+  on canvas" (`#rdCanvas`) is a plain link to it and closes the drawer.
+  The page has "Run details" (the run drawer, no step expanded) and "All
+  pipelines". A reload or a shared URL lands back on the canvas.
+- The canvas is vanilla JS and SVG in board.html (`renderRunCanvas`),
+  not the editor's React Flow bundle: it is read-only, must redraw on
+  every SSE refetch through `render()`, and must work when
+  `pipeline-editor/dist` isn't built. Layout is
+  `src/api/public/board-run-canvas.js` (`canvasLayers`,
+  `runCanvasModel`), covered by `test/board-run-canvas.test.ts`. A saved
+  pipeline stores no node positions, so it lays the graph out itself:
+  one column per longest-path layer from the entry steps, definition
+  order within a column, shorter columns centred. Edges that loop back
+  (a reviewer sending work back) are found by DFS and drawn as arcs
+  under the nodes; a self-loop is a small arc on the node's right edge.
+- A node's colour is the status token of that step's latest card
+  (`latestStepCards`, the same rule as B1's step bar), so a retried step
+  shows its newest attempt, labelled "(attempt N)". `data-status` is the
+  display status (a reviewer's running card is "reviewing");
+  `data-task-status` is the card's own status, as `GET /tasks` has it.
+  A step the run hasn't reached is "Not started", dashed and disabled.
+  An edge is solid once the run has a card at both ends.
+- A step card whose step the definition no longer has (edited since the
+  run) gets its own dotted node in a last column, so nothing the run did
+  goes missing. With the definition deleted, every node is one of those
+  and the page says edges can't be shown. A run id not on the board
+  says so instead of drawing an empty canvas.
+- Clicking a node calls `openRunDrawer(runId, taskId)`: the run drawer
+  with that step expanded, the same `#tdDetail` and actions as B1.
+- e2e (`e2e/pipelines.spec.ts`, "A run on its pipeline canvas"): a real
+  `POST /pipelines/:id/run` fixture's node statuses equal its step cards
+  in `GET /tasks`, then follow two real `POST /tasks/:id/move` calls
+  over `/events` with no reload. Screenshots at 1440x900 in
+  `test-results/pipelines-page/b3-run-canvas*.png`.
+- Targets: B3 moves none of T1–T6. It adds a page, not board controls
+  or board cards; B1's T5 test in the same spec still measures 1 board
+  card per run.
+
 ## 5. Testing, for every card
 
 - `bun run typecheck` clean, `bun test test/` 0 failures.
