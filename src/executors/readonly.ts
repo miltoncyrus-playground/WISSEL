@@ -5,6 +5,15 @@ import { runClaude, runViaBun, type CommandRunner } from "./claude-cli.ts";
 
 export type { CommandResult, CommandRunner } from "./claude-cli.ts";
 
+/** What `toolAccess: [web]` grants a readonly agent: claude's own web
+ *  search and page fetch, passed as `--allowedTools`. Plan mode denies
+ *  both without it (checked live 2026-10-07: WebSearch showed up in
+ *  `permission_denials`; with this list it searched and returned real
+ *  results). Still plan mode, so no write and no bash either way. Only
+ *  this executor reads `web`; the registry rejects it anywhere else
+ *  (see Registry.from). docs/SDD-ai-news-podcast.md §3.1. */
+export const WEB_ALLOWED_TOOLS = ["WebSearch", "WebFetch"] as const;
+
 export interface ReadOnlyExecutorOptions {
   runner?: CommandRunner;
   /** Explicit override, mainly for tests/evals that want to pin a
@@ -90,6 +99,9 @@ export class ReadOnlyExecutor implements Executor {
       agent,
       permissionMode: "plan",
       model: this.model ?? resolveModel(task, agent, harness),
+      // Undefined for every agent without `web`: no --allowedTools at
+      // all, the exact command line from before `web` existed.
+      allowedTools: agent.toolAccess.includes("web") ? [...WEB_ALLOWED_TOOLS] : undefined,
       env: harness?.env,
       memoryPath: this.memoryPath,
       injectMemory: this.injectMemory,

@@ -188,6 +188,11 @@
   background: var(--page);
 }
 
+/* Built-in templates sit under the saved list, in the wide column. */
+.pe-app .pe-choice-templates {
+  grid-column: 2;
+}
+
 .pe-app .pe-choice h2 {
   margin: 0;
   font-size: 14px;

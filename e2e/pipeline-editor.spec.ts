@@ -219,13 +219,18 @@ test.describe("pipeline editor in the board shell", () => {
     await page.locator("#pipelineEditorRoot").getByRole("button", { name: "Run", exact: true }).click();
     await expect(page.locator("#newPipelinePanel")).toBeVisible();
     await expect(page.locator("#prPipeline")).toHaveValue(pipelineId);
-    await page.locator("#prRepo").fill("/tmp/wissel-e2e-repo");
+    // Every step is triager (readonly, read only), so the run needs no
+    // repo: the field is hidden and each step gets a scratch workspace
+    // (docs/SDD-ai-news-podcast.md §3.4).
+    await expect(page.locator("#prRepoField")).toBeHidden();
+    await expect(page.locator("#prNoRepoHint")).toBeVisible();
     await page.locator("#prInput").fill("Playwright smoke run: what is 2+2?");
 
     const [runResponse] = await Promise.all([
       page.waitForResponse((r) => r.url().includes(`/pipelines/${pipelineId}/run`) && r.request().method() === "POST", { timeout: 90_000 }),
       page.getByRole("button", { name: "Start run", exact: true }).click(),
     ]);
+    expect(runResponse.request().postDataJSON()).toEqual({ input: "Playwright smoke run: what is 2+2?" });
     expect(runResponse.status()).toBe(201);
     const rootTask = (await runResponse.json()) as { id: string; status: string; title: string };
     expect(rootTask.title).toBe(`Pipeline: ${pipelineName}`);
@@ -316,6 +321,22 @@ test.describe("pipeline editor in the board shell", () => {
     const original = await (await request.get(`/pipelines/${source.id}`)).json();
     expect(original.name).toBe(source.name);
     expect(original.graph).toEqual(source.graph);
+  });
+
+  // docs/SDD-ai-news-podcast.md §3.3: the AI news podcast is offered as
+  // a built-in template under New pipeline. Not saved here, so nothing
+  // is left on the Pipelines page.
+  test("start from the AI news podcast template: three steps in a line with the news agents", async ({ page }) => {
+    await openNewPipeline(page);
+    await page.getByRole("button", { name: "Start from template AI news podcast", exact: true }).click();
+    await expect(page.locator(".react-flow__node")).toHaveCount(3);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(2);
+    await expect(page.locator('input[placeholder="Pipeline name"]')).toHaveValue("AI news podcast");
+    expect(await readStepSnapshots(page, 3)).toEqual([
+      { name: "Gather news", agentId: "ai-news-gatherer", transition: "all", joinMode: null },
+      { name: "Explain simply", agentId: "eli5-explainer", transition: "all", joinMode: null },
+      { name: "Write podcast script", agentId: "podcast-scriptwriter", transition: "all", joinMode: null },
+    ]);
   });
 
   test("the editor uses the board's colour tokens and follows its light/dark setting", async ({ page }) => {

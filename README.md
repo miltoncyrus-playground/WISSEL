@@ -55,6 +55,7 @@ bun run eval:live-task-output
 bun run eval:conflict-integrator
 bun run eval:memory-curation-quality
 bun run eval:claude-cli-429-replay
+bun run eval:ai-news
 ```
 
 The pipeline editor is a separate Vite bundle. `pipeline-editor/dist/` is
@@ -152,6 +153,17 @@ the Pipelines page; the `eval:pipeline-*` scripts use them. Every step runs in-p
 regardless of `WISSEL_EXECUTE_WRITE_TIER`. API: `/pipelines`
 (CRUD), `POST /pipelines/:id/run`, `GET /pipeline-runs/:runId`.
 
+A pipeline whose steps are all readonly with no `write`/`bash` runs with
+no repo (each step in its own `~/.wissel/scratch/<taskId>`) and an
+optional input; the Run dialog hides the repo field for it. Any other
+pipeline without a repo is a 400.
+
+**AI news podcast** (`docs/SDD-ai-news-podcast.md`): gather the week's AI
+news from the web, explain it simply, write a 5 minute podcast script.
+Create it with `bun run seed:ai-news` (idempotent) or from the "Start from
+a template" list under New pipeline; check it with `bun run eval:ai-news`
+(paid, uses the web).
+
 ## Configuration
 
 ### Environment variables
@@ -210,6 +222,11 @@ under capacity, otherwise the task waits. It never runs on an unlisted
 harness. A card's `harnessOverride` wins over the list. An unknown id, or
 a harness of the wrong tool, stops startup
 (`docs/SDD-agent-harness-preference.md`).
+
+`toolAccess` takes `read`, `write`, `bash` and `web`. `web` gives a
+`tier: readonly`, `executor: readonly` agent WebSearch and WebFetch, still
+in plan mode; on any other agent it stops startup
+(`docs/SDD-ai-news-podcast.md` §3.1).
 
 Model per run (`src/core/model-resolution.ts`): `task.model`, else the
 harness's `model`, else the agent's `costProfile.model`

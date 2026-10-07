@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { blankDraft, draftFromPipeline, templateChoices } from "../pipeline-editor/src/templates.ts";
+import { aiNewsPodcastDraft, blankDraft, builtInTemplates, draftFromPipeline, templateChoices } from "../pipeline-editor/src/templates.ts";
 import { colorModeFor } from "../pipeline-editor/src/theme.ts";
 import type { PipelineDef } from "../pipeline-editor/src/types.ts";
 
@@ -66,6 +66,16 @@ test("the start-from list is every saved pipeline, sorted by name, without reord
   expect(templateChoices(list).map((p) => p.id)).toEqual(["a", "b", "c"]);
   expect(list.map((p) => p.id)).toEqual(["b", "c", "a"]);
   expect(templateChoices([])).toEqual([]);
+});
+
+test("built-in templates: the AI news podcast, as a fresh copy every time", () => {
+  const [first, ...rest] = builtInTemplates();
+  expect(rest).toEqual([]);
+  expect(first).toEqual(aiNewsPodcastDraft());
+  expect(first!.name).toBe("AI news podcast");
+  expect(Object.keys(first!).sort()).toEqual(["description", "graph", "name"]);
+  first!.graph.steps[0]!.name = "Changed";
+  expect(builtInTemplates()[0]!.graph.steps[0]!.name).toBe("Gather news");
 });
 
 test("the editor's colour mode follows the board: an explicit Light/Dark wins, Auto follows the OS", () => {

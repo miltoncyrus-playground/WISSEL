@@ -1,0 +1,130 @@
+#!/usr/bin/env bun
+/**
+ * Live eval for the "AI news podcast" pipeline (docs/SDD-ai-news-podcast.md
+ * §5). Real `claude -p` calls through ReadOnlyExecutor (the gather step
+ * with WebSearch/WebFetch), no repo, nothing scripted. Paid and uses the
+ * web: not run by `bun test`; run it with `bun run eval:ai-news` before
+ * ship or nightly.
+ *
+ * Each run seeds the pipeline into a throwaway in-memory board with
+ * scripts/seed-ai-news-pipeline.ts (so the seeded definition is what
+ * gets tested), runs it with no repo and no input, then applies the
+ * deterministic checks in eval/ai-news-checks.ts to the real outputs:
+ * every final source URL is in the gather step's set, every gathered
+ * story is dated within 7 days, 5 to 8 stories, script 600 to 1000
+ * words, run cost under $1.50 from the telemetry `result` events of the
+ * run's step tasks.
+ *
+ * Pass threshold: all checks on at least 2 of 3 runs (web results vary).
+ * Stops early once the outcome is decided (2 passes, or 2 failures), so
+ * a clean result costs two runs, not three. Every run's raw outputs and
+ * check results go to /tmp/wissel-eval-ai-news/<timestamp>/run-<n>.json.
+ */
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Registry } from "../src/core/registry.ts";
+import { startPipelineRun, type PipelineRunnerContext } from "../src/core/pipeline-runner.ts";
+import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
+import { runViaBun } from "../src/executors/claude-cli.ts";
+import { parsePipelineHandoff } from "../src/executors/parse-pipeline-handoff.ts";
+import { SqliteBoard } from "../src/services/board.ts";
+import { SqlitePipelineStore } from "../src/services/pipelines.ts";
+import { TelemetryLog } from "../src/services/telemetry.ts";
+import { seedAiNewsPipeline } from "../scripts/seed-ai-news-pipeline.ts";
+import { checkAiNewsRun, type AiNewsCheck } from "./ai-news-checks.ts";
+
+const RUNS = 3;
+const NEEDED = 2;
+
+/** Sums actualCost over telemetry `result` events for these task ids. */
+async function costFromTelemetry(path: string, taskIds: Set<string>): Promise<number | undefined> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  let total: number | undefined;
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let e: { type?: string; taskId?: string; actualCost?: number };
+    try {
+      e = JSON.parse(line) as typeof e;
+    } catch {
+      continue;
+    }
+    if (e.type === "result" && e.taskId && taskIds.has(e.taskId) && typeof e.actualCost === "number") total = (total ?? 0) + e.actualCost;
+  }
+  return total;
+}
+
+async function runOnce(n: number, outDir: string): Promise<boolean> {
+  const homeDir = await mkdtemp(join(tmpdir(), "wissel-eval-ai-news-home-"));
+  const telemetryPath = join(homeDir, "telemetry.jsonl");
+  try {
+    const board = new SqliteBoard();
+    const pipelines = new SqlitePipelineStore(board.db);
+    const registry = await Registry.load();
+    const { pipeline } = await seedAiNewsPipeline(pipelines, registry);
+    const ctx: PipelineRunnerContext = {
+      executors: [new ReadOnlyExecutor({ runner: runViaBun, homeDir })],
+      pipelines,
+      telemetry: new TelemetryLog(telemetryPath),
+    };
+
+    const now = new Date();
+    console.log(`Run ${n}: "${pipeline.name}" with no repo (real claude, real web)...`);
+    const root = await startPipelineRun(board, registry, pipeline, undefined, "", ctx);
+
+    const steps = (await board.list()).filter((t) => t.pipelineRunId === root.id);
+    const resultFor = async (stepId: string) => {
+      const card = steps.find((t) => t.pipelineStepId === stepId);
+      return card ? await board.getResult(card.id) : undefined;
+    };
+    // task_results doesn't store pipelineHandoff; a step's summary is its
+    // raw final message, so the handoff is parsed back out of it.
+    const gather = await resultFor("gather");
+    const final = await resultFor("script");
+    const gatherHandoff = gather ? parsePipelineHandoff(gather.summary) : null;
+    const finalHandoff = final ? parsePipelineHandoff(final.summary) : null;
+    const costUsd = await costFromTelemetry(telemetryPath, new Set([root.id, ...steps.map((t) => t.id)]));
+
+    const checks: AiNewsCheck[] = [
+      {
+        name: "run-status",
+        pass: root.status === "done",
+        detail: `run ${root.status}; steps: ${steps.map((t) => `${t.pipelineStepId}=${t.status}`).join(", ")}`,
+      },
+      ...checkAiNewsRun({ gather: gatherHandoff?.data, final: finalHandoff?.data, costUsd, now }),
+    ];
+    const pass = checks.every((c) => c.pass);
+
+    for (const c of checks) console.log(`  ${c.pass ? "PASS" : "FAIL"}  ${c.name}: ${c.detail}`);
+    const file = join(outDir, `run-${n}.json`);
+    await writeFile(
+      file,
+      JSON.stringify({ pass, root: { id: root.id, status: root.status }, checks, costUsd, gather: gatherHandoff, final: finalHandoff, summaries: { gather: gather?.summary, script: final?.summary } }, null, 2),
+    );
+    console.log(`  ${pass ? "PASS" : "FAIL"}  run ${n}  (outputs: ${file})`);
+    return pass;
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+  }
+}
+
+async function main(): Promise<void> {
+  const outDir = join("/tmp/wissel-eval-ai-news", new Date().toISOString().replace(/[:.]/g, "-"));
+  await mkdir(outDir, { recursive: true });
+  let passes = 0;
+  let fails = 0;
+  for (let n = 1; n <= RUNS && passes < NEEDED && fails <= RUNS - NEEDED; n++) {
+    if (await runOnce(n, outDir)) passes++;
+    else fails++;
+  }
+  const ok = passes >= NEEDED;
+  console.log(`\n${ok ? "PASS" : "FAIL"}: ${passes} of ${passes + fails} runs passed every check (need ${NEEDED} of ${RUNS}). Outputs in ${outDir}`);
+  if (!ok) process.exit(1);
+}
+
+await main();
