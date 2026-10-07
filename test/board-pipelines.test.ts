@@ -145,7 +145,23 @@ test("board.html has the Pipelines page with its list and a New pipeline link to
   expect(start).toBeGreaterThan(-1);
   const page = html.slice(start, html.indexOf("</section>\n  </section>", start));
   expect(page).toContain('id="pipelinesList"');
-  expect(page).toMatch(/<a [^>]*id="newPipelineLink"[^>]*href="\/pipelines\/edit"/);
+  // Card B2 (§4.2): the editor is a page in the shell, not /pipelines/edit.
+  expect(page).toMatch(/<a [^>]*id="newPipelineLink"[^>]*href="#\/pipelines\/new"/);
+});
+
+test("board.html has the editor page, mounts the bundle from the editor routes, and links Edit to #/pipelines/edit/<id>", async () => {
+  const html = await readFile(BOARD_HTML_PATH, "utf8");
+  expect(html).toMatch(/<section id="pipelineEditorPage" data-page hidden>[\s\S]*?id="pipelineEditorError"[\s\S]*?id="pipelineEditorRoot"/);
+  expect(html).toContain('edit.href = boardRouteHash("pipelines/edit/:id", { id: p.id });');
+  expect(html).toContain("if (def.editor) showPipelineEditor(def, parsed.params || {}, !wasEditor);");
+  expect(html).toContain("mod.mountPipelineEditor(");
+  // The editor's Run is the same "+ New" drawer as the Pipelines page's Run.
+  expect(html).toMatch(/runPipeline: function \(pipelineId\) \{\s*openNewDrawer\("pipeline", \{ pipelineId: pipelineId \}\);/);
+});
+
+test("the editor bundle exports mountPipelineEditor, the name board.html calls", async () => {
+  const main = await readFile(join(import.meta.dir, "..", "pipeline-editor", "src", "main.tsx"), "utf8");
+  expect(main).toMatch(/export function mountPipelineEditor\(/);
 });
 
 test("board.html loads board-pipelines.js before its inline script", async () => {

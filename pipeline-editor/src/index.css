@@ -1,213 +1,364 @@
-:root {
-  color-scheme: light;
-  --pe-bg: #f7f7f8;
-  --pe-panel: #ffffff;
-  --pe-border: #d8d8dd;
-  --pe-text: #1a1a1f;
-  --pe-muted: #6b6b76;
-  --pe-accent: #3b5bdb;
-  --pe-accent-text: #ffffff;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-}
-
-* {
-  box-sizing: border-box;
-}
-
-html,
-body,
-#root {
-  height: 100%;
-  margin: 0;
-}
-
-body {
-  background: var(--pe-bg);
-  color: var(--pe-text);
-}
+/* The editor runs inside the board shell (docs/SDD-ui-cleanup.md §4.2)
+   and uses the board's own colour tokens (--surface, --page, --ink-1,
+   --line, --accent, ... in src/api/public/board.html), so light, dark
+   and Auto follow the board's Settings with no copy of the palette here.
+   Every rule is scoped under .pe-app: this sheet is injected into the
+   board's <head> and must not restyle the rest of the page. The board
+   sets .pe-app's height (#pipelineEditorRoot .pe-app). */
 
 .pe-app {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink-1);
+  overflow: hidden;
+  font-size: 13px;
 }
 
-.pe-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 16px 20px 8px;
+.pe-app * {
+  box-sizing: border-box;
 }
 
-.pe-eyebrow {
+.pe-app.pe-centered {
+  align-items: center;
+  justify-content: center;
+}
+
+.pe-app .pe-muted {
+  color: var(--ink-muted);
   margin: 0;
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--pe-muted);
+  line-height: 1.5;
 }
 
-.pe-header h1 {
-  margin: 2px 0 0;
-  font-size: 22px;
+/* ---- toolbar ---- */
+.pe-app .pe-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
 }
 
-.pe-back-link {
-  color: var(--pe-accent);
+.pe-app .pe-back {
+  color: var(--ink-2);
   text-decoration: none;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pe-app .pe-back:hover {
+  color: var(--accent);
+}
+
+.pe-app .pe-title {
+  margin: 0;
   font-size: 14px;
+  font-weight: 700;
 }
 
-.pe-back-link:hover {
-  text-decoration: underline;
-}
-
-.pe-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  align-items: flex-end;
-  padding: 8px 20px;
-  border-bottom: 1px solid var(--pe-border);
-  background: var(--pe-panel);
-}
-
-.pe-toolbar-group {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-}
-
-.pe-field {
+.pe-app .pe-field {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  font-size: 12px;
-  color: var(--pe-muted);
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
 }
 
-.pe-field input,
-.pe-field select {
-  font-size: 14px;
+.pe-app .pe-field.pe-inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.pe-app .pe-grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.pe-app .pe-grow input {
+  width: 100%;
+}
+
+.pe-app input,
+.pe-app select {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
   padding: 6px 8px;
-  border: 1px solid var(--pe-border);
-  border-radius: 6px;
-  background: var(--pe-panel);
-  color: var(--pe-text);
-  min-width: 160px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--page);
+  color: var(--ink-1);
+  min-width: 0;
 }
 
-button {
-  font-size: 14px;
-  padding: 7px 12px;
-  border: 1px solid var(--pe-border);
-  border-radius: 6px;
-  background: var(--pe-panel);
-  color: var(--pe-text);
+.pe-app input:focus-visible,
+.pe-app select:focus-visible,
+.pe-app .pe-btn:focus-visible,
+.pe-app .pe-template:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.pe-app .pe-btn {
+  appearance: none;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink-1);
   cursor: pointer;
+  white-space: nowrap;
 }
 
-button:hover {
-  border-color: var(--pe-accent);
+.pe-app .pe-btn:hover {
+  background: var(--accent-wash);
 }
 
-button:disabled {
+.pe-app .pe-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-button.pe-primary {
-  background: var(--pe-accent);
-  border-color: var(--pe-accent);
-  color: var(--pe-accent-text);
+.pe-app .pe-btn.pe-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
-.pe-canvas {
-  flex: 1;
-  min-height: 0;
+.pe-app .pe-btn.pe-primary:hover {
+  opacity: 0.92;
 }
 
-.pe-run-panel {
-  display: flex;
+.pe-app .pe-btn.pe-danger {
+  color: var(--critical);
+  align-self: flex-start;
+}
+
+.pe-app .pe-icon-btn {
+  padding: 2px 8px;
+  line-height: 1.2;
+}
+
+.pe-app .pe-status {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pe-app .pe-status-block {
+  padding: 16px;
+  white-space: normal;
+  max-width: none;
+}
+
+.pe-app .pe-dirty {
+  color: var(--ink-muted);
+  font-size: 12px;
+}
+
+/* ---- "New pipeline": start blank / start from ---- */
+.pe-app .pe-choices {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(320px, 2fr);
   gap: 16px;
-  align-items: flex-end;
-  padding: 12px 20px;
-  border-top: 1px solid var(--pe-border);
-  background: var(--pe-panel);
+  padding: 16px;
+  overflow: auto;
+  align-items: start;
 }
 
-.pe-run-link {
-  font-size: 14px;
-  color: var(--pe-accent);
-}
-
-.pe-status {
-  margin: 0;
-  padding: 8px 20px;
-  font-size: 13px;
-  color: var(--pe-muted);
-}
-
-.pe-loading {
+.pe-app .pe-choice {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
-  color: var(--pe-muted);
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--page);
 }
 
-.step-node {
+.pe-app .pe-choice h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.pe-app .pe-choice > .pe-btn {
+  align-self: flex-start;
+}
+
+.pe-app .pe-template-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  width: 220px;
-  padding: 10px;
-  border: 1px solid var(--pe-border);
-  border-radius: 8px;
-  background: var(--pe-panel);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
-  font-size: 13px;
 }
 
-.step-node-header {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.step-node-name {
-  flex: 1;
-  font-size: 14px;
-  font-weight: 600;
-  padding: 4px 6px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-}
-
-.step-node-name:hover,
-.step-node-name:focus {
-  border-color: var(--pe-border);
-  background: var(--pe-bg);
-}
-
-.step-node-delete {
-  padding: 2px 8px;
-  line-height: 1;
-  border-radius: 4px;
-}
-
-.step-node-field {
+.pe-app .pe-template {
+  appearance: none;
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-size: 11px;
-  color: var(--pe-muted);
+  text-align: left;
+  font: inherit;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-1);
+  cursor: pointer;
 }
 
-.step-node-field select {
+.pe-app .pe-template:hover {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.pe-app .pe-template-name {
+  font-weight: 700;
+}
+
+.pe-app .pe-template-meta {
+  color: var(--ink-muted);
   font-size: 12px;
-  padding: 4px 6px;
-  border: 1px solid var(--pe-border);
-  border-radius: 4px;
+}
+
+/* ---- canvas + step side panel ---- */
+.pe-app .pe-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+
+.pe-app .pe-canvas {
+  min-width: 0;
+  min-height: 0;
+}
+
+.pe-app .pe-step-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-left: 1px solid var(--line);
+  overflow-y: auto;
+}
+
+.pe-app .pe-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pe-app .pe-panel-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+}
+
+.pe-app .pe-panel-empty,
+.pe-app .pe-field-hint {
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.pe-app .pe-field-hint.mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+/* React Flow reads these before its own defaults, so the canvas,
+   controls and minimap follow the board's theme. */
+.pe-app .react-flow {
+  --xy-background-color: var(--page);
+  --xy-background-pattern-color: var(--line);
+  --xy-edge-stroke: var(--ink-muted);
+  --xy-edge-stroke-selected: var(--accent);
+  --xy-connectionline-stroke: var(--accent);
+  --xy-handle-background-color: var(--ink-2);
+  --xy-handle-border-color: var(--surface);
+  --xy-node-border-radius: 8px;
+  --xy-controls-button-background-color: var(--surface);
+  --xy-controls-button-background-color-hover: var(--accent-wash);
+  --xy-controls-button-color: var(--ink-1);
+  --xy-controls-button-color-hover: var(--ink-1);
+  --xy-controls-button-border-color: var(--line);
+  --xy-minimap-background-color: var(--surface);
+  --xy-minimap-node-background-color: var(--line);
+  --xy-attribution-background-color: transparent;
+  --xy-edge-label-background-color: var(--surface);
+  --xy-edge-label-color: var(--ink-2);
+}
+
+/* ---- step node ---- */
+.pe-app .step-node {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 200px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink-1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  cursor: pointer;
+}
+
+.pe-app .step-node.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-wash);
+}
+
+.pe-app .step-node-name {
+  font-weight: 700;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pe-app .step-node-agent {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+.pe-app .step-node-agent.missing {
+  color: var(--critical);
+}
+
+.pe-app .step-node-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pe-app .step-node-tag {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-wash);
+  color: var(--ink-2);
 }

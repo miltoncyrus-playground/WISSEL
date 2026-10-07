@@ -6,16 +6,21 @@ export interface BoardRouteDef {
   page: string;
   nav: string | null;
   boardView?: "lanes" | "features";
+  /** Set on the pipeline editor's routes (card B2): which mode the
+   *  editor bundle mounts in. */
+  editor?: "new" | "edit";
 }
 
 export type NewDrawerTab = "task" | "pipeline";
 
+/** Keys may hold `:name` segments (`pipelines/edit/:id`). */
 export const BOARD_ROUTES: Record<string, BoardRouteDef>;
 
-export const BOARD_ROUTE_REDIRECTS: Record<string, { to: string; openNew: NewDrawerTab }>;
+export const BOARD_ROUTE_REDIRECTS: Record<string, { to: string; openNew?: NewDrawerTab }>;
 
 export function parseBoardRoute(
   hash: string | null | undefined,
-): { route: string; known: boolean; redirected?: true; openNew?: NewDrawerTab };
+): { route: string; known: boolean; redirected?: true; openNew?: NewDrawerTab; params?: Record<string, string> };
 
-export function boardRouteHash(route: string): string;
+/** Fills each `:name` segment of `route` from `params`, URI-encoded. */
+export function boardRouteHash(route: string, params?: Record<string, string>): string;

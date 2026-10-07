@@ -58,7 +58,7 @@ test.describe("Pipelines page", () => {
     await expect(row.locator(".pl-desc")).toHaveText("e2e: no entry step, fails instantly");
     await expect(row.locator(".pl-steps")).toHaveText("2 steps");
     await expect(row.locator(".pl-last")).toHaveText("No runs yet");
-    await expect(row.getByRole("link", { name: `Edit ${pipeline.name}` })).toHaveAttribute("href", `/pipelines/edit/${pipeline.id}`);
+    await expect(row.getByRole("link", { name: `Edit ${pipeline.name}` })).toHaveAttribute("href", `#/pipelines/edit/${pipeline.id}`);
 
     const listed = (await (await request.get("/pipelines")).json()) as unknown[];
     await expect(page.locator("#pipelinesCount")).toHaveText(String(listed.length));
@@ -170,35 +170,121 @@ test.describe("Pipelines page", () => {
   });
 
   // The editor itself (its own Vite bundle) is pipeline-editor.spec.ts's
-  // job, including loading /pipelines/edit/<id>. Here it's stubbed, so
-  // this spec checks only where the page sends you and doesn't depend on
-  // pipeline-editor/dist being built.
+  // job. Here the bundle is stubbed with a module that has the same
+  // export (mountPipelineEditor), so this spec checks where the page
+  // sends you and the board's side of the mount contract, and doesn't
+  // depend on pipeline-editor/dist being built. Card B2 (§4.2): the
+  // editor is a page inside the shell, so none of this leaves /board.
+  const EDITOR_STUB = `
+    export function mountPipelineEditor(el, opts) {
+      const render = (o) => {
+        window.__editorMounts = (window.__editorMounts || []).concat([{ route: o.route, key: o.key }]);
+        window.__editorHost = o.host;
+        el.innerHTML = "";
+        const h = document.createElement("h1");
+        h.className = "editor-stub";
+        h.textContent = "editor stub: " + (o.route.mode === "edit" ? "edit " + o.route.pipelineId : "new");
+        el.appendChild(h);
+      };
+      render(opts);
+      return { update: render, unmount() {} };
+    }`;
+
   async function stubEditor(page: Page) {
     const served: string[] = [];
-    await page.route("**/pipelines/edit**", (route) => {
+    await page.route("**/pipelines/edit/pipeline-editor.js", (route) => {
       served.push(new URL(route.request().url()).pathname);
-      return route.fulfill({ status: 200, contentType: "text/html", body: "<h1>editor stub</h1>" });
+      return route.fulfill({ status: 200, contentType: "text/javascript", body: EDITOR_STUB });
     });
     return served;
   }
 
-  test("Edit opens the existing editor at /pipelines/edit/<id>", async ({ page, request }) => {
+  async function expectEditorInShell(page: Page) {
+    await expect(page.locator("#pipelineEditorPage")).toBeVisible();
+    await expect(page.locator("#pipelinesPage")).toBeHidden();
+    await expect(page.getByRole("link", { name: "Pipelines", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(page.locator("#newBtn")).toBeVisible(); // same top bar
+  }
+
+  test("Edit opens the editor inside the shell at #/pipelines/edit/<id>", async ({ page, request }) => {
     const pipeline = await createNoEntryPipeline(request, unique("Edit me"));
     const served = await stubEditor(page);
     await page.goto("/board#/pipelines");
+    await page.evaluate(() => { (window as unknown as { __marker: number }).__marker = 1; });
     await pipelineRow(page, pipeline.id).getByRole("link", { name: `Edit ${pipeline.name}` }).click();
-    await expect(page).toHaveURL(new RegExp(`/pipelines/edit/${pipeline.id}$`));
-    await expect(page.locator("h1")).toHaveText("editor stub");
-    expect(served).toEqual([`/pipelines/edit/${pipeline.id}`]);
+    await expect(page).toHaveURL(new RegExp(`/board#/pipelines/edit/${pipeline.id}$`));
+    await expectEditorInShell(page);
+    await expect(page.locator("#pipelineEditorRoot h1.editor-stub")).toHaveText(`editor stub: edit ${pipeline.id}`);
+    expect(served).toEqual(["/pipelines/edit/pipeline-editor.js"]);
+    // Never navigated: the marker set before the click survives.
+    expect(await page.evaluate(() => (window as unknown as { __marker?: number }).__marker)).toBe(1);
   });
 
-  test("New pipeline opens the editor at /pipelines/edit", async ({ page }) => {
+  test("New pipeline opens the editor inside the shell at #/pipelines/new", async ({ page }) => {
     const served = await stubEditor(page);
     await page.goto("/board#/pipelines");
     await page.getByRole("link", { name: "New pipeline", exact: true }).click();
-    await expect(page).toHaveURL(/\/pipelines\/edit$/);
-    await expect(page.locator("h1")).toHaveText("editor stub");
-    expect(served).toEqual(["/pipelines/edit"]);
+    await expect(page).toHaveURL(/\/board#\/pipelines\/new$/);
+    await expectEditorInShell(page);
+    await expect(page.locator("#pipelineEditorRoot h1.editor-stub")).toHaveText("editor stub: new");
+    expect(served).toEqual(["/pipelines/edit/pipeline-editor.js"]);
+  });
+
+  test("the old /pipelines/edit page URLs redirect into the shell's editor routes", async ({ page, request }) => {
+    const pipeline = await createNoEntryPipeline(request, unique("Old URL"));
+    await stubEditor(page);
+    await page.goto("/pipelines/edit");
+    await expect(page).toHaveURL(/\/board#\/pipelines\/new$/);
+    await expect(page.locator("#pipelineEditorRoot h1.editor-stub")).toHaveText("editor stub: new");
+    await page.goto(`/pipelines/edit/${pipeline.id}`);
+    await expect(page).toHaveURL(new RegExp(`/board#/pipelines/edit/${pipeline.id}$`));
+    await expect(page.locator("#pipelineEditorRoot h1.editor-stub")).toHaveText(`editor stub: edit ${pipeline.id}`);
+  });
+
+  test("the board's side of the mount contract: fresh editor per visit, setRoute without a remount, Run opens the drawer", async ({ page, request }) => {
+    const pipeline = await createNoEntryPipeline(request, unique("Contract"));
+    const served = await stubEditor(page);
+    await page.goto("/board#/pipelines/new");
+    await expect(page.locator("#pipelineEditorRoot h1.editor-stub")).toHaveText("editor stub: new");
+
+    type W = { __editorMounts: { route: unknown; key: string }[]; __editorHost: { setRoute(r: unknown): void; runPipeline(id: string): void } };
+    const mounts = () => page.evaluate(() => (window as unknown as W).__editorMounts);
+
+    // A first Save moves a new draft to its id: address bar only, no hashchange, no remount.
+    await page.evaluate((id) => (window as unknown as W).__editorHost.setRoute({ mode: "edit", pipelineId: id }), pipeline.id);
+    await expect(page).toHaveURL(new RegExp(`/board#/pipelines/edit/${pipeline.id}$`));
+    expect(await mounts()).toHaveLength(1);
+    await expect(page.getByRole("link", { name: "Pipelines", exact: true })).toHaveAttribute("aria-current", "page");
+
+    // Run: the "+ New" drawer's Pipeline run tab with this pipeline picked.
+    await page.evaluate((id) => (window as unknown as W).__editorHost.runPipeline(id), pipeline.id);
+    await expect(page.locator("#newDrawer")).toBeVisible();
+    await expect(page.locator("#newPipelinePanel")).toBeVisible();
+    await expect(page.locator("#prPipeline")).toHaveValue(pipeline.id);
+    await page.keyboard.press("Escape");
+
+    // Leaving and coming back mounts a fresh editor (a new key), even on the same route.
+    await page.getByRole("link", { name: "Pipelines", exact: true }).click();
+    await page.getByRole("link", { name: "New pipeline", exact: true }).click();
+    await expect(page.locator("#pipelineEditorRoot h1.editor-stub")).toHaveText("editor stub: new");
+    await page.getByRole("link", { name: "Pipelines", exact: true }).click();
+    await page.getByRole("link", { name: "New pipeline", exact: true }).click();
+    await expect.poll(async () => (await mounts()).length).toBe(3);
+    const all = await mounts();
+    expect(all.map((m) => m.route)).toEqual([{ mode: "new" }, { mode: "new" }, { mode: "new" }]);
+    expect(new Set(all.map((m) => m.key)).size).toBe(3);
+    // The bundle is imported once per page load.
+    expect(served).toEqual(["/pipelines/edit/pipeline-editor.js"]);
+  });
+
+  test("an unbuilt editor shows the build command in the shell instead of a blank page", async ({ page }) => {
+    await page.route("**/pipelines/edit/pipeline-editor.js", (route) =>
+      route.fulfill({ status: 503, contentType: "text/plain", body: "pipeline-editor not built" }),
+    );
+    await page.goto("/board#/pipelines/new");
+    await expect(page.locator("#pipelineEditorPage")).toBeVisible();
+    await expect(page.locator("#pipelineEditorError")).toBeVisible();
+    await expect(page.locator("#pipelineEditorError")).toContainText("cd pipeline-editor && bun install && bun run build");
   });
 
   test("a GET /pipelines failure shows inline instead of an empty list", async ({ page }) => {
