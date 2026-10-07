@@ -50,6 +50,36 @@ test("sweep routes an unblocked task and runs it on the matching executor", asyn
   expect(seen.map((t) => t.id)).toEqual([task.id]);
 });
 
+// Regression, 2026-10-07: sweep routed pipeline cards (labels []) the
+// moment they were created and sent them to no-match, while
+// pipeline-runner.ts was about to run them. A pipeline card is the
+// runner's, never the Router's.
+test("sweep leaves every pipeline card alone: root and step stay inbox, no decision, no run", async () => {
+  const seen: TaskCard[] = [];
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => {
+      seen.push(task);
+      return { taskId: task.id, agentId: agent.id, ok: true, summary: "x" };
+    }),
+  ]);
+  const root = await board.create({ title: "Pipeline: AI news podcast", body: "", labels: [], repo: "", pipelineId: "p1" });
+  // Even a step whose labels WOULD route (intake -> triager) is skipped.
+  const step = await board.create({ title: "AI news podcast: Gather news", body: "", labels: ["intake"], repo: "", pipelineId: "p1", pipelineRunId: root.id, pipelineStepId: "gather" });
+  const plain = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+
+  await orchestrator.sweep();
+
+  for (const id of [root.id, step.id]) {
+    const t = await board.get(id);
+    expect(t!.status).toBe("inbox");
+    expect(t!.routedTo).toBeUndefined();
+    expect(await board.getDecision(id)).toBeUndefined();
+  }
+  // A normal card in the same sweep still routes and runs.
+  expect((await board.get(plain.id))!.status).toBe("done");
+  expect(seen.map((t) => t.id)).toEqual([plain.id]);
+});
+
 test("with a HarnessPool configured, a locally-run task is stamped with the picked harness before it finishes, and released after", async () => {
   const seenHarness: (Harness | undefined)[] = [];
   const harnesses = HarnessPool.from([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true }]);

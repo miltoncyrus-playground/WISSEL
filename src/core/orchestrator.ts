@@ -971,6 +971,14 @@ export class Orchestrator {
       if (this.inFlight.has(task.id)) continue;
       if (task.routedTo) continue; // already routed — a human or a prior run owns it now
       if (task.status !== "inbox" && task.status !== "ready") continue;
+      // pipeline-runner.ts owns every card in a run (root and steps) and
+      // picks each step's agent from the definition, never the Router.
+      // Without this, the board event from creating a card triggered a
+      // sweep that routed it before the runner moved it to "running":
+      // labels [] matched nothing and the card went to no-match (seen
+      // live 2026-10-07 on the first "AI news podcast" run; the root,
+      // which stays in inbox, hit it every time).
+      if (task.pipelineId !== undefined) continue;
 
       // A task Board.scheduleRetry rescheduled after a 429 isn't
       // eligible again until its clock has passed — reads the same as
