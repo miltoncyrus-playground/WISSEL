@@ -19,6 +19,13 @@ function worktreesRoot(homeDir?: string): string {
   return join(homeDir ?? homedir(), ".wissel", "worktrees");
 }
 
+/** Where a write-tier run of `task` works: the same `reviewLineageId ??
+ *  id` key WriteExecutor/CodexWriteExecutor pass to createTaskWorktree.
+ *  Used by crash recovery to find a still-live orphan in that directory. */
+export function taskWorktreePath(task: Pick<TaskCard, "id" | "reviewLineageId">, homeDir?: string): string {
+  return join(worktreesRoot(homeDir), task.reviewLineageId ?? task.id);
+}
+
 function branchName(worktreeKey: string): string {
   return `wissel/${worktreeKey}`;
 }

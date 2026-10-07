@@ -10,6 +10,7 @@ import { buildMcpConfigJson, mcpAllowedToolNames, mcpServerEnvOverrides, resolve
 import { parseMcpCalls } from "./parse-mcp-calls.ts";
 import { resolveScratchWorkspace } from "../services/scratch-workspace.ts";
 import { mcpApprovalRequestBlockPresent, parseMcpApprovalRequest } from "./parse-mcp-approval-request.ts";
+import { trackChild } from "./child-processes.ts";
 
 /** A retriable 429's reset time must be within this window of "now" —
  *  parseSessionLimitReset can in principle only ever return same-day or
@@ -60,6 +61,9 @@ export async function runViaBun(
     stdout: "pipe",
     stderr: "pipe",
   });
+  // Tracked until it exits, so a server shutdown can stop it instead of
+  // orphaning it — see src/executors/child-processes.ts.
+  const tracked = trackChild(proc, cmd, opts.cwd);
   if (opts.stdin !== undefined) {
     proc.stdin.write(opts.stdin);
     await proc.stdin.end();
@@ -69,6 +73,11 @@ export async function runViaBun(
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
+  // Killed by our own shutdown: never resolve. A resolved 143 would let
+  // the executor record a "failed" result in the moment before exit,
+  // when the run didn't fail, the server stopped. Leaving the task at
+  // "running" is what lets crash recovery requeue it on the next start.
+  if (tracked.killedForShutdown) return new Promise<never>(() => {});
   return { stdout, stderr, exitCode };
 }
 

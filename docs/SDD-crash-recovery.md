@@ -411,3 +411,80 @@ there.
   `done`.
 - `bun run typecheck` and `bun test test/` both green — see
   test/crash-recovery-review-verdict.test.ts.
+
+## 10. Revision: orphaned agent subprocesses (duplicate sessions in one worktree)
+
+Confirmed live, 2026-10-07: card `53dfecf8` (UI B3) was dispatched at
+00:06:28 UTC and the server was restarted at about 00:07:20. Startup
+recovery logged `reset 1 orphaned running task(s) back to inbox` and
+redispatched it at 00:07:26, but the first `claude -p` (PID 158838) was
+still running, reparented to PID 1, in
+`~/.wissel/worktrees/53dfecf8-…`. The second session saw files it hadn't
+written appear and stopped BLOCKED. The orphan's result could never be
+recorded (no server tracked it anymore); it was killed by hand.
+
+**Root cause.** §3.1's premise ("every task found at `running` is a
+crash orphan") holds for the *board*, not for the *subprocess*.
+`runViaBun` spawned agents with a bare `Bun.spawn` nothing tracked, and
+nothing in `src/` handled SIGTERM/SIGINT, so a restart never stopped its
+children. Recovery then reset the task under a still-live writer.
+
+**Fix, two layers.**
+
+1. *Clean shutdown* (`src/executors/child-processes.ts`). `runViaBun`,
+   the one spawn path for claude-cli and codex-cli alike, registers
+   every child until its `exited` promise settles.
+   `installShutdownHandlers()`, called first thing in the server
+   bootstrap (`src/api/server.ts`, `import.meta.main` only, never
+   `createApp`), turns SIGTERM/SIGINT into: SIGTERM every tracked child,
+   wait up to 3s, SIGKILL whatever's left, log one
+   `shutdown: killed agent process <pid> (<cmd>) in <cwd> (SIGTERM|SIGKILL ...)`
+   line each, exit 143/130. A run killed this way never resolves back
+   into its executor, so no "failed" result is written in the moment
+   before exit; the task stays `running` and the next start's recovery
+   requeues it, which is the right outcome for "the server stopped".
+2. *Belt and braces at startup* (`reconcileOrphanedTasks`). Covers what
+   a signal handler can't: `kill -9`, a crash, `bun --watch`'s own
+   restart. Before resetting each `running` task, it lists processes
+   from `/proc` (one scan per pass, only when there is at least one
+   orphan) and kills any `claude`/`codex` process, binary or Node shim,
+   whose cwd is that task's worktree (`taskWorktreePath`: same
+   `reviewLineageId ?? id` key the write executors use) or below it,
+   logging each kill. Matching is deliberately narrow: a shell, editor,
+   or `bun test` a human has open in that worktree is never touched,
+   and neither is this process itself.
+
+**Failure modes, stated plainly.**
+
+- `/proc` unavailable (non-Linux) or unreadable: logged as
+  `can't check for live agent processes (...)`, and every task is reset
+  exactly as before this revision. Startup never crashes over it.
+- A matching process that can't be stopped (EPERM, still alive after
+  SIGKILL): that task is left at `running` and logged `needs a human`.
+  Failing closed is the point. Resetting would recreate the exact
+  duplicate-session bug. The next start retries.
+- Read-only agents run in `task.repo` or a scratch workspace, not a
+  worktree, so layer 2 doesn't look for them (killing every `claude` in
+  a shared repo dir would hit a human's own session). Layer 1 still
+  stops them on a clean shutdown, and an orphaned read-only run can't
+  write anything anyway.
+- Only the direct child is signalled, not its process group. This
+  assumes `claude`/`codex` stop their own tool subprocesses (a running
+  `bun test`, say) when they get SIGTERM. Not verified. A grandchild
+  that outlives its agent would survive both layers.
+
+**Acceptance criteria**
+- `runViaBun` registers a real subprocess while it runs and unregisters
+  it on exit (test/child-processes.test.ts).
+- The shutdown hook kills a real tracked `sleep` child, and SIGKILLs one
+  that ignores SIGTERM (test/child-processes.test.ts).
+- Crash recovery with an injected process lister: a matching live
+  process is killed before the reset; non-matching ones (other
+  worktree, `-sibling` prefix lookalike, non-agent binary, own pid) are
+  left alone; a failing lister falls back to today's behavior; an
+  unkillable match leaves its task at `running`
+  (test/crash-recovery.test.ts).
+- Live: `bun run live-check:shutdown` starts a real server on :8799
+  against `:memory:` with a fake `claude` that `exec`s `sleep 300`, runs
+  a task, sends the server SIGTERM, and asserts the `sleep` is gone. It
+  fails with the handler removed (verified).

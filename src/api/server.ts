@@ -37,6 +37,7 @@ import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
 import { checkHarnessAuth } from "../core/harness-discovery.ts";
 import { setHarnessEnabled, setHarnessModel } from "../core/harness-manifest.ts";
 import { getVersionInfo } from "../core/version.ts";
+import { installShutdownHandlers } from "../executors/child-processes.ts";
 import type { Executor, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -1358,6 +1359,13 @@ function sseStream(board: { events?: import("node:events").EventEmitter }): Resp
 }
 
 if (import.meta.main) {
+  // First thing, before anything can spawn: SIGTERM/SIGINT stop every
+  // agent subprocess this server started, then exit. Without this a
+  // restart left `claude -p` running in its worktree while the next
+  // start's crash recovery dispatched a second session into the same
+  // one — see src/executors/child-processes.ts and
+  // docs/SDD-crash-recovery.md §10.
+  installShutdownHandlers();
   const port = Number(process.env.WISSEL_PORT ?? 8787);
   const dbPath = process.env.WISSEL_DB_PATH ?? join(homedir(), ".wissel", "board.sqlite");
   const telemetryPath = process.env.WISSEL_TELEMETRY_PATH ?? join(homedir(), ".wissel", "telemetry.jsonl");

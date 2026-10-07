@@ -23,7 +23,10 @@ bun run team create <prefix>  # scaffold a coordinator + 3 specialists, delegati
 bun run version        # commit/branch/dirty this checkout is actually running
 bun run test           # unit/integration
 bun run test:e2e       # Playwright smoke tests against a live server
+bun run live-check:shutdown  # real server + real agent spawn + SIGTERM: asserts no agent process survives
 ```
+
+To restart safely, stop the server with Ctrl-C or `kill <pid>` (SIGINT/SIGTERM), never `kill -9`: it stops every agent subprocess it started before exiting, and anything left behind anyway (a `kill -9`, a crash) is killed by crash recovery on the next start before its task is requeued. See docs/SDD-crash-recovery.md §10.
 
 Set `WISSEL_ORCHESTRATOR=1` to have wissel route eligible tasks
 automatically as they appear (off by default). A routing decision only

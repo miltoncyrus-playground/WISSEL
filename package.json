@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test test/",
     "test:e2e": "playwright test",
+    "live-check:shutdown": "bun test scripts/live-check-shutdown.test.ts",
     "test:e2e:affected": "bun run scripts/e2e-affected.ts --run",
     "eval:readonly": "bun run eval/readonly.eval.ts",
     "eval:implementer-reviewer": "bun run eval/implementer-reviewer.eval.ts",
