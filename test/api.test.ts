@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { createApp, servePipelineEditorAsset, type CreateAppOptions } from "../src/api/server.ts";
+import { createApp, PIPELINE_EDITOR_ENTRY, servePipelineEditorAsset, type CreateAppOptions } from "../src/api/server.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
@@ -1821,27 +1821,58 @@ test("POST /pipelines/:id/run drives the run end-to-end and emits real BoardEven
   expect((await app(req("/pipelines/nope/runs"))).status).toBe(404);
 });
 
-test("GET /pipelines/edit serves the pipeline-editor SPA's index.html, not the /pipelines/:id 404 path", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "wissel-api-pipeline-editor-test-"));
+// Card B2 (docs/SDD-ui-cleanup.md §4.2): the editor lives in the board
+// shell, so its old page URLs redirect to the board's hash routes —
+// built or not, and never swallowed by GET /pipelines/:id (which would
+// otherwise treat "edit" as a pipeline id).
+test("GET /pipelines/edit and /pipelines/edit/<id> redirect into the board shell's editor routes", async () => {
+  for (const built of [true, false]) {
+    const dir = await mkdtemp(join(tmpdir(), "wissel-api-pipeline-editor-test-"));
+    try {
+      if (built) await writeFile(join(dir, "pipeline-editor.js"), "export {};");
+      const app = await makeApp(new SqliteBoard(), { pipelineEditorDist: new URL(`file://${dir}/`) });
+
+      for (const path of ["/pipelines/edit", "/pipelines/edit/"]) {
+        const bare = await app(req(path));
+        expect(bare.status, `${path} built=${built}`).toBe(302);
+        expect(bare.headers.get("location")).toBe("/board#/pipelines/new");
+      }
+      for (const path of ["/pipelines/edit/some-pipeline-id", "/pipelines/edit/some-pipeline-id/"]) {
+        const withId = await app(req(path));
+        expect(withId.status, `${path} built=${built}`).toBe(302);
+        expect(withId.headers.get("location")).toBe("/board#/pipelines/edit/some-pipeline-id");
+      }
+      // Still URL-encoded; the board's parseBoardRoute decodes it.
+      const encoded = await app(req("/pipelines/edit/a%20b"));
+      expect(encoded.headers.get("location")).toBe("/board#/pipelines/edit/a%20b");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("GET /pipelines/edit/pipeline-editor.js serves the fixed-name bundle the board imports", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-pipeline-editor-entry-test-"));
   try {
-    await writeFile(join(dir, "index.html"), "<html>pipeline editor</html>");
+    await writeFile(join(dir, PIPELINE_EDITOR_ENTRY), "window.wisselPipelineEditor = {};");
     const app = await makeApp(new SqliteBoard(), { pipelineEditorDist: new URL(`file://${dir}/`) });
-
-    const bare = await app(req("/pipelines/edit"));
-    expect(bare.status).toBe(200);
-    expect(await bare.text()).toBe("<html>pipeline editor</html>");
-
-    // A client-side "edit an existing pipeline" route, e.g.
-    // /pipelines/edit/<pipeline-id> — no matching file on disk, so it
-    // falls back to the same SPA entry point rather than 404ing or
-    // being swallowed by GET /pipelines/:id (which would otherwise
-    // treat "edit" as a pipeline id).
-    const withId = await app(req("/pipelines/edit/some-pipeline-id"));
-    expect(withId.status).toBe(200);
-    expect(await withId.text()).toBe("<html>pipeline editor</html>");
+    const res = await app(req(`/pipelines/edit/${PIPELINE_EDITOR_ENTRY}`));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("window.wisselPipelineEditor = {};");
+    expect(res.headers.get("cache-control")).toBe("no-cache");
+    // A missing asset in a built editor is a plain 404, not a redirect.
+    expect((await app(req("/pipelines/edit/assets/gone-abc123.js"))).status).toBe(404);
+    expect((await app(req("/pipelines/edit/missing.css"))).status).toBe(404);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("board.html imports the editor bundle by the name the server and vite.config.ts use", async () => {
+  const html = await readFile(join(import.meta.dir, "..", "src", "api", "public", "board.html"), "utf8");
+  expect(html).toContain(`"/pipelines/edit/${PIPELINE_EDITOR_ENTRY}"`);
+  const vite = await readFile(join(import.meta.dir, "..", "pipeline-editor", "vite.config.ts"), "utf8");
+  expect(vite).toContain(`entryFileNames: "${PIPELINE_EDITOR_ENTRY}"`);
 });
 
 test("GET /pipelines/edit serves a real on-disk asset file as-is, by content", async () => {
@@ -1898,11 +1929,11 @@ test("servePipelineEditorAsset's own distDir guard refuses a path that resolves 
   }
 });
 
-test("GET /pipelines/edit 503s with a helpful message when pipeline-editor hasn't been built", async () => {
+test("GET /pipelines/edit/pipeline-editor.js 503s with a helpful message when pipeline-editor hasn't been built", async () => {
   const dir = await mkdtemp(join(tmpdir(), "wissel-api-pipeline-editor-unbuilt-test-"));
   try {
     const app = await makeApp(new SqliteBoard(), { pipelineEditorDist: new URL(`file://${dir}/`) });
-    const res = await app(req("/pipelines/edit"));
+    const res = await app(req(`/pipelines/edit/${PIPELINE_EDITOR_ENTRY}`));
     expect(res.status).toBe(503);
     expect(await res.text()).toContain("pipeline-editor not built");
   } finally {

@@ -1590,7 +1590,8 @@ test.describe("Shell and navigation", () => {
     await expect(page.locator("#pipelinesPage")).toBeVisible();
     await expect(page.locator("#boardPanel")).toBeHidden();
     await expect(link).toHaveAttribute("aria-current", "page");
-    await expect(page.getByRole("link", { name: "New pipeline", exact: true })).toHaveAttribute("href", "/pipelines/edit");
+    // Card B2 (§4.2): the editor is a page in the shell too.
+    await expect(page.getByRole("link", { name: "New pipeline", exact: true })).toHaveAttribute("href", "#/pipelines/new");
   });
 
   test("below 1100px the sidebar collapses to icons, and its links keep their names", async ({ page }) => {

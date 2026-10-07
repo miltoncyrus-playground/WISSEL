@@ -173,20 +173,28 @@ pipeline definition). CRUD lives at `/pipelines`; see
 The canvas editor (`pipeline-editor/`) is wissel's first frontend
 framework/build step — a separate React + `@xyflow/react` + Vite app,
 deliberately isolated from `board.html`'s zero-build-tooling convention
-(see the SDD's §3.2). Build it once, then the running server picks up
-its static output automatically:
+(see the SDD's §3.2). It opens inside the board shell (Pipelines → New
+pipeline or Edit, i.e. `/board#/pipelines/new` and
+`/board#/pipelines/edit/<id>`; see `docs/SDD-ui-cleanup.md` §4.2): the
+board imports the built bundle `/pipelines/edit/pipeline-editor.js` and
+mounts it. `pipeline-editor/dist/` is gitignored, so build it once per
+checkout (and again after changing `pipeline-editor/src/`); the running
+server serves the new output without a restart, a browser reload picks
+it up:
 
 ```bash
 cd pipeline-editor
 bun install
-bun run build      # writes pipeline-editor/dist/
+bun run build      # writes pipeline-editor/dist/pipeline-editor.js
 cd ..
-bun run dev         # or serve — now serving /pipelines/edit too
+bun run dev         # or serve
 ```
 
 `bun run dev` inside `pipeline-editor/` also works standalone for local
-iteration (hot reload, proxies `/agents`/`/pipelines`/`/board` to the
-real wissel server at `:8787` — see `pipeline-editor/vite.config.ts`).
-Until `pipeline-editor/dist/` exists, `GET /pipelines/edit` responds
-`503` with a message telling you to build it — never a silent blank
-page.
+iteration (a dev harness in `pipeline-editor/index.html`, hot reload,
+proxies `/agents`/`/pipelines`/`/board` to the real wissel server at
+`:8787` — see `pipeline-editor/vite.config.ts`). Until
+`pipeline-editor/dist/` exists, the board's editor page shows the build
+command instead of a canvas, and `GET /pipelines/edit/pipeline-editor.js`
+responds `503` with the same hint. The old page URLs (`/pipelines/edit`,
+`/pipelines/edit/<id>`) redirect to the board routes.

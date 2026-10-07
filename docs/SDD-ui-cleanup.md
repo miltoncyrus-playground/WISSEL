@@ -302,6 +302,56 @@ is unchanged in phase A.
 - The plain-HTTP rule from memory/lessons.md still applies (`newId()`,
   no secure-context-only APIs).
 
+**B2 revision notes (as built).**
+- Routes: `#/pipelines/new` and `#/pipelines/edit/<id>`
+  (`BOARD_ROUTES["pipelines/new"]` and `["pipelines/edit/:id"]`, both
+  `nav: "pipelines"`, page `#pipelineEditorPage`). A `:name` segment in
+  a route key is a param: `parseBoardRoute` returns `params`, and
+  `boardRouteHash(route, params)` fills and URI-encodes it.
+  `#/pipelines/edit` with no id redirects to `#/pipelines/new`. The old
+  page URLs `/pipelines/edit` and `/pipelines/edit/<id>` are now server
+  302s to those hashes (`servePipelineEditorAsset`).
+- Mounting: the editor stays its own Vite bundle. The build input is
+  `pipeline-editor/src/main.tsx` (not index.html, which is now only the
+  `bun run dev` harness) with a fixed entry name, `pipeline-editor.js`
+  (`PIPELINE_EDITOR_ENTRY` in server.ts; `test/api.test.ts` checks
+  vite.config.ts uses the same name), served `cache-control: no-cache`.
+  board.html's `showPipelineEditor` imports it on the first editor visit
+  and calls its `mountPipelineEditor(el, { route, host, key })` export.
+  CSS travels inside the module (`?inline`) and is injected once, every
+  rule scoped under `.pe-app`. `dist/` stays gitignored; the README has
+  the build step. Unbuilt, the page shows the build command
+  (`#pipelineEditorError`) instead of a canvas.
+- Each navigation into the editor mounts a fresh one (new `key`), so New
+  pipeline always starts at the blank / start-from choice. A first Save
+  calls `host.setRoute`, which rewrites the hash with `replaceState`
+  (no hashchange), so the canvas isn't reloaded and Back goes to the
+  Pipelines page. Unsaved edits are lost on navigating away, as before.
+- Run moved out of the editor's own Run box: it calls
+  `host.runPipeline(id)`, which opens the "+ New" drawer's Pipeline run
+  tab with the pipeline picked (the same path as A4's Run). It refuses
+  while there are unsaved changes, since a run uses the saved version.
+  The editor's Load dropdown is gone; the Pipelines page's Edit replaces it.
+- "Start from" copies the saved pipeline's graph with its step and edge
+  ids unchanged (`draftFromPipeline`, `pipeline-editor/src/templates.ts`,
+  covered by `test/pipeline-editor-templates.test.ts`). Ids only need to
+  be unique within one pipeline, and a "choose" step's handoff `next`
+  can name a step id, so new ids could change how the copy routes. The
+  copy is named "<name> (copy)" and saves as a new pipeline.
+- Theme: the editor's CSS reads the board's tokens directly (`--page`,
+  `--surface`, `--ink-*`, `--line`, `--accent`, ...), including React
+  Flow's `--xy-*` variables, and passes React Flow a `colorMode` that
+  follows `data-theme` / the OS live (`colorModeFor`, `theme.ts`).
+- The step side panel (`components/StepPanel.tsx`) always holds a 300px
+  column, empty or not, so selecting a step never resizes the canvas
+  under a drag. Selection is React Flow's own `selected` flag; a new step
+  starts selected. Join mode shows only for a step with two or more
+  incoming edges, as the in-node toggle did. Nodes are read-only
+  summaries (name, agent, transition, join).
+- Targets: B2 moves none of T1–T6. Measured at 1440x900 by
+  `e2e/pipeline-editor.spec.ts` screenshots (test-results/
+  pipeline-editor-manual/), which need `pipeline-editor/dist` built.
+
 ### 4.3 Live run progress on the canvas (card B3)
 
 Opening a run from its detail drawer ("view on canvas") shows the

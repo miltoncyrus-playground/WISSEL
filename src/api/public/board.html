@@ -403,6 +403,12 @@
   .pl-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   .pl-btn.primary:hover { opacity: 0.92; color: #fff; }
   .pl-empty { padding: 16px; font-size: 12.5px; color: var(--ink-muted); }
+  /* The editor page fills the main column below the top bar: 48px top
+     bar + .main's 14px/32px vertical padding. The editor's own styles
+     (pipeline-editor/src/index.css) read the tokens above. */
+  #pipelineEditorRoot .pe-app { height: calc(100vh - 94px); min-height: 520px; }
+  .pe-load-error { border: 1px solid var(--critical); border-radius: 12px; background: var(--surface); padding: 16px 20px; font-size: 13px; line-height: 1.5; color: var(--ink-1); }
+  .pe-load-error code { background: var(--page); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
   .hm-row-meta.reason { color: var(--critical); }
   .hm-toggle {
     appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-1);
@@ -727,10 +733,18 @@
     <section class="panel-flush">
       <div class="panel-head">
         <h2>Saved pipelines <span class="count" id="pipelinesCount"></span></h2>
-        <a class="pl-btn primary" id="newPipelineLink" href="/pipelines/edit">New pipeline</a>
+        <a class="pl-btn primary" id="newPipelineLink" href="#/pipelines/new">New pipeline</a>
       </div>
       <div id="pipelinesList"><p class="pl-empty">Loading pipelines…</p></div>
     </section>
+  </section>
+
+  <!-- The pipeline editor (docs/SDD-ui-cleanup.md §4.2): pipeline-editor/'s
+       React bundle, imported on first visit and mounted into
+       #pipelineEditorRoot. See mountPipelineEditor below. -->
+  <section id="pipelineEditorPage" data-page hidden>
+    <div class="pe-load-error" id="pipelineEditorError" role="alert" hidden></div>
+    <div id="pipelineEditorRoot"></div>
   </section>
 
   <section id="archivePanel" data-page hidden>
@@ -4722,13 +4736,93 @@
       actions.appendChild(runBtn);
       var edit = document.createElement("a");
       edit.className = "pl-btn";
-      edit.href = "/pipelines/edit/" + encodeURIComponent(p.id);
+      edit.href = boardRouteHash("pipelines/edit/:id", { id: p.id });
       edit.textContent = "Edit";
       edit.setAttribute("aria-label", "Edit " + p.name);
       actions.appendChild(edit);
       el.appendChild(actions);
       return el;
     }));
+  }
+
+  // --- Pipeline editor (docs/SDD-ui-cleanup.md §4.2) ------------------
+  //
+  // pipeline-editor/ is its own React/Vite bundle. It's imported on the
+  // first visit to #/pipelines/new or #/pipelines/edit/<id> and mounted
+  // into #pipelineEditorRoot, inside this shell: same sidebar (Pipelines
+  // stays highlighted), same top bar, same colour tokens. The contract
+  // is mountPipelineEditor in pipeline-editor/src/main.tsx.
+  //
+  // Each navigation into the editor mounts a fresh draft (a new `key`),
+  // so New pipeline always starts at the blank / start-from choice. The
+  // editor's own URL change (a first Save turns #/pipelines/new into
+  // #/pipelines/edit/<id>) goes through host.setRoute, which rewrites
+  // the address bar without a hashchange, so the canvas isn't reloaded.
+  var PIPELINE_EDITOR_SRC = "/pipelines/edit/pipeline-editor.js";
+  var pipelineEditorImport = null;
+  var pipelineEditorHandle = null;
+  var pipelineEditorRouteKey = null;
+  var pipelineEditorMounts = 0;
+
+  function editorRouteFor(def, params) {
+    return def.editor === "edit" ? { mode: "edit", pipelineId: params.id } : { mode: "new" };
+  }
+  function editorRouteKey(route) {
+    return route.mode === "edit" ? "edit:" + route.pipelineId : "new";
+  }
+
+  var pipelineEditorHost = {
+    setRoute: function (route) {
+      pipelineEditorRouteKey = editorRouteKey(route);
+      currentRoute = route.mode === "edit" ? "pipelines/edit/:id" : "pipelines/new";
+      history.replaceState(null, "", route.mode === "edit"
+        ? boardRouteHash("pipelines/edit/:id", { id: route.pipelineId })
+        : boardRouteHash("pipelines/new"));
+    },
+    // The editor's Run is the Pipelines page's Run (card A4): the "+ New"
+    // drawer's Pipeline run tab with this pipeline picked.
+    runPipeline: function (pipelineId) {
+      openNewDrawer("pipeline", { pipelineId: pipelineId });
+    },
+  };
+
+  function showPipelineEditorError(err) {
+    var box = document.getElementById("pipelineEditorError");
+    var msg = document.createElement("p");
+    msg.style.margin = "0 0 6px";
+    msg.append("The pipeline editor isn't built, or failed to load. Build it once with ");
+    var cmd = document.createElement("code");
+    cmd.textContent = "cd pipeline-editor && bun install && bun run build";
+    msg.append(cmd, ", then reload.");
+    var detail = document.createElement("p");
+    detail.className = "muted";
+    detail.style.margin = "0";
+    detail.textContent = String(err && err.message ? err.message : err);
+    box.replaceChildren(msg, detail);
+    box.hidden = false;
+  }
+
+  // `entering`: the previous route wasn't one of the editor's.
+  function showPipelineEditor(def, params, entering) {
+    var route = editorRouteFor(def, params);
+    var key = editorRouteKey(route);
+    if (!entering && key === pipelineEditorRouteKey) return;
+    pipelineEditorRouteKey = key;
+    var mountKey = ++pipelineEditorMounts;
+    if (!pipelineEditorImport) pipelineEditorImport = import(PIPELINE_EDITOR_SRC);
+    pipelineEditorImport.then(function (mod) {
+      // Navigated again while the bundle loaded: that call mounts.
+      if (mountKey !== pipelineEditorMounts) return;
+      document.getElementById("pipelineEditorError").hidden = true;
+      var opts = { route: route, host: pipelineEditorHost, key: String(mountKey) };
+      if (pipelineEditorHandle) pipelineEditorHandle.update(opts);
+      else pipelineEditorHandle = mod.mountPipelineEditor(document.getElementById("pipelineEditorRoot"), opts);
+    }).catch(function (err) {
+      if (mountKey !== pipelineEditorMounts) return;
+      pipelineEditorImport = null; // try again on the next visit
+      pipelineEditorRouteKey = null;
+      showPipelineEditorError(err);
+    });
   }
 
   // --- Hash routing (docs/SDD-ui-cleanup.md §3.1) ---------------------
@@ -4748,6 +4842,7 @@
     if (!parsed.known || parsed.redirected) history.replaceState(null, "", boardRouteHash(parsed.route));
     var route = parsed.route;
     var def = BOARD_ROUTES[route];
+    var wasEditor = !!(BOARD_ROUTES[currentRoute] && BOARD_ROUTES[currentRoute].editor);
     currentRoute = route;
 
     document.querySelectorAll("[data-page]").forEach(function (el) { el.hidden = el.id !== def.page; });
@@ -4775,6 +4870,7 @@
     // page reload, and this is cheap (two small local reads).
     if (route === "setup/memory") loadMemoryTab();
     if (route === "pipelines") loadPipelinesPage();
+    if (def.editor) showPipelineEditor(def, parsed.params || {}, !wasEditor);
     if (route === "setup/projects") { loadProjectsTab(); renderProjectSummaryBox(); }
   }
 

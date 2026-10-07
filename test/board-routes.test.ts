@@ -16,6 +16,7 @@ test("every route the SDD names parses to itself", () => {
     "board",
     "board/features",
     "pipelines",
+    "pipelines/new",
     "archive",
     "setup/agents",
     "setup/harnesses",
@@ -26,6 +27,45 @@ test("every route the SDD names parses to itself", () => {
   ]) {
     expect(parseBoardRoute(boardRouteHash(route))).toEqual({ route, known: true });
   }
+});
+
+// Card B2 (§4.2): the editor is a page in the shell, under Pipelines.
+test("#/pipelines/edit/<id> parses the pipeline id, and round-trips through boardRouteHash", () => {
+  const route = "pipelines/edit/:id";
+  expect(parseBoardRoute("#/pipelines/edit/abc-123")).toEqual({ route, known: true, params: { id: "abc-123" } });
+  expect(parseBoardRoute("#/pipelines/edit/abc-123/")).toEqual({ route, known: true, params: { id: "abc-123" } });
+  for (const id of ["abc-123", "a b/c?d#e", "üñí", ":id"]) {
+    const hash = boardRouteHash(route, { id });
+    expect(hash.startsWith("#/pipelines/edit/")).toBe(true);
+    expect(parseBoardRoute(hash)).toEqual({ route, known: true, params: { id } });
+  }
+  // The server's redirect from the old /pipelines/edit/<id> keeps the
+  // segment URL-encoded; it decodes here.
+  expect(parseBoardRoute("#/pipelines/edit/a%20b").params).toEqual({ id: "a b" });
+});
+
+test("a param route without exactly one valid segment is unknown", () => {
+  for (const hash of ["#/pipelines/edit/a/b", "#/pipelines/edit/%E0%A4%A", "#/pipelines/new/x", "#/pipelines/x/abc"]) {
+    expect(parseBoardRoute(hash)).toEqual({ route: "board", known: false });
+  }
+});
+
+test("#/pipelines/edit with no id is a new pipeline", () => {
+  for (const hash of ["#/pipelines/edit", "#/pipelines/edit/"]) {
+    expect(parseBoardRoute(hash)).toEqual({ route: "pipelines/new", known: true, redirected: true });
+  }
+});
+
+test("boardRouteHash leaves a route without params alone, and encodes a missing param as empty", () => {
+  expect(boardRouteHash("pipelines/new", { id: "x" })).toBe("#/pipelines/new");
+  expect(boardRouteHash("pipelines/edit/:id")).toBe("#/pipelines/edit/");
+});
+
+test("the editor routes show the editor page and keep Pipelines highlighted", () => {
+  expect(BOARD_ROUTES["pipelines/new"]).toEqual({ page: "pipelineEditorPage", nav: "pipelines", editor: "new" });
+  expect(BOARD_ROUTES["pipelines/edit/:id"]).toEqual({ page: "pipelineEditorPage", nav: "pipelines", editor: "edit" });
+  const withParam = Object.keys(BOARD_ROUTES).filter((r) => r.includes(":"));
+  expect(withParam).toEqual(["pipelines/edit/:id"]);
 });
 
 test("an empty hash is the board, and known, so a bare /board URL is left alone", () => {
@@ -49,11 +89,11 @@ test("the old #/new URL redirects to the board with the New drawer's Task tab", 
   expect(Object.prototype.hasOwnProperty.call(BOARD_ROUTES, "new")).toBe(false);
 });
 
-test("every redirect targets a real route and names a real drawer tab", () => {
+test("every redirect targets a real route, and any drawer tab it opens is real", () => {
   for (const [from, r] of Object.entries(BOARD_ROUTE_REDIRECTS)) {
     expect(Object.prototype.hasOwnProperty.call(BOARD_ROUTES, from)).toBe(false);
     expect(Object.prototype.hasOwnProperty.call(BOARD_ROUTES, r.to)).toBe(true);
-    expect(["task", "pipeline"]).toContain(r.openNew);
+    if (r.openNew !== undefined) expect(["task", "pipeline"]).toContain(r.openNew);
   }
 });
 

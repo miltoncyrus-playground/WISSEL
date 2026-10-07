@@ -671,12 +671,12 @@ export function createApp(
         return json(decision);
       }
 
-      // The pipeline-editor SPA (pipeline-editor/, its own Vite build —
-      // see docs/SDD-pipelines.md §3.2) — checked before the `/pipelines`
-      // API block below so a request for `/pipelines/edit` (or
-      // `/pipelines/edit/<id>`, the editor's own client-side "edit an
-      // existing pipeline" route) is never mistaken for `GET
-      // /pipelines/:id` treating "edit" as a pipeline id.
+      // The pipeline-editor bundle (pipeline-editor/, its own Vite build —
+      // see docs/SDD-pipelines.md §3.2, mounted in the board shell since
+      // docs/SDD-ui-cleanup.md §4.2) — checked before the `/pipelines`
+      // API block below so a request for `/pipelines/edit` (or the old
+      // `/pipelines/edit/<id>` page URL, now a redirect) is never
+      // mistaken for `GET /pipelines/:id` treating "edit" as a pipeline id.
       if (url.pathname === "/pipelines/edit" || url.pathname.startsWith("/pipelines/edit/")) {
         if (req.method !== "GET") return notFound();
         return servePipelineEditorAsset(url.pathname, pipelineEditorDist);
@@ -1277,13 +1277,33 @@ function taskOutputStream(taskId: string, board: { events?: import("node:events"
   });
 }
 
-/** Serves pipeline-editor's built SPA output for any `/pipelines/edit*`
- *  request. A real on-disk file under `distDir` (a JS/CSS/asset chunk)
- *  is served as-is; anything else — the bare `/pipelines/edit` entry
- *  point, or a client-side route like `/pipelines/edit/<pipeline-id>`
- *  that has no matching file on disk — falls back to `index.html`, the
- *  standard single-entry-point SPA shape. Guards against a `..`-laden
- *  path escaping `distDir` the same way any static file server has to. */
+/** The bundle board.html imports to mount the editor inside its shell
+ *  (docs/SDD-ui-cleanup.md §4.2). A fixed name, not Vite's hashed one,
+ *  so the board can import it without reading a manifest — see
+ *  pipeline-editor/vite.config.ts. */
+export const PIPELINE_EDITOR_ENTRY = "pipeline-editor.js";
+
+/** Where an old standalone-editor URL lives now, or null if `sub` (the
+ *  path after `/pipelines/edit/`) looks like an asset. `/pipelines/edit`
+ *  is the board's `#/pipelines/new`; `/pipelines/edit/<id>` is
+ *  `#/pipelines/edit/<id>`. `<id>` is passed through still URL-encoded,
+ *  and the board decodes it. */
+function pipelineEditorRedirect(sub: string): string | null {
+  const seg = sub.replace(/\/+$/, "");
+  if (!seg) return "/board#/pipelines/new";
+  if (seg.includes("/") || /\.[a-z0-9]+$/i.test(seg)) return null;
+  return `/board#/pipelines/edit/${seg}`;
+}
+
+/** Serves pipeline-editor's built output for any `/pipelines/edit*`
+ *  request. A real on-disk file under `distDir` (the entry bundle, a
+ *  chunk, the standalone index.html) is served as-is. Since card B2 the
+ *  editor runs inside the board shell, so the old page URLs
+ *  (`/pipelines/edit`, `/pipelines/edit/<pipeline-id>`) redirect to the
+ *  board's hash routes instead of serving an SPA entry point. A missing
+ *  asset is 503 while the editor isn't built at all, else 404. Guards
+ *  against a `..`-laden path escaping `distDir` the same way any static
+ *  file server has to. */
 export async function servePipelineEditorAsset(pathname: string, distDir: URL): Promise<Response> {
   const sub = pathname.slice("/pipelines/edit".length).replace(/^\/+/, "");
   const candidate = sub ? new URL(sub, distDir) : distDir;
@@ -1291,14 +1311,18 @@ export async function servePipelineEditorAsset(pathname: string, distDir: URL): 
 
   if (sub) {
     const file = Bun.file(candidate);
-    if (await file.exists()) return new Response(file);
+    // The entry's name never changes between builds, so the browser
+    // must revalidate it or a rebuild stays invisible until a hard reload.
+    if (await file.exists()) return new Response(file, sub === PIPELINE_EDITOR_ENTRY ? { headers: { "cache-control": "no-cache" } } : undefined);
   }
 
-  const index = Bun.file(new URL("index.html", distDir));
-  if (!(await index.exists())) {
+  const redirect = pipelineEditorRedirect(sub);
+  if (redirect) return new Response(null, { status: 302, headers: { location: redirect } });
+
+  if (!(await Bun.file(new URL(PIPELINE_EDITOR_ENTRY, distDir)).exists())) {
     return new Response("pipeline-editor not built — run `bun install && bun run build` inside pipeline-editor/", { status: 503 });
   }
-  return new Response(index);
+  return notFound();
 }
 
 function sseStream(board: { events?: import("node:events").EventEmitter }): Response {

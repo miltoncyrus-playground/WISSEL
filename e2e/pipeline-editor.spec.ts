@@ -1,4 +1,13 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+
+// docs/SDD-ui-cleanup.md §4.2 (card B2): the pipeline editor runs inside
+// the board shell (#/pipelines/new, #/pipelines/edit/<id>), uses the
+// board's theme, offers "start blank" or "start from" a saved pipeline,
+// and edits a step in a side panel instead of dropdowns inside the node.
+//
+// Needs pipeline-editor/dist (gitignored): `cd pipeline-editor && bun
+// install && bun run build`. Without it the editor page shows that
+// command (see e2e/pipelines.spec.ts) and these tests fail at the canvas.
 
 // test-results/ is already gitignored (see .gitignore) — this sandbox
 // only allows writes inside the worktree, not /tmp, so screenshot
@@ -27,6 +36,29 @@ async function connectNodes(page: Page, sourceNodeIndex: number, targetNodeIndex
   await page.mouse.up();
 }
 
+function stepPanel(page: Page) {
+  return page.locator('#pipelineEditorRoot aside.pe-step-panel[aria-label="Step settings"]');
+}
+
+/** Clicks step `index` on the canvas; the side panel then edits it. */
+async function selectStep(page: Page, index: number): Promise<void> {
+  const node = page.locator(".react-flow__node").nth(index);
+  await node.click();
+  await expect(node).toHaveClass(/selected/);
+  await expect(stepPanel(page).getByLabel("Step name")).toBeVisible();
+}
+
+/** Opens the editor the way a human does: sidebar Pipelines, then New
+ *  pipeline, then one of the two starts. Never leaves /board. */
+async function openNewPipeline(page: Page): Promise<void> {
+  await page.goto("/board");
+  await page.getByRole("link", { name: "Pipelines", exact: true }).click();
+  await expect(page.locator("#pipelinesPage")).toBeVisible();
+  await page.getByRole("link", { name: "New pipeline", exact: true }).click();
+  await expect(page).toHaveURL(/\/board#\/pipelines\/new$/);
+  await expect(page.getByRole("heading", { name: "New pipeline" })).toBeVisible();
+}
+
 interface StepSnapshot {
   name: string;
   agentId: string;
@@ -37,88 +69,100 @@ interface StepSnapshot {
 async function readStepSnapshots(page: Page, count: number): Promise<StepSnapshot[]> {
   const out: StepSnapshot[] = [];
   for (let i = 0; i < count; i++) {
-    const node = page.locator(".react-flow__node").nth(i);
-    const name = await node.locator("input.step-node-name").inputValue();
-    const agentId = await node.locator('select[aria-label="Agent"]').inputValue();
-    const transition = await node.locator('select[aria-label="Transition type"]').inputValue();
-    const joinModeSelect = node.locator('select[aria-label="Join mode"]');
+    await selectStep(page, i);
+    const panel = stepPanel(page);
+    const name = await panel.locator('input[aria-label="Step name"]').inputValue();
+    const agentId = await panel.locator('select[aria-label="Agent"]').inputValue();
+    const transition = await panel.locator('select[aria-label="Transition type"]').inputValue();
+    const joinModeSelect = panel.locator('select[aria-label="Join mode"]');
     const joinMode = (await joinModeSelect.count()) > 0 ? await joinModeSelect.inputValue() : null;
     out.push({ name, agentId, transition, joinMode });
   }
   return out;
 }
 
-test.describe("pipeline-editor canvas app", () => {
-  // Default 1280x720 leaves the 3rd step's card (and its connection
-  // handles) partially off-screen at 260px-per-step spacing — confirmed
-  // live: boundingBox() still resolves a handle's layout position even
-  // when it's outside the viewport, so the drag coordinates looked
-  // valid but landed nowhere, and react-flow silently read the
-  // mousedown as a canvas pan instead of a connection attempt (0 edges
-  // created, no error). A wider viewport keeps all 3 steps on-screen so
-  // the drag actually lands on the handles, matching how a real browser
-  // window (not a real usability constraint of the app itself) would
-  // normally have room to show this.
-  test.use({ viewport: { width: 1600, height: 900 } });
+async function createPipeline(request: APIRequestContext, name: string) {
+  const res = await request.post("/pipelines", {
+    data: {
+      name,
+      description: "e2e: a template to start from",
+      graph: {
+        steps: [
+          { id: "plan", name: "Plan", agentId: "planner", transition: "choose" },
+          { id: "review", name: "Review", agentId: "reviewer", transition: "all" },
+        ],
+        edges: [{ id: "plan-review", from: "plan", to: "review", label: "ready" }],
+      },
+    },
+  });
+  expect(res.status()).toBe(201);
+  return (await res.json()) as { id: string; name: string; description: string; graph: unknown };
+}
+
+test.describe("pipeline editor in the board shell", () => {
+  // The SDD's measuring viewport (§2). The step panel always holds its
+  // 300px column, so selecting a step never resizes the canvas under a
+  // drag, and three steps at 260px spacing fit beside it after Fit View.
+  test.use({ viewport: { width: 1440, height: 900 } });
 
   test("author a 3-step join graph, save, reload identically, run it for real, and see it land on the board", async ({ page }) => {
     test.setTimeout(120_000);
 
-    // --- board.html into the editor: sidebar Pipelines, then the
-    // Pipelines page's New pipeline (card A4, docs/SDD-ui-cleanup.md §3.4)
-    await page.goto("/board");
-    await page.getByRole("link", { name: "Pipelines", exact: true }).click();
-    await expect(page.locator("#pipelinesPage")).toBeVisible();
-    const editorLink = page.locator('a[href="/pipelines/edit"]');
-    await expect(editorLink).toHaveCount(1);
-    await expect(page.getByRole("link", { name: "New pipeline", exact: true })).toHaveAttribute("href", "/pipelines/edit");
-    await editorLink.click();
-    await expect(page).toHaveURL(/\/pipelines\/edit$/);
-
-    await expect(page.locator("h1")).toHaveText("Pipeline editor");
+    // --- board shell into the editor: sidebar Pipelines, New pipeline,
+    // Start blank. Pipelines stays highlighted, the top bar stays.
+    await openNewPipeline(page);
+    await page.getByRole("button", { name: "Start blank", exact: true }).click();
+    await expect(page.locator("#pipelineEditorRoot .react-flow")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Pipelines", exact: true })).toHaveAttribute("aria-current", "page");
+    await expect(page.locator("#newBtn")).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/01-empty-canvas.png` });
 
     // --- author 3 steps: two entry steps fanning out ("all") into a
     // join step (joinMode "all") — exercises the agent picker, the
-    // transition toggle, and the join-mode toggle together. -------------
+    // transition toggle, and the join-mode toggle together, all in the
+    // step side panel. ---------------------------------------------------
     const addStep = page.getByRole("button", { name: "+ Add step" });
     await addStep.click();
     await addStep.click();
     await addStep.click();
     await expect(page.locator(".react-flow__node")).toHaveCount(3);
+    // The nodes are summaries now; the fields live in the panel.
+    await expect(page.locator(".react-flow__node select")).toHaveCount(0);
 
     // A new step's default agent is agents[0]?.id (App.tsx) -- whichever
-    // agent happens to be declared first in agents/manifest.yaml
-    // (triager, as it happens). Select it explicitly on each step rather
-    // than relying on that default -- it isn't a documented contract, and
-    // asserting on an implicit ordering would break the moment the
-    // manifest gets reordered. See the Run section below for why
-    // triager, not quick-answer, is the right real-dispatch agent here.
+    // agent happens to be declared first in agents/manifest.yaml.
+    // Select triager explicitly on each step rather than relying on that
+    // default -- it isn't a documented contract. See the Run section
+    // below for why triager, not quick-answer, is the right
+    // real-dispatch agent here.
+    const agentList = (await (await page.request.get("/agents")).json()) as { id: string; name: string }[];
+    const triagerName = agentList.find((a) => a.id === "triager")!.name;
     for (let i = 0; i < 3; i++) {
-      const node = page.locator(".react-flow__node").nth(i);
-      await node.locator('select[aria-label="Agent"]').selectOption("triager");
-      await expect(node.locator('select[aria-label="Agent"]')).toHaveValue("triager");
+      await selectStep(page, i);
+      const agent = stepPanel(page).locator('select[aria-label="Agent"]');
+      await agent.selectOption("triager");
+      await expect(agent).toHaveValue("triager");
+      // The node's summary follows the panel.
+      await expect(page.locator(".react-flow__node").nth(i).locator(".step-node-agent")).toHaveText(triagerName);
     }
 
     // Transition-type toggle: both entry steps fan out unconditionally,
     // so the join step activates deterministically regardless of what
     // triager's free-text output looks like.
-    await page.locator(".react-flow__node").nth(0).locator('select[aria-label="Transition type"]').selectOption("all");
-    await page.locator(".react-flow__node").nth(1).locator('select[aria-label="Transition type"]').selectOption("all");
+    for (const i of [0, 1]) {
+      await selectStep(page, i);
+      await stepPanel(page).locator('select[aria-label="Transition type"]').selectOption("all");
+    }
 
     // No join-mode selector until a step actually has >1 incoming edge.
-    await expect(page.locator(".react-flow__node").nth(2).locator('select[aria-label="Join mode"]')).toHaveCount(0);
+    await selectStep(page, 2);
+    await expect(stepPanel(page).locator('select[aria-label="Join mode"]')).toHaveCount(0);
 
-    // `fitView` (App.tsx) only runs on initial mount, when there are zero
-    // nodes — adding steps afterward never re-fits, so by 3 steps the
-    // 3rd step's handles render past the viewport edge even at a wide
-    // 1600px window. boundingBox() still resolves a real layout
-    // position for an off-screen handle, so the drag coordinates look
-    // valid but land nowhere — confirmed live: react-flow silently reads
-    // the mousedown as a canvas pan instead of a connection attempt (0
-    // edges, no error). The app already ships a "Fit View" control for
-    // exactly this — click it before connecting, same as a real user
-    // would once they can't see all their steps.
+    // `fitView` only runs on mount, when there are zero nodes, so click
+    // the canvas's own "Fit View" control before dragging between
+    // handles, same as a real user would once steps go off-screen.
+    // boundingBox() still resolves an off-screen handle's position, and
+    // react-flow silently reads a drag that lands nowhere as a pan.
     await page.getByRole("button", { name: "Fit View" }).click();
     await page.waitForTimeout(200);
 
@@ -126,11 +170,13 @@ test.describe("pipeline-editor canvas app", () => {
     await connectNodes(page, 1, 2);
     await expect(page.locator(".react-flow__edge")).toHaveCount(2);
 
-    const joinModeSelect = page.locator(".react-flow__node").nth(2).locator('select[aria-label="Join mode"]');
+    await selectStep(page, 2);
+    const joinModeSelect = stepPanel(page).locator('select[aria-label="Join mode"]');
     await expect(joinModeSelect).toBeVisible();
     await expect(joinModeSelect).toHaveValue("any"); // default
     await joinModeSelect.selectOption("all");
     await expect(joinModeSelect).toHaveValue("all");
+    await expect(page.locator(".react-flow__node").nth(2).locator(".step-node-tags")).toContainText("join: all");
 
     const pipelineName = unique("Playwright pipeline smoke");
     await page.locator('input[placeholder="Pipeline name"]').fill(pipelineName);
@@ -145,8 +191,8 @@ test.describe("pipeline-editor canvas app", () => {
     // --- Save/load against the real /pipelines API -----------------------
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.locator(".pe-status")).toContainText("Saved", { timeout: 10_000 });
-    await expect(page).toHaveURL(/\/pipelines\/edit\/.+/);
-    const pipelineId = new URL(page.url()).pathname.split("/").pop()!;
+    await expect(page).toHaveURL(/\/board#\/pipelines\/edit\/.+/);
+    const pipelineId = decodeURIComponent(new URL(page.url()).hash.split("/").pop()!);
     expect(pipelineId.length).toBeGreaterThan(0);
 
     await page.screenshot({ path: `${SCREENSHOT_DIR}/03-saved.png` });
@@ -162,39 +208,36 @@ test.describe("pipeline-editor canvas app", () => {
 
     await page.screenshot({ path: `${SCREENSHOT_DIR}/04-reloaded-identical.png` });
 
-    // --- Run button -> real POST /pipelines/:id/run ----------------------
+    // --- Run -> the "+ New" drawer -> real POST /pipelines/:id/run --------
     // Real agent (triager, executor: readonly, cheapest CLI-executor
-    // agent in the manifest at ~$0.03/task) — this is a genuine
-    // end-to-end dispatch, not a mock. NOT quick-answer: its `executor:
-    // api` calls anthropic-api.ts directly, which needs real Anthropic
-    // API credentials. The e2e fixture harness (e2e/fixtures/
-    // harnesses.yaml) deliberately reports `enabled: true` for
-    // discovery/UI purposes without ever promising a *real* call
-    // authenticates — confirmed live: quick-answer failed here with
-    // "Could not resolve authentication method." triager's readonly/CLI
-    // executor instead authenticates via the already-logged-in local
-    // `claude` CLI session, the same real auth every other agent
-    // dispatch in this project already depends on.
-    await page.locator('input[placeholder="/path/to/repo"]').fill("/tmp/wissel-e2e-repo");
-    await page.locator('input[placeholder="What should this run do?"]').fill("Playwright smoke run: what is 2+2?");
+    // agent in the manifest at ~$0.03/task) — a genuine end-to-end
+    // dispatch, not a mock. NOT quick-answer: its `executor: api` calls
+    // anthropic-api.ts directly, which needs real Anthropic API
+    // credentials the e2e fixture harness never promises. triager's
+    // readonly/CLI executor authenticates via the already-logged-in
+    // local `claude` CLI session.
+    await page.locator("#pipelineEditorRoot").getByRole("button", { name: "Run", exact: true }).click();
+    await expect(page.locator("#newPipelinePanel")).toBeVisible();
+    await expect(page.locator("#prPipeline")).toHaveValue(pipelineId);
+    await page.locator("#prRepo").fill("/tmp/wissel-e2e-repo");
+    await page.locator("#prInput").fill("Playwright smoke run: what is 2+2?");
 
     const [runResponse] = await Promise.all([
       page.waitForResponse((r) => r.url().includes(`/pipelines/${pipelineId}/run`) && r.request().method() === "POST", { timeout: 90_000 }),
-      page.getByRole("button", { name: "Run", exact: true }).click(),
+      page.getByRole("button", { name: "Start run", exact: true }).click(),
     ]);
     expect(runResponse.status()).toBe(201);
     const rootTask = (await runResponse.json()) as { id: string; status: string; title: string };
     expect(rootTask.title).toBe(`Pipeline: ${pipelineName}`);
-
-    await expect(page.locator(".pe-status")).toContainText(`Pipeline run created: task ${rootTask.id}`);
+    await expect(page.locator("#prStatus")).toContainText(`“${rootTask.title}” finished`);
     await page.screenshot({ path: `${SCREENSHOT_DIR}/05-run-complete.png` });
+    await page.keyboard.press("Escape");
 
-    // --- the resulting task really is on the board, in its Swimlanes lane
-    await page.locator(".pe-run-link").click();
-    await expect(page).toHaveURL(/\/board$/);
-
+    // --- the run really is on the board, grouped under its root in
+    // Swimlanes (card B1 folds a run's steps into the root's lane)
+    await page.getByRole("link", { name: "Board", exact: true }).click();
     await page.getByRole("button", { name: "By feature", exact: true }).click();
-    const lane = page.locator(".swimlane", { hasText: rootTask.title });
+    const lane = page.locator(`#swimlanesBody .swimlane[data-run-id="${rootTask.id}"]`);
     await expect(lane).toHaveCount(1);
     // The joined step's own card ("<pipeline>: Step 3") proves the whole
     // graph — both entry steps and the join step — actually ran, not
@@ -216,7 +259,8 @@ test.describe("pipeline-editor canvas app", () => {
   // step and edge ids, so "+ Add step" threw "crypto.randomUUID is not a
   // function" and nothing appeared. This suite runs on localhost (a
   // secure context), so the bug was invisible here; removing randomUUID
-  // before the app loads reproduces the LAN case.
+  // before the app loads reproduces the LAN case. Entered through the
+  // old /pipelines/edit URL, which now redirects into the shell.
   test("adding and connecting steps works without crypto.randomUUID (plain-HTTP LAN access)", async ({ page }) => {
     await page.addInitScript(() => {
       Object.defineProperty(Crypto.prototype, "randomUUID", { value: undefined, configurable: true });
@@ -225,7 +269,9 @@ test.describe("pipeline-editor canvas app", () => {
     page.on("pageerror", (e) => pageErrors.push(e.message));
 
     await page.goto("/pipelines/edit");
+    await expect(page).toHaveURL(/\/board#\/pipelines\/new$/);
     expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
+    await page.getByRole("button", { name: "Start blank", exact: true }).click();
 
     const addStep = page.getByRole("button", { name: "+ Add step" });
     await addStep.click();
@@ -238,5 +284,73 @@ test.describe("pipeline-editor canvas app", () => {
     await expect(page.locator(".react-flow__edge")).toHaveCount(1);
 
     expect(pageErrors).toEqual([]);
+  });
+
+  test("start from a saved pipeline: the copy keeps its graph, saves as a new pipeline, and the original is untouched", async ({ page, request }) => {
+    const source = await createPipeline(request, unique("Template source"));
+    await openNewPipeline(page);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/07-new-pipeline-choice.png` });
+
+    await page.getByRole("button", { name: `Start from ${source.name}`, exact: true }).click();
+    await expect(page.locator(".react-flow__node")).toHaveCount(2);
+    await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+    await expect(page.locator('input[placeholder="Pipeline name"]')).toHaveValue(`${source.name} (copy)`);
+    await expect(page.locator('input[placeholder="Optional"]')).toHaveValue("e2e: a template to start from");
+    expect(await readStepSnapshots(page, 2)).toEqual([
+      { name: "Plan", agentId: "planner", transition: "choose", joinMode: null },
+      { name: "Review", agentId: "reviewer", transition: "all", joinMode: null },
+    ]);
+
+    // Not saved yet: Run is off until there's a pipeline to run.
+    await expect(page.locator("#pipelineEditorRoot").getByRole("button", { name: "Run", exact: true })).toBeDisabled();
+
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.locator(".pe-status")).toContainText("Saved", { timeout: 10_000 });
+    await expect(page).toHaveURL(/\/board#\/pipelines\/edit\/.+/);
+    const copyId = decodeURIComponent(new URL(page.url()).hash.split("/").pop()!);
+    expect(copyId).not.toBe(source.id);
+
+    const copy = await (await request.get(`/pipelines/${copyId}`)).json();
+    expect(copy.name).toBe(`${source.name} (copy)`);
+    expect(copy.graph).toEqual(source.graph);
+    const original = await (await request.get(`/pipelines/${source.id}`)).json();
+    expect(original.name).toBe(source.name);
+    expect(original.graph).toEqual(source.graph);
+  });
+
+  test("the editor uses the board's colour tokens and follows its light/dark setting", async ({ page }) => {
+    // Resolves a board token the same way the board's own CSS does.
+    const token = (name: string) =>
+      page.evaluate((n) => {
+        const probe = document.createElement("div");
+        probe.style.background = `var(${n})`;
+        document.body.appendChild(probe);
+        const value = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return value;
+      }, name);
+    const canvasBg = () => page.locator("#pipelineEditorRoot .react-flow").evaluate((el) => getComputedStyle(el).backgroundColor);
+    const appBg = () => page.locator("#pipelineEditorRoot .pe-app").evaluate((el) => getComputedStyle(el).backgroundColor);
+
+    const seen: Record<string, string> = {};
+    for (const theme of ["Dark", "Light"] as const) {
+      await page.goto("/board#/setup/settings");
+      await page.getByRole("button", { name: theme, exact: true }).click();
+      await page.getByRole("link", { name: "Pipelines", exact: true }).click();
+      await page.getByRole("link", { name: "New pipeline", exact: true }).click();
+      await page.getByRole("button", { name: "Start blank", exact: true }).click();
+      await expect(page.locator("#pipelineEditorRoot .react-flow")).toHaveClass(new RegExp(`\\b${theme.toLowerCase()}\\b`));
+      expect(await canvasBg()).toBe(await token("--page"));
+      expect(await appBg()).toBe(await token("--surface"));
+      seen[theme] = await canvasBg();
+      await page.screenshot({ path: `${SCREENSHOT_DIR}/08-theme-${theme.toLowerCase()}.png` });
+    }
+    expect(seen.Dark).not.toBe(seen.Light);
+
+    // A theme change while the editor is open applies straight away.
+    await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; });
+    await expect(page.locator("#pipelineEditorRoot .react-flow")).toHaveClass(/\bdark\b/);
+    expect(await canvasBg()).toBe(seen.Dark);
+    await page.evaluate(() => { try { localStorage.removeItem("wissel-theme"); } catch {} });
   });
 });
