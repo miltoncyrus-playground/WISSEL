@@ -20,3 +20,10 @@ harnesses:
     # (board.spec.ts, docs/SDD-agent-harness-preference.md §3.7). No
     # agent lists this harness, so it never limits a real run.
     maxConcurrent: 2
+  # Disabled on purpose: the board's account line (GET /status/accounts)
+  # must leave it out (board.spec.ts "Account line"). validateHarness
+  # keeps a disabled entry disabled, so this is deterministic too.
+  - id: e2e-fixture-disabled
+    tool: anthropic-api
+    label: "E2E Disabled Harness"
+    enabled: false

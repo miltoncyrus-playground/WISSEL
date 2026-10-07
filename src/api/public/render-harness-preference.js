@@ -58,10 +58,83 @@ function describeAgentHarnesses(agent, harnesses) {
   return { any: false, entries: entries, text: text };
 }
 
+// ---- The board's account line (top bar, Board page only). Input is
+// one GET /status/accounts row ({ id, label, tool, activeCount,
+// maxConcurrent?, defaultModel?, running: [{ taskId, title, agentId,
+// model }] }); the server already dropped disabled harnesses and
+// resolved every model, so nothing here decides what runs where.
+
+// Labels past this length get cut to the part after the dash.
+var ACCOUNT_LABEL_MAX = 20;
+
+// "Claude — milton.cyrus@gmail.com" -> "Claude (gmail)": a long label is
+// cut to the part after its dash, and an email there to its provider.
+// Short labels ("codex", "Claude — personal") are kept whole.
+function shortAccountLabel(label) {
+  label = label || "";
+  if (label.length <= ACCOUNT_LABEL_MAX) return label;
+  var m = /^(.*?)\s+[—–-]\s+(.+)$/.exec(label);
+  if (!m) return label;
+  var email = /^[^@\s]+@([^.\s]+)\./.exec(m[2]);
+  return email ? m[1] + " (" + email[1] + ")" : m[2];
+}
+
+// "claude-opus-5-5" -> "opus-5-5", "claude-haiku-4-5-20251001" ->
+// "haiku-4-5". Other tools' model ids pass through unchanged.
+function shortModelName(model) {
+  return String(model).replace(/^claude-/, "").replace(/-\d{8}$/, "");
+}
+
+// Distinct models in first-seen order, "×N" when more than one task uses
+// it: "opus-5-5 ×2, sonnet-5-5". A null model (agent unknown to the
+// registry) reads "unknown model" rather than vanishing.
+function summarizeRunningModels(running) {
+  var order = [];
+  var counts = {};
+  (running || []).forEach(function (r) {
+    var name = r.model ? shortModelName(r.model) : "unknown model";
+    if (!(name in counts)) { counts[name] = 0; order.push(name); }
+    counts[name]++;
+  });
+  return order.map(function (name) { return counts[name] > 1 ? name + " ×" + counts[name] : name; }).join(", ");
+}
+
+// Everything one chip shows. `text` is the whole visible line (short
+// label · tool · load · models) so a test can compare the DOM against
+// it; `title` is the hover text: full label, then one line per running
+// task (title · agent · model).
+function describeAccountChip(row) {
+  var running = row.running || [];
+  var busy = running.length > 0 || (row.activeCount || 0) > 0;
+  var load = formatHarnessCapacity(row) || (running.length > 0 ? running.length + " running" : "idle");
+  var models = running.length > 0
+    ? summarizeRunningModels(running)
+    : row.defaultModel ? shortModelName(row.defaultModel) : "agent defaults";
+  var label = shortAccountLabel(row.label || row.id);
+  var titleLines = [(row.label || row.id) + " (" + row.tool + ")", load + " · " + (running.length > 0 ? "running:" : "idle, next run uses " + (row.defaultModel || "each agent's own model"))];
+  running.forEach(function (r) {
+    titleLines.push("• " + r.title + " · " + (r.agentId || "unknown agent") + " · " + (r.model || "unknown model"));
+  });
+  return {
+    id: row.id,
+    label: label,
+    tool: row.tool,
+    load: load,
+    models: models,
+    busy: busy,
+    text: label + " · " + row.tool + " · " + load + " · " + models,
+    title: titleLines.join("\n"),
+  };
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     formatHarnessCapacity: formatHarnessCapacity,
     harnessPreferenceState: harnessPreferenceState,
     describeAgentHarnesses: describeAgentHarnesses,
+    shortAccountLabel: shortAccountLabel,
+    shortModelName: shortModelName,
+    summarizeRunningModels: summarizeRunningModels,
+    describeAccountChip: describeAccountChip,
   };
 }

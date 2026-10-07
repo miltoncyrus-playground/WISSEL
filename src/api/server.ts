@@ -12,6 +12,7 @@ import { HarnessPool, validateAgentHarnesses } from "../core/harness-pool.ts";
 import { McpServerPool, checkMcpServerReachable, parseMcpServerCreateInput, type CheckMcpServerReachableOptions } from "../core/mcp-server-pool.ts";
 import { setMcpServerEnabled, setMcpServerToolTrust, addMcpServer } from "../core/mcp-manifest.ts";
 import { Registry } from "../core/registry.ts";
+import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts } from "../core/crash-recovery.ts";
@@ -498,6 +499,24 @@ export function createApp(
             activeCount: harnesses.activeCount(h.id),
             availableModels: cache[h.id]?.models ?? [],
           })),
+        );
+      }
+
+      // The board's account line: every enabled harness, its live load,
+      // and the model each running task on it uses (see
+      // src/core/account-status.ts). Pipeline definitions are only read
+      // when a running step card needs one to name its agent.
+      if (url.pathname === "/status/accounts" && req.method === "GET") {
+        const running = await board.list({ status: "running" });
+        const needsPipelines = running.some((t) => !t.routedTo && t.pipelineId);
+        return json(
+          buildAccountStatus({
+            harnesses: harnesses.all(),
+            tasks: running,
+            agents: registry,
+            activeCount: (id) => harnesses.activeCount(id),
+            pipelines: needsPipelines ? await pipelines.list() : [],
+          }),
         );
       }
 

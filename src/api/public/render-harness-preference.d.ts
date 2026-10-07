@@ -27,3 +27,30 @@ export interface AgentHarnessDescription {
 export function formatHarnessCapacity(h: HarnessRow): string | null;
 export function harnessPreferenceState(h: HarnessRow | undefined): HarnessPreferenceState;
 export function describeAgentHarnesses(agent: { harnesses?: string[] } | undefined, harnesses: HarnessRow[] | undefined): AgentHarnessDescription;
+
+/** One GET /status/accounts row (src/core/account-status.ts AccountStatus). */
+export interface AccountStatusRow {
+  id: string;
+  label: string;
+  tool: string;
+  activeCount: number;
+  maxConcurrent?: number;
+  defaultModel?: string;
+  running: { taskId: string; title: string; agentId: string | null; model: string | null }[];
+}
+
+export interface AccountChip {
+  id: string;
+  label: string;
+  tool: string;
+  load: string;
+  models: string;
+  busy: boolean;
+  text: string;
+  title: string;
+}
+
+export function shortAccountLabel(label: string): string;
+export function shortModelName(model: string): string;
+export function summarizeRunningModels(running: AccountStatusRow["running"]): string;
+export function describeAccountChip(row: AccountStatusRow): AccountChip;
