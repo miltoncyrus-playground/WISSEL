@@ -1344,6 +1344,24 @@ test.describe("Swimlanes view", () => {
     await expect(blockedLane.locator(".slcard .sl-tag")).toHaveAttribute("title", new RegExp(depTitle));
   });
 
+  test("By feature cards are one fixed width, even when a title holds a long unbroken word", async ({ page, request }) => {
+    // A word like WISSEL_MEMORY_INJECTION used to widen its lane's cards
+    // (215px vs 190px elsewhere) through flexbox's automatic min width.
+    const title = `Card width test WISSEL_SOME_VERY_LONG_UNBROKEN_IDENTIFIER_NAME ${Date.now()}`;
+    const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo" } });
+    const id = (await created.json()).id as string;
+    // A real 2-card lineage: the Review card's relation line repeats the title.
+    await request.post(`/tasks/${id}/result`, { data: { agentId: "implementer", ok: true, summary: "did the thing" } });
+
+    await page.goto("/board");
+    await page.getByRole("button", { name: "By feature", exact: true }).click();
+    const lane = page.locator("#swimlanesBody .swimlane", { has: page.locator(".swimlane-head", { hasText: title }) });
+    await expect(lane.locator(".slcard")).toHaveCount(2);
+
+    const widths = await page.locator("#swimlanesBody .slcard").evaluateAll((cards) => cards.map((c) => c.getBoundingClientRect().width));
+    for (const w of widths) expect(Math.round(w)).toBe(190);
+  });
+
   test("a lane with an actively-running card sorts above an all-idle lane", async ({ page, request }) => {
     // Created first, so without active-first sorting it would naturally
     // render above the active one below (insertion/creation order).
