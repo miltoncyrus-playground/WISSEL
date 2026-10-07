@@ -47,8 +47,30 @@ function pipelineRows(pipelines, tasks) {
   });
 }
 
+// Whether the Run dialog needs a repo for this pipeline: true when any
+// step's agent is not readonly-tier or has write/bash in toolAccess, the
+// same rule as stepsNeedingRepo (src/core/pipeline-runner.ts), which
+// POST /pipelines/:id/run enforces. A step whose agent isn't in `agents`
+// doesn't count (the server agrees: that step fails on its own). With
+// no agents loaded yet it answers true, so the field never disappears
+// for a pipeline that turns out to need it (docs/SDD-ai-news-podcast.md
+// §3.4).
+function pipelineNeedsRepo(p, agents) {
+  if (!agents || !agents.length) return true;
+  var byId = Object.create(null);
+  agents.forEach(function (a) { byId[a.id] = a; });
+  var steps = (p && p.graph && p.graph.steps) || [];
+  return steps.some(function (s) {
+    var a = byId[s.agentId];
+    if (!a) return false;
+    var access = a.toolAccess || [];
+    return a.tier !== "readonly" || access.indexOf("write") !== -1 || access.indexOf("bash") !== -1;
+  });
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
+    pipelineNeedsRepo: pipelineNeedsRepo,
     isPipelineRunRoot: isPipelineRunRoot,
     lastRunsByPipeline: lastRunsByPipeline,
     pipelineStepCount: pipelineStepCount,

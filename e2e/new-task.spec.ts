@@ -47,7 +47,9 @@ async function createNoEntryPipeline(request: APIRequestContext, name: string) {
       graph: {
         steps: [
           { id: "a", name: "Plan", agentId: "planner", transition: "all" },
-          { id: "b", name: "Review", agentId: "reviewer", transition: "all" },
+          // A write-tier step, so the Run dialog asks for a repo
+          // (docs/SDD-ai-news-podcast.md §3.4). Never runs: no entry step.
+          { id: "b", name: "Implement", agentId: "implementer", transition: "all" },
         ],
         edges: [{ id: "ab", from: "a", to: "b" }, { id: "ba", from: "b", to: "a" }],
       },
@@ -478,7 +480,7 @@ test.describe("Pipeline run tab", () => {
     await page.getByRole("tab", { name: "Pipeline run", exact: true }).click();
 
     await page.locator("#prPipeline").selectOption(pipeline.id);
-    await expect(page.locator("#prPipelineHint")).toHaveText("e2e: no entry step, fails instantly · 2 steps: Plan, Review");
+    await expect(page.locator("#prPipelineHint")).toHaveText("e2e: no entry step, fails instantly · 2 steps: Plan, Implement");
   });
 
   test("submit stays disabled until pipeline, repo and input are all set", async ({ page, request }) => {
@@ -527,6 +529,52 @@ test.describe("Pipeline run tab", () => {
     // A failed run needs a human: it's in Needs you, behind the drawer.
     await page.keyboard.press("Escape");
     await expect(page.locator(`#needsYouBody [data-task-id="${root.id}"]`)).toBeVisible();
+  });
+
+  // docs/SDD-ai-news-podcast.md §3.4: all-readonly steps need no repo.
+  // No entry step again, so the real POST fails the run without spawning.
+  test("a repo-less pipeline hides Repo, makes Input optional, and posts { input } only", async ({ page, request }) => {
+    const res = await request.post("/pipelines", {
+      data: {
+        name: unique("Repo-less pipeline"), description: "e2e: readonly only, no entry step",
+        graph: {
+          steps: [
+            { id: "a", name: "Plan", agentId: "planner", transition: "all" },
+            { id: "b", name: "Review", agentId: "reviewer", transition: "all" },
+          ],
+          edges: [{ id: "ab", from: "a", to: "b" }, { id: "ba", from: "b", to: "a" }],
+        },
+      },
+    });
+    const repoless = (await res.json()) as { id: string; name: string };
+    const needsRepo = await createNoEntryPipeline(request, unique("Needs-repo pipeline"));
+    await page.getByRole("tab", { name: "Task", exact: true }).click();
+    await page.getByRole("tab", { name: "Pipeline run", exact: true }).click();
+    // Sticky value from an earlier run: must not be sent for a repo-less one.
+    await page.locator("#prRepo").fill("/tmp/wissel-e2e-repo");
+
+    await page.locator("#prPipeline").selectOption(repoless.id);
+    await expect(page.locator("#prRepoField")).toBeHidden();
+    await expect(page.locator("#prNoRepoHint")).toBeVisible();
+    await expect(page.locator("#prInputHint")).toContainText("Optional.");
+    await expect(page.locator("#prSubmit")).toBeEnabled();
+
+    // Switching to a pipeline with a write step brings Repo back.
+    await page.locator("#prPipeline").selectOption(needsRepo.id);
+    await expect(page.locator("#prRepoField")).toBeVisible();
+    await expect(page.locator("#prNoRepoHint")).toBeHidden();
+    await expect(page.locator("#prSubmit")).toBeDisabled();
+
+    await page.locator("#prPipeline").selectOption(repoless.id);
+    const [runResponse] = await Promise.all([
+      page.waitForResponse((r) => r.url().endsWith(`/pipelines/${repoless.id}/run`) && r.request().method() === "POST"),
+      page.locator("#prSubmit").click(),
+    ]);
+    expect(runResponse.request().postDataJSON()).toEqual({ input: "" });
+    expect(runResponse.status()).toBe(201);
+    const root = (await runResponse.json()) as { repo?: string; pipelineId: string };
+    expect(root.pipelineId).toBe(repoless.id);
+    expect(root.repo).toBeUndefined();
   });
 
   test("a server error shows inline and re-enables submit", async ({ page, request }) => {

@@ -338,6 +338,160 @@ agents:
     # transcript, not a diff.
     reviewTarget: tool-calls
 
+  # The "AI news podcast" pipeline (docs/SDD-ai-news-podcast.md):
+  # gather -> explain simply -> podcast script. All three are pipeline-only
+  # agents with one unique tag each, for the same reason as
+  # pipeline-reviewer and mcp-tool-caller above: pipeline-runner.ts looks
+  # them up by id, and a tag shared with any other agent would change
+  # routing for unrelated board tasks. Each step hands its structured
+  # output to the next as `data` in a ```pipeline-handoff``` block
+  # (buildNextStepBody, src/core/pipeline-runner.ts). No repo: the run
+  # gets a scratch workspace per step (§3.4).
+  - id: ai-news-gatherer
+    name: AI news gatherer
+    kind: agent
+    tier: readonly
+    description: Searches the web for the most important AI news of the last 7 days and hands off dated, sourced stories.
+      The only agent with `web` access (WebSearch, WebFetch), still under plan mode.
+    whenToUse: The gather step of the "AI news podcast" pipeline. Never routed by the fuzzy Router (see its tag).
+    tags: [ai-news-gather-step]
+    executor: readonly
+    inputs: [task-card]
+    outputs: [news-stories]
+    trustLevel: medium
+    toolAccess: [web]
+    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.80 }
+    outputContractFormat: pipeline-handoff
+    outputContract: |
+      Your job: find the most important AI news of the last 7 days
+      (counting back from today's date) and hand it off as data.
+
+      How to work:
+      - Use WebSearch to find candidates, then WebFetch to read the
+        actual pages before you write anything about a story.
+      - Pick 6 to 8 stories by default, a mix of research, products,
+        policy and industry. If the task input asks for something else
+        (a focus, a shorter window, a different count), follow it.
+      - Prefer primary sources: lab and company blogs, papers, official
+        announcements, government pages. Use a news outlet when no primary
+        source exists. Never cite a search results page.
+
+      Hard rules, no exceptions:
+      - Never invent a story, a date, a quote, a number or a URL. Every
+        URL in `sources` must be one you actually found with WebSearch or
+        opened with WebFetch in this run, copied exactly.
+      - A story with no publication date you can see on a source, or with
+        no source URL, is DROPPED. Do not guess a date. Do not keep it
+        "with a note". Leave it out.
+      - A story dated more than 7 days before today is dropped.
+      - `facts` says only what the sources say: 2 to 4 plain sentences,
+        no speculation, no hype words.
+
+      Output contract, mandatory and machine-parsed: your final message
+      MUST end with a fenced block of exactly this form, nothing after it:
+
+      ```pipeline-handoff
+      {"data": {"generatedAt": "2026-10-07", "stories": [{"title": "...", "date": "2026-10-05", "sources": ["https://..."], "facts": "..."}]}}
+      ```
+
+      - `generatedAt`: today's date, YYYY-MM-DD.
+      - `stories`: array, each with `title` (string), `date` (YYYY-MM-DD,
+        the publication date from the source), `sources` (array of one or
+        more full https URLs), `facts` (string).
+      - Valid JSON on its own: no trailing commas, no comments, no nested
+        code fences. A missing or malformed block fails the run.
+    verificationContract: |
+      You run under `--permission-mode plan` with only WebSearch and
+      WebFetch granted. Bash, Edit and Write are unavailable by design.
+      Before the final block, check every story once more: does it have
+      a date within the last 7 days and at least one URL you actually
+      saw? If not, drop it.
+
+  - id: eli5-explainer
+    name: ELI5 explainer
+    kind: agent
+    tier: readonly
+    description: Rewrites handed-off news stories in plain language a curious 12-year-old could follow, with why each matters
+      and what is still unknown. No tools, no new facts.
+    whenToUse: The explain step of the "AI news podcast" pipeline. Never routed by the fuzzy Router (see its tag).
+    tags: [ai-news-explain-step]
+    executor: readonly
+    inputs: [news-stories]
+    outputs: [explained-stories]
+    trustLevel: medium
+    toolAccess: []
+    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.20 }
+    outputContractFormat: pipeline-handoff
+    outputContract: |
+      Your input is the `stories` list handed off by the gather step
+      (fenced as data in the task body). For each story, write:
+      - `explanation`: what happened, in plain language a curious
+        12-year-old could follow. Short sentences. Explain any jargon
+        with an everyday comparison.
+      - `whyItMatters`: one or two sentences on why a normal person
+        might care.
+      - `unknowns`: one honest line on what we don't know yet.
+
+      Hard rules:
+      - Add no new facts. Everything in `explanation` must come from that
+        story's `facts`. If something is unclear, say it is unclear.
+      - Copy `title`, `date` and `sources` from the input unchanged. Never
+        add, drop, shorten or rewrite a URL.
+      - Keep every story from the input, in the same order.
+
+      Output contract, mandatory and machine-parsed: your final message
+      MUST end with a fenced block of exactly this form, nothing after it:
+
+      ```pipeline-handoff
+      {"data": {"stories": [{"title": "...", "date": "2026-10-05", "sources": ["https://..."], "explanation": "...", "whyItMatters": "...", "unknowns": "..."}]}}
+      ```
+
+      Valid JSON on its own: no trailing commas, no comments, no nested
+      code fences. A missing or malformed block fails the run.
+
+  - id: podcast-scriptwriter
+    name: Podcast scriptwriter
+    kind: agent
+    tier: readonly
+    description: Turns explained news stories into a single-host spoken podcast script of about 5 minutes, plus a quick-read
+      list of one-line headlines with their source links. No tools.
+    whenToUse: The script step of the "AI news podcast" pipeline. Never routed by the fuzzy Router (see its tag).
+    tags: [ai-news-script-step]
+    executor: readonly
+    inputs: [explained-stories]
+    outputs: [podcast-script, quick-read]
+    trustLevel: medium
+    toolAccess: []
+    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.20 }
+    outputContractFormat: pipeline-handoff
+    outputContract: |
+      Your input is the explained `stories` list handed off by the
+      previous step (fenced as data in the task body). Produce two things.
+
+      1. `script`: a single-host spoken script of about 5 minutes,
+         700 to 900 words. A short intro, one segment per story with a
+         spoken transition between them, a short outro. Written for the
+         ear: short sentences, plain words, no markdown, no bullet
+         points, no tables, no headings, no URLs read out, no stage
+         directions. Separate paragraphs with a blank line. Use only what
+         the stories say; add no new facts.
+      2. `quickRead`: one entry per story, in the same order: `headline`
+         (short), `oneLine` (one plain sentence), `source` (exactly one
+         URL copied unchanged from that story's `sources`; never a URL
+         that is not in the input).
+
+      Output contract, mandatory and machine-parsed: your final message
+      MUST end with a fenced block of exactly this form, nothing after it:
+
+      ```pipeline-handoff
+      {"data": {"quickRead": [{"headline": "...", "oneLine": "...", "source": "https://..."}], "script": "First paragraph.\n\nSecond paragraph.", "wordCount": 812}}
+      ```
+
+      - `wordCount`: the number of words in `script`, as an integer.
+      - Valid JSON on its own: newlines inside `script` escaped as \n, no
+        trailing commas, no comments, no nested code fences. A missing or
+        malformed block fails the run.
+
   - id: repo-briefer
     name: Repo briefer
     kind: agent

@@ -1273,16 +1273,17 @@
           <p class="field-hint" id="prPipelineEmpty" hidden>No saved pipelines yet. Build one from Pipelines in the sidebar.</p>
         </div>
 
-        <div class="field">
+        <div class="field" id="prRepoField">
           <label for="prRepo">Repo</label>
           <input id="prRepo" type="text" required list="ntRepoList" autocomplete="off">
           <p class="field-hint" id="prRepoProjectHint" hidden></p>
         </div>
+        <p class="field-hint" id="prNoRepoHint" hidden>No repo needed: every step is read-only and runs in its own scratch workspace.</p>
 
         <div class="field">
           <label for="prInput">Input</label>
           <textarea id="prInput" rows="5" required placeholder="What should this run do?"></textarea>
-          <p class="field-hint">Given to every entry step. The run shows on the board as soon as it starts.</p>
+          <p class="field-hint" id="prInputHint">Given to every entry step. The run shows on the board as soon as it starts.</p>
         </div>
 
         <div class="form-actions">
@@ -4644,6 +4645,10 @@
     applyProjectFilter();
     render();
     renderOverrideGrid();
+    // The Run dialog's repo field depends on the agents' access; the
+    // drawer may already be open with a pipeline picked.
+    renderPrRepoField();
+    updatePrSubmitEnabled();
     // Step names and step counts for run cards (docs/SDD-ui-cleanup.md §4.1).
     // render() above already asked for them if a run is on the board.
     if (!pipelineDefsLoading) loadPipelineDefs();
@@ -4779,10 +4784,31 @@
     return (savedPipelines || []).filter(function (p) { return p.id === id; })[0] || null;
   }
 
+  // A pipeline whose steps are all read-only with no write/bash access
+  // runs with no repo and an optional input (pipelineNeedsRepo,
+  // board-pipelines.js; docs/SDD-ai-news-podcast.md §3.4). No pipeline
+  // picked yet counts as needing one, so the form looks as it always did.
+  function prNeedsRepo() {
+    var p = selectedPipeline();
+    return !p || pipelineNeedsRepo(p, allAgents);
+  }
+
+  function renderPrRepoField() {
+    var needsRepo = prNeedsRepo();
+    document.getElementById("prRepoField").hidden = !needsRepo;
+    document.getElementById("prRepo").required = needsRepo;
+    document.getElementById("prNoRepoHint").hidden = needsRepo;
+    document.getElementById("prInput").required = needsRepo;
+    document.getElementById("prInputHint").textContent = needsRepo
+      ? "Given to every entry step. The run shows on the board as soon as it starts."
+      : "Optional. Given to every entry step. The run shows on the board as soon as it starts.";
+  }
+
   function updatePrSubmitEnabled() {
     var repo = document.getElementById("prRepo").value.trim();
     var input = document.getElementById("prInput").value.trim();
-    document.getElementById("prSubmit").disabled = prInFlight || !(selectedPipeline() && repo && input);
+    var ready = selectedPipeline() && (!prNeedsRepo() || (repo && input));
+    document.getElementById("prSubmit").disabled = prInFlight || !ready;
   }
 
   function renderPipelineHint() {
@@ -4816,6 +4842,7 @@
     select.disabled = savedPipelines !== null && !list.length;
     document.getElementById("prPipelineEmpty").hidden = !(savedPipelines !== null && !list.length);
     renderPipelineHint();
+    renderPrRepoField();
     updatePrSubmitEnabled();
   }
 
@@ -4846,6 +4873,7 @@
 
   document.getElementById("prPipeline").addEventListener("change", function () {
     renderPipelineHint();
+    renderPrRepoField();
     updatePrSubmitEnabled();
   });
   ["prRepo", "prInput"].forEach(function (id) {
@@ -4861,13 +4889,17 @@
     var statusEl = document.getElementById("prStatus");
     var repo = repoEl.value.trim();
     var input = inputEl.value.trim();
+    var needsRepo = prNeedsRepo();
 
     errorEl.hidden = true;
-    if (!pipeline || !repo || !input) {
+    if (!pipeline || (needsRepo && (!repo || !input))) {
       errorEl.textContent = "Pipeline, repo, and input are required.";
       errorEl.hidden = false;
       return;
     }
+    // A hidden Repo field may still hold a sticky value from an earlier
+    // run; a repo-less pipeline never gets it.
+    var runBody = needsRepo ? { repo: repo, input: input } : { input: input };
 
     prInFlight = true;
     updatePrSubmitEnabled();
@@ -4876,7 +4908,7 @@
 
     fetch("/pipelines/" + encodeURIComponent(pipeline.id) + "/run", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ repo: repo, input: input }),
+      body: JSON.stringify(runBody),
     }).then(function (r) {
       if (!r.ok) return r.json().catch(function () { return {}; }).then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
       return r.json();

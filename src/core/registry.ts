@@ -29,6 +29,17 @@ export class Registry {
       if (agent.harnesses !== undefined && !(Array.isArray(agent.harnesses) && agent.harnesses.every((id) => typeof id === "string"))) {
         throw new Error(`agent "${agent.id}": harnesses must be a list of harness ids, got ${JSON.stringify(agent.harnesses)}`);
       }
+      // `web` is a readonly-only grant: ReadOnlyExecutor is the one
+      // place that turns it into --allowedTools WebSearch WebFetch, and
+      // only under plan mode. On a write-tier agent (or one another
+      // executor runs) it would either widen a write run's reach or
+      // silently do nothing, so the manifest fails to load instead.
+      // docs/SDD-ai-news-podcast.md §3.1.
+      if ((agent.toolAccess ?? []).includes("web") && (agent.tier !== "readonly" || agent.executor !== "readonly")) {
+        throw new Error(
+          `agent "${agent.id}": toolAccess "web" is only for tier: readonly agents run by executor: readonly, got tier ${agent.tier}, executor ${agent.executor}`,
+        );
+      }
       registry.agents.set(agent.id, agent);
     }
     return registry;

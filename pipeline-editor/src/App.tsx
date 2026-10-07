@@ -16,7 +16,7 @@ import { flowToGraph, graphToFlow, incomingCounts, positionsOf, type StepNode as
 import { StepNode, type StepNodeInteractive } from "./components/StepNode";
 import { StepPanel } from "./components/StepPanel";
 import { newId } from "./id";
-import { blankDraft, draftFromPipeline, templateChoices, type PipelineDraft } from "./templates";
+import { blankDraft, builtInTemplates, draftFromPipeline, templateChoices, type PipelineDraft } from "./templates";
 import { useBoardColorMode } from "./useBoardColorMode";
 import type { EditorHost, EditorRoute } from "./host";
 import type { AgentDef, PipelineDef, PipelineStepDef } from "./types";
@@ -292,6 +292,23 @@ export function App({ route, host }: AppProps) {
                 ))}
               </ul>
             )}
+          </section>
+          <section className="pe-choice pe-choice-templates" aria-labelledby="peStartTemplateTitle">
+            <h2 id="peStartTemplateTitle">Start from a template</h2>
+            <p className="pe-muted">A ready-made pipeline to change and save as your own.</p>
+            <ul className="pe-template-list">
+              {builtInTemplates().map((t) => (
+                <li key={t.name}>
+                  <button type="button" className="pe-template" data-template-name={t.name} aria-label={`Start from template ${t.name}`} onClick={() => openDraft(t)}>
+                    <span className="pe-template-name">{t.name}</span>
+                    <span className="pe-template-meta">
+                      {t.graph.steps.length === 1 ? "1 step" : `${t.graph.steps.length} steps`}
+                      {t.description ? ` · ${t.description}` : ""}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           </section>
         </div>
       </div>

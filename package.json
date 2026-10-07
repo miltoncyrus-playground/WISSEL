@@ -16,6 +16,8 @@
     "test:e2e": "playwright test",
     "live-check:shutdown": "bun test scripts/live-check-shutdown.test.ts",
     "test:e2e:affected": "bun run scripts/e2e-affected.ts --run",
+    "seed:ai-news": "bun run scripts/seed-ai-news-pipeline.ts",
+    "eval:ai-news": "bun run eval/ai-news-podcast.eval.ts",
     "eval:readonly": "bun run eval/readonly.eval.ts",
     "eval:implementer-reviewer": "bun run eval/implementer-reviewer.eval.ts",
     "eval:planner-subtask-plan": "bun run eval/planner-subtask-plan.eval.ts",

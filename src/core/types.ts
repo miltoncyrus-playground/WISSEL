@@ -53,6 +53,11 @@ export interface AgentDef {
   outputs: string[];
   costProfile: CostProfile;
   trustLevel: TrustLevel;
+  /** Values: `read`, `write`, `bash`, `web`. `write`/`bash` mean the
+   *  agent needs a real repo (worktree). `web` grants WebSearch and
+   *  WebFetch to a readonly agent under plan mode (ReadOnlyExecutor's
+   *  WEB_ALLOWED_TOOLS); the registry rejects it on any other agent.
+   *  See docs/SDD-ai-news-podcast.md §3.1. */
   toolAccess: string[];
   /** Which specific tools on which specific MCP servers this agent may
    *  call — an open-ended axis alongside toolAccess's closed enum,

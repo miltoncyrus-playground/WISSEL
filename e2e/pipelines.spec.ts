@@ -25,7 +25,9 @@ async function createNoEntryPipeline(request: APIRequestContext, name: string, d
       graph: {
         steps: [
           { id: "a", name: "Plan", agentId: "planner", transition: "all" },
-          { id: "b", name: "Review", agentId: "reviewer", transition: "all" },
+          // A write-tier step, so the Run dialog asks for a repo
+          // (docs/SDD-ai-news-podcast.md §3.4). Never runs: no entry step.
+          { id: "b", name: "Implement", agentId: "implementer", transition: "all" },
         ],
         edges: [{ id: "ab", from: "a", to: "b" }, { id: "ba", from: "b", to: "a" }],
       },
@@ -115,7 +117,7 @@ test.describe("Pipelines page", () => {
     await expect(page.getByRole("tab", { name: "Pipeline run", exact: true })).toHaveAttribute("aria-selected", "true");
     await expect(page.locator("#newPipelinePanel")).toBeVisible();
     await expect(page.locator("#prPipeline")).toHaveValue(pipeline.id);
-    await expect(page.locator("#prPipelineHint")).toHaveText("e2e: no entry step, fails instantly · 2 steps: Plan, Review");
+    await expect(page.locator("#prPipelineHint")).toHaveText("e2e: no entry step, fails instantly · 2 steps: Plan, Implement");
 
     const input = unique("T3 input");
     await page.locator("#prRepo").fill("/tmp/wissel-e2e-repo");

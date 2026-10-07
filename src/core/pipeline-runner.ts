@@ -33,6 +33,28 @@ export interface PipelineRunnerContext {
   memoryPath?: string;
 }
 
+/** The steps of `pipelineDef` whose agent needs a real repo: anything
+ *  not readonly-tier, or with `write`/`bash` in its toolAccess (the
+ *  same rule POST /tasks and Orchestrator.process apply to a single
+ *  task). `[]` means the pipeline can run with no repo at all, each
+ *  step task in its own scratch workspace (runClaude falls back to
+ *  resolveScratchWorkspace when `task.repo` is undefined). A step naming
+ *  an unknown agent isn't listed: it can't touch a repo, and its run
+ *  fails loud on its own ("references unknown agent"). The board's Run
+ *  dialog applies the same rule client-side (pipelineNeedsRepo,
+ *  src/api/public/board-pipelines.js). docs/SDD-ai-news-podcast.md §3.4. */
+export function stepsNeedingRepo(pipelineDef: PipelineDef, registry: Registry): PipelineStepDef[] {
+  return pipelineDef.graph.steps.filter((step) => {
+    const agent = registry.get(step.agentId);
+    if (!agent) return false;
+    return agent.tier !== "readonly" || agent.toolAccess.includes("write") || agent.toolAccess.includes("bash");
+  });
+}
+
+/** Thrown by startPipelineRun for a repo-less run of a pipeline that has
+ *  a write/bash step, before anything is created on the board. */
+export class PipelineRepoRequiredError extends Error {}
+
 /**
  * Starts a pipeline run: creates the root pipeline task, then drives
  * every entry step (a step with no incoming edges) — and, recursively,
@@ -50,15 +72,28 @@ export interface PipelineRunnerContext {
  * "failed") — there is no "dispatched, check back later" state for a
  * pipeline run in this phase, unlike a normal write-tier handoff (see
  * docs/SDD-pipelines.md §5's named non-goals).
+ *
+ * `repo` is optional only for a pipeline with no step in
+ * stepsNeedingRepo: every task in that run is created without a repo.
+ * Otherwise a missing repo throws PipelineRepoRequiredError before the
+ * root card exists, so nothing half-starts.
  */
 export async function startPipelineRun(
   board: Board,
   registry: Registry,
   pipelineDef: PipelineDef,
-  repo: string,
+  repo: string | undefined,
   input: string,
   ctx: PipelineRunnerContext,
 ): Promise<TaskCard> {
+  if (!repo) {
+    const needing = stepsNeedingRepo(pipelineDef, registry);
+    if (needing.length > 0) {
+      const names = needing.map((s) => `"${s.name}" (${s.agentId})`).join(", ");
+      throw new PipelineRepoRequiredError(`repo is required: pipeline "${pipelineDef.name}" has steps with file/bash access: ${names}`);
+    }
+    repo = undefined; // "" and undefined both mean no repo.
+  }
   const root = await board.create({ title: `Pipeline: ${pipelineDef.name}`, body: input, labels: [], repo, pipelineId: pipelineDef.id });
   await board.move(root.id, "running");
 
@@ -129,10 +164,11 @@ export async function handlePipelineStepResult(
 
   const root = (await board.get(runId))!;
   const nonce = runId.slice(0, 8);
-  // startPipelineRun requires a real `repo` string up front (see
-  // POST /pipelines/:id/run) and every step task inherits it, so this
-  // is never actually undefined for a pipeline step.
-  const repoForNext = result.worktree?.path ?? task.repo!;
+  // Every step task inherits the run's repo. Undefined only for a
+  // repo-less run (see startPipelineRun), whose steps are all readonly
+  // and so never produce a worktree either: the next step gets its own
+  // scratch workspace.
+  const repoForNext = result.worktree?.path ?? task.repo;
   const nextBody = buildNextStepBody(root.body, result.pipelineHandoff, nonce);
 
   for (const targetId of targetIds) {
@@ -170,7 +206,7 @@ async function runStepAndSuccessors(
   root: TaskCard,
   runId: string,
   step: PipelineStepDef,
-  repo: string,
+  repo: string | undefined,
   body: string,
   ctx: PipelineRunnerContext,
 ): Promise<void> {
@@ -192,6 +228,23 @@ async function runStepAndSuccessors(
       board,
       registry,
       fail(created.id, step.agentId, `pipeline step "${step.name}" references unknown agent "${step.agentId}"`),
+      ctx.telemetry,
+      undefined,
+      ctx.memoryPath,
+      pipelineCtx,
+    );
+    return;
+  }
+
+  // startPipelineRun already refused a repo-less run with a write/bash
+  // step, but handlePipelineStepResult re-reads the stored definition,
+  // so a step edited in mid-run could still land here with no repo. Fail
+  // it rather than hand WriteExecutor an undefined repo.
+  if (!repo && stepsNeedingRepo({ ...pipelineDef, graph: { steps: [step], edges: [] } }, registry).length > 0) {
+    await finishResult(
+      board,
+      registry,
+      fail(created.id, agent.id, `pipeline step "${step.name}" runs "${agent.id}", which has file/bash access, but this run has no repo`),
       ctx.telemetry,
       undefined,
       ctx.memoryPath,

@@ -1839,7 +1839,10 @@ test("POST /pipelines/:id/run drives the run end-to-end and emits real BoardEven
   const missingPipeline = await app(req("/pipelines/nope/run", { method: "POST", body: JSON.stringify({ repo: "r", input: "i" }) }));
   expect(missingPipeline.status).toBe(404);
 
-  const badBody = await app(req(`/pipelines/${created.id}/run`, { method: "POST", body: JSON.stringify({}) }));
+  // Both steps are readonly, so repo and input are optional here
+  // (docs/SDD-ai-news-podcast.md §3.4); a non-string is still a 400.
+  // The write-step "repo required" 400 is in test/ai-news-podcast.test.ts.
+  const badBody = await app(req(`/pipelines/${created.id}/run`, { method: "POST", body: JSON.stringify({ repo: 1, input: "go" }) }));
   expect(badBody.status).toBe(400);
 
   const secondRoot = (await (

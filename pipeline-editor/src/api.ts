@@ -46,7 +46,9 @@ export async function updatePipeline(id: string, input: { name: string; descript
   return unwrap<PipelineDef>(res, `pipeline ${id} not found`);
 }
 
-export async function runPipeline(id: string, input: { repo: string; input: string }): Promise<TaskCard> {
+/** `repo` (and `input`) may be left out only for a pipeline whose steps
+ *  are all readonly with no write/bash access; the server 400s otherwise. */
+export async function runPipeline(id: string, input: { repo?: string; input?: string }): Promise<TaskCard> {
   const res = await fetch(`/pipelines/${encodeURIComponent(id)}/run`, {
     method: "POST",
     headers: { "content-type": "application/json" },

@@ -16,7 +16,7 @@ import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts } from "../core/crash-recovery.ts";
-import { startPipelineRun } from "../core/pipeline-runner.ts";
+import { PipelineRepoRequiredError, startPipelineRun, stepsNeedingRepo } from "../core/pipeline-runner.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
 import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH } from "../core/model-refresh-scheduler.ts";
@@ -750,15 +750,33 @@ export function createApp(
         if (parts.length === 3 && parts[2] === "run" && req.method === "POST") {
           const pipeline = await pipelines.get(parts[1]!);
           if (!pipeline) return notFound();
-          const body = (await req.json()) as { repo?: string; input?: string };
-          if (!body.repo || !body.input) return json({ error: "repo and input are required" }, 400);
-          const root = await startPipelineRun(board as Board, registry, pipeline, body.repo, body.input, {
-            executors: manualExecutors,
-            pipelines,
-            harnesses,
-            telemetry,
-            memoryPath: opts.memoryPath,
-          });
+          const body = (await req.json()) as { repo?: unknown; input?: unknown };
+          if ((body.repo !== undefined && typeof body.repo !== "string") || (body.input !== undefined && typeof body.input !== "string")) {
+            return json({ error: "repo and input must be strings" }, 400);
+          }
+          // A pipeline whose steps are all readonly with no write/bash
+          // access runs with no repo (scratch workspace per step) and an
+          // optional input, e.g. "AI news podcast"
+          // (docs/SDD-ai-news-podcast.md §3.3/§3.4). Anything else still
+          // needs both, and fails here, before a root card exists.
+          const repoless = stepsNeedingRepo(pipeline, registry).length === 0;
+          if (!repoless && (!body.repo || !body.input)) {
+            const names = stepsNeedingRepo(pipeline, registry).map((s) => `"${s.name}" (${s.agentId})`).join(", ");
+            return json({ error: `repo and input are required: this pipeline has steps with file/bash access: ${names}` }, 400);
+          }
+          let root: TaskCard;
+          try {
+            root = await startPipelineRun(board as Board, registry, pipeline, body.repo || undefined, body.input ?? "", {
+              executors: manualExecutors,
+              pipelines,
+              harnesses,
+              telemetry,
+              memoryPath: opts.memoryPath,
+            });
+          } catch (e) {
+            if (e instanceof PipelineRepoRequiredError) return json({ error: e.message }, 400);
+            throw e;
+          }
           return json(root, 201);
         }
 
