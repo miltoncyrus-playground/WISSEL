@@ -1,6 +1,7 @@
 # SDD: AI news podcast pipeline
 
-Status: proposed 2026-10-07 (Milton asked for it; cards follow this doc).
+Status: approved 2026-10-07. Milton's decisions: read-out is browser
+speech, runs are on demand, cheaper model where it makes sense (§3.2).
 First non-development pipeline in wissel.
 
 ## 1. Why
@@ -58,8 +59,10 @@ All `tier: readonly`, `executor: readonly`, each with one unique tag
 comment in the manifest) and `outputContractFormat: pipeline-handoff`,
 so each step's structured output is handed to the next as fenced data
 (`buildNextStepBody`, `src/core/pipeline-runner.ts:303`).
-Model: `claude-opus-5-5` for all three (best available, per CLAUDE.md).
-Milton can change any of them in the model table.
+Model: `claude-sonnet-5-5` for all three. Revision 2026-10-07, Milton:
+use a cheaper model where it makes sense. Sonnet is half opus's price;
+haiku was not chosen because gathering needs source judgment and the
+script must read well aloud. Change any of them in the model table.
 
 1. **ai-news-gatherer** (`toolAccess: [web]`). Finds the most important
    AI news of the last 7 days (default 6 to 8 stories, mix of research,

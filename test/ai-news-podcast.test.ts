@@ -103,7 +103,7 @@ test("web grant: the registry rejects web on a write-tier agent, or on a readonl
 
 // ---- §3.2 the three agents ------------------------------------------
 
-test("manifest: the three news agents load as readonly pipeline-handoff agents on claude-opus-5-5, each with one tag nobody else uses", async () => {
+test("manifest: the three news agents load as readonly pipeline-handoff agents on claude-sonnet-5-5 (Milton, 2026-10-07: cheaper model where it makes sense), each with one tag nobody else uses", async () => {
   const registry = await Registry.load();
   const all = registry.all();
   for (const id of NEWS_AGENTS) {
@@ -113,7 +113,7 @@ test("manifest: the three news agents load as readonly pipeline-handoff agents o
     expect(a!.executor).toBe("readonly");
     expect(a!.kind).toBe("agent");
     expect(a!.outputContractFormat).toBe("pipeline-handoff");
-    expect(a!.costProfile.model).toBe("claude-opus-5-5");
+    expect(a!.costProfile.model).toBe("claude-sonnet-5-5");
     expect(a!.tags).toHaveLength(1);
     const others = all.filter((o) => o.id !== id);
     expect(others.some((o) => o.tags.includes(a!.tags[0]!)), `${id}'s tag ${a!.tags[0]} is shared`).toBe(false);

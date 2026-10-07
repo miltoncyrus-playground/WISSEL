@@ -360,7 +360,7 @@ agents:
     outputs: [news-stories]
     trustLevel: medium
     toolAccess: [web]
-    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.80 }
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.40 }
     outputContractFormat: pipeline-handoff
     outputContract: |
       Your job: find the most important AI news of the last 7 days
@@ -420,7 +420,7 @@ agents:
     outputs: [explained-stories]
     trustLevel: medium
     toolAccess: []
-    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.20 }
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.10 }
     outputContractFormat: pipeline-handoff
     outputContract: |
       Your input is the `stories` list handed off by the gather step
@@ -462,7 +462,7 @@ agents:
     outputs: [podcast-script, quick-read]
     trustLevel: medium
     toolAccess: []
-    costProfile: { model: claude-opus-5-5, estUsdPerTask: 0.20 }
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.10 }
     outputContractFormat: pipeline-handoff
     outputContract: |
       Your input is the explained `stories` list handed off by the
