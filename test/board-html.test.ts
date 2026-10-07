@@ -255,3 +255,21 @@ test("the MCP add-server form opts out of native constraint validation so its ow
   const html = await readFile(BOARD_HTML_PATH, "utf8");
   expect(html).toMatch(/<form id="mcpAddForm" novalidate>/);
 });
+
+// The account line (GET /status/accounts): its markup sits inside the
+// top bar (no extra height above the first card, SDD-ui-cleanup T1), it
+// refreshes on every refetchTasks() (SSE task events and harness
+// enable/disable/model changes all go through it), it loads at boot,
+// and it shows only on the Board page.
+test("board.html wires the account line into the top bar, refetchTasks, boot, and the Board route", async () => {
+  const html = await readFile(BOARD_HTML_PATH, "utf8");
+  const topbar = html.slice(html.indexOf('<header class="topbar">'), html.indexOf("</header>"));
+  expect(topbar).toContain('id="accountsLine"');
+
+  const refetch = html.slice(html.indexOf("function refetchTasks() {"), html.indexOf("function renderProjectSwitcher("));
+  expect(refetch).toContain("refetchAccounts();");
+  expect(html).toContain("refetchAccounts();\n  Promise.all([");
+  expect(html).toContain('fetch("/status/accounts")');
+  expect(html).toContain("describeAccountChip(row)");
+  expect(html).toContain('document.getElementById("accountsLine").hidden = !def.boardView;');
+});

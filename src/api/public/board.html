@@ -118,6 +118,48 @@
   }
   .topbar select { font: inherit; font-size: 13px; max-width: 240px; }
   .topbar-spacer { flex: 1; }
+  /* Account line: one chip per enabled harness (GET /status/accounts).
+     It lives inside the 48px top bar so it costs no height above the
+     first card (T1). Chips are two short rows (account + tool, then
+     load · models) at their natural width; the other top-bar controls
+     don't shrink, and when the chips don't fit the line scrolls
+     sideways inside itself, never the page. */
+  .topbar > :not(.accounts-line):not(.topbar-spacer) { flex: none; }
+  .accounts-line {
+    display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+  }
+  .acct-chip {
+    display: inline-flex; align-items: center; gap: 6px; flex: none;
+    padding: 2px 9px 2px 7px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
+    color: var(--ink-2); font-size: 11px; line-height: 1.25; text-decoration: none; white-space: nowrap;
+  }
+  .acct-chip:hover { border-color: var(--accent); }
+  .acct-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .acct-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sig-inbox); flex: none; }
+  .acct-chip.busy { border-color: var(--sig-running); color: var(--ink-1); }
+  .acct-chip.busy .acct-dot { background: var(--sig-running); }
+  .acct-body { display: flex; flex-direction: column; min-width: 0; }
+  .acct-head, .acct-sub { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+  .acct-label { font-weight: 600; }
+  .acct-tool { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 9.5px; color: var(--ink-muted); }
+  .acct-sub { color: var(--ink-2); }
+  .acct-models { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .acct-models::before { content: "·"; margin-right: 5px; color: var(--ink-muted); }
+  .acct-chip.busy .acct-load { color: var(--sig-running); font-weight: 600; }
+  /* Phone: the top bar wraps instead of pushing the page sideways, and
+     scrolls away rather than staying pinned at that height. The account
+     line takes its own full-width row; chips go to one row each, drop
+     the tool tag (it's in the title) and ellipsize the models. */
+  @media (max-width: 720px) {
+    .topbar { position: static; flex-wrap: wrap; height: auto; min-height: 48px; padding: 6px 12px; row-gap: 6px; }
+    .topbar select { max-width: 100%; min-width: 0; }
+    .topbar > :not(.accounts-line):not(.topbar-spacer) { flex: 0 1 auto; }
+    .accounts-line { order: 99; flex: 1 1 100%; flex-wrap: wrap; overflow: visible; }
+    .acct-chip { flex: 0 1 auto; max-width: 100%; min-width: 0; }
+    .acct-body { flex-direction: row; gap: 5px; }
+    .acct-tool { display: none; }
+  }
   .new-btn {
     appearance: none; border: none; background: var(--accent); color: #fff; font: inherit; font-size: 13px; font-weight: 700;
     padding: 6px 14px; border-radius: 7px; cursor: pointer; flex: none;
@@ -728,6 +770,9 @@
       <button type="button" data-board-view="features" aria-pressed="false">By feature</button>
     </div>
     <label class="sup-toggle" id="supersededToggle" title="Superseded cards are earlier attempts a re-attempt replaced"><input type="checkbox" id="showSuperseded"> Show superseded</label>
+    <!-- Which accounts (enabled harnesses) are working and on which
+         models; Board page only. Filled by renderAccountsLine. -->
+    <nav class="accounts-line" id="accountsLine" aria-label="Accounts"></nav>
     <span class="topbar-spacer"></span>
     <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
     <span class="version-badge" id="versionBadge"></span>
@@ -3782,7 +3827,62 @@
   var refetchSeq = 0;
   var appliedRefetchSeq = 0;
 
+  // The top bar's account line (GET /status/accounts). Fetched on its
+  // own, piggybacking on every refetchTasks() call (SSE task events,
+  // harness enable/disable/model changes), so a failure here leaves the
+  // line stale but never the board. Same "latest applied response wins"
+  // guard as refetchTasks below.
+  var accountsSeq = 0;
+  var appliedAccountsSeq = 0;
+
+  function refetchAccounts() {
+    var seq = ++accountsSeq;
+    return fetch("/status/accounts").then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (rows) {
+      if (seq < appliedAccountsSeq) return;
+      appliedAccountsSeq = seq;
+      renderAccountsLine(rows || []);
+    }).catch(function (err) {
+      console.error("refetchAccounts failed:", err);
+    });
+  }
+
+  function renderAccountsLine(rows) {
+    var line = document.getElementById("accountsLine");
+    line.textContent = "";
+    rows.forEach(function (row) {
+      var chip = describeAccountChip(row);
+      var a = document.createElement("a");
+      a.className = "acct-chip" + (chip.busy ? " busy" : "");
+      a.href = "#/setup/harnesses";
+      a.setAttribute("data-harness-id", chip.id);
+      a.setAttribute("aria-label", chip.text);
+      a.title = chip.title;
+      var dot = document.createElement("span");
+      dot.className = "acct-dot";
+      a.appendChild(dot);
+      var body = document.createElement("span");
+      body.className = "acct-body";
+      [["acct-head", [["acct-label", chip.label], ["acct-tool", chip.tool]]], ["acct-sub", [["acct-load", chip.load], ["acct-models", chip.models]]]].forEach(function (row) {
+        var rowEl = document.createElement("span");
+        rowEl.className = row[0];
+        row[1].forEach(function (part) {
+          var span = document.createElement("span");
+          span.className = part[0];
+          span.textContent = part[1];
+          rowEl.appendChild(span);
+        });
+        body.appendChild(rowEl);
+      });
+      a.appendChild(body);
+      line.appendChild(a);
+    });
+  }
+
   function refetchTasks() {
+    refetchAccounts();
     // /harnesses and /mcp-servers are both refetched alongside /tasks
     // (not just once at startup) because their activeCount is live
     // server-side state — a harness/server going idle/busy is exactly
@@ -4515,6 +4615,7 @@
     document.getElementById("settingsVersion").textContent = "Version unavailable (GET /version failed).";
   });
 
+  refetchAccounts();
   Promise.all([
     fetch("/agents").then(function (r) { return r.json(); }),
     fetch("/tasks").then(function (r) { return r.json(); }),
@@ -5082,6 +5183,7 @@
     // Lanes / By feature: two views of the same Board page.
     document.getElementById("boardViewToggle").hidden = !def.boardView;
     document.getElementById("supersededToggle").hidden = def.boardView !== "lanes";
+    document.getElementById("accountsLine").hidden = !def.boardView;
     document.getElementById("boardPanel").hidden = def.boardView !== "lanes";
     document.getElementById("swimlanesPanel").hidden = def.boardView !== "features";
     document.querySelectorAll("#boardViewToggle button").forEach(function (b) {

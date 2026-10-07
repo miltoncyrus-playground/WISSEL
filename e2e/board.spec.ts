@@ -1650,6 +1650,78 @@ test.describe("Shell and navigation", () => {
   });
 });
 
+// The account line in the top bar (GET /status/accounts): one chip per
+// enabled harness, the models its running tasks use, live over SSE.
+// Harness ids are machine-dependent (discovery adds this machine's own
+// accounts), so the expected set comes from GET /harnesses, never a
+// hardcoded list. e2e-fixture-disabled (e2e/fixtures/harnesses.yaml)
+// is the deterministic disabled entry.
+test.describe("Account line", () => {
+  type AccountRow = { id: string; running: { taskId: string; model: string | null }[] };
+
+  async function startRunningTask(request: APIRequestContext, model: string) {
+    const res = await request.post("/tasks", {
+      data: { title: `Account line ${model}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo", routedTo: "implementer", harness: "e2e-fixture-harness", model },
+    });
+    const task = (await res.json()) as { id: string; title: string };
+    await request.post(`/tasks/${task.id}/move`, { data: { status: "running" } });
+    return task;
+  }
+
+  test("one chip per enabled harness, disabled ones absent, a running task's model on its chip, live on finish", async ({ page, request }) => {
+    const model = `acct-model-${Date.now()}`;
+    const task = await startRunningTask(request, model);
+    try {
+      const harnesses = (await (await request.get("/harnesses")).json()) as { id: string; enabled: boolean }[];
+      expect(harnesses.find((h) => h.id === "e2e-fixture-disabled")?.enabled).toBe(false);
+      const enabledIds = harnesses.filter((h) => h.enabled).map((h) => h.id);
+
+      await page.goto("/board");
+      const line = page.locator("#accountsLine");
+      await expect(line.locator(".acct-chip")).toHaveCount(enabledIds.length);
+      expect(await line.locator(".acct-chip").evaluateAll((els) => els.map((e) => e.getAttribute("data-harness-id")))).toEqual(enabledIds);
+      await expect(line.locator('[data-harness-id="e2e-fixture-disabled"]')).toHaveCount(0);
+
+      // Every chip's visible text is exactly what describeAccountChip
+      // makes of its GET /status/accounts row.
+      const rows = (await (await request.get("/status/accounts")).json()) as AccountRow[];
+      const expected = await page.evaluate((r) => r.map((row) => (window as unknown as { describeAccountChip: (x: unknown) => { text: string } }).describeAccountChip(row).text), rows);
+      expect(await line.locator(".acct-chip").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")))).toEqual(expected);
+
+      const chip = line.locator('[data-harness-id="e2e-fixture-harness"]');
+      await expect(chip).toHaveClass(/\bbusy\b/);
+      await expect(chip.locator(".acct-models")).toContainText(model);
+      expect(await chip.getAttribute("title")).toContain(`${task.title} · implementer · ${model}`);
+
+      // Finishing the task updates the line over SSE, no reload.
+      await request.post(`/tasks/${task.id}/move`, { data: { status: "done" } });
+      await expect(chip.locator(".acct-models")).not.toContainText(model);
+
+      await chip.click();
+      await expect(page).toHaveURL(/#\/setup\/harnesses$/);
+      await expect(line).toBeHidden();
+    } finally {
+      await request.post(`/tasks/${task.id}/move`, { data: { status: "done" } });
+    }
+  });
+
+  test("no horizontal scroll at 390px wide; chips stay on screen", async ({ page, request }) => {
+    const task = await startRunningTask(request, `acct-phone-${Date.now()}`);
+    try {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto("/board");
+      const chip = page.locator('#accountsLine [data-harness-id="e2e-fixture-harness"]');
+      await expect(chip).toBeVisible();
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      expect(overflow).toBeLessThanOrEqual(0);
+      const box = (await chip.boundingBox())!;
+      expect(box.x + box.width).toBeLessThanOrEqual(390);
+    } finally {
+      await request.post(`/tasks/${task.id}/move`, { data: { status: "done" } });
+    }
+  });
+});
+
 // docs/SDD-ui-cleanup.md §3.2 (card A2): the "Needs you" strip and the
 // four lanes. Targets T2 (no truncated titles) and T4 (every card
 // needing a human in one place), measured at 1440x900 as §2 asks.

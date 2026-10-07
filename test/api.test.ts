@@ -90,6 +90,42 @@ test("GET /harnesses defaults to empty, and returns configured harnesses with a 
   expect(body).toEqual([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true, activeCount: 0, availableModels: [] }]);
 });
 
+test("GET /status/accounts: one row per enabled harness with live load and each running task's resolved model", async () => {
+  const harnesses = HarnessPool.from([
+    { id: "claude", tool: "claude-cli", label: "Claude — milton.cyrus@gmail.com", enabled: true, maxConcurrent: 2 },
+    { id: "claude-adevinta", tool: "claude-cli", label: "Claude — corporate", enabled: false },
+    { id: "api", tool: "anthropic-api", label: "Anthropic API", enabled: true, model: "claude-sonnet-5-5" },
+  ]);
+  const board = new SqliteBoard();
+  const app = await makeApp(board, { harnesses });
+  const implementer = (await Registry.load()).get("implementer")!;
+
+  const idle = (await (await app(req("/status/accounts"))).json()) as unknown[];
+  expect(idle).toEqual([
+    { id: "claude", label: "Claude — milton.cyrus@gmail.com", tool: "claude-cli", activeCount: 0, maxConcurrent: 2, running: [] },
+    { id: "api", label: "Anthropic API", tool: "anthropic-api", activeCount: 0, defaultModel: "claude-sonnet-5-5", running: [] },
+  ]);
+
+  // The same stamps the orchestrator leaves: acquire, setHarness, move.
+  harnesses.acquire("claude-cli");
+  const running = await board.create({ title: "Build it", body: "x", labels: [], routedTo: "implementer" });
+  await board.setHarness(running.id, "claude");
+  await board.move(running.id, "running");
+  const overridden = await board.create({ title: "Pinned", body: "x", labels: [], routedTo: "implementer", model: "claude-haiku-4-5", harness: "claude" });
+  await board.move(overridden.id, "running");
+  // Stamped but not running: not shown.
+  await board.create({ title: "Queued", body: "x", labels: [], routedTo: "implementer", harness: "claude" });
+
+  const busy = (await (await app(req("/status/accounts"))).json()) as { id: string; activeCount: number; running: unknown[] }[];
+  expect(busy.map((r) => r.id)).toEqual(["claude", "api"]);
+  expect(busy[0]!.activeCount).toBe(1);
+  expect(busy[0]!.running).toEqual([
+    { taskId: running.id, title: "Build it", agentId: "implementer", model: implementer.costProfile.model },
+    { taskId: overridden.id, title: "Pinned", agentId: "implementer", model: "claude-haiku-4-5" },
+  ]);
+  expect(busy[1]!.running).toEqual([]);
+});
+
 test("GET /harnesses reports availableModels from an injected fake cache, keyed by harness id", async () => {
   const dir = await mkdtemp(join(tmpdir(), "wissel-api-models-cache-test-"));
   try {
