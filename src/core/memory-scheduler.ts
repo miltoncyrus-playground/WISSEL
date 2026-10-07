@@ -21,6 +21,22 @@ const MEMORY_CURATOR_AGENT_ID = "memory-curator";
  *  in orchestrator.ts. No special-casing of the agent id anywhere here. */
 const MEMORY_TASK_LABELS = ["memory", "housekeeping"];
 
+/** Statuses in which a curation task is still queued or running. A task
+ *  in any other status (done, failed, escalated, ...) has stopped and
+ *  doesn't block a new run. */
+const OPEN_CURATION_STATUSES = new Set<TaskCard["status"]>(["inbox", "ready", "running", "dispatched"]);
+
+/** The unarchived curation task still queued or running, if any. The
+ *  due-check reads telemetry, which only records a run once it finishes,
+ *  so without this every server start while a curation is in flight (or
+ *  requeued by crash recovery after a restart killed it) created another
+ *  one: two "Curate session memory" tasks running at once, confirmed live
+ *  2026-10-07 (312b2bdd + d998d5e2). */
+export async function findOpenCurationTask(board: Board): Promise<TaskCard | undefined> {
+  const tasks = await board.list();
+  return tasks.find((t) => !t.archivedAt && OPEN_CURATION_STATUSES.has(t.status) && MEMORY_TASK_LABELS.every((l) => t.labels.includes(l)));
+}
+
 interface RawResultEvent {
   type?: string;
   taskId?: string;
@@ -197,6 +213,12 @@ export async function runMemoryCurationIfDue(opts: MemorySchedulerOptions): Prom
   const lastRanAt = await getLastMemoryCurationAt(opts.telemetryPath);
   if (!isMemoryCurationDue(lastRanAt, intervalHours)) return false;
 
+  const open = await findOpenCurationTask(opts.board);
+  if (open) {
+    console.log(`memory-scheduler: curation due, but task ${open.id} is already ${open.status}; not creating another`);
+    return false;
+  }
+
   const body = await gatherSessionLessons(opts.telemetryPath, opts.board, lastRanAt, memoryPath);
   const task = await opts.board.create({
     title: "Curate session memory",
@@ -204,7 +226,13 @@ export async function runMemoryCurationIfDue(opts: MemorySchedulerOptions): Prom
     labels: [...MEMORY_TASK_LABELS],
     repo: opts.repo ?? process.cwd(),
   });
-  await opts.orchestrator.runNow(task.id, opts.executors);
+  try {
+    await opts.orchestrator.runNow(task.id, opts.executors);
+  } catch (e) {
+    // Creating the task emits a board event, and the orchestrator's sweep
+    // can pick it up before this line runs. It's running either way.
+    if ((e as Error).message !== `task ${task.id} is already running`) throw e;
+  }
   return true;
 }
 

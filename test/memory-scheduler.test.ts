@@ -13,6 +13,7 @@ import {
   getLastMemoryCurationAt,
   isMemoryCurationDue,
   runMemoryCurationIfDue,
+  findOpenCurationTask,
 } from "../src/core/memory-scheduler.ts";
 import type { AgentDef, Executor, TaskCard } from "../src/core/types.ts";
 
@@ -273,6 +274,85 @@ test("runMemoryCurationIfDue: not due yet does nothing at all — no task create
 
     expect(ran).toBe(false);
     expect(await board.list()).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// --- one curation at a time: a queued or running one blocks a new one ---
+// Regression for 2026-10-07: a restart killed curation 312b2bdd, crash
+// recovery requeued it, and the next start's due-check (telemetry only
+// sees finished runs) created d998d5e2 alongside it.
+
+test("runMemoryCurationIfDue: due, but a curation task is already queued or running, creates nothing", async () => {
+  for (const status of ["inbox", "ready", "running", "dispatched"] as const) {
+    const dir = await tmp();
+    try {
+      const board = new SqliteBoard();
+      const existing = await board.create({ title: "Curate session memory", body: "", labels: ["memory", "housekeeping"], repo: dir });
+      if (status !== "inbox") await board.move(existing.id, status);
+      const registry = await Registry.load();
+      // memoryPath on the Orchestrator too: if the guard ever regresses,
+      // finishResult must write the fake summary to the tmp dir, never to
+      // this repo's real memory/lessons.md (which happened once).
+      const orchestrator = new Orchestrator(board, registry, new Router(registry), [], undefined, { memoryPath: join(dir, "lessons.md") });
+      let runs = 0;
+
+      const ran = await runMemoryCurationIfDue({
+        board,
+        orchestrator,
+        executors: [fakeExecutor(async (task, agent) => {
+          runs++;
+          return { taskId: task.id, agentId: agent.id, ok: true, summary: "x" };
+        })],
+        telemetryPath: join(dir, "telemetry.jsonl"),
+        memoryPath: join(dir, "lessons.md"),
+        repo: dir,
+      });
+
+      expect(ran).toBe(false);
+      expect((await board.list()).map((t) => t.id)).toEqual([existing.id]);
+      expect(runs).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("findOpenCurationTask: finished, archived, or unrelated tasks don't block a new curation", async () => {
+  const board = new SqliteBoard();
+  const done = await board.create({ title: "Curate session memory", body: "", labels: ["memory", "housekeeping"], repo: "/r" });
+  await board.move(done.id, "done");
+  const failed = await board.create({ title: "Curate session memory", body: "", labels: ["memory", "housekeeping"], repo: "/r" });
+  await board.move(failed.id, "failed");
+  const archived = await board.create({ title: "Curate session memory", body: "", labels: ["memory", "housekeeping"], repo: "/r" });
+  await board.archive(archived.id);
+  await board.create({ title: "Unrelated", body: "", labels: ["memory"], repo: "/r" });
+  expect(await findOpenCurationTask(board)).toBeUndefined();
+
+  const open = await board.create({ title: "Curate session memory", body: "", labels: ["memory", "housekeeping"], repo: "/r" });
+  expect((await findOpenCurationTask(board))?.id).toBe(open.id);
+});
+
+test("runMemoryCurationIfDue: the sweep starting the new task first is not a failure", async () => {
+  const dir = await tmp();
+  try {
+    const board = new SqliteBoard();
+    const registry = await Registry.load();
+    const orchestrator = new Orchestrator(board, registry, new Router(registry), [], undefined, { memoryPath: join(dir, "l.md") });
+    // Simulates the sweep winning the race: runNow sees the task in flight.
+    orchestrator.runNow = async (taskId: string) => {
+      throw new Error(`task ${taskId} is already running`);
+    };
+    const ran = await runMemoryCurationIfDue({ board, orchestrator, executors: [], telemetryPath: join(dir, "t.jsonl"), memoryPath: join(dir, "l.md"), repo: dir });
+    expect(ran).toBe(true);
+    expect((await board.list()).length).toBe(1);
+
+    orchestrator.runNow = async () => {
+      throw new Error("task not found: x");
+    };
+    await board.move((await board.list())[0]!.id, "done");
+    await expect(runMemoryCurationIfDue({ board, orchestrator, executors: [], telemetryPath: join(dir, "t.jsonl"), memoryPath: join(dir, "l.md"), repo: dir })).rejects.toThrow("task not found");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
