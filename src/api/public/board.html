@@ -112,53 +112,55 @@
   .nav-icon { width: 16px; height: 16px; flex: none; display: inline-flex; }
   .nav-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
   .main-col { min-width: 0; display: flex; flex-direction: column; }
+  /* The top bar wraps: its controls on the first row, the account line
+     on a full-width row of its own below them (see .accounts-line). A
+     narrow window wraps the controls too instead of pushing the page
+     sideways. */
   .topbar {
-    position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px;
-    height: 48px; padding: 0 20px; background: var(--page); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; row-gap: 4px;
+    min-height: 48px; padding: 6px 20px 5px; background: var(--page); border-bottom: 1px solid var(--border);
   }
   .topbar select { font: inherit; font-size: 13px; max-width: 240px; }
   .topbar-spacer { flex: 1; }
-  /* Account line: one chip per enabled harness (GET /status/accounts).
-     It lives inside the 48px top bar so it costs no height above the
-     first card (T1). Chips are two short rows (account + tool, then
-     load · models) at their natural width; the other top-bar controls
-     don't shrink, and when the chips don't fit the line scrolls
-     sideways inside itself, never the page. */
-  .topbar > :not(.accounts-line):not(.topbar-spacer) { flex: none; }
+  /* Account line: one chip per enabled harness (GET /status/accounts),
+     on its own full-width row under the controls so every account is
+     visible at once (inside the controls row only the first one fit at
+     1280px). One-line chips keep the row about 22px, and .main's top
+     padding is trimmed to match, so the first card still starts within
+     120px of the top (T1). Chips wrap to more rows rather than scroll. */
   .accounts-line {
-    display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0;
-    overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+    order: 99; flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0;
   }
+  .accounts-line:empty, .accounts-line[hidden] { display: none; }
   .acct-chip {
-    display: inline-flex; align-items: center; gap: 6px; flex: none;
-    padding: 2px 9px 2px 7px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface);
-    color: var(--ink-2); font-size: 11px; line-height: 1.25; text-decoration: none; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; max-width: 100%; min-width: 0;
+    padding: 2px 9px 2px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface);
+    color: var(--ink-2); font-size: 11px; line-height: 1.35; text-decoration: none; white-space: nowrap;
   }
   .acct-chip:hover { border-color: var(--accent); }
   .acct-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .acct-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--sig-inbox); flex: none; }
   .acct-chip.busy { border-color: var(--sig-running); color: var(--ink-1); }
   .acct-chip.busy .acct-dot { background: var(--sig-running); }
-  .acct-body { display: flex; flex-direction: column; min-width: 0; }
+  .acct-body { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
   .acct-head, .acct-sub { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+  .acct-sub::before { content: "·"; color: var(--ink-muted); }
   .acct-label { font-weight: 600; }
-  .acct-tool { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 9.5px; color: var(--ink-muted); }
+  /* The tool (claude-cli, codex-cli, ...) is in the chip's title; the
+     label already names it, and dropping it keeps every account on one
+     row at 1440px, which T1 depends on. */
+  .acct-tool { display: none; }
   .acct-sub { color: var(--ink-2); }
   .acct-models { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .acct-models::before { content: "·"; margin-right: 5px; color: var(--ink-muted); }
+  .acct-models:empty { display: none; }
   .acct-chip.busy .acct-load { color: var(--sig-running); font-weight: 600; }
-  /* Phone: the top bar wraps instead of pushing the page sideways, and
-     scrolls away rather than staying pinned at that height. The account
-     line takes its own full-width row; chips go to one row each, drop
-     the tool tag (it's in the title) and ellipsize the models. */
+  /* Phone: the top bar scrolls away rather than staying pinned at its
+     wrapped height, and controls may shrink. */
   @media (max-width: 720px) {
-    .topbar { position: static; flex-wrap: wrap; height: auto; min-height: 48px; padding: 6px 12px; row-gap: 6px; }
+    .topbar { position: static; padding: 6px 12px; row-gap: 6px; }
     .topbar select { max-width: 100%; min-width: 0; }
     .topbar > :not(.accounts-line):not(.topbar-spacer) { flex: 0 1 auto; }
-    .accounts-line { order: 99; flex: 1 1 100%; flex-wrap: wrap; overflow: visible; }
-    .acct-chip { flex: 0 1 auto; max-width: 100%; min-width: 0; }
-    .acct-body { flex-direction: row; gap: 5px; }
-    .acct-tool { display: none; }
   }
   .new-btn {
     appearance: none; border: none; background: var(--accent); color: #fff; font: inherit; font-size: 13px; font-weight: 700;
@@ -166,7 +168,7 @@
   }
   .new-btn:hover { opacity: 0.92; }
   .new-btn[aria-expanded="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .main { padding: 14px 20px 32px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .main { padding: 10px 20px 32px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   /* Below 1100px the sidebar keeps only its icons. Labels are clipped
      rather than display:none so each link keeps its accessible name;
      the title attribute gives a hover hint. */
@@ -269,6 +271,12 @@
   /* An empty lane keeps its equal share of the width (cards stay the same
      size whatever the other lanes hold); only its header dims. */
   .kcol-empty h3 { opacity: 0.55; white-space: nowrap; }
+  /* Phone: four side-by-side lanes would be about 70px each, so they
+     stack, each lane full width; an empty one is just its header. */
+  @media (max-width: 720px) {
+    .kanban { flex-direction: column; gap: 10px; }
+    .kcol-empty h3 { margin-bottom: 0; }
+  }
   /* A superseded card (TaskCard.supersededBy set) — real history, never
      "current state," so it's visually receded rather than either hidden
      or presented as equally live. */

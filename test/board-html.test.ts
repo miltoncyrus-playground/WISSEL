@@ -257,7 +257,7 @@ test("the MCP add-server form opts out of native constraint validation so its ow
 });
 
 // The account line (GET /status/accounts): its markup sits inside the
-// top bar (no extra height above the first card, SDD-ui-cleanup T1), it
+// sticky top bar, on a row of its own (T1 is measured in e2e), it
 // refreshes on every refetchTasks() (SSE task events and harness
 // enable/disable/model changes all go through it), it loads at boot,
 // and it shows only on the Board page.

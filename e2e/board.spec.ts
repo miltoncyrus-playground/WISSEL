@@ -1720,6 +1720,41 @@ test.describe("Account line", () => {
       await request.post(`/tasks/${task.id}/move`, { data: { status: "done" } });
     }
   });
+  // Regression, found on the live board 2026-10-07: inside the controls
+  // row only the first chip fit at 1280px (the rest scrolled out of view
+  // inside the line), and at 760px the top bar pushed the page sideways.
+  test("every chip is fully on screen and nothing scrolls sideways from 760 to 1440px", async ({ page }) => {
+    for (const width of [760, 1000, 1280, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/board");
+      const chips = page.locator("#accountsLine .acct-chip");
+      await expect(chips.first()).toBeVisible();
+      const r = await page.evaluate(() => {
+        const line = document.getElementById("accountsLine")!;
+        return {
+          pageOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+          lineOverflow: line.scrollWidth - line.clientWidth,
+          chipRights: Array.from(line.querySelectorAll(".acct-chip")).map((c) => c.getBoundingClientRect().right),
+          vw: document.documentElement.clientWidth,
+        };
+      });
+      expect(r.pageOverflow, `page overflow at ${width}px`).toBeLessThanOrEqual(0);
+      expect(r.lineOverflow, `chips hidden inside the line at ${width}px`).toBeLessThanOrEqual(0);
+      for (const right of r.chipRights) expect(right).toBeLessThanOrEqual(r.vw);
+    }
+  });
+
+  test("on a phone the four lanes stack full width instead of squeezing side by side", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/board");
+    const boxes = await page.locator("#kanbanBody .kcol").evaluateAll((cols) => cols.map((c) => { const b = c.getBoundingClientRect(); return { x: b.x, w: b.width, y: b.y }; }));
+    expect(boxes.length).toBe(4);
+    for (const b of boxes) {
+      expect(Math.abs(b.x - boxes[0]!.x)).toBeLessThan(1);
+      expect(b.w).toBeGreaterThan(250);
+    }
+    for (let k = 1; k < boxes.length; k++) expect(boxes[k]!.y).toBeGreaterThan(boxes[k - 1]!.y);
+  });
 });
 
 // docs/SDD-ui-cleanup.md §3.2 (card A2): the "Needs you" strip and the

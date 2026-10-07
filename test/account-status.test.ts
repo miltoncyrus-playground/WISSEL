@@ -170,13 +170,16 @@ test("summarizeRunningModels: distinct models in first-seen order with ×N; null
   expect(summarizeRunningModels([run(null)])).toBe("unknown model");
 });
 
-test("describeAccountChip: idle chip shows defaultModel or agent defaults, load via formatHarnessCapacity", () => {
+test("describeAccountChip: idle chip shows its pinned defaultModel or no model at all, load via formatHarnessCapacity", () => {
   const idle = describeAccountChip({ id: "codex", label: "codex", tool: "codex-cli", activeCount: 0, running: [] });
-  expect(idle).toMatchObject({ label: "codex", tool: "codex-cli", load: "idle", models: "agent defaults", busy: false });
-  expect(idle.text).toBe("codex · codex-cli · idle · agent defaults");
+  expect(idle).toMatchObject({ label: "codex", tool: "codex-cli", load: "idle", models: "", busy: false });
+  expect(idle.text).toBe("codex · idle");
+  expect(idle.title).toContain("(codex-cli)");
+  expect(idle.title).toContain("each agent's own model");
 
   const capped = describeAccountChip({ id: "a", label: "A", tool: "anthropic-api", activeCount: 0, maxConcurrent: 2, defaultModel: "claude-sonnet-5-5", running: [] });
   expect(capped).toMatchObject({ load: "0/2 active", models: "sonnet-5-5", busy: false });
+  expect(capped.text).toBe("A · 0/2 active · sonnet-5-5");
 });
 
 test("describeAccountChip: busy chip lists running models, and its title lists each task with agent and model", () => {

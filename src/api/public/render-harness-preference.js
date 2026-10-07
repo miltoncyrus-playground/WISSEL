@@ -100,16 +100,18 @@ function summarizeRunningModels(running) {
 }
 
 // Everything one chip shows. `text` is the whole visible line (short
-// label · tool · load · models) so a test can compare the DOM against
-// it; `title` is the hover text: full label, then one line per running
-// task (title · agent · model).
+// label · load, then · models when there are any) so a test can compare
+// the DOM against it; `title` is the hover text: full label and tool,
+// then one line per running task (title · agent · model). An idle
+// account with no pinned model shows no model at all: nothing is using
+// one, and the title says each agent's own model applies.
 function describeAccountChip(row) {
   var running = row.running || [];
   var busy = running.length > 0 || (row.activeCount || 0) > 0;
   var load = formatHarnessCapacity(row) || (running.length > 0 ? running.length + " running" : "idle");
   var models = running.length > 0
     ? summarizeRunningModels(running)
-    : row.defaultModel ? shortModelName(row.defaultModel) : "agent defaults";
+    : row.defaultModel ? shortModelName(row.defaultModel) : "";
   var label = shortAccountLabel(row.label || row.id);
   var titleLines = [(row.label || row.id) + " (" + row.tool + ")", load + " · " + (running.length > 0 ? "running:" : "idle, next run uses " + (row.defaultModel || "each agent's own model"))];
   running.forEach(function (r) {
@@ -122,7 +124,7 @@ function describeAccountChip(row) {
     load: load,
     models: models,
     busy: busy,
-    text: label + " · " + row.tool + " · " + load + " · " + models,
+    text: label + " · " + load + (models ? " · " + models : ""),
     title: titleLines.join("\n"),
   };
 }
