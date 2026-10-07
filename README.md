@@ -1,203 +1,242 @@
 # wissel
 
-Routes tasks to a fleet of agents and skills. It decides; it doesn't
-execute by default. Read-only agents run in-process; write-tier agents
-are decided and handed off to whatever actually runs them (agetor) —
-wissel never spawns a worktree or a session for *dispatched* work. When
-local write-tier execution is opted into (see
-`WISSEL_EXECUTE_WRITE_TIER` below), wissel does run the work itself,
-inside its own isolated git worktree — never editing a task's repo
-directly until a human explicitly merges it.
+Personal research project. It changes often, and changes may break things.
 
-Named after the railway switch point — the thing that decides which
-track the work goes down, and makes sure two trains never take the same
-one.
+wissel is a task board that routes each card to an agent from a fleet
+(`agents/manifest.yaml`) and runs it under one of your local accounts
+(`harnesses.yaml`). Code changes happen in an isolated git worktree, go
+through an automated reviewer, and are merged back into the repo.
+
+Named after the railway switch point: the thing that decides which track
+the work goes down.
+
+## Run it
 
 ```bash
 bun install
-bun run dev            # board API + web fleet view, at :8787 — includes a New Task tab
-bun run serve          # same, without --watch — see warning below before using bun run dev
-bun run agents         # list the fleet
-bun run why <task-id>  # what matched, and why — the router is never a black box
-bun run team create <prefix>  # scaffold a coordinator + 3 specialists, delegation pre-wired
-bun run version        # commit/branch/dirty this checkout is actually running
-bun run test           # unit/integration
-bun run test:e2e       # Playwright smoke tests against a live server
-bun run live-check:shutdown  # real server + real agent spawn + SIGTERM: asserts no agent process survives
+WISSEL_ORCHESTRATOR=1 WISSEL_EXECUTE_WRITE_TIER=1 bun run serve   # how it's normally run
 ```
 
-To restart safely, stop the server with Ctrl-C or `kill <pid>` (SIGINT/SIGTERM), never `kill -9`: it stops every agent subprocess it started before exiting, and anything left behind anyway (a `kill -9`, a crash) is killed by crash recovery on the next start before its task is requeued. See docs/SDD-crash-recovery.md §10.
+The board is at `http://localhost:8787`.
 
-Set `WISSEL_ORCHESTRATOR=1` to have wissel route eligible tasks
-automatically as they appear (off by default). A routing decision only
-ever dispatches when the router is confident — zero match, a weak match,
-or an unresolved tie all stop before spend, visible on the board as
-`no-match`.
+Defaults, if you start it with no env vars (`src/api/server.ts:1424-1425`):
+both flags are off. Nothing is routed until you click **Run** on a card,
+and write-tier agents (implementer, fixer, integrator, lint-fixer) are
+only routed and handed off to an external runner, not executed. The
+board's **Run** button always executes, write tier included.
 
-Set `WISSEL_EXECUTE_WRITE_TIER=1` (in addition to the orchestrator flag
-above) to have wissel run write-tier work itself — headless `claude -p`
-(or `codex exec`) against an isolated git worktree of the task's repo —
-instead of only dispatching it for agetor or another external runner to
-pick up. Off by default; a write-tier success lands in `review`, never
-`done`, regardless of who ran it — unless the routed agent declares
-both `autoMerge: true` and `trustLevel: "high"` in `agents/manifest.yaml`,
-in which case it skips straight to `done` (a real `git merge --no-ff`
-still happens for a worktree result; a genuine conflict falls back to
-`review` like normal, never a silent `done`). No agent opts into this by
-default. From `review`, the board's **Merge**/**Discard** actions (or
-`POST /tasks/:id/merge` / `/tasks/:id/discard`) either land the
-worktree's changes into the task's repo or throw them away — see
-`docs/SDD-worktree-isolation.md`.
+In daily use both flags are on: wissel routes every new card itself and
+runs write-tier work locally in a worktree.
 
-Turning both flags on moves the pipeline from "wissel decides, a human
-dispatches every step by hand" to genuinely unattended: an
-implementer→reviewer→pushback/escalation loop (see
-`docs/SDD-review-handoff.md`) runs start to finish with no manual
-`POST /tasks/:id/run` in between, all the way up to the one deliberate
-human checkpoint (`review`, or `escalated` after repeated rejection).
-Set a concurrency and/or spend cap before turning this on for a
-credit-limited account — see `docs/SDD-pipeline-automation.md` §2.6 for
-why (built after this project's own pipeline burned through real spend
-under entirely manual, one-at-a-time dispatch and still hit usage
-limits):
+| Command | What it does |
+|---|---|
+| `bun run serve` | Board API and UI on :8787. Use this one. |
+| `bun run dev` | Same with `--watch`. Restarts whenever a file under `src/` changes, including when wissel merges its own work into this checkout (see below). |
+| `bun run agents` | List the fleet. |
+| `bun run why <task-id>` | Show what the router matched for a task, and why. |
+| `bun run team create <prefix>` | Scaffold a coordinator and 3 specialists in `agents/manifest.yaml`. |
+| `bun run version` | Commit, branch and dirty state of this checkout. |
+| `bun run typecheck` | `tsc --noEmit`. |
+| `bun run test` | Gate tests (`bun test test/`). |
+| `bun run test:e2e` | Playwright tests against a live server. |
+| `bun run test:e2e:affected` | Only the e2e specs affected by your changes. |
+| `bun run live-check:shutdown` | Real server, real agent spawn, SIGTERM: asserts no agent process survives. |
 
-- `WISSEL_MAX_CONCURRENT_TASKS` — caps how many tasks the automatic
-  sweep loop has in flight at once. Undefined/unset means unlimited.
-  Doesn't affect a human's manual `POST /tasks/:id/run`, which always
-  bypasses this the same way it bypasses every other sweep gate.
-- `WISSEL_SWEEP_SPEND_CEILING_USD` — caps total real spend (from
-  telemetry's own recorded `actualCost`, not estimates) the sweep loop
-  will let accumulate within the current UTC day before it stops
-  dispatching further work. Undefined/unset means unlimited. Checked
-  once per sweep round, not per task — a coarse same-round guard
-  against runaway multi-day spend, not a precise per-dispatch meter.
+Paid evals (real LLM calls), one script each:
 
-A claude-cli session-limit (429) hit no longer strands a task on
-`failed` for a human to notice and manually retry — `runClaude` detects
-it, parses the real reset time out of the error text, and
-`Board.scheduleRetry` reschedules the task (reusing its existing
-worktree) instead. See `docs/SDD-pipeline-automation.md` §3.2.
+```bash
+bun run eval:readonly
+bun run eval:implementer-reviewer
+bun run eval:planner-subtask-plan
+bun run eval:pipeline-review-handoff
+bun run eval:pipeline-full-lifecycle
+bun run eval:pipeline-mcp-integration
+bun run eval:live-task-output
+bun run eval:conflict-integrator
+bun run eval:memory-curation-quality
+bun run eval:claude-cli-429-replay
+```
 
-Earlier versions of this ran write-tier subprocesses directly against
-`task.repo`'s own working tree, which meant a self-hosted task (repo ==
-wissel's own source) editing files could trigger `bun run dev`'s
-`--watch` mid-run and orphan its own subprocess — hit for real while
-building the `codex-cli` harness. Worktree isolation (above) fixes this
-structurally for the run itself: a write-tier task never touches
-`task.repo` at all until a human merges it, so `bun run dev` is safe to
-use while tasks are running.
-
-The merge step is a different story. An auto-merge (`autoMerge: true` +
-`trustLevel: "high"`, or a human's own `POST /tasks/:id/merge`) does
-write into `task.repo` for real — that's the whole point — and when
-`task.repo` is wissel's own self-hosted source, a merge touching
-anything under `src/` restarts `bun run dev`'s `--watch` process mid-
-merge, same as the old direct-subprocess bug, just moved to a later
-step. Confirmed live: a real auto-merge landed (`git merge --no-ff`
-succeeded) and the restart hit in the gap between that and the next
-`board.move(..., "done")`, stranding the card at `pending-review`
-forever and blocking every task that depended on it — see
-docs/SDD-crash-recovery.md's interrupted-review-verdict section, which
-this now recovers from automatically on the next start. The strand
-itself isn't fatal anymore, but it's still a restart you don't need: run
-`bun run serve` (no `--watch`) instead of `bun run dev` whenever
-`WISSEL_EXECUTE_WRITE_TIER=1` is set on a self-hosted checkout.
-
-Each execution harness (see `harnesses.yaml`) can be turned on or off by
-hand from the board — the strip at the top only ever shows what's usable
-right now, but the **Manage harnesses** panel next to it lists every
-configured harness (including disabled/not-authenticated ones) with a
-toggle. Disabling just stops new work from picking it (nothing in
-flight is interrupted); enabling re-checks that the harness is actually
-authenticated before flipping the switch, refusing with a clear error
-otherwise. Either way it's `POST /harnesses/:id/enable` /`/disable`,
-and it's `harnesses.yaml` itself that gets updated (comments preserved),
-so the decision survives a restart — see
-`docs/SDD-harness-enable-disable.md`.
-
-An agent can pin which harnesses it runs on with an ordered
-`harnesses:` list in `agents/manifest.yaml`, e.g.
-`harnesses: [claude-adevinta, claude]`. Each run takes the first listed
-harness that is enabled and under capacity. When none is, the task
-**waits** unrouted in its column (logged once as `waiting: none of
-[claude-adevinta, claude] enabled and under capacity`) and resumes on
-its own when one is enabled or a run on one finishes; it never moves to
-a harness the agent didn't list. A pipeline step can't wait, so it fails
-loud instead. A card's `harnessOverride` still wins over the list. An
-unknown id, or a harness whose tool doesn't match the agent's executor
-(a claude-cli agent listing a codex harness), stops the server at
-startup; a listed harness that's merely disabled doesn't. Agents with
-no list keep the old least-loaded pick. A harness in `harnesses.yaml`
-can set `maxConcurrent: N` (a positive integer) to cap how many tasks
-run on it at once; at the cap it counts as busy, and an override onto it
-fails loud. `GET /agents` and `GET /harnesses` report both fields. See
-`docs/SDD-agent-harness-preference.md`.
-
-Wissel reports which commit/build it's actually running, snapshotted
-once at process startup (not a live git check, so it always describes
-what this process loaded, not whatever's currently on disk — see
-`docs/SDD-version-info.md`): `GET /version` returns
-`{commit, commitShort, branch, dirty, packageVersion, startedAt}`,
-`wissel --version` (or `-v`) prints the same as one line, and the
-startup log always includes a `version: ...` line. The board's header
-also shows a small commit badge (hover for the full commit/branch).
-
-Memory curation (`WISSEL_MEMORY_CURATION=1`) periodically distills recent
-session history into `memory/lessons.md` (see
-`docs/SDD-memory-curator.md`). Whether that file ever reaches an agent's
-prompt is a separate toggle: `WISSEL_MEMORY_INJECTION=1` (or `true`)
-folds it into every claude-cli/codex-cli prompt; unset or any other
-value means off. **Off by default** while Milton rethinks how memory
-should reach agents — curation keeps running and accumulating either
-way, nothing is lost by leaving this off. See
-`docs/SDD-memory-injection-toggle.md`.
-
-Known gaps:
-- No sandboxing beyond whatever the underlying agent CLI already does —
-  not solved here, noted so it isn't assumed.
-- Merging/discarding a worktree is a manual, per-task action — nothing
-  auto-merges (unless the routed agent opted into `autoMerge`, see
-  above), and an abandoned worktree (task deleted, never
-  merged/discarded) just sits under `~/.wissel/worktrees/` until cleaned
-  up by hand.
-
-Design decisions and build order: `docs/HANDOVER.md` — but read
-`docs/HANDOVER-2026-09-17.md` first, it's the current spec and supersedes
-the older doc on the router/execution boundary.
-
-## Pipelines
-
-A **Pipeline** is a stored, reusable step graph — author it once on the
-canvas, run it as many times as wanted (`POST /pipelines/:id/run`, or the
-board's own hardcoded implementer→reviewer loop reproduced as a real
-pipeline definition). CRUD lives at `/pipelines`; see
-`docs/SDD-pipelines.md` for the full design.
-
-The canvas editor (`pipeline-editor/`) is wissel's first frontend
-framework/build step — a separate React + `@xyflow/react` + Vite app,
-deliberately isolated from `board.html`'s zero-build-tooling convention
-(see the SDD's §3.2). It opens inside the board shell (Pipelines → New
-pipeline or Edit, i.e. `/board#/pipelines/new` and
-`/board#/pipelines/edit/<id>`; see `docs/SDD-ui-cleanup.md` §4.2): the
-board imports the built bundle `/pipelines/edit/pipeline-editor.js` and
-mounts it. `pipeline-editor/dist/` is gitignored, so build it once per
-checkout (and again after changing `pipeline-editor/src/`); the running
-server serves the new output without a restart, a browser reload picks
-it up:
+The pipeline editor is a separate Vite bundle. `pipeline-editor/dist/` is
+gitignored, so build it once per checkout, and again after changing
+`pipeline-editor/src/`. A browser reload picks it up; no server restart.
 
 ```bash
 cd pipeline-editor
 bun install
-bun run build      # writes pipeline-editor/dist/pipeline-editor.js
+bun run build
 cd ..
-bun run dev         # or serve
 ```
 
-`bun run dev` inside `pipeline-editor/` also works standalone for local
-iteration (a dev harness in `pipeline-editor/index.html`, hot reload,
-proxies `/agents`/`/pipelines`/`/board` to the real wissel server at
-`:8787` — see `pipeline-editor/vite.config.ts`). Until
-`pipeline-editor/dist/` exists, the board's editor page shows the build
-command instead of a canvas, and `GET /pipelines/edit/pipeline-editor.js`
-responds `503` with the same hint. The old page URLs (`/pipelines/edit`,
-`/pipelines/edit/<id>`) redirect to the board routes.
+### Restarting safely
+
+Stop the server with Ctrl-C or `kill <pid>` (SIGINT/SIGTERM), never
+`kill -9`. The shutdown handler kills every agent subprocess it started
+(`src/executors/child-processes.ts`). On the next start, crash recovery
+kills any agent process left behind, requeues tasks stranded at
+`running`, and finishes review verdicts a restart interrupted
+(`src/core/crash-recovery.ts`, `docs/SDD-crash-recovery.md` §9, §10).
+
+Use `bun run serve`, not `bun run dev`, when wissel works on its own
+source. An auto-merge into `src/` restarts the `--watch` process mid-merge.
+Recovery handles it on the next start, but the restart is avoidable.
+
+## How it works
+
+1. **Board.** Cards live in SQLite (`~/.wissel/board.sqlite`). Create one
+   from **+ New** (Task or Pipeline run) or `POST /tasks`.
+2. **Router.** `src/core/router.ts` scores each agent by how many of the
+   card's `labels` match its `tags`. A zero match or a tie for first stops
+   before any spend and lands as `no-match`. `bun run why` shows the full
+   ranking.
+3. **Harness.** `src/core/harness-pool.ts` picks the account to run under
+   (see Harnesses below). If none is available, the task waits unrouted
+   and resumes on its own when one frees up or is enabled.
+4. **Executor.** `src/executors/`: `claude -p` (`claude-cli`),
+   `codex exec` (`codex-cli`), or the Anthropic Messages API
+   (`anthropic-api`, read-only agents only). Output streams live into the
+   card's drawer.
+5. **Worktree.** Write-tier work runs in its own git worktree under
+   `~/.wissel/worktrees/<task>` (`src/services/worktree.ts`). The task's
+   repo is not touched until merge.
+6. **Review.** An agent with `reviewer` in its `handoffs` (implementer
+   does) lands on `pending-review` and a reviewer run follows. On
+   `changes_requested` a pushback attempt reruns the implementer in the
+   same worktree. After 5 pushbacks the card goes to `escalated`
+   (`src/core/orchestrator.ts`, `docs/SDD-review-handoff.md`).
+7. **Merge.** On approve, an agent with `autoMerge: true` and
+   `trustLevel: high` is merged with `git merge --no-ff` into whatever is
+   checked out in the task's repo, and the card moves to `done`.
+   implementer has this on. Without it, or on a merge conflict, the card
+   stops at `review` for a human **Merge** or **Discard**
+   (`POST /tasks/:id/merge`, `/discard`).
+
+A planner card ends in a `subtask-plan` block that the orchestrator turns
+into real child cards. When every child has landed, an integrator card is
+created to check they fit together.
+
+A claude-cli session limit (429) reschedules the task for the reset time
+in the error text instead of failing it (`docs/SDD-pipeline-automation.md`
+§3.2).
+
+## The board
+
+`src/api/public/board.html`, vanilla JS, no build step
+(`docs/SDD-ui-cleanup.md`).
+
+- **Sidebar.** Work: Board, Pipelines, Archive. Setup: Agents & skills,
+  Harnesses, MCP servers, Projects, Memory, Settings.
+- **Top bar.** Project switcher, **+ New**, the account line (one chip per
+  enabled harness with what's running on it and which model,
+  `GET /status/accounts`), and a version badge (`GET /version`).
+- **Needs you.** Every card in `review`, `escalated`, `failed` or
+  `no-match`, plus pending MCP approvals.
+- **Lanes.** Queued, Working, In review, Done (last 24h by default). A
+  second view, **By feature**, shows one swimlane per root card with its
+  subtasks and follow-ups.
+- **Pipeline runs** show as one card with step progress. Clicking opens
+  the run drawer; "View on canvas" shows the graph with live step status.
+- **Archive.** Archived cards and their subtrees. Auto-archive of `done`
+  cards after 24h is behind `WISSEL_AUTO_ARCHIVE`.
+
+## Pipelines
+
+A pipeline is a saved step graph (`src/core/pipeline-runner.ts`,
+`docs/SDD-pipelines.md`). The Pipelines page lists them with **Run** and
+**Edit**. The editor opens inside the board (`#/pipelines/new`,
+`#/pipelines/edit/<id>`) and needs `pipeline-editor/dist/` built (see
+above). `src/core/review-handoff-pipeline.ts` and
+`src/core/full-lifecycle-pipeline.ts` define the built-in reviewer loop
+and full lifecycle as pipeline graphs. The server does not seed them onto
+the Pipelines page; the `eval:pipeline-*` scripts use them. Every step runs in-process, write tier included,
+regardless of `WISSEL_EXECUTE_WRITE_TIER`. API: `/pipelines`
+(CRUD), `POST /pipelines/:id/run`, `GET /pipeline-runs/:runId`.
+
+## Configuration
+
+### Environment variables
+
+Flags accept `1` or `true`; anything else is off.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `WISSEL_ORCHESTRATOR` | off | Route new cards automatically. |
+| `WISSEL_EXECUTE_WRITE_TIER` | off | Run write-tier agents locally in a worktree instead of handing them off. Only matters with `WISSEL_ORCHESTRATOR`. |
+| `WISSEL_MAX_CONCURRENT_TASKS` | unlimited | Cap on tasks the automatic sweep runs at once. Manual **Run** ignores it. |
+| `WISSEL_SWEEP_SPEND_CEILING_USD` | unlimited | Stop the automatic sweep once recorded spend for the current UTC day reaches this. |
+| `WISSEL_MEMORY_CURATION` | off | Periodically distill session history into `memory/lessons.md`. |
+| `WISSEL_MEMORY_INTERVAL_HOURS` | 24 | How often curation checks if it's due. |
+| `WISSEL_MEMORY_INJECTION` | off | Add `memory/lessons.md` to every claude-cli/codex-cli prompt. Curation keeps running either way. |
+| `WISSEL_MEMORY_PATH` | `memory/lessons.md` | Lessons file location. |
+| `WISSEL_AUTO_ARCHIVE` | off | Archive `done` cards 24h after `doneAt`. |
+| `WISSEL_ARCHIVE_CHECK_INTERVAL_HOURS` | 1 | Auto-archive check interval. |
+| `WISSEL_MODEL_REFRESH` | off | Refresh the model catalog (valid model ids per harness). |
+| `WISSEL_MODEL_REFRESH_INTERVAL_HOURS` | 24 | Model catalog refresh interval. |
+| `WISSEL_MODELS_CACHE_PATH` | `~/.wissel/models-cache.json` | Model catalog cache. |
+| `WISSEL_MERGE_HEALTH` | off | Detect repos left mid-merge (`.git/MERGE_HEAD`) and show a banner. Never auto-resolves. |
+| `WISSEL_MERGE_HEALTH_INTERVAL_HOURS` | 1 | Merge-health check interval. |
+| `WISSEL_PORT` | 8787 | HTTP port. |
+| `WISSEL_DB_PATH` | `~/.wissel/board.sqlite` | Board database. |
+| `WISSEL_TELEMETRY_PATH` | `~/.wissel/telemetry.jsonl` | Per-run cost and outcome log. |
+| `WISSEL_HARNESSES_PATH` | `harnesses.yaml` | Harness manifest. |
+| `WISSEL_MCP_SERVERS_PATH` | `mcp-servers.yaml` | MCP server registry. |
+| `WISSEL_API_URL` | `http://localhost:8787` | Server the CLI (`src/cli.ts`) talks to. |
+| `WISSEL_COMMIT` | from git | Commit to report when there's no `.git` (`src/core/version.ts`). |
+
+### `harnesses.yaml`: accounts
+
+A harness is a tool (`claude-cli`, `codex-cli`, `anthropic-api`) plus an
+account. At startup wissel auto-detects every authenticated `~/.claude*`
+profile, `~/.codex`, and every `ANTHROPIC_API_KEY` / `ANTHROPIC_API_KEY_<NAME>`
+in the environment (`src/core/harness-discovery.ts`), then layers
+`harnesses.yaml` on top: an entry with the same id overrides the detected
+one. Manual entries are re-checked and reported disabled if not
+authenticated on this machine.
+
+Per harness: `enabled`, `model` (default model for runs on it), and
+`maxConcurrent` (at the cap it counts as busy). Enable, disable and set
+the model from Setup > Harnesses (`POST /harnesses/:id/enable`,
+`/disable`, `/model`); changes are written back to `harnesses.yaml`.
+Disabling stops new work only. See `docs/SDD-execution-harnesses.md`,
+`docs/SDD-harness-enable-disable.md`.
+
+### `agents/manifest.yaml`: the fleet
+
+Each agent declares `tier` (`readonly` or `write`), `executor`, `tags`,
+`whenToUse`, `handoffs`, `trustLevel`, `autoMerge`, and
+`costProfile.model`. Optional `harnesses: [id, ...]` is an ordered
+preference: each run takes the first listed harness that is enabled and
+under capacity, otherwise the task waits. It never runs on an unlisted
+harness. A card's `harnessOverride` wins over the list. An unknown id, or
+a harness of the wrong tool, stops startup
+(`docs/SDD-agent-harness-preference.md`).
+
+Model per run (`src/core/model-resolution.ts`): `task.model`, else the
+harness's `model`, else the agent's `costProfile.model`
+(`docs/SDD-model-selection.md`).
+
+### `mcp-servers.yaml`: tools agents can reach
+
+Registry of MCP servers (stdio or http) with per-tool `trust`. Managed
+from Setup > MCP servers (`/mcp-servers`). A tool call marked
+`approval-required` shows up in Needs you for approve/deny
+(`docs/SDD-mcp-orchestration.md`, `docs/SDD-mcp-server-registration.md`).
+The checked-in file registers none.
+
+## Known gaps
+
+- No sandboxing beyond what the agent CLI itself does.
+- Deleting a task does not remove its worktree. It stays under
+  `~/.wissel/worktrees/` until cleaned up by hand.
+
+## Docs
+
+- `docs/HANDOVER-2026-09-17.md`: current spec on the router/execution
+  boundary. Supersedes `docs/HANDOVER.md`.
+- `docs/SDD-worktree-isolation.md`: worktrees, merge and discard.
+- `docs/SDD-review-handoff.md`: reviewer loop and status machine.
+- `docs/SDD-pipeline-automation.md`: unattended mode, concurrency and spend caps, 429 retry.
+- `docs/SDD-crash-recovery.md`: restart recovery, merge health.
+- `docs/SDD-pipelines.md`, `docs/SDD-ui-cleanup.md`: pipelines and the board UI.
+- `docs/SDD-memory-curator.md`, `docs/SDD-memory-injection-toggle.md`: memory.
+- `docs/SDD-task-archiving.md`, `docs/SDD-version-info.md`, `docs/SDD-live-task-output.md`.
