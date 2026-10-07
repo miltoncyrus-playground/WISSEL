@@ -47,7 +47,7 @@ harnesses:
   - id: claude-adevinta
     tool: claude-cli
     label: Claude — milton.cyrus@adevinta.com
-    enabled: true
+    enabled: false
     env:
       CLAUDE_CONFIG_DIR: /home/mcyrus/.claude-adevinta
   - id: anthropic-api
