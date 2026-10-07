@@ -13,13 +13,15 @@
 // (card B2, §4.2), which mount the editor bundle into `page`.
 //
 // A `:name` segment matches any one non-empty segment and comes back as
-// `params.name` (only `pipelines/edit/:id` uses one).
+// `params.name` (`pipelines/edit/:id`, and `pipelines/run/:runId`, a
+// run's graph with live step statuses, card B3, §4.3).
 var BOARD_ROUTES = {
   board: { page: "boardPage", nav: "board", boardView: "lanes" },
   "board/features": { page: "boardPage", nav: "board", boardView: "features" },
   pipelines: { page: "pipelinesPage", nav: "pipelines" },
   "pipelines/new": { page: "pipelineEditorPage", nav: "pipelines", editor: "new" },
   "pipelines/edit/:id": { page: "pipelineEditorPage", nav: "pipelines", editor: "edit" },
+  "pipelines/run/:runId": { page: "runCanvasPage", nav: "pipelines" },
   archive: { page: "archivePanel", nav: "archive" },
   "setup/agents": { page: "agentsPage", nav: "setup/agents" },
   "setup/harnesses": { page: "harnessPanel", nav: "setup/harnesses" },

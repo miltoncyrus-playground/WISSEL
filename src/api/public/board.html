@@ -409,6 +409,34 @@
   #pipelineEditorRoot .pe-app { height: calc(100vh - 94px); min-height: 520px; }
   .pe-load-error { border: 1px solid var(--critical); border-radius: 12px; background: var(--surface); padding: 16px 20px; font-size: 13px; line-height: 1.5; color: var(--ink-1); }
   .pe-load-error code { background: var(--page); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  /* A run on its pipeline graph (docs/SDD-ui-cleanup.md §4.3). Node
+     size and positions come from runCanvasModel (board-run-canvas.js);
+     each node's colour is its step's status token. */
+  .rc-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .rc-head h2 { margin: 0; font-size: 16px; font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
+  .rc-head .run-progress { margin: 0; font-size: 12px; }
+  .rc-head .rc-spacer { flex: 1; }
+  .rc-message { font-size: 13px; color: var(--ink-muted); }
+  .rc-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--page); max-height: calc(100vh - 150px); }
+  .rc-canvas { position: relative; }
+  .rc-canvas svg { position: absolute; inset: 0; overflow: visible; }
+  .rc-edge { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 4 4; }
+  .rc-edge.reached { stroke: var(--ink-muted); stroke-dasharray: none; }
+  .rc-arrow { fill: var(--ink-muted); }
+  #rdCanvas { display: inline-block; margin-top: 10px; }
+  .rc-edge-label { font-size: 10.5px; fill: var(--ink-muted); text-anchor: middle; paint-order: stroke; stroke: var(--page); stroke-width: 4px; }
+  .rc-node {
+    position: absolute; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; gap: 5px;
+    appearance: none; text-align: left; font: inherit; color: var(--ink-1); cursor: pointer;
+    background: var(--surface); border: 1.5px solid var(--rc-color, var(--line)); border-left-width: 5px; border-radius: 9px; padding: 6px 10px;
+  }
+  .rc-node:hover { box-shadow: 0 0 0 3px color-mix(in srgb, var(--rc-color, var(--line)) 25%, transparent); }
+  .rc-node:disabled { cursor: default; border-style: dashed; color: var(--ink-muted); box-shadow: none; }
+  .rc-node .rc-name { font-size: 12.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rc-node .rc-sub { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--ink-muted); min-width: 0; }
+  .rc-node .rc-sub .mono { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .rc-node .status-pill { padding: 2px 7px 2px 6px; font-size: 10.5px; flex: none; }
+  .rc-node.stale { border-style: dotted; }
   .hm-row-meta.reason { color: var(--critical); }
   .hm-toggle {
     appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-1);
@@ -747,6 +775,34 @@
     <div id="pipelineEditorRoot"></div>
   </section>
 
+  <!-- A pipeline run on its graph, each step coloured by its live status
+       (docs/SDD-ui-cleanup.md §4.3). Opened from the run drawer's "View
+       on canvas"; redrawn by render() on every SSE refetch. -->
+  <section id="runCanvasPage" data-page hidden>
+    <div class="rc-head">
+      <h2 id="rcTitle">Pipeline run</h2>
+      <span id="rcStatus"></span>
+      <p class="run-progress" id="rcProgress"></p>
+      <span class="rc-spacer"></span>
+      <button type="button" class="pl-btn" id="rcDetails" hidden>Run details</button>
+      <a class="pl-btn" href="#/pipelines">All pipelines</a>
+    </div>
+    <p class="rc-message" id="rcMessage" hidden></p>
+    <div class="rc-scroll" id="rcScroll">
+      <div class="rc-canvas" id="rcCanvas" role="group" aria-label="Pipeline steps">
+        <svg id="rcEdges" aria-hidden="true">
+          <defs>
+            <marker id="rcArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="rc-arrow" d="M0,0 L10,5 L0,10 z"></path>
+            </marker>
+          </defs>
+          <g id="rcEdgeLayer"></g>
+        </svg>
+        <div id="rcNodes"></div>
+      </div>
+    </div>
+  </section>
+
   <section id="archivePanel" data-page hidden>
     <p class="eyebrow">Archive</p>
     <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Archived tasks, grouped the same lineage-root way Swimlanes groups live ones — a whole archived feature still reads as one lane. Unarchive a card to bring exactly it back to Board/Swimlanes.</p>
@@ -1027,6 +1083,7 @@
       <div id="rdProgress" class="run-progress"></div>
       <div id="rdBar" class="run-bar"></div>
       <p class="rd-total" id="rdTotal"></p>
+      <a class="pl-btn" id="rdCanvas" href="#/pipelines">View on canvas</a>
     </section>
     <section class="drawer-section">
       <p class="eyebrow">Input</p>
@@ -1189,6 +1246,7 @@
 <script src="/board-new.js"></script>
 <script src="/board-pipelines.js"></script>
 <script src="/board-runs.js"></script>
+<script src="/board-run-canvas.js"></script>
 <script>
 (function () {
   "use strict";
@@ -2270,6 +2328,7 @@
     var total = document.getElementById("rdTotal");
     total.hidden = !(runSummary && typeof runSummary.totalCost === "number");
     total.textContent = total.hidden ? "" : "Total cost " + formatCost(runSummary.totalCost);
+    document.getElementById("rdCanvas").href = boardRouteHash(RUN_CANVAS_ROUTE, { runId: root.id });
     renderRunSteps();
   }
 
@@ -2339,6 +2398,166 @@
 
   document.getElementById("rdClose").addEventListener("click", closeRunDrawer);
   document.getElementById("runOverlay").addEventListener("click", closeRunDrawer);
+  // The link's own href changes the hash; the drawer gets out of the way.
+  document.getElementById("rdCanvas").addEventListener("click", closeRunDrawer);
+
+  // --- A run on its pipeline graph (docs/SDD-ui-cleanup.md §4.3, card B3)
+  //
+  // #/pipelines/run/<runId>: the run's pipeline laid out by
+  // runCanvasModel (board-run-canvas.js), each step node coloured by the
+  // status of that step's latest card. render() redraws it on every
+  // SSE-driven refetch, so the colours follow the run live. Clicking a
+  // node opens the run drawer on that step: the same detail as B1.
+  var RUN_CANVAS_ROUTE = "pipelines/run/:runId";
+  var runCanvasId = null; // the run root the route names
+  var boardLoaded = false; // the first GET /tasks has landed
+  var SVG_NS = "http://www.w3.org/2000/svg";
+
+  function svgEl(tag, attrs) {
+    var el = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs).forEach(function (k) { el.setAttribute(k, attrs[k]); });
+    return el;
+  }
+
+  function runCanvasMessage(text) {
+    var el = document.getElementById("rcMessage");
+    el.hidden = !text;
+    el.textContent = text || "";
+  }
+
+  function nodeStatusText(n) {
+    return n.status === RUN_STEP_PENDING ? "Not started" : statusLabel(n.status);
+  }
+
+  function fillRunCanvasNode(el, n) {
+    var G = RUN_CANVAS_GEOMETRY;
+    el.style.left = n.x + "px";
+    el.style.top = n.y + "px";
+    el.style.width = G.nodeWidth + "px";
+    el.style.height = G.nodeHeight + "px";
+    el.dataset.status = n.status;
+    if (n.taskId) { el.dataset.taskId = n.taskId; el.dataset.taskStatus = n.taskStatus; }
+    else { delete el.dataset.taskId; delete el.dataset.taskStatus; }
+    if (n.status === RUN_STEP_PENDING) el.style.removeProperty("--rc-color");
+    else el.style.setProperty("--rc-color", "var(" + statusColor(n.status) + ")");
+    el.classList.toggle("stale", !n.inDefinition);
+    el.disabled = !n.taskId;
+    var name = stepLabel(n.name, n.attempt);
+    var why = n.inDefinition ? "" : " (no longer in the pipeline)";
+    el.title = name + ": " + nodeStatusText(n) + why + (n.taskId ? "" : ". The run hasn't reached this step.");
+    el.setAttribute("aria-label", name + ", " + nodeStatusText(n) + why + (n.taskId ? ", show details" : ""));
+
+    el.textContent = "";
+    var nameEl = document.createElement("span"); nameEl.className = "rc-name"; nameEl.textContent = name;
+    var sub = document.createElement("span"); sub.className = "rc-sub";
+    if (n.status === RUN_STEP_PENDING) {
+      var pill = document.createElement("span"); pill.className = "status-pill"; pill.textContent = "Not started";
+      sub.appendChild(pill);
+    } else {
+      sub.appendChild(statusPill(n.status));
+    }
+    if (n.taskStatus === "running" || n.taskStatus === "dispatched") sub.appendChild(activeDot("actively working"));
+    var agent = document.createElement("span"); agent.className = "mono"; agent.textContent = n.agentId || "";
+    sub.appendChild(agent);
+    el.appendChild(nameEl); el.appendChild(sub);
+  }
+
+  function renderRunCanvasEdges(model) {
+    var svg = document.getElementById("rcEdges");
+    svg.setAttribute("width", model.width);
+    svg.setAttribute("height", model.height);
+    var layer = document.getElementById("rcEdgeLayer");
+    layer.textContent = "";
+    model.edges.forEach(function (e) {
+      var path = svgEl("path", {
+        d: e.path,
+        class: "rc-edge" + (e.reached ? " reached" : "") + (e.back ? " back" : ""),
+        "marker-end": "url(#rcArrow)",
+        "data-edge-id": e.id,
+        "data-from": e.from,
+        "data-to": e.to,
+      });
+      layer.appendChild(path);
+      if (e.label) {
+        var text = svgEl("text", { class: "rc-edge-label", x: e.labelAt.x, y: e.labelAt.y + 4 });
+        text.textContent = e.label;
+        layer.appendChild(text);
+      }
+    });
+  }
+
+  // Keyed by step id, like the run drawer's rows, so a node keeps focus
+  // across SSE refreshes.
+  function renderRunCanvasNodes(model) {
+    var wrap = document.getElementById("rcNodes");
+    var existing = Object.create(null);
+    Array.prototype.forEach.call(wrap.children, function (el) { existing[el.dataset.stepId] = el; });
+    model.nodes.forEach(function (n) {
+      var el = existing[n.id];
+      delete existing[n.id];
+      if (!el) {
+        el = document.createElement("button");
+        el.type = "button";
+        el.className = "rc-node";
+        el.dataset.stepId = n.id;
+        el.addEventListener("click", function () {
+          if (el.dataset.taskId && runCanvasId) openRunDrawer(runCanvasId, el.dataset.taskId);
+        });
+        wrap.appendChild(el);
+      }
+      fillRunCanvasNode(el, n);
+    });
+    Object.keys(existing).forEach(function (id) { existing[id].remove(); });
+  }
+
+  function clearRunCanvas() {
+    document.getElementById("rcNodes").textContent = "";
+    document.getElementById("rcEdgeLayer").textContent = "";
+    document.getElementById("rcScroll").hidden = true;
+  }
+
+  function renderRunCanvas() {
+    if (currentRoute !== RUN_CANVAS_ROUTE || !runCanvasId) return;
+    var root = findTask(runCanvasId);
+    var status = document.getElementById("rcStatus");
+    status.textContent = "";
+    if (!root || !isRunRootCard(root)) {
+      document.getElementById("rcTitle").textContent = "Pipeline run";
+      document.getElementById("rcProgress").textContent = "";
+      document.getElementById("rcDetails").hidden = true;
+      clearRunCanvas();
+      runCanvasMessage(!boardLoaded ? "Loading the run…"
+        : root ? root.title + " isn't a pipeline run."
+        : "No pipeline run " + runCanvasId + " on the board. It may have been deleted.");
+      return;
+    }
+    var run = runOf(root);
+    var model = runCanvasModel(root, run.steps, run.def);
+    document.getElementById("rcTitle").textContent = root.title;
+    status.appendChild(statusPill(root.status));
+    if (root.status === "running") status.appendChild(activeDot("run in progress"));
+    document.getElementById("rcProgress").textContent = run.progress.text;
+    document.getElementById("rcDetails").hidden = false;
+
+    if (!model.nodes.length) {
+      clearRunCanvas();
+      runCanvasMessage(run.def ? "This pipeline has no steps." : "Loading the pipeline…");
+      return;
+    }
+    runCanvasMessage(run.def ? ""
+      : pipelineDefsMissing[root.pipelineId] ? "This run's pipeline no longer exists, so only the steps it ran are shown, without edges."
+      : "Loading the pipeline…");
+    document.getElementById("rcScroll").hidden = false;
+    var canvas = document.getElementById("rcCanvas");
+    canvas.style.width = model.width + "px";
+    canvas.style.height = model.height + "px";
+    renderRunCanvasEdges(model);
+    renderRunCanvasNodes(model);
+  }
+
+  document.getElementById("rcDetails").addEventListener("click", function () {
+    if (runCanvasId) openRunDrawer(runCanvasId);
+  });
 
   // Harnesses setup page — the full list, separate from the "Available
   // now" strip on purpose (docs/SDD-harness-enable-disable.md §2/§9):
@@ -3492,6 +3711,8 @@
     renderArchiveTab();
     // Its last-run column reads `tasks`, so it follows every refetch.
     if (currentRoute === "pipelines") renderPipelinesPage();
+    // Live step colours on a run's canvas (§4.3): every SSE refetch lands here.
+    if (currentRoute === RUN_CANVAS_ROUTE) renderRunCanvas();
     renderFleetBoxes();
     renderHarnessStrip();
     if (harnessPanelOpen) renderHarnessPanel();
@@ -4305,6 +4526,7 @@
     projects = results[3] || [];
     mcpServers = results[4] || [];
     mergeHealth = results[5] || [];
+    boardLoaded = true;
     applyProjectFilter();
     render();
     renderOverrideGrid();
@@ -4871,6 +5093,8 @@
     if (route === "setup/memory") loadMemoryTab();
     if (route === "pipelines") loadPipelinesPage();
     if (def.editor) showPipelineEditor(def, parsed.params || {}, !wasEditor);
+    runCanvasId = route === RUN_CANVAS_ROUTE ? parsed.params.runId : null;
+    if (runCanvasId) renderRunCanvas();
     if (route === "setup/projects") { loadProjectsTab(); renderProjectSummaryBox(); }
   }
 
