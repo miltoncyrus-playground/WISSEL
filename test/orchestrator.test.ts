@@ -80,6 +80,26 @@ test("sweep leaves every pipeline card alone: root and step stay inbox, no decis
   expect(seen.map((t) => t.id)).toEqual([plain.id]);
 });
 
+test("sweep never routes or runs an archived inbox card", async () => {
+  const seen: TaskCard[] = [];
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => {
+      seen.push(task);
+      return { taskId: task.id, agentId: agent.id, ok: true, summary: "x" };
+    }),
+  ]);
+  const archived = await board.create({ title: "put away", body: "", labels: ["intake"], repo: "r" });
+  await board.archive(archived.id);
+
+  await orchestrator.sweep();
+
+  const t = await board.get(archived.id);
+  expect(t!.status).toBe("inbox");
+  expect(t!.routedTo).toBeUndefined();
+  expect(await board.getDecision(archived.id)).toBeUndefined();
+  expect(seen).toEqual([]);
+});
+
 test("with a HarnessPool configured, a locally-run task is stamped with the picked harness before it finishes, and released after", async () => {
   const seenHarness: (Harness | undefined)[] = [];
   const harnesses = HarnessPool.from([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true }]);

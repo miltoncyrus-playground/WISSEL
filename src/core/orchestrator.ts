@@ -984,6 +984,10 @@ export class Orchestrator {
       // live 2026-10-07 on the first "AI news podcast" run; the root,
       // which stays in inbox, hit it every time).
       if (task.pipelineId !== undefined) continue;
+      // Archived means put away by a human: never routed or run, even if
+      // it was archived while still in inbox (seen 2026-10-09: an
+      // archived stray integrator card was re-routed on every sweep).
+      if (task.archivedAt) continue;
 
       // A task Board.scheduleRetry rescheduled after a 429 isn't
       // eligible again until its clock has passed — reads the same as
