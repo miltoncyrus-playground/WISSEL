@@ -128,6 +128,9 @@ export async function finishResult(
     actualCost: result.actualCost,
     harnessId: result.harnessId,
     ...(audio ? { audio } : {}),
+    // A session-limit (429) reschedule, so the retrospective digest can
+    // count them (docs/SDD-wissel-retro-podcast.md §3.1).
+    ...(result.retryAfter ? { retryAfter: result.retryAfter } : {}),
   });
 
   const agent = registry.get(result.agentId);

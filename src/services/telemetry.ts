@@ -11,6 +11,8 @@ export type TelemetryEvent =
       harnessId?: string;
       /** Only on a pipeline "Make audio" step's result (TtsExecutor). */
       audio?: { bytes: number; synthesisSeconds: number };
+      /** Only on a result rescheduled after a session-limit (429) hit. */
+      retryAfter?: string;
     };
 
 /**

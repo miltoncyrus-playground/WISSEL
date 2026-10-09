@@ -30,6 +30,7 @@ import { ApiExecutor } from "../executors/anthropic-api.ts";
 import { CodexReadOnlyExecutor } from "../executors/codex-readonly.ts";
 import { CodexWriteExecutor } from "../executors/codex-write.ts";
 import { DEFAULT_TTS_URL, DEFAULT_TTS_VOICE, TtsExecutor, defaultAudioDir, isSafeRunId } from "../executors/tts.ts";
+import { DigestExecutor } from "../executors/digest.ts";
 import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-audio.ts";
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
@@ -261,11 +262,23 @@ export function createApp(
   // TtsExecutor too: it only writes an MP3 under audioDir, never a repo.
   const audioDir = opts.audioDir ?? defaultAudioDir();
   const ttsExecutor = () => new TtsExecutor({ baseUrl: opts.tts?.url, voice: opts.tts?.voice, audioDir });
+  // DigestExecutor too: it only reads (this board, telemetry, lessons,
+  // docs, read-only git) for the Wissel retrospective podcast's collect
+  // step (docs/SDD-wissel-retro-podcast.md §3.1).
+  const digestExecutor = () =>
+    new DigestExecutor({
+      board,
+      telemetryPath: telemetry?.filePath,
+      lessonsPath: opts.memoryPath,
+      runner: opts.commandRunner ?? runViaBun,
+      agentModel: (id) => registry.get(id)?.costProfile.model,
+    });
   const autoExecutors: Executor[] = [
     new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     new ApiExecutor(),
     new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     ttsExecutor(),
+    digestExecutor(),
   ];
   if (executeWriteTier)
     autoExecutors.push(
@@ -279,6 +292,7 @@ export function createApp(
     new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     ttsExecutor(),
+    digestExecutor(),
   ];
   // Fail loud before serving anything if an agent's `harnesses` list names
   // an unknown id or a harness of the wrong tool (a typo would otherwise

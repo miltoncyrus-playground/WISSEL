@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Creates the stored "AI news podcast" and "World news podcast" pipelines
- * (docs/SDD-ai-news-podcast.md §3.3, §3.8) through the same PipelineStore `POST /pipelines` writes to, on the
+ * Creates the stored "AI news podcast", "World news podcast" and "Wissel
+ * retrospective podcast" pipelines (docs/SDD-ai-news-podcast.md §3.3,
+ * §3.8, docs/SDD-wissel-retro-podcast.md §3.4) through the same
+ * PipelineStore `POST /pipelines` writes to, on the
  * board database the server uses (`WISSEL_DB_PATH`, default
  * `~/.wissel/board.sqlite`).
  *
@@ -16,7 +18,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { aiNewsPodcastDraft, worldNewsPodcastDraft, type PipelineDraft } from "../pipeline-editor/src/templates.ts";
+import { aiNewsPodcastDraft, wisselRetroPodcastDraft, worldNewsPodcastDraft, type PipelineDraft } from "../pipeline-editor/src/templates.ts";
 import { Registry } from "../src/core/registry.ts";
 import type { PipelineDef } from "../src/core/types.ts";
 import { SqliteBoard } from "../src/services/board.ts";
@@ -41,7 +43,12 @@ export async function seedWorldNewsPipeline(store: PipelineStore, registry: Regi
   return seedPipeline(store, registry, worldNewsPodcastDraft());
 }
 
-/** Creates or upgrades one news pipeline from its template, keyed by name. */
+/** The "Wissel retrospective podcast" pipeline, seeded the same way. */
+export async function seedWisselRetroPipeline(store: PipelineStore, registry: Registry): Promise<SeedResult> {
+  return seedPipeline(store, registry, wisselRetroPodcastDraft());
+}
+
+/** Creates or upgrades one podcast pipeline from its template, keyed by name. */
 export async function seedPipeline(store: PipelineStore, registry: Registry, draft: PipelineDraft): Promise<SeedResult> {
   const missing = draft.graph.steps.filter((s) => !registry.get(s.agentId)).map((s) => s.agentId);
   if (missing.length > 0) {
@@ -59,7 +66,11 @@ if (import.meta.main) {
   const board = new SqliteBoard(dbPath);
   const store = new SqlitePipelineStore(board.db);
   const registry = await Registry.load();
-  for (const { pipeline, outcome } of [await seedAiNewsPipeline(store, registry), await seedWorldNewsPipeline(store, registry)]) {
+  for (const { pipeline, outcome } of [
+    await seedAiNewsPipeline(store, registry),
+    await seedWorldNewsPipeline(store, registry),
+    await seedWisselRetroPipeline(store, registry),
+  ]) {
     const steps = pipeline.graph.steps.map((s) => s.name).join(" -> ");
     console.log(
       outcome === "created"

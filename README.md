@@ -173,6 +173,17 @@ headlines plus the main news from Spain and the Netherlands, each story
 tagged with its region. `bun run seed:ai-news` seeds both pipelines;
 check it with `bun run eval:world-news`.
 
+**Wissel retrospective podcast** (`docs/SDD-wissel-retro-podcast.md`):
+a podcast about your own work in wissel. "Collect activity" is not an
+agent: `src/executors/digest.ts` reads this board (cards folded by
+lineage), merge commits (read-only git, linked to GitHub), telemetry
+spend, `memory/lessons.md` and changed SDDs into a small digest. An
+analyst picks what you built, what you learned, what to improve and
+ideas to think about; the script and audio steps are the news ones. The
+run input sets the period (`last 30 days`, `since 2026-10-01`, default
+7 days). `bun run seed:ai-news` seeds it too; check it with
+`bun run eval:wissel-retro` (paid, reads a copy of the real board).
+
 The "Make audio" step is not an agent: `src/executors/tts.ts` sends the
 script to a local [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)
 service (`WISSEL_TTS_URL`, docker container `kokoro-tts`) and saves
