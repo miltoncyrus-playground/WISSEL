@@ -183,3 +183,23 @@ test("the auto-created integrator card actually routes to the integrator agent w
   expect(decision.confident).toBe(true);
   expect(decision.selected).toBe("integrator");
 });
+
+// Regression, 2026-10-07: a pipeline step's parentTaskId is its run's
+// root card, so once every step of the first "AI news podcast" run was
+// done, an "Integrate: Pipeline: AI news podcast" card appeared. A run is
+// settled by pipeline-runner.ts, never integrated.
+test("a pipeline run whose steps all finish spawns no integrator card", async () => {
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  wireAutoIntegrator(board, registry);
+
+  const root = await board.create({ title: "Pipeline: AI news podcast", body: "", labels: [], repo: "", pipelineId: "p1" });
+  const steps = [];
+  for (const id of ["gather", "explain", "script"]) {
+    steps.push(await board.create({ title: `AI news podcast: ${id}`, body: "", labels: [], repo: "", pipelineId: "p1", pipelineRunId: root.id, pipelineStepId: id, parentTaskId: root.id }));
+  }
+  for (const s of steps) await board.move(s.id, "done");
+  await settle();
+
+  expect((await board.list()).filter((t) => t.labels.includes("integration"))).toEqual([]);
+});

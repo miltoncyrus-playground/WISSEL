@@ -813,6 +813,11 @@ async function maybeSpawnIntegrator(board: Board, registry: Registry, task: Task
   // `pushbackCount`, including 0 on the very first reviewer pass — a
   // genuine top-level subtask card never has either set at creation.
   if (task.labels.includes("review") || task.pushbackCount !== undefined) return;
+  // A pipeline step's parentTaskId is its run's root card: run grouping,
+  // not subtask decomposition. pipeline-runner.ts settles the run itself;
+  // integrating it spawned a bogus "Integrate: Pipeline: ..." card once
+  // every step was done (seen live 2026-10-07, "AI news podcast").
+  if (task.pipelineId !== undefined) return;
 
   const parentId = task.parentTaskId;
   if (!parentId) return;
