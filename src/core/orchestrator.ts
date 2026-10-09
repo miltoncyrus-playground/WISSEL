@@ -61,6 +61,16 @@ export function resolveLiveTip(task: TaskCard | undefined, byId: Map<string, Tas
   return current;
 }
 
+/** A "Make audio" step's size and synthesis time (TtsExecutor's handoff
+ *  `data.audio`, docs/SDD-ai-news-podcast.md §3.7), for the telemetry
+ *  result event, so Kokoro's speed can be tracked across runs.
+ *  Undefined for every other result. */
+function audioTelemetry(result: TaskResult): { bytes: number; synthesisSeconds: number } | undefined {
+  const audio = result.pipelineHandoff?.data?.audio as { bytes?: unknown; synthesisSeconds?: unknown } | undefined;
+  if (!audio || typeof audio.bytes !== "number" || typeof audio.synthesisSeconds !== "number") return undefined;
+  return { bytes: audio.bytes, synthesisSeconds: audio.synthesisSeconds };
+}
+
 /**
  * Records a result wherever it came from — an executor wissel ran itself,
  * or an external report for a write-tier task wissel only decided and
@@ -110,7 +120,15 @@ export async function finishResult(
   pipelineCtx?: PipelineFinishContext,
 ): Promise<void> {
   await board.recordResult(result);
-  await telemetry?.record({ type: "result", taskId: result.taskId, agentId: result.agentId, actualCost: result.actualCost, harnessId: result.harnessId });
+  const audio = audioTelemetry(result);
+  await telemetry?.record({
+    type: "result",
+    taskId: result.taskId,
+    agentId: result.agentId,
+    actualCost: result.actualCost,
+    harnessId: result.harnessId,
+    ...(audio ? { audio } : {}),
+  });
 
   const agent = registry.get(result.agentId);
 

@@ -84,14 +84,14 @@ function newsRaw(reason, finalSummary) {
   return { kind: "raw", reason: reason, raw: typeof finalSummary === "string" ? finalSummary : "" };
 }
 
-// What the drawer shows for a run's last step:
+// What the drawer shows for a run's news step (newsStepCards' `news`):
 //   { kind: "none" }  not a news result; the drawer adds nothing.
 //   { kind: "raw", reason, raw }  a news result that can't be shaped;
 //     the drawer shows the step's raw output and why.
 //   { kind: "news", rows, paragraphs, wordCount, flaggedCount, gatherChecked }
-// `finalSummary` / `gatherSummary` are the last and first steps' raw
+// `finalSummary` / `gatherSummary` are the news and first steps' raw
 // result summaries (undefined when they have none). `expected` is true
-// when the last step is the podcast scriptwriter, so its missing data is
+// when the news step is the podcast scriptwriter, so its missing data is
 // an error to show rather than "some other pipeline". Never throws.
 function newsView(finalSummary, gatherSummary, expected) {
   var data = parseHandoffData(finalSummary);
@@ -99,8 +99,8 @@ function newsView(finalSummary, gatherSummary, expected) {
   if (!looksLikeNews) {
     if (!expected) return { kind: "none" };
     return newsRaw(typeof finalSummary === "string" && finalSummary.trim() !== ""
-      ? "The last step's output has no valid pipeline-handoff data with quickRead and script."
-      : "The last step has no output.", finalSummary);
+      ? "The script step's output has no valid pipeline-handoff data with quickRead and script."
+      : "The script step has no output.", finalSummary);
   }
   if (!Array.isArray(data.quickRead)) return newsRaw("quickRead is missing or not a list.", finalSummary);
   var paragraphs = splitScript(data.script);
@@ -133,6 +133,58 @@ function newsView(finalSummary, gatherSummary, expected) {
     flaggedCount: rows.filter(function (r) { return r.flag !== null; }).length,
     gatherChecked: !!urls,
   };
+}
+
+var NEWS_SCRIPT_AGENT = "podcast-scriptwriter";
+var NEWS_AUDIO_AGENT = "podcast-audio";
+
+// Which of a run's step cards the drawer reads (§3.5, §3.7). `steps` are
+// the run's step cards in the order they ran; `defSteps` the pipeline
+// definition's steps ([] when it's gone). A card's agent is its
+// definition step's agentId, else the card's routedTo. Found by agent,
+// not position, since "Make audio" now runs after the scriptwriter:
+//   news: the scriptwriter's latest card, else the last card (so any
+//     other pipeline whose last step hands off quickRead + script still
+//     shows, as before); `expected` says which.
+//   gather: the first step's latest card, unless that is `news` itself.
+//   audio: the audio step's latest card, or null.
+// null for a run with no steps yet.
+function newsStepCards(steps, defSteps) {
+  if (!steps || !steps.length) return null;
+  var agentByStep = Object.create(null);
+  (defSteps || []).forEach(function (d) { if (d && d.id) agentByStep[d.id] = d.agentId; });
+  var agentOf = function (card) { return (card.pipelineStepId && agentByStep[card.pipelineStepId]) || card.routedTo || null; };
+  var script = null;
+  var audio = null;
+  var gather = null;
+  var firstStepId = steps[0].pipelineStepId;
+  steps.forEach(function (card) {
+    var agent = agentOf(card);
+    if (agent === NEWS_SCRIPT_AGENT) script = card;
+    if (agent === NEWS_AUDIO_AGENT) audio = card;
+    if (card.pipelineStepId === firstStepId) gather = card;
+  });
+  var news = script || steps[steps.length - 1];
+  return { news: news, expected: !!script, gather: gather && gather.id !== news.id ? gather : null, audio: audio };
+}
+
+// The Listen tab's audio, from the audio step's card and the run
+// summary's `audio` field (GET /pipeline-runs/:id):
+//   { state: "ready", url, bytes }  the MP3 exists: player + Download.
+//   { state: "making" }  the audio step hasn't finished yet.
+//   { state: "failed" }  the audio step failed; Read aloud is the fallback.
+//   { state: "none" }  no audio step, or it finished with no file.
+// The file wins over the card: a summary that has audio is "ready" even
+// while a later retry of the step runs.
+function newsAudioView(audioCard, summaryAudio) {
+  if (newsIsRecord(summaryAudio) && typeof summaryAudio.url === "string" && summaryAudio.url) {
+    return { state: "ready", url: summaryAudio.url, bytes: typeof summaryAudio.bytes === "number" ? summaryAudio.bytes : null };
+  }
+  if (!audioCard) return { state: "none" };
+  var s = audioCard.status;
+  if (s === "inbox" || s === "ready" || s === "running" || s === "dispatched") return { state: "making" };
+  if (s === "done") return { state: "none" };
+  return { state: "failed" };
 }
 
 // True when the browser can read aloud. Some browsers (and a page with
@@ -228,6 +280,10 @@ if (typeof module !== "undefined") {
     gatherUrlSet: gatherUrlSet,
     splitScript: splitScript,
     newsView: newsView,
+    NEWS_SCRIPT_AGENT: NEWS_SCRIPT_AGENT,
+    NEWS_AUDIO_AGENT: NEWS_AUDIO_AGENT,
+    newsStepCards: newsStepCards,
+    newsAudioView: newsAudioView,
     hasSpeech: hasSpeech,
     pickVoice: pickVoice,
     createNewsReader: createNewsReader,

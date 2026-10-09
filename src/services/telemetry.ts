@@ -3,7 +3,15 @@ import { dirname } from "node:path";
 
 export type TelemetryEvent =
   | { type: "dispatch"; taskId: string; agentId: string; model?: string; estimatedCost?: number }
-  | { type: "result"; taskId: string; agentId: string; actualCost?: number; harnessId?: string };
+  | {
+      type: "result";
+      taskId: string;
+      agentId: string;
+      actualCost?: number;
+      harnessId?: string;
+      /** Only on a pipeline "Make audio" step's result (TtsExecutor). */
+      audio?: { bytes: number; synthesisSeconds: number };
+    };
 
 /**
  * Append-only cost/dispatch log: {agent, model, task_id, estimated_cost,

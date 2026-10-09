@@ -86,10 +86,11 @@ export class ReadOnlyExecutor implements Executor {
 
   canHandle(agent: AgentDef): boolean {
     // executor: api is ApiExecutor's territory, executor: codex is
-    // CodexReadOnlyExecutor's — both excluded explicitly so none of the
-    // three depend on array order in whatever pool they're all
-    // registered in to stay mutually exclusive.
-    return agent.tier === "readonly" && agent.executor !== "api" && agent.executor !== "codex";
+    // CodexReadOnlyExecutor's, executor: tts is TtsExecutor's (no LLM at
+    // all). All excluded explicitly so none of them depend on array
+    // order in whatever pool they're all registered in to stay mutually
+    // exclusive.
+    return agent.tier === "readonly" && agent.executor !== "api" && agent.executor !== "codex" && agent.executor !== "tts";
   }
 
   async run(task: TaskCard, agent: AgentDef, harness?: Harness): Promise<TaskResult> {

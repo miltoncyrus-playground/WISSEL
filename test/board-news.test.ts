@@ -6,14 +6,19 @@ import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { parsePipelineHandoff } from "../src/executors/parse-pipeline-handoff.ts";
 import { checkAiNewsRun, countWords } from "../eval/ai-news-checks.ts";
+import { aiNewsPodcastDraft } from "../pipeline-editor/src/templates.ts";
 import {
   NEWS_FLAG_MISSING,
   NEWS_FLAG_NOT_A_LINK,
   NEWS_FLAG_NOT_FROM_GATHER,
   NEWS_FLAG_UNCHECKED,
+  NEWS_AUDIO_AGENT,
+  NEWS_SCRIPT_AGENT,
   createNewsReader,
   gatherUrlSet,
   hasSpeech,
+  newsAudioView,
+  newsStepCards,
   newsView,
   parseHandoffData,
   pickVoice,
@@ -164,13 +169,76 @@ test("missing data: raw for the scriptwriter step, nothing at all for any other 
   }
   // Even an unexpected step that does hand off quickRead + script shows it.
   expect(newsView(SCRIPT, GATHER, false).kind).toBe("news");
-  expect(newsView("", GATHER, true)).toMatchObject({ kind: "raw", raw: "", reason: "The last step has no output." });
+  expect(newsView("", GATHER, true)).toMatchObject({ kind: "raw", raw: "", reason: "The script step has no output." });
 });
 
 test("an empty quickRead with a script is still a news view (Listen works, Quick read is empty)", () => {
   const view = news(newsView(handoff({ quickRead: [], script: "One.\n\nTwo." }), GATHER, true));
   expect(view.rows).toEqual([]);
   expect(view.paragraphs).toEqual(["One.", "Two."]);
+});
+
+// --- Which step cards the drawer reads, and the audio state (§3.7) -------
+
+const DEF_STEPS = aiNewsPodcastDraft().graph.steps;
+
+function card(id: string, pipelineStepId: string, status = "done", routedTo?: string) {
+  return { id, pipelineStepId, status, ...(routedTo ? { routedTo } : {}) };
+}
+
+test("newsStepCards finds the scriptwriter by its definition agentId when Make audio runs after it", () => {
+  const steps = [card("g", "gather"), card("e", "explain"), card("s", "script"), card("a", "audio", "running")];
+  const got = newsStepCards(steps, DEF_STEPS)!;
+  expect(got.news.id).toBe("s");
+  expect(got.expected).toBe(true);
+  expect(got.gather!.id).toBe("g");
+  expect(got.audio!.id).toBe("a");
+  expect(NEWS_SCRIPT_AGENT).toBe("podcast-scriptwriter");
+  expect(NEWS_AUDIO_AGENT).toBe("podcast-audio");
+});
+
+test("newsStepCards takes each step's latest card (a retried step has several) and falls back to routedTo without a definition", () => {
+  const steps = [
+    card("g1", "gather", "failed"),
+    card("g2", "gather"),
+    card("s1", "script", "failed"),
+    card("s2", "script"),
+    card("a1", "audio", "failed"),
+    card("a2", "audio", "running"),
+  ];
+  const got = newsStepCards(steps, DEF_STEPS)!;
+  expect([got.news.id, got.gather!.id, got.audio!.id]).toEqual(["s2", "g2", "a2"]);
+  // Definition deleted: the cards' own routedTo still name the agents.
+  const routed = [card("g", "x1", "done", "ai-news-gatherer"), card("s", "x2", "done", "podcast-scriptwriter"), card("a", "x3", "done", "podcast-audio")];
+  expect(newsStepCards(routed, [])).toMatchObject({ news: { id: "s" }, expected: true, gather: { id: "g" }, audio: { id: "a" } });
+});
+
+test("newsStepCards: a three-step run from before Make audio, any other pipeline, and a run with no steps", () => {
+  const old = newsStepCards([card("g", "gather"), card("e", "explain"), card("s", "script")], DEF_STEPS)!;
+  expect([old.news.id, old.expected, old.gather!.id, old.audio]).toEqual(["s", true, "g", null]);
+  // Not a news pipeline: the last card, not expected, as before card 3.
+  const other = newsStepCards([card("a", "one", "done", "triager"), card("b", "two", "done", "eli5-explainer")], [])!;
+  expect([other.news.id, other.expected, other.gather!.id, other.audio]).toEqual(["b", false, "a", null]);
+  // A one-step run: the gather card is the news card itself, so no gather.
+  expect(newsStepCards([card("s", "script")], DEF_STEPS)!.gather).toBeNull();
+  expect(newsStepCards([], DEF_STEPS)).toBeNull();
+  expect(newsStepCards(null, DEF_STEPS)).toBeNull();
+});
+
+test("newsAudioView maps the audio step's status and the run summary's audio to the Listen tab's state", () => {
+  const url = "/pipeline-runs/r1/audio";
+  expect(newsAudioView(null, null)).toEqual({ state: "none" });
+  expect(newsAudioView(undefined, undefined)).toEqual({ state: "none" });
+  for (const s of ["inbox", "ready", "dispatched", "running"]) expect(newsAudioView({ status: s }, null), s).toEqual({ state: "making" });
+  for (const s of ["failed", "escalated", "no-match"]) expect(newsAudioView({ status: s }, null), s).toEqual({ state: "failed" });
+  // Done but the summary hasn't reported a file (yet, or it's gone).
+  expect(newsAudioView({ status: "done" }, null)).toEqual({ state: "none" });
+  // The file wins over the card, whatever the card says.
+  expect(newsAudioView({ status: "done" }, { url, bytes: 6032 })).toEqual({ state: "ready", url, bytes: 6032 });
+  expect(newsAudioView({ status: "running" }, { url, bytes: 6032 })).toEqual({ state: "ready", url, bytes: 6032 });
+  expect(newsAudioView(null, { url })).toEqual({ state: "ready", url, bytes: null });
+  // Malformed summary audio is ignored, never a broken player.
+  for (const bad of [{}, { url: "" }, { url: 7 }, "x", 1]) expect(newsAudioView({ status: "failed" }, bad), JSON.stringify(bad)).toEqual({ state: "failed" });
 });
 
 // --- parseHandoffData mirrors parsePipelineHandoff ----------------------

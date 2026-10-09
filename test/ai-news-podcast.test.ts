@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,14 @@ import { Registry } from "../src/core/registry.ts";
 import type { AgentDef, Executor, PipelineDef, PipelineGraph, TaskCard } from "../src/core/types.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
 import { ReadOnlyExecutor, WEB_ALLOWED_TOOLS } from "../src/executors/readonly.ts";
+import { ApiExecutor } from "../src/executors/anthropic-api.ts";
+import { CodexReadOnlyExecutor } from "../src/executors/codex-readonly.ts";
+import { CodexWriteExecutor } from "../src/executors/codex-write.ts";
+import { WriteExecutor } from "../src/executors/write.ts";
+import { TtsExecutor } from "../src/executors/tts.ts";
+import { SILENT_MP3_PATH } from "./fixtures/ai-news/make-silent-mp3.ts";
 import { SqliteBoard } from "../src/services/board.ts";
+import { TelemetryLog } from "../src/services/telemetry.ts";
 import { SqlitePipelineStore, type PipelineStore } from "../src/services/pipelines.ts";
 import { pipelineNeedsRepo } from "../src/api/public/board-pipelines.js";
 import { aiNewsPodcastDraft, AI_NEWS_PODCAST_NAME } from "../pipeline-editor/src/templates.ts";
@@ -146,8 +153,31 @@ function handoff(data: Record<string, unknown>): string {
   return JSON.stringify({ type: "result", subtype: "success", is_error: false, result: `done\n\n\`\`\`pipeline-handoff\n${JSON.stringify({ data })}\n\`\`\`` });
 }
 
-test("repo-less run: the real AI news pipeline starts with no repo; every step task has no repo and runs in its own scratch workspace", async () => {
+/** A fake Kokoro-FastAPI on port 0 (never the real one) that speaks
+ *  anything as the silent fixture MP3, recording what it was asked to
+ *  say. `failSpeech` makes the speech call a 500. */
+function fakeKokoro(failSpeech = false): { url: string; inputs: string[]; stop(): void } {
+  const inputs: string[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(req) {
+      const path = new URL(req.url).pathname;
+      if (path === "/health") return Response.json({ status: "healthy" });
+      inputs.push(((await req.json()) as { input: string }).input);
+      if (failSpeech) return new Response("model crashed", { status: 500 });
+      return new Response(readFileSync(SILENT_MP3_PATH), { headers: { "content-type": "audio/mpeg" } });
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}`, inputs, stop: () => server.stop(true) };
+}
+
+const GATHER_OUT = handoff({ generatedAt: "2026-10-07", stories: [{ title: "T", date: "2026-10-06", sources: ["https://example.com/a"], facts: "F." }] });
+const EXPLAIN_OUT = handoff({ stories: [{ title: "T", date: "2026-10-06", sources: ["https://example.com/a"], explanation: "E", whyItMatters: "W", unknowns: "U" }] });
+const SCRIPT_OUT = handoff({ quickRead: [{ headline: "H", oneLine: "O", source: "https://example.com/a" }], script: "Hello there.\n\nBye now.", wordCount: 4 });
+
+test("repo-less run: the real AI news pipeline starts with no repo; the LLM steps run in their own scratch workspaces and Make audio speaks the script into <audioDir>/<runId>.mp3", async () => {
   const homeDir = await mkdtemp(join(tmpdir(), "wissel-ai-news-scratch-"));
+  const kokoro = fakeKokoro();
   try {
     const board = new SqliteBoard();
     const registry = await Registry.load();
@@ -155,32 +185,94 @@ test("repo-less run: the real AI news pipeline starts with no repo; every step t
     const def = await pipelines.create(aiNewsPodcastDraft());
     const cwds: string[] = [];
     const stdins: string[] = [];
-    const outputs = [
-      handoff({ generatedAt: "2026-10-07", stories: [{ title: "T", date: "2026-10-06", sources: ["https://example.com/a"], facts: "F." }] }),
-      handoff({ stories: [{ title: "T", date: "2026-10-06", sources: ["https://example.com/a"], explanation: "E", whyItMatters: "W", unknowns: "U" }] }),
-      handoff({ quickRead: [{ headline: "H", oneLine: "O", source: "https://example.com/a" }], script: "S", wordCount: 1 }),
-    ];
+    const outputs = [GATHER_OUT, EXPLAIN_OUT, SCRIPT_OUT];
     const runner: CommandRunner = async (_cmd, opts) => {
       cwds.push(opts.cwd);
       stdins.push(opts.stdin ?? "");
       return { stdout: outputs[cwds.length - 1]!, stderr: "", exitCode: 0 };
     };
-    const ctx: PipelineRunnerContext = { executors: [new ReadOnlyExecutor({ runner, homeDir })], pipelines };
+    const audioDir = join(homeDir, "audio");
+    // The server's own pool order: ReadOnlyExecutor first, TtsExecutor
+    // after it, so this also proves ReadOnlyExecutor never claims the
+    // audio step.
+    const telemetryPath = join(homeDir, "telemetry.jsonl");
+    const ctx: PipelineRunnerContext = {
+      executors: [new ReadOnlyExecutor({ runner, homeDir }), new TtsExecutor({ baseUrl: kokoro.url, audioDir })],
+      pipelines,
+      telemetry: new TelemetryLog(telemetryPath),
+    };
 
     const root = await startPipelineRun(board, registry, def, undefined, "", ctx);
 
     expect(root.status).toBe("done");
     expect(root.repo).toBeUndefined();
     const steps = (await board.list()).filter((t) => t.pipelineRunId === root.id);
-    expect(steps.map((s) => s.pipelineStepId)).toEqual(["gather", "explain", "script"]);
+    expect(steps.map((s) => s.pipelineStepId)).toEqual(["gather", "explain", "script", "audio"]);
     expect(steps.every((s) => s.repo === undefined && s.status === "done")).toBe(true);
-    expect(cwds).toEqual(steps.map((s) => join(homeDir, ".wissel", "scratch", s.id)));
+    // Three claude calls, one per LLM step; the audio step spawns nothing.
+    expect(cwds).toEqual(steps.slice(0, 3).map((s) => join(homeDir, ".wissel", "scratch", s.id)));
     expect(cwds.every((d) => existsSync(d))).toBe(true);
     // Each step's data reaches the next one as fenced data.
     expect(stdins[1]).toContain('"facts": "F."');
     expect(stdins[2]).toContain('"whyItMatters": "W"');
+    // The scriptwriter's script, exactly, is what Kokoro was asked to say.
+    expect(kokoro.inputs).toEqual(["Hello there.\n\nBye now."]);
+    const audioFile = join(audioDir, `${root.id}.mp3`);
+    expect(new Uint8Array(readFileSync(audioFile))).toEqual(new Uint8Array(readFileSync(SILENT_MP3_PATH)));
+    expect((await board.getResult(steps[3]!.id))?.summary).toContain(`"file":"${audioFile}"`);
+    // §3.7 telemetry: the audio step's result event carries bytes and
+    // synthesis time so Kokoro's speed can be tracked; no other step's does.
+    const results = readFileSync(telemetryPath, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((e) => e.type === "result");
+    const audioEvents = results.filter((e) => e.audio);
+    expect(audioEvents).toHaveLength(1);
+    expect(audioEvents[0]).toMatchObject({ taskId: steps[3]!.id, agentId: "podcast-audio", actualCost: 0, audio: { bytes: statSync(audioFile).size, synthesisSeconds: expect.any(Number) } });
+    expect(results.filter((e) => e.agentId !== "podcast-audio").length).toBeGreaterThanOrEqual(3);
   } finally {
+    kokoro.stop();
     await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("Make audio failing fails the run, but the script step stays done with its quick read and script", async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), "wissel-ai-news-scratch-"));
+  const kokoro = fakeKokoro(true);
+  try {
+    const board = new SqliteBoard();
+    const registry = await Registry.load();
+    const pipelines = new SqlitePipelineStore(board.db);
+    const def = await pipelines.create(aiNewsPodcastDraft());
+    let n = 0;
+    const outputs = [GATHER_OUT, EXPLAIN_OUT, SCRIPT_OUT];
+    const runner: CommandRunner = async () => ({ stdout: outputs[n++]!, stderr: "", exitCode: 0 });
+    const audioDir = join(homeDir, "audio");
+    const ctx: PipelineRunnerContext = { executors: [new ReadOnlyExecutor({ runner, homeDir }), new TtsExecutor({ baseUrl: kokoro.url, audioDir })], pipelines };
+
+    const root = await startPipelineRun(board, registry, def, undefined, "", ctx);
+
+    expect(root.status).toBe("failed");
+    const steps = (await board.list()).filter((t) => t.pipelineRunId === root.id);
+    expect(steps.map((s) => [s.pipelineStepId, s.status])).toEqual([["gather", "done"], ["explain", "done"], ["script", "done"], ["audio", "failed"]]);
+    expect((await board.getResult(steps[3]!.id))?.summary).toMatch(/^Audio not made: Kokoro TTS at .* returned HTTP 500: model crashed$/);
+    expect((await board.getResult(steps[2]!.id))?.summary).toContain('"quickRead"');
+    expect(existsSync(join(audioDir, `${root.id}.mp3`))).toBe(false);
+  } finally {
+    kokoro.stop();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("executor resolution: podcast-audio resolves to TtsExecutor alone; every other manifest agent resolves exactly as it did without TtsExecutor in the pool", async () => {
+  const registry = await Registry.load();
+  // The server's default manual pool (src/api/server.ts), minus and plus TtsExecutor.
+  const before: Executor[] = [new ReadOnlyExecutor(), new ApiExecutor(), new CodexReadOnlyExecutor(), new WriteExecutor(), new CodexWriteExecutor()];
+  const after: Executor[] = [...before, new TtsExecutor()];
+  const audio = registry.get("podcast-audio")!;
+  expect(after.filter((e) => e.canHandle(audio)).map((e) => e.id)).toEqual(["tts"]);
+  const others = registry.all().filter((a) => a.id !== "podcast-audio");
+  expect(others.length).toBeGreaterThan(10);
+  for (const agent of others) {
+    const handlers = (pool: Executor[]) => pool.filter((e) => e.canHandle(agent)).map((e) => e.id);
+    expect(handlers(after), agent.id).toEqual(handlers(before));
   }
 });
 
@@ -277,7 +369,7 @@ test("POST /pipelines/:id/run: an all-readonly pipeline runs with no repo and no
   expect(root.status).toBe("done");
   expect(root.repo).toBeUndefined();
   expect(root.body).toBe("");
-  expect(seen.map((t) => t.pipelineStepId)).toEqual(["gather", "explain", "script"]);
+  expect(seen.map((t) => t.pipelineStepId)).toEqual(["gather", "explain", "script", "audio"]);
   expect(seen.every((t) => t.repo === undefined)).toBe(true);
 
   // Optional input reaches the gather step.
@@ -307,44 +399,83 @@ test("POST /pipelines/:id/run: a pipeline with a write step and no repo is a 400
 
 // ---- §3.3 seed script and template ------------------------------------
 
-test("seed: running twice leaves exactly one AI news podcast pipeline, and never overwrites an edited one", async () => {
+test("seed: running twice leaves exactly one AI news podcast pipeline; the second run writes nothing and keeps an edited description", async () => {
   const board = new SqliteBoard();
   const store = new SqlitePipelineStore(board.db);
   const registry = await Registry.load();
 
   const first = await seedAiNewsPipeline(store, registry);
-  expect(first.created).toBe(true);
+  expect(first.outcome).toBe("created");
   expect(first.pipeline.name).toBe(AI_NEWS_PODCAST_NAME);
   expect(first.pipeline.graph).toEqual(aiNewsPodcastDraft().graph);
 
-  await store.update(first.pipeline.id, { name: AI_NEWS_PODCAST_NAME, description: "mine", graph: first.pipeline.graph });
+  const edited = await store.update(first.pipeline.id, { name: AI_NEWS_PODCAST_NAME, description: "mine", graph: first.pipeline.graph });
   const second = await seedAiNewsPipeline(store, registry);
-  expect(second.created).toBe(false);
+  expect(second.outcome).toBe("unchanged");
   expect(second.pipeline.id).toBe(first.pipeline.id);
   expect(second.pipeline.description).toBe("mine");
+  expect((await store.get(first.pipeline.id))!.updatedAt).toBe(edited.updatedAt);
   expect((await store.list()).filter((p) => p.name === AI_NEWS_PODCAST_NAME)).toHaveLength(1);
+});
+
+// §3.7: the pipeline stored before "Make audio" existed, as card 1 seeded it.
+const THREE_STEP_GRAPH: PipelineGraph = {
+  steps: [
+    { id: "gather", name: "Gather news", agentId: "ai-news-gatherer", transition: "all" },
+    { id: "explain", name: "Explain simply", agentId: "eli5-explainer", transition: "all" },
+    { id: "script", name: "Write podcast script", agentId: "podcast-scriptwriter", transition: "all" },
+  ],
+  edges: [
+    { id: "gather-explain", from: "gather", to: "explain" },
+    { id: "explain-script", from: "explain", to: "script" },
+  ],
+};
+
+test("seed: the stored three-step pipeline is upgraded to four steps in place (same id, name and description kept, past runs still linked); running again changes nothing", async () => {
+  const board = new SqliteBoard();
+  const store = new SqlitePipelineStore(board.db);
+  const registry = await Registry.load();
+  const old = await store.create({ name: AI_NEWS_PODCAST_NAME, description: "the old one", graph: THREE_STEP_GRAPH });
+  const pastRun = await board.create({ title: `Pipeline: ${AI_NEWS_PODCAST_NAME}`, body: "", labels: [], pipelineId: old.id });
+
+  const upgraded = await seedAiNewsPipeline(store, registry);
+  expect(upgraded.outcome).toBe("updated");
+  expect(upgraded.pipeline.id).toBe(old.id);
+  expect(upgraded.pipeline.description).toBe("the old one");
+  expect(upgraded.pipeline.graph).toEqual(aiNewsPodcastDraft().graph);
+  expect(upgraded.pipeline.graph.steps.map((s) => s.name)).toEqual(["Gather news", "Explain simply", "Write podcast script", "Make audio"]);
+  expect(await store.list()).toHaveLength(1);
+  expect((await store.get((await board.get(pastRun.id))!.pipelineId!))!.graph.steps).toHaveLength(4);
+
+  const again = await seedAiNewsPipeline(store, registry);
+  expect(again.outcome).toBe("unchanged");
+  expect(again.pipeline).toEqual((await store.get(old.id))!);
+  expect((await store.get(old.id))!.updatedAt).toBe(upgraded.pipeline.updatedAt);
+  expect(await store.list()).toHaveLength(1);
 });
 
 test("seed: a manifest missing the news agents throws and writes nothing", async () => {
   const board = new SqliteBoard();
   const store = new SqlitePipelineStore(board.db);
   await expect(seedAiNewsPipeline(store, Registry.from([agentDef()]))).rejects.toThrow(
-    "agents/manifest.yaml has no agent(s) ai-news-gatherer, eli5-explainer, podcast-scriptwriter",
+    "agents/manifest.yaml has no agent(s) ai-news-gatherer, eli5-explainer, podcast-scriptwriter, podcast-audio",
   );
   expect(await store.list()).toEqual([]);
 });
 
-test("template: gather -> explain -> script in a line, transition all, every agent real and repo-less", async () => {
+test("template: gather -> explain -> script -> audio in a line, transition all, every agent real and repo-less", async () => {
   const draft = aiNewsPodcastDraft();
   const registry = await Registry.load();
-  expect(draft.graph.steps.map((s) => [s.id, s.agentId, s.transition])).toEqual([
-    ["gather", "ai-news-gatherer", "all"],
-    ["explain", "eli5-explainer", "all"],
-    ["script", "podcast-scriptwriter", "all"],
+  expect(draft.graph.steps.map((s) => [s.id, s.name, s.agentId, s.transition])).toEqual([
+    ["gather", "Gather news", "ai-news-gatherer", "all"],
+    ["explain", "Explain simply", "eli5-explainer", "all"],
+    ["script", "Write podcast script", "podcast-scriptwriter", "all"],
+    ["audio", "Make audio", "podcast-audio", "all"],
   ]);
   expect(draft.graph.edges.map((e) => [e.from, e.to])).toEqual([
     ["gather", "explain"],
     ["explain", "script"],
+    ["script", "audio"],
   ]);
   const def: PipelineDef = { ...draft, id: "x", createdAt: "", updatedAt: "" };
   expect(stepsNeedingRepo(def, registry)).toEqual([]);

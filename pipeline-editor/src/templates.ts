@@ -34,26 +34,29 @@ export function draftFromPipeline(source: PipelineDef): PipelineDraft {
 
 export const AI_NEWS_PODCAST_NAME = "AI news podcast";
 
-/** The AI news podcast pipeline (docs/SDD-ai-news-podcast.md §3.3):
- *  gather -> explain simply -> podcast script, in a line, "all" on every
- *  step so no `next` is needed. Every agent is readonly with no
- *  write/bash, so it runs with no repo. The one definition both the
+/** The AI news podcast pipeline (docs/SDD-ai-news-podcast.md §3.3,
+ *  §3.7): gather -> explain simply -> podcast script -> make audio, in a
+ *  line, "all" on every step so no `next` is needed. Every agent is
+ *  readonly with no write/bash (the audio step is TtsExecutor, no LLM),
+ *  so it runs with no repo. The one definition both the
  *  "New pipeline" built-in list and scripts/seed-ai-news-pipeline.ts
  *  use; type-only imports keep this file loadable from bun test and
  *  the seed script without React. */
 export function aiNewsPodcastDraft(): PipelineDraft {
   return {
     name: AI_NEWS_PODCAST_NAME,
-    description: "Gathers the week's AI news from the web, explains it simply, and writes a 5 minute podcast script with a quick read.",
+    description: "Gathers the week's AI news from the web, explains it simply, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.",
     graph: {
       steps: [
         { id: "gather", name: "Gather news", agentId: "ai-news-gatherer", transition: "all" },
         { id: "explain", name: "Explain simply", agentId: "eli5-explainer", transition: "all" },
         { id: "script", name: "Write podcast script", agentId: "podcast-scriptwriter", transition: "all" },
+        { id: "audio", name: "Make audio", agentId: "podcast-audio", transition: "all" },
       ],
       edges: [
         { id: "gather-explain", from: "gather", to: "explain" },
         { id: "explain-script", from: "explain", to: "script" },
+        { id: "script-audio", from: "script", to: "audio" },
       ],
     },
   };

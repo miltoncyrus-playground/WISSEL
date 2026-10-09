@@ -30,6 +30,29 @@ export type NewsView =
 
 export function newsView(finalSummary: unknown, gatherSummary: unknown, expected: boolean): NewsView;
 
+export const NEWS_SCRIPT_AGENT: string;
+export const NEWS_AUDIO_AGENT: string;
+
+export interface NewsStepCard {
+  id: string;
+  status: string;
+  pipelineStepId?: string;
+  routedTo?: string;
+}
+
+export function newsStepCards<C extends NewsStepCard>(
+  steps: C[] | null | undefined,
+  defSteps: { id: string; agentId: string }[] | null | undefined,
+): { news: C; expected: boolean; gather: C | null; audio: C | null } | null;
+
+export type NewsAudioView =
+  | { state: "ready"; url: string; bytes: number | null }
+  | { state: "making" }
+  | { state: "failed" }
+  | { state: "none" };
+
+export function newsAudioView(audioCard: { status: string } | null | undefined, summaryAudio: unknown): NewsAudioView;
+
 export interface SpeechLike {
   speak(u: unknown): void;
   cancel(): void;
