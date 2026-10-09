@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { aiNewsPodcastDraft, blankDraft, builtInTemplates, draftFromPipeline, templateChoices, worldNewsPodcastDraft } from "../pipeline-editor/src/templates.ts";
+import { aiNewsPodcastDraft, blankDraft, builtInTemplates, draftFromPipeline, templateChoices, wisselRetroPodcastDraft, worldNewsPodcastDraft } from "../pipeline-editor/src/templates.ts";
 import { colorModeFor } from "../pipeline-editor/src/theme.ts";
 import type { PipelineDef } from "../pipeline-editor/src/types.ts";
 
@@ -68,9 +68,14 @@ test("the start-from list is every saved pipeline, sorted by name, without reord
   expect(templateChoices([])).toEqual([]);
 });
 
-test("built-in templates: the AI and World news podcasts, as fresh copies every time", () => {
-  const [first, second, ...rest] = builtInTemplates();
+test("built-in templates: the AI news, World news and Wissel retrospective podcasts, as fresh copies every time", () => {
+  const [first, second, third, ...rest] = builtInTemplates();
   expect(rest).toEqual([]);
+  expect(third).toEqual(wisselRetroPodcastDraft());
+  expect(third!.name).toBe("Wissel retrospective podcast");
+  third!.graph.steps[2]!.name = "Changed";
+  expect(builtInTemplates()[2]!.graph.steps[2]!.name).toBe("Write podcast script");
+  expect(builtInTemplates()[0]!.graph.steps[2]!.name).toBe("Write podcast script");
   expect(second).toEqual(worldNewsPodcastDraft());
   expect(second!.name).toBe("World news podcast");
   expect(first).toEqual(aiNewsPodcastDraft());

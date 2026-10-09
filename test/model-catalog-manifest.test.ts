@@ -13,8 +13,9 @@ test("every claude-cli agent's manifest model is in CLAUDE_CLI_STATIC_MODELS", a
   const registry = await Registry.load();
   const missing = registry
     .all()
-    // executor: tts is the local Kokoro step (TtsExecutor), not an LLM.
-    .filter((a) => a.executor !== "api" && a.executor !== "codex" && a.executor !== "tts")
+    // executor: tts is the local Kokoro step (TtsExecutor) and executor:
+    // digest the retrospective's collect step (DigestExecutor); neither is an LLM.
+    .filter((a) => a.executor !== "api" && a.executor !== "codex" && a.executor !== "tts" && a.executor !== "digest")
     .filter((a) => !CLAUDE_CLI_STATIC_MODELS.includes(a.costProfile.model))
     .map((a) => `${a.id}: ${a.costProfile.model}`);
   expect(missing).toEqual([]);

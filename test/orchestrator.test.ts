@@ -1392,6 +1392,27 @@ test("finishResult reschedules a retryAfter result instead of failing the task โ
   expect(after!.retryAfter).toBe(retryAfter);
 });
 
+// docs/SDD-wissel-retro-podcast.md ยง3.1: the retrospective digest counts
+// 429 retries from telemetry, so the result event must say so; a plain
+// result's event stays exactly as before.
+test("finishResult's telemetry result event carries retryAfter for a 429 reschedule, and only then", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-retry-telemetry-"));
+  try {
+    const { board, registry } = await setup([]);
+    const telemetry = new TelemetryLog(join(dir, "t.jsonl"));
+    const limited = await board.create({ title: "limited", body: "", labels: ["code"], repo: "r" });
+    const plain = await board.create({ title: "plain", body: "", labels: ["intake"], repo: "r" });
+    const retryAfter = new Date(Date.now() + 60_000).toISOString();
+    await finishResult(board, registry, { taskId: limited.id, agentId: "implementer", ok: false, summary: "session limit hit", retryAfter }, telemetry);
+    await finishResult(board, registry, { taskId: plain.id, agentId: "triager", ok: true, summary: "ok", actualCost: 0.1 }, telemetry);
+    const events = (await readFile(join(dir, "t.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    expect(events[0]).toMatchObject({ type: "result", taskId: limited.id, retryAfter });
+    expect(Object.keys(events[1]).sort()).toEqual(["actualCost", "agentId", "at", "taskId", "type"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a real 429-then-retry round trip through sweep()/WriteExecutor reuses the exact same worktree, no fresh one created", async () => {
   const { WriteExecutor } = await import("../src/executors/write.ts");
   const home = await mkdtemp(join(tmpdir(), "wissel-429-retry-test-"));

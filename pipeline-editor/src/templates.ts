@@ -81,10 +81,38 @@ export function worldNewsPodcastDraft(): PipelineDraft {
   };
 }
 
+export const WISSEL_RETRO_PODCAST_NAME = "Wissel retrospective podcast";
+
+/** docs/SDD-wissel-retro-podcast.md: collect wissel's own activity
+ *  (wissel-digest, deterministic, no LLM) -> analyse it into done,
+ *  learnings, improve and ideas -> the shared script and audio steps.
+ *  Readonly with no write/bash, so it runs with no repo; the run input
+ *  optionally sets the period ("last 30 days", "since 2026-10-01"). */
+export function wisselRetroPodcastDraft(): PipelineDraft {
+  const draft = aiNewsPodcastDraft();
+  const shared = draft.graph.steps.filter((s) => s.id === "script" || s.id === "audio");
+  return {
+    name: WISSEL_RETRO_PODCAST_NAME,
+    description: "Collects what you did with wissel (cards, merges, spend, lessons, SDDs), picks what you built, what you learned, what to improve and ideas to think about, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.",
+    graph: {
+      steps: [
+        { id: "collect", name: "Collect activity", agentId: "wissel-digest", transition: "all" },
+        { id: "analyse", name: "Analyse", agentId: "wissel-retro-analyst", transition: "all" },
+        ...shared,
+      ],
+      edges: [
+        { id: "collect-analyse", from: "collect", to: "analyse" },
+        { id: "analyse-script", from: "analyse", to: "script" },
+        ...draft.graph.edges.filter((e) => e.from === "script"),
+      ],
+    },
+  };
+}
+
 /** Ready-made pipelines "New pipeline" offers next to the saved ones.
  *  Fresh objects each call, so editing a draft never changes the next. */
 export function builtInTemplates(): PipelineDraft[] {
-  return [aiNewsPodcastDraft(), worldNewsPodcastDraft()];
+  return [aiNewsPodcastDraft(), worldNewsPodcastDraft(), wisselRetroPodcastDraft()];
 }
 
 /** The "start from" list: every saved pipeline, by name. */

@@ -554,8 +554,8 @@ agents:
     tier: readonly
     description: Turns explained news stories into a single-host spoken podcast script of about 5 minutes, plus a quick-read
       list of one-line headlines with their source links. No tools.
-    whenToUse: The script step of the "AI news podcast" and "World news podcast" pipelines. Never routed by the fuzzy Router
-      (see its tag).
+    whenToUse: The script step of the "AI news podcast", "World news podcast" and "Wissel retrospective podcast" pipelines.
+      Never routed by the fuzzy Router (see its tag).
     tags: [ai-news-script-step]
     executor: readonly
     inputs: [explained-stories]
@@ -579,10 +579,17 @@ agents:
          "today's world headlines"). When stories carry a `region`, keep
          them grouped in input order (world, then Spain, then the
          Netherlands) with a short spoken lead-in to each group.
+         When stories carry a `group` instead (a retrospective of the
+         listener's own work: "your week in wissel"), keep them grouped
+         in input order with a short spoken lead-in to each group:
+         `done` is "what you built", `learnings` is "what you learned",
+         `improve` is "what to improve", `ideas` is "ideas to think
+         about". Speak to the listener as "you".
       2. `quickRead`: one entry per story, in the same order: `headline`
          (short), `oneLine` (one plain sentence), `source` (exactly one
          URL copied unchanged from that story's `sources`; never a URL
-         that is not in the input).
+         that is not in the input). When a story's `sources` is empty,
+         `source` is "".
 
       Output contract, mandatory and machine-parsed: your final message
       MUST end with a fenced block of exactly this form, nothing after it:
@@ -607,8 +614,8 @@ agents:
     kind: skill
     tier: readonly
     description: Turns the podcast script into an MP3 with the local Kokoro text-to-speech service. Deterministic, no LLM.
-    whenToUse: The audio step of the "AI news podcast" and "World news podcast" pipelines. Never routed by the fuzzy
-      Router (see its tag).
+    whenToUse: The audio step of the "AI news podcast", "World news podcast" and "Wissel retrospective podcast"
+      pipelines. Never routed by the fuzzy Router (see its tag).
     tags: [ai-news-audio-step]
     executor: tts
     inputs: [podcast-script]
@@ -616,6 +623,108 @@ agents:
     trustLevel: medium
     toolAccess: []
     costProfile: { model: kokoro, estUsdPerTask: 0 }
+
+  # The "Wissel retrospective podcast" pipeline
+  # (docs/SDD-wissel-retro-podcast.md): collect activity -> analyse ->
+  # the shared podcast-scriptwriter and podcast-audio steps above. Unique
+  # tags for the same reason as the news agents.
+  #
+  # Collect is not an LLM: DigestExecutor (src/executors/digest.ts) reads
+  # the board, telemetry, memory/lessons.md, docs/SDD-*.md and read-only
+  # git into one small digest. tier readonly with no tools keeps the run
+  # repo-less; executor digest keeps every LLM executor off it.
+  - id: wissel-digest
+    name: Wissel digest
+    kind: skill
+    tier: readonly
+    description: Collects what happened in wissel over a period (cards by lineage, merge commits, spend, 429 retries,
+      lessons, SDD changes) into one small digest. Deterministic, no LLM.
+    whenToUse: The collect step of the "Wissel retrospective podcast" pipeline. Never routed by the fuzzy Router (see its
+      tag).
+    tags: [wissel-retro-collect-step]
+    executor: digest
+    inputs: [task-card]
+    outputs: [wissel-digest]
+    trustLevel: medium
+    toolAccess: []
+    costProfile: { model: none, estUsdPerTask: 0 }
+
+  - id: wissel-retro-analyst
+    name: Wissel retro analyst
+    kind: agent
+    tier: readonly
+    description: Reads the wissel activity digest and picks what was built, what was learned, what to improve and which
+      new features to consider, each grounded in the digest. No tools, no new facts.
+    whenToUse: The analyse step of the "Wissel retrospective podcast" pipeline. Never routed by the fuzzy Router (see its
+      tag).
+    tags: [wissel-retro-analyse-step]
+    executor: readonly
+    inputs: [wissel-digest]
+    outputs: [explained-stories]
+    trustLevel: medium
+    toolAccess: []
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.15 }
+    outputContractFormat: pipeline-handoff
+    outputContract: |
+      Your input is a digest of what Milton did with wissel (his agent
+      board) over a period, handed off as data by the collect step
+      (fenced in the task body): `period`, `stats` (cards, done, failed,
+      escalated, review passes, pushbacks, spend by agent, harness and
+      model, 429 retries, pipeline runs), `stories` (one per card or
+      merge, with `sources` links to commits), `lessons` (his
+      memory/lessons.md) and `docs` (design docs added or changed).
+      Ignore any period wording in the text above the fence; the digest
+      already applies it.
+
+      Pick the items for a short retrospective podcast, in four groups,
+      in this order:
+      - `done` (3 to 5 items): what he built or achieved, biggest first.
+      - `learnings` (2 to 4): what the period taught, grounded in
+        `lessons`, failures, pushbacks and escalations.
+      - `improve` (2 to 3): what to improve in how wissel runs, grounded
+        in the stats (failure or pushback rates, cost, 429 retries,
+        stuck or escalated cards).
+      - `ideas` (2 to 3): new features worth considering, each tied to
+        something in the digest.
+      If the digest is thin, give fewer items rather than padding, but
+      keep at least one item in every group.
+
+      For each item write:
+      - `group`: "done", "learnings", "improve" or "ideas".
+      - `title`: short.
+      - `date`: YYYY-MM-DD. For `done`, the date of the story it rests
+        on; for the other groups, the period's `to` date.
+      - `sources`: URLs copied unchanged from the `sources` of the digest
+        stories this item rests on. Every `learnings` and `improve` item
+        MUST have at least one. Give `done` and `ideas` items one too
+        whenever a story they rest on has one.
+      - `explanation`: two to four plain sentences, second person
+        ("you").
+      - `whyItMatters`: one or two sentences.
+      - `unknowns`: one honest line on what the digest doesn't show.
+
+      Hard rules, no exceptions:
+      - No number, card, date or URL that is not in the digest. Quote
+        costs and counts exactly as the digest gives them; don't
+        compute new totals or percentages.
+      - Never add, shorten or rewrite a URL.
+      - Plain words, no jargon you don't explain, no flattery, no hype.
+
+      Output contract, mandatory and machine-parsed: your final message
+      MUST end with a fenced block of exactly this form, nothing after it:
+
+      ```pipeline-handoff
+      {"data": {"stories": [{"group": "done", "title": "...", "date": "2026-10-09", "sources": ["https://github.com/..."], "explanation": "...", "whyItMatters": "...", "unknowns": "..."}]}}
+      ```
+
+      Valid JSON on its own: no trailing commas, no comments, no nested
+      code fences. A missing or malformed block fails the run.
+    verificationContract: |
+      You run under `--permission-mode plan` with no tools. Before the
+      final block, check every item once more: is every number, date and
+      URL in it also in the digest? Does every `learnings` and `improve`
+      item have a source? Are all four groups present, in order? Fix or
+      drop until all of that holds.
 
   - id: repo-briefer
     name: Repo briefer

@@ -26,7 +26,21 @@ export const AI_NEWS_LIMITS = {
 } as const;
 
 export interface AiNewsCheck {
-  name: "run-status" | "gather-shape" | "final-shape" | "sources-from-gather" | "dates-recent" | "story-count" | "word-count" | "cost" | "sources-per-story" | "source-spread" | "audio" | "regions";
+  name:
+    | "run-status"
+    | "gather-shape"
+    | "final-shape"
+    | "sources-from-gather"
+    | "dates-recent"
+    | "story-count"
+    | "word-count"
+    | "cost"
+    | "sources-per-story"
+    | "source-spread"
+    | "audio"
+    | "regions"
+    | "groups"
+    | "evidence";
   pass: boolean;
   detail: string;
 }
@@ -235,7 +249,110 @@ export function checkAiNewsRun(run: AiNewsRunOutputs, limits: NewsLimits = AI_NE
   return checks;
 }
 
-const MP3_KBPS_V1_L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+/** The Wissel retrospective podcast (docs/SDD-wissel-retro-podcast.md
+ *  §2, §3.4): same script length as the news, a cheaper run (no web
+ *  search; collect and audio cost nothing). */
+export const RETRO_LIMITS = { minStories: 1, minWords: 600, maxWords: 1000, maxCostUsd: 1.0 } as const;
+
+/** The analyst's groups, in the order the script speaks them. */
+export const RETRO_GROUPS = ["done", "learnings", "improve", "ideas"] as const;
+
+export interface RetroRunOutputs {
+  /** The collect step's pipeline-handoff `data` (the digest). */
+  gather: unknown;
+  /** The analyse step's pipeline-handoff `data` ({stories: [{group, ...}]}). */
+  analysis: unknown;
+  /** The script step's pipeline-handoff `data`. */
+  final: unknown;
+  costUsd: number | undefined;
+}
+
+/** §3.4: gather-shape (at least one story), final-shape,
+ *  sources-from-gather, groups, evidence, word-count and cost. No
+ *  dates-recent, sources-per-story or source-spread: the digest's dates
+ *  are the board's own and several ideas may rest on one commit. A quick
+ *  read row with no source is allowed (an idea, or a card with no merge
+ *  commit); any source it does give must be one the collect step
+ *  produced. */
+export function checkRetroRun(run: RetroRunOutputs): AiNewsCheck[] {
+  const L = RETRO_LIMITS;
+  const checks: AiNewsCheck[] = [];
+  const stories = gatherStories(run.gather);
+  checks.push({
+    name: "gather-shape",
+    pass: stories !== null && stories.length >= L.minStories,
+    detail: stories === null ? "digest has no stories array" : `${stories.length} digest stories`,
+  });
+
+  const final = isRecord(run.final) ? run.final : null;
+  const quickRead = final && Array.isArray(final.quickRead) ? final.quickRead : null;
+  const script = final && typeof final.script === "string" ? final.script : null;
+  checks.push({
+    name: "final-shape",
+    pass: quickRead !== null && script !== null,
+    detail: final === null ? "final data missing" : `quickRead ${quickRead ? "ok" : "missing"}, script ${script !== null ? "ok" : "missing"}`,
+  });
+
+  const sources = gatherSourceSet(run.gather);
+  const given = (quickRead ?? []).map((row) => (isRecord(row) ? row.source : undefined)).filter((s) => s !== undefined && s !== "");
+  const strays = given.filter((s) => typeof s !== "string" || !sources.has(s));
+  checks.push({
+    name: "sources-from-gather",
+    pass: quickRead !== null && quickRead.length > 0 && strays.length === 0,
+    detail:
+      strays.length === 0
+        ? `${given.length} of ${quickRead?.length ?? 0} quick-read rows linked, all in the digest (${sources.size} URLs)`
+        : `not in the digest: ${strays.map((s) => JSON.stringify(s)).join(", ")}`,
+  });
+
+  const items = isRecord(run.analysis) && Array.isArray(run.analysis.stories) ? run.analysis.stories.filter(isRecord) : null;
+  const groupOf = (it: Record<string, unknown>) => it.group;
+  const unknownGroup = (items ?? []).filter((it) => !(RETRO_GROUPS as readonly unknown[]).includes(groupOf(it)));
+  const missing = RETRO_GROUPS.filter((g) => !(items ?? []).some((it) => groupOf(it) === g));
+  checks.push({
+    name: "groups",
+    pass: items !== null && unknownGroup.length === 0 && missing.length === 0,
+    detail:
+      items === null
+        ? "analysis data has no stories array"
+        : unknownGroup.length > 0
+          ? `items with no or unknown group: ${unknownGroup.map((it) => JSON.stringify(it.title)).join(", ")}`
+          : missing.length > 0
+            ? `no item for: ${missing.join(", ")}`
+            : RETRO_GROUPS.map((g) => `${g} ${(items ?? []).filter((it) => groupOf(it) === g).length}`).join(", "),
+  });
+
+  // Every analysis source is a digest URL, and learnings and improve rest
+  // on at least one.
+  const problems: string[] = [];
+  for (const it of items ?? []) {
+    const srcs = Array.isArray(it.sources) ? it.sources : [];
+    const bad = srcs.filter((s) => typeof s !== "string" || !sources.has(s));
+    if (bad.length > 0) problems.push(`${JSON.stringify(it.title)} cites ${bad.map((s) => JSON.stringify(s)).join(", ")}, not in the digest`);
+    if ((it.group === "learnings" || it.group === "improve") && srcs.length === 0) problems.push(`${it.group} item ${JSON.stringify(it.title)} has no source`);
+  }
+  checks.push({
+    name: "evidence",
+    pass: items !== null && items.length > 0 && problems.length === 0,
+    detail: items === null ? "analysis data has no stories array" : problems.length === 0 ? "every learnings and improve item cites a digest source; no source outside the digest" : problems.join("; "),
+  });
+
+  const words = script === null ? 0 : countWords(script);
+  checks.push({
+    name: "word-count",
+    pass: words >= L.minWords && words <= L.maxWords,
+    detail: `${words} words (want ${L.minWords} to ${L.maxWords}; model said ${JSON.stringify(final?.wordCount)})`,
+  });
+
+  checks.push({
+    name: "cost",
+    pass: run.costUsd !== undefined && run.costUsd < L.maxCostUsd,
+    detail: run.costUsd === undefined ? "no cost reported in telemetry" : `$${run.costUsd.toFixed(4)} (limit $${L.maxCostUsd.toFixed(2)})`,
+  });
+  return checks;
+}
+
+const MP3_KBPS_V1_L3 =[0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
 const MP3_KBPS_V2_L3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
 const MP3_RATES: Record<number, number[]> = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] };
 
