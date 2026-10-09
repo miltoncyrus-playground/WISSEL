@@ -100,6 +100,48 @@ test("sweep never routes or runs an archived inbox card", async () => {
   expect(seen).toEqual([]);
 });
 
+// Regression, 2026-10-09: a card rescheduled after a 429 sat in inbox
+// about 2 hours past its retryAfter, because only board events trigger a
+// sweep and a quiet board has none.
+test("a started orchestrator runs a rescheduled card once its retryAfter passes, with no board event", async () => {
+  const seen: string[] = [];
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => {
+      seen.push(task.id);
+      return { taskId: task.id, agentId: agent.id, ok: true, summary: "x" };
+    }),
+  ]);
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await board.scheduleRetry(task.id, new Date(Date.now() + 300).toISOString());
+
+  orchestrator.start();
+  try {
+    await new Promise((r) => setTimeout(r, 100));
+    expect(seen).toEqual([]); // not before its time
+    const deadline = Date.now() + 3000;
+    while (seen.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    expect(seen).toEqual([task.id]);
+    expect((await board.get(task.id))!.status).toBe("done");
+  } finally {
+    orchestrator.stop();
+  }
+});
+
+test("sweep() on an orchestrator that was never started arms no retry timer", async () => {
+  const seen: string[] = [];
+  const { board, orchestrator } = await setup([
+    fakeExecutor("readonly", async (task, agent) => {
+      seen.push(task.id);
+      return { taskId: task.id, agentId: agent.id, ok: true, summary: "x" };
+    }),
+  ]);
+  const task = await board.create({ title: "raw input", body: "", labels: ["intake"], repo: "r" });
+  await board.scheduleRetry(task.id, new Date(Date.now() + 200).toISOString());
+  await orchestrator.sweep();
+  await new Promise((r) => setTimeout(r, 1500));
+  expect(seen).toEqual([]);
+});
+
 test("with a HarnessPool configured, a locally-run task is stamped with the picked harness before it finishes, and released after", async () => {
   const seenHarness: (Harness | undefined)[] = [];
   const harnesses = HarnessPool.from([{ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true }]);

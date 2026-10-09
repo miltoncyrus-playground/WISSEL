@@ -949,11 +949,58 @@ export class Orchestrator {
     private opts: OrchestratorOptions = {},
   ) {}
 
+  private started = false;
+  private onBoardEvent = () => void this.sweep();
+  /** The one pending wake-up for the earliest future `retryAfter` (a card
+   *  rescheduled after a 429). Board events alone never fire when a retry
+   *  time passes, so on a quiet board a rate-limited card waited until
+   *  some unrelated event or a restart (seen 2026-10-09: card d3f87348
+   *  sat ~2h past its retry time). */
+  private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private retryTimerAt: number | undefined;
+
   /** Runs an initial sweep, then re-sweeps on every board event that could
-   *  make a previously-blocked task eligible. */
+   *  make a previously-blocked task eligible, and when the earliest
+   *  scheduled retry comes due. */
   start(): void {
-    this.board.events.on("event", () => void this.sweep());
+    this.started = true;
+    this.board.events.on("event", this.onBoardEvent);
     void this.sweep();
+  }
+
+  /** Stops reacting to board events and cancels the retry wake-up. */
+  stop(): void {
+    this.started = false;
+    this.board.events.off("event", this.onBoardEvent);
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    this.retryTimerAt = undefined;
+  }
+
+  /** Arms (or moves earlier) a single timer for the earliest future
+   *  retryAfter among unrouted inbox/ready cards. Only while started, so
+   *  a test calling sweep() directly never leaves a timer behind. */
+  private scheduleRetryWake(tasks: TaskCard[]): void {
+    if (!this.started) return;
+    const now = Date.now();
+    let earliest: number | undefined;
+    for (const t of tasks) {
+      if (!t.retryAfter || t.routedTo || t.archivedAt || (t.status !== "inbox" && t.status !== "ready")) continue;
+      const at = new Date(t.retryAfter).getTime();
+      if (Number.isNaN(at) || at <= now) continue;
+      if (earliest === undefined || at < earliest) earliest = at;
+    }
+    if (earliest === undefined) return;
+    if (this.retryTimer && this.retryTimerAt !== undefined && this.retryTimerAt <= earliest) return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimerAt = earliest;
+    // +1s so the retry time has definitely passed when the sweep reads it.
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      this.retryTimerAt = undefined;
+      void this.sweep();
+    }, Math.min(earliest - now + 1000, 2 ** 31 - 1));
+    this.retryTimer.unref?.();
   }
 
   /** Processes every currently-eligible task once, and doesn't resolve
@@ -963,6 +1010,7 @@ export class Orchestrator {
   async sweep(): Promise<void> {
     const tasks = await this.board.list();
     const byId = new Map(tasks.map((t) => [t.id, t]));
+    this.scheduleRetryWake(tasks);
     const pending: Promise<void>[] = [];
 
     // Computed once per sweep() call, not per task — see
