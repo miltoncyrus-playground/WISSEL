@@ -200,8 +200,16 @@ test.describe("Board view", () => {
     await expect(page.locator("#agentsBox")).toContainText("implementer");
     await expect(page.locator("#agentsBox .tier-chip.write").first()).toContainText("handed off");
     await expect(page.locator("#skillsBox")).toContainText("lint-fixer");
-    await expect(page.locator("#agentsCount")).toContainText("13 agents");
-    await expect(page.locator("#skillsCount")).toContainText("5 skills");
+    // Counts come from GET /agents, not hardcoded: adding an agent or a
+    // skill to the manifest must not break this test (it went stale
+    // twice, 5c60409 and again with podcast-audio).
+    const fleet = (await (await page.request.get("/agents")).json()) as { kind: string }[];
+    const agentCount = fleet.filter((a) => a.kind === "agent").length;
+    const skillCount = fleet.filter((a) => a.kind === "skill").length;
+    expect(agentCount).toBeGreaterThan(0);
+    expect(skillCount).toBeGreaterThan(0);
+    await expect(page.locator("#agentsCount")).toContainText(`${agentCount} agents`);
+    await expect(page.locator("#skillsCount")).toContainText(`${skillCount} skills`);
 
     // No cost figure anywhere in the fleet boxes — replaced by the active dot.
     await expect(page.locator(".fleet-cost")).toHaveCount(0);
