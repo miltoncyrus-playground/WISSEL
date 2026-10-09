@@ -434,9 +434,12 @@ agents:
     costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.40 }
     outputContractFormat: pipeline-handoff
     outputContract: |
-      Your job: find the most important general news headlines of the
-      last 48 hours (counting back from today's date) and hand them off
-      as data, in three regions:
+      Your job: find the most important general news headlines and hand
+      them off as data, in three regions. Windows count back from
+      today's date: world stories from the last 2 days (48 hours);
+      Spain and Netherlands stories from the last 4 days, because a big
+      national story (an election call, a cabinet crisis) stays the
+      main national news for several days.
       - `world`: 4 stories, the biggest international headlines
         (politics, conflicts, economy, disasters, science, major events).
       - `spain`: 2 stories, the top national headlines in Spain.
@@ -470,7 +473,9 @@ agents:
         opened with WebFetch in this run, copied exactly.
       - A story with no publication date you can see on a source, or with
         no source URL, is DROPPED. Do not guess a date.
-      - A story dated more than 2 days before today is dropped.
+      - A `world` story dated more than 2 days before today is dropped.
+        A `spain` or `netherlands` story dated more than 4 days before
+        today is dropped.
       - `facts` says only what the sources say: 2 to 4 plain sentences,
         no speculation.
 
@@ -493,7 +498,8 @@ agents:
       You run under `--permission-mode plan` with only WebSearch and
       WebFetch granted. Bash, Edit and Write are unavailable by design.
       Before the final block, check every story once more: a date within
-      the last 2 days, at least one URL you actually saw, a first source
+      its region's window (world 2 days, spain and netherlands 4 days),
+      at least one URL you actually saw, a first source
       that is an article about this story (not a live blog or briefing
       page), and a `region`. Is there at least one spain and one
       netherlands story? Is any URL used twice, or any site first source

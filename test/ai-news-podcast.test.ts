@@ -524,7 +524,7 @@ test("world news podcast: same explain, script and audio steps as the AI one, on
 
 test("world-news-gatherer: contract covers world, spain and netherlands with a region field, a 48 hour window and the same source rules", async () => {
   const c = (await Registry.load()).get("world-news-gatherer")!.outputContract!;
-  for (const key of ['"region"', '"world"', '"spain"', '"netherlands"', '"generatedAt"', '"stories"', '"sources"', '"facts"', "last 48 hours", "more than 2 days", "No URL may appear in more than one story", "At most 3 stories"]) {
+  for (const key of ['"region"', '"world"', '"spain"', '"netherlands"', '"generatedAt"', '"stories"', '"sources"', '"facts"', "last 2 days (48 hours)", "last 4 days", "more than 2 days", "more than 4 days", "No URL may appear in more than one story", "At most 3 stories"]) {
     expect(c).toContain(key);
   }
   // The shared steps pass region through and group by it.

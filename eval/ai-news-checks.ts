@@ -99,9 +99,13 @@ export function ageInDays(date: unknown, now: Date): number | null {
 
 export type NewsLimits = { [K in keyof typeof AI_NEWS_LIMITS]: number };
 
-/** The world headlines pipeline: same checks, a 2-day window (it gathers
- *  the last 48 hours, not the week). */
-export const WORLD_NEWS_LIMITS: NewsLimits = { ...AI_NEWS_LIMITS, maxAgeDays: 2 };
+/** The world headlines pipeline: same checks, shorter windows. World
+ *  stories must be at most 2 days old; Spain and Netherlands stories at
+ *  most 4 (Milton, 2026-10-10: a big national story such as an election
+ *  call stays the main national news for days). `maxAgeDays` is the
+ *  loosest window; checkWorldNewsRun applies the per-region ones. */
+export const WORLD_NEWS_LIMITS: NewsLimits = { ...AI_NEWS_LIMITS, maxAgeDays: 4 };
+export const WORLD_NEWS_REGION_MAX_AGE_DAYS: Record<string, number> = { world: 2, spain: 4, netherlands: 4 };
 
 /** Regions every world run must cover (Milton, 2026-10-09: generic world
  *  headlines plus Spain and the Netherlands). */
@@ -113,6 +117,21 @@ export function checkWorldNewsRun(run: AiNewsRunOutputs): AiNewsCheck[] {
   const checks = checkAiNewsRun(run, WORLD_NEWS_LIMITS);
   const stories = gatherStories(run.gather) ?? [];
   const regionOf = (st: unknown) => (isRecord(st) ? st.region : undefined);
+  // Per-region date windows replace the generic dates-recent result.
+  const tooOld = stories.filter((st) => {
+    const age = ageInDays(st.date, run.now);
+    const max = WORLD_NEWS_REGION_MAX_AGE_DAYS[String(regionOf(st))] ?? WORLD_NEWS_LIMITS.maxAgeDays;
+    return age === null || age > max || age < -1;
+  });
+  const di = checks.findIndex((c) => c.name === "dates-recent");
+  checks[di] = {
+    name: "dates-recent",
+    pass: stories.length > 0 && tooOld.length === 0,
+    detail:
+      tooOld.length === 0
+        ? "every story within its region's window (world 2 days, spain and netherlands 4)"
+        : `out of range or missing: ${tooOld.map((st) => `${JSON.stringify(st.title)} (${String(regionOf(st))}, ${JSON.stringify(st.date)})`).join(", ")}`,
+  };
   const unknown = stories.filter((st) => !(WORLD_NEWS_REGIONS as readonly unknown[]).includes(regionOf(st)));
   const missing = WORLD_NEWS_REGIONS.filter((r) => !stories.some((st) => regionOf(st) === r));
   checks.push({

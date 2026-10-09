@@ -153,9 +153,25 @@ test("world run: a missing region, or a story with none, fails the regions check
   expect(worldFailing(worldRun(["world", "world", "spain", "netherlands", undefined]))).toEqual(["regions"]);
 });
 
-test("world run: the window is 2 days, not 7", () => {
-  // 2026-10-04 is 3 days before NOW: fine for AI news, too old for headlines.
-  const old = worldRun(["world", "world", "world", "spain", "netherlands"], "2026-10-04");
-  expect(worldFailing(old)).toEqual(["dates-recent"]);
-  expect(failing(old)).toEqual([]);
+test("world run: world stories may be 2 days old, Spain and Netherlands 4", () => {
+  // NOW is 2026-10-07. 2026-10-04 is 3 days back, 2026-10-02 is 5.
+  const mk = (dates: Record<string, string>) => {
+    const regions = ["world", "world", "world", "spain", "netherlands"];
+    const stories = regions.map((region, i) => ({ ...story(i + 1, dates[region]!), region }));
+    return goodRun({
+      gather: { generatedAt: "2026-10-07", stories },
+      final: { quickRead: stories.map((s) => ({ headline: s.title, oneLine: "x", source: s.sources[0] })), script: `${words(400)}\n\n${words(400)}`, wordCount: 800 },
+    });
+  };
+  // A 3-day-old Spain or Netherlands story is fine (the 2026-10-09 run's
+  // election call was this case).
+  expect(worldFailing(mk({ world: "2026-10-06", spain: "2026-10-04", netherlands: "2026-10-04" }))).toEqual([]);
+  // A 3-day-old world story is not.
+  const oldWorld = mk({ world: "2026-10-04", spain: "2026-10-06", netherlands: "2026-10-06" });
+  expect(worldFailing(oldWorld)).toEqual(["dates-recent"]);
+  expect(checkWorldNewsRun(oldWorld).find((c) => c.name === "dates-recent")!.detail).toContain("(world, ");
+  // A 5-day-old national story is too old too.
+  expect(worldFailing(mk({ world: "2026-10-06", spain: "2026-10-02", netherlands: "2026-10-06" }))).toEqual(["dates-recent"]);
+  // The AI checks keep their 7-day window.
+  expect(failing(mk({ world: "2026-10-02", spain: "2026-10-02", netherlands: "2026-10-02" }))).toEqual([]);
 });
