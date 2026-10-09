@@ -1,0 +1,14 @@
+# Runs the AI and World news podcast pipelines through the live wissel
+# server (scripts/run-pipelines.ts). Triggered by
+# wissel-morning-podcasts.timer. Install: see ops/systemd/README.md.
+[Unit]
+Description=wissel: AI news + World news podcasts
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/code/wissel
+ExecStart=%h/.bun/bin/bun run scripts/run-pipelines.ts "AI news podcast" "World news podcast"
+# Both runs plus two Kokoro syntheses on this CPU take ~15 minutes.
+TimeoutStartSec=1h

@@ -1,0 +1,12 @@
+# 06:00 Spanish/Dutch time every day (Europe/Madrid and Europe/Amsterdam
+# share CET/CEST), daylight saving handled by systemd. Persistent: a run
+# missed while the machine was off fires once on the next boot.
+[Unit]
+Description=wissel: news podcasts at 06:00 Europe/Madrid
+
+[Timer]
+OnCalendar=*-*-* 06:00:00 Europe/Madrid
+Persistent=true
+
+[Install]
+WantedBy=timers.target
