@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
+import { builtInTemplates } from "../pipeline-editor/src/templates.ts";
 
 // docs/SDD-ui-cleanup.md §4.2 (card B2): the pipeline editor runs inside
 // the board shell (#/pipelines/new, #/pipelines/edit/<id>), uses the
@@ -326,18 +327,23 @@ test.describe("pipeline editor in the board shell", () => {
   // docs/SDD-ai-news-podcast.md §3.3: the AI news podcast is offered as
   // a built-in template under New pipeline. Not saved here, so nothing
   // is left on the Pipelines page.
-  test("start from the AI news podcast template: three steps in a line with the news agents", async ({ page }) => {
-    await openNewPipeline(page);
-    await page.getByRole("button", { name: "Start from template AI news podcast", exact: true }).click();
-    await expect(page.locator(".react-flow__node")).toHaveCount(3);
-    await expect(page.locator(".react-flow__edge")).toHaveCount(2);
-    await expect(page.locator('input[placeholder="Pipeline name"]')).toHaveValue("AI news podcast");
-    expect(await readStepSnapshots(page, 3)).toEqual([
-      { name: "Gather news", agentId: "ai-news-gatherer", transition: "all", joinMode: null },
-      { name: "Explain simply", agentId: "eli5-explainer", transition: "all", joinMode: null },
-      { name: "Write podcast script", agentId: "podcast-scriptwriter", transition: "all", joinMode: null },
-    ]);
-  });
+  // Expectations come from the templates themselves (a dependency-free
+  // module), not hardcoded: this test went stale when "Make audio" made
+  // the AI template four steps.
+  for (const template of builtInTemplates()) {
+    test(`start from the ${template.name} template: its steps in a line with the right agents`, async ({ page }) => {
+      const steps = template.graph.steps;
+      expect(steps.length).toBeGreaterThan(2);
+      await openNewPipeline(page);
+      await page.getByRole("button", { name: `Start from template ${template.name}`, exact: true }).click();
+      await expect(page.locator(".react-flow__node")).toHaveCount(steps.length);
+      await expect(page.locator(".react-flow__edge")).toHaveCount(template.graph.edges.length);
+      await expect(page.locator('input[placeholder="Pipeline name"]')).toHaveValue(template.name);
+      expect(await readStepSnapshots(page, steps.length)).toEqual(
+        steps.map((s) => ({ name: s.name, agentId: s.agentId, transition: s.transition, joinMode: s.joinMode ?? null })),
+      );
+    });
+  }
 
   test("the editor uses the board's colour tokens and follows its light/dark setting", async ({ page }) => {
     // Resolves a board token the same way the board's own CSS does.

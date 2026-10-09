@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { aiNewsPodcastDraft, blankDraft, builtInTemplates, draftFromPipeline, templateChoices } from "../pipeline-editor/src/templates.ts";
+import { aiNewsPodcastDraft, blankDraft, builtInTemplates, draftFromPipeline, templateChoices, worldNewsPodcastDraft } from "../pipeline-editor/src/templates.ts";
 import { colorModeFor } from "../pipeline-editor/src/theme.ts";
 import type { PipelineDef } from "../pipeline-editor/src/types.ts";
 
@@ -68,9 +68,11 @@ test("the start-from list is every saved pipeline, sorted by name, without reord
   expect(templateChoices([])).toEqual([]);
 });
 
-test("built-in templates: the AI news podcast, as a fresh copy every time", () => {
-  const [first, ...rest] = builtInTemplates();
+test("built-in templates: the AI and World news podcasts, as fresh copies every time", () => {
+  const [first, second, ...rest] = builtInTemplates();
   expect(rest).toEqual([]);
+  expect(second).toEqual(worldNewsPodcastDraft());
+  expect(second!.name).toBe("World news podcast");
   expect(first).toEqual(aiNewsPodcastDraft());
   expect(first!.name).toBe("AI news podcast");
   expect(Object.keys(first!).sort()).toEqual(["description", "graph", "name"]);

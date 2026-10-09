@@ -62,10 +62,29 @@ export function aiNewsPodcastDraft(): PipelineDraft {
   };
 }
 
+export const WORLD_NEWS_PODCAST_NAME = "World news podcast";
+
+/** The same four steps as the AI news podcast with a different gather
+ *  step: world-news-gatherer finds the last 48 hours' top world
+ *  headlines plus Spain and the Netherlands, each story tagged with a
+ *  `region`. Explain, script and audio are shared unchanged (the
+ *  explainer copies `region` through; the scriptwriter groups by it). */
+export function worldNewsPodcastDraft(): PipelineDraft {
+  const draft = aiNewsPodcastDraft();
+  return {
+    name: WORLD_NEWS_PODCAST_NAME,
+    description: "Gathers today's top world headlines plus the main news from Spain and the Netherlands, explains them simply, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.",
+    graph: {
+      steps: draft.graph.steps.map((s) => (s.id === "gather" ? { ...s, name: "Gather headlines", agentId: "world-news-gatherer" } : s)),
+      edges: draft.graph.edges,
+    },
+  };
+}
+
 /** Ready-made pipelines "New pipeline" offers next to the saved ones.
  *  Fresh objects each call, so editing a draft never changes the next. */
 export function builtInTemplates(): PipelineDraft[] {
-  return [aiNewsPodcastDraft()];
+  return [aiNewsPodcastDraft(), worldNewsPodcastDraft()];
 }
 
 /** The "start from" list: every saved pipeline, by name. */

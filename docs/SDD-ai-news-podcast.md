@@ -231,6 +231,31 @@ The telemetry `result` event of the audio step carries
 definition agentId (falling back to the card's `routedTo`), and
 `newsAudioView` maps them to ready / making / failed / none.
 
+### 3.8 World news podcast, revision 2026-10-09
+
+Milton: "reuse the same pipeline but now for generic headline world
+news, also check in headlines from Spain and the Netherlands."
+
+- Same four steps and edges. Only the gather step changes: a new agent
+  `world-news-gatherer` (readonly, `toolAccess: [web]`, sonnet, unique
+  tag) with the same source rules as `ai-news-gatherer` (own page per
+  story, roundups and live blogs only for discovery, no shared URL, at
+  most 3 stories per lead site) and a 48 hour window. It returns 4
+  `world`, 2 `spain` and 2 `netherlands` stories, each with a `region`.
+  Spanish and Dutch sources are read in the original and written up in
+  English.
+- `eli5-explainer` copies `region` through; `podcast-scriptwriter`
+  names the topic in its intro from the stories and, when stories have a
+  region, keeps them grouped (world, Spain, the Netherlands) with a
+  spoken lead-in per group. Both changes leave the AI pipeline's
+  behaviour the same (its stories have no region).
+- Template `worldNewsPodcastDraft()` (pipeline-editor/src/templates.ts),
+  listed under New pipeline; `bun run seed:ai-news` seeds both
+  pipelines.
+- Checks: `checkWorldNewsRun` (eval/ai-news-checks.ts) is the AI checks
+  with a 2 day window plus `regions` (every story has a known region,
+  each region has at least one story). `bun run eval:world-news`.
+
 ## 4. Tests (gate lane, every card)
 
 - `web` grant: a readonly agent with `toolAccess: [web]` gets

@@ -33,9 +33,14 @@ import { parsePipelineHandoff } from "../src/executors/parse-pipeline-handoff.ts
 import { SqliteBoard } from "../src/services/board.ts";
 import { SqlitePipelineStore } from "../src/services/pipelines.ts";
 import { TelemetryLog } from "../src/services/telemetry.ts";
-import { seedAiNewsPipeline } from "../scripts/seed-ai-news-pipeline.ts";
+import { seedAiNewsPipeline, seedWorldNewsPipeline } from "../scripts/seed-ai-news-pipeline.ts";
 import { TtsExecutor, audioFilePath } from "../src/executors/tts.ts";
-import { checkAiNewsRun, checkAudio, countWords, type AiNewsCheck } from "./ai-news-checks.ts";
+import { checkAiNewsRun, checkAudio, checkWorldNewsRun, countWords, type AiNewsCheck } from "./ai-news-checks.ts";
+
+/** `--world` runs the "World news podcast" pipeline (SDD §3.8) with its
+ *  own checks (2-day window, every region covered) instead of the AI one:
+ *  `bun run eval:world-news`. */
+const WORLD = process.argv.includes("--world");
 
 const RUNS = 3;
 const NEEDED = 2;
@@ -69,7 +74,7 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
     const board = new SqliteBoard();
     const pipelines = new SqlitePipelineStore(board.db);
     const registry = await Registry.load();
-    const { pipeline } = await seedAiNewsPipeline(pipelines, registry);
+    const { pipeline } = await (WORLD ? seedWorldNewsPipeline : seedAiNewsPipeline)(pipelines, registry);
     const audioDir = join(homeDir, "audio");
     const ctx: PipelineRunnerContext = {
       executors: [
@@ -111,7 +116,7 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
         pass: root.status === "done",
         detail: `run ${root.status}; steps: ${steps.map((t) => `${t.pipelineStepId}=${t.status}`).join(", ")}${audio && !audio.ok ? `; audio: ${audio.summary}` : ""}`,
       },
-      ...checkAiNewsRun({ gather: gatherHandoff?.data, final: finalHandoff?.data, costUsd, now }),
+      ...(WORLD ? checkWorldNewsRun : checkAiNewsRun)({ gather: gatherHandoff?.data, final: finalHandoff?.data, costUsd, now }),
       checkAudio({ audio: audioHandoff?.data, file: mp3 ? new Uint8Array(mp3) : null, words: countWords(script) }),
     ];
     const pass = checks.every((c) => c.pass);
@@ -134,7 +139,7 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
-  const outDir = join("/tmp/wissel-eval-ai-news", new Date().toISOString().replace(/[:.]/g, "-"));
+  const outDir = join(WORLD ? "/tmp/wissel-eval-world-news" : "/tmp/wissel-eval-ai-news", new Date().toISOString().replace(/[:.]/g, "-"));
   await mkdir(outDir, { recursive: true });
   let passes = 0;
   let fails = 0;

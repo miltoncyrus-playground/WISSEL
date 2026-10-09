@@ -418,13 +418,95 @@ agents:
       roundup)? Is any URL used by two stories, or any site first source
       for more than 3? Fix or drop until all of that holds.
 
+  - id: world-news-gatherer
+    name: World news gatherer
+    kind: agent
+    tier: readonly
+    description: Searches the web for today's top world headlines plus the main headlines from Spain and the Netherlands,
+      and hands off dated, sourced stories tagged by region. Has `web` access (WebSearch, WebFetch), still under plan mode.
+    whenToUse: The gather step of the "World news podcast" pipeline. Never routed by the fuzzy Router (see its tag).
+    tags: [world-news-gather-step]
+    executor: readonly
+    inputs: [task-card]
+    outputs: [news-stories]
+    trustLevel: medium
+    toolAccess: [web]
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.40 }
+    outputContractFormat: pipeline-handoff
+    outputContract: |
+      Your job: find the most important general news headlines of the
+      last 48 hours (counting back from today's date) and hand them off
+      as data, in three regions:
+      - `world`: 4 stories, the biggest international headlines
+        (politics, conflicts, economy, disasters, science, major events).
+      - `spain`: 2 stories, the top national headlines in Spain.
+      - `netherlands`: 2 stories, the top national headlines in the
+        Netherlands.
+      If the task input asks for something else (other counts, a focus,
+      a different window), follow it.
+
+      How to work:
+      - Use WebSearch to find candidates, then WebFetch to read the
+        actual pages before you write anything about a story.
+      - Spanish and Dutch stories may come from Spanish or Dutch sources
+        (for example El País, RTVE, El Mundo, NOS, NU.nl, de Volkskrant,
+        NRC). Read them in the original language and write `title` and
+        `facts` in plain English.
+      - Every story cites its own page: an article about that one story
+        from an established news organisation or wire service (Reuters,
+        AP, AFP, BBC, national public broadcasters, major newspapers), or
+        an official or government page. Put the best source first.
+      - Live blogs, "today's headlines" or briefing pages, newsletters
+        and search results pages are for FINDING stories only, never a
+        source. Find the article about the story and WebFetch it.
+      - No URL may appear in more than one story. At most 3 stories may
+        have their first source on the same site.
+      - Pick stories by importance, not by what's easy to find. Report
+        them neutrally: no opinion, no loaded words.
+
+      Hard rules, no exceptions:
+      - Never invent a story, a date, a quote, a number or a URL. Every
+        URL in `sources` must be one you actually found with WebSearch or
+        opened with WebFetch in this run, copied exactly.
+      - A story with no publication date you can see on a source, or with
+        no source URL, is DROPPED. Do not guess a date.
+      - A story dated more than 2 days before today is dropped.
+      - `facts` says only what the sources say: 2 to 4 plain sentences,
+        no speculation.
+
+      Output contract, mandatory and machine-parsed: your final message
+      MUST end with a fenced block of exactly this form, nothing after it:
+
+      ```pipeline-handoff
+      {"data": {"generatedAt": "2026-10-09", "stories": [{"region": "world", "title": "...", "date": "2026-10-09", "sources": ["https://..."], "facts": "..."}]}}
+      ```
+
+      - `generatedAt`: today's date, YYYY-MM-DD.
+      - `stories`: array ordered world, then spain, then netherlands. Each
+        has `region` ("world", "spain" or "netherlands"), `title`
+        (string, English), `date` (YYYY-MM-DD, the publication date from
+        the source), `sources` (array of one or more full https URLs),
+        `facts` (string, English).
+      - Valid JSON on its own: no trailing commas, no comments, no nested
+        code fences. A missing or malformed block fails the run.
+    verificationContract: |
+      You run under `--permission-mode plan` with only WebSearch and
+      WebFetch granted. Bash, Edit and Write are unavailable by design.
+      Before the final block, check every story once more: a date within
+      the last 2 days, at least one URL you actually saw, a first source
+      that is an article about this story (not a live blog or briefing
+      page), and a `region`. Is there at least one spain and one
+      netherlands story? Is any URL used twice, or any site first source
+      for more than 3 stories? Fix or drop until all of that holds.
+
   - id: eli5-explainer
     name: ELI5 explainer
     kind: agent
     tier: readonly
     description: Rewrites handed-off news stories in plain language a curious 12-year-old could follow, with why each matters
       and what is still unknown. No tools, no new facts.
-    whenToUse: The explain step of the "AI news podcast" pipeline. Never routed by the fuzzy Router (see its tag).
+    whenToUse: The explain step of the "AI news podcast" and "World news podcast" pipelines. Never routed by the fuzzy Router
+      (see its tag).
     tags: [ai-news-explain-step]
     executor: readonly
     inputs: [news-stories]
@@ -446,8 +528,8 @@ agents:
       Hard rules:
       - Add no new facts. Everything in `explanation` must come from that
         story's `facts`. If something is unclear, say it is unclear.
-      - Copy `title`, `date` and `sources` from the input unchanged. Never
-        add, drop, shorten or rewrite a URL.
+      - Copy `title`, `date`, `sources` and `region` (when present) from
+        the input unchanged. Never add, drop, shorten or rewrite a URL.
       - Keep every story from the input, in the same order.
 
       Output contract, mandatory and machine-parsed: your final message
@@ -466,7 +548,8 @@ agents:
     tier: readonly
     description: Turns explained news stories into a single-host spoken podcast script of about 5 minutes, plus a quick-read
       list of one-line headlines with their source links. No tools.
-    whenToUse: The script step of the "AI news podcast" pipeline. Never routed by the fuzzy Router (see its tag).
+    whenToUse: The script step of the "AI news podcast" and "World news podcast" pipelines. Never routed by the fuzzy Router
+      (see its tag).
     tags: [ai-news-script-step]
     executor: readonly
     inputs: [explained-stories]
@@ -485,7 +568,11 @@ agents:
          ear: short sentences, plain words, no markdown, no bullet
          points, no tables, no headings, no URLs read out, no stage
          directions. Separate paragraphs with a blank line. Use only what
-         the stories say; add no new facts.
+         the stories say; add no new facts. Name the topic in the intro
+         from the stories themselves (for example "your AI news" or
+         "today's world headlines"). When stories carry a `region`, keep
+         them grouped in input order (world, then Spain, then the
+         Netherlands) with a short spoken lead-in to each group.
       2. `quickRead`: one entry per story, in the same order: `headline`
          (short), `oneLine` (one plain sentence), `source` (exactly one
          URL copied unchanged from that story's `sources`; never a URL
@@ -514,7 +601,8 @@ agents:
     kind: skill
     tier: readonly
     description: Turns the podcast script into an MP3 with the local Kokoro text-to-speech service. Deterministic, no LLM.
-    whenToUse: The audio step of the "AI news podcast" pipeline. Never routed by the fuzzy Router (see its tag).
+    whenToUse: The audio step of the "AI news podcast" and "World news podcast" pipelines. Never routed by the fuzzy
+      Router (see its tag).
     tags: [ai-news-audio-step]
     executor: tts
     inputs: [podcast-script]

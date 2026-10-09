@@ -26,7 +26,7 @@ export const AI_NEWS_LIMITS = {
 } as const;
 
 export interface AiNewsCheck {
-  name: "run-status" | "gather-shape" | "final-shape" | "sources-from-gather" | "dates-recent" | "story-count" | "word-count" | "cost" | "sources-per-story" | "source-spread" | "audio";
+  name: "run-status" | "gather-shape" | "final-shape" | "sources-from-gather" | "dates-recent" | "story-count" | "word-count" | "cost" | "sources-per-story" | "source-spread" | "audio" | "regions";
   pass: boolean;
   detail: string;
 }
@@ -97,8 +97,39 @@ export function ageInDays(date: unknown, now: Date): number | null {
   return Math.round((today - then) / DAY_MS);
 }
 
-export function checkAiNewsRun(run: AiNewsRunOutputs): AiNewsCheck[] {
-  const L = AI_NEWS_LIMITS;
+export type NewsLimits = { [K in keyof typeof AI_NEWS_LIMITS]: number };
+
+/** The world headlines pipeline: same checks, a 2-day window (it gathers
+ *  the last 48 hours, not the week). */
+export const WORLD_NEWS_LIMITS: NewsLimits = { ...AI_NEWS_LIMITS, maxAgeDays: 2 };
+
+/** Regions every world run must cover (Milton, 2026-10-09: generic world
+ *  headlines plus Spain and the Netherlands). */
+export const WORLD_NEWS_REGIONS = ["world", "spain", "netherlands"] as const;
+
+/** checkAiNewsRun with WORLD_NEWS_LIMITS, plus a `regions` check: every
+ *  gathered story has a known region and each region has a story. */
+export function checkWorldNewsRun(run: AiNewsRunOutputs): AiNewsCheck[] {
+  const checks = checkAiNewsRun(run, WORLD_NEWS_LIMITS);
+  const stories = gatherStories(run.gather) ?? [];
+  const regionOf = (st: unknown) => (isRecord(st) ? st.region : undefined);
+  const unknown = stories.filter((st) => !(WORLD_NEWS_REGIONS as readonly unknown[]).includes(regionOf(st)));
+  const missing = WORLD_NEWS_REGIONS.filter((r) => !stories.some((st) => regionOf(st) === r));
+  checks.push({
+    name: "regions",
+    pass: stories.length > 0 && unknown.length === 0 && missing.length === 0,
+    detail:
+      unknown.length > 0
+        ? `stories with no or unknown region: ${unknown.map((st) => JSON.stringify(st.title)).join(", ")}`
+        : missing.length > 0
+          ? `no story for: ${missing.join(", ")}`
+          : WORLD_NEWS_REGIONS.map((r) => `${r} ${stories.filter((st) => regionOf(st) === r).length}`).join(", "),
+  });
+  return checks;
+}
+
+export function checkAiNewsRun(run: AiNewsRunOutputs, limits: NewsLimits = AI_NEWS_LIMITS): AiNewsCheck[] {
+  const L = limits;
   const checks: AiNewsCheck[] = [];
   const stories = gatherStories(run.gather);
   checks.push({

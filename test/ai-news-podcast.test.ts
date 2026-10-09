@@ -19,12 +19,13 @@ import { SqliteBoard } from "../src/services/board.ts";
 import { TelemetryLog } from "../src/services/telemetry.ts";
 import { SqlitePipelineStore, type PipelineStore } from "../src/services/pipelines.ts";
 import { pipelineNeedsRepo } from "../src/api/public/board-pipelines.js";
-import { aiNewsPodcastDraft, AI_NEWS_PODCAST_NAME } from "../pipeline-editor/src/templates.ts";
-import { seedAiNewsPipeline } from "../scripts/seed-ai-news-pipeline.ts";
+import { aiNewsPodcastDraft, AI_NEWS_PODCAST_NAME, worldNewsPodcastDraft, WORLD_NEWS_PODCAST_NAME } from "../pipeline-editor/src/templates.ts";
+import { seedAiNewsPipeline, seedWorldNewsPipeline } from "../scripts/seed-ai-news-pipeline.ts";
 
 // docs/SDD-ai-news-podcast.md §3.1 to §3.4, gate tests from §4.
 
-const NEWS_AGENTS = ["ai-news-gatherer", "eli5-explainer", "podcast-scriptwriter"] as const;
+const NEWS_AGENTS = ["ai-news-gatherer", "world-news-gatherer", "eli5-explainer", "podcast-scriptwriter"] as const;
+const GATHERERS = ["ai-news-gatherer", "world-news-gatherer"];
 
 function agentDef(overrides: Partial<AgentDef> = {}): AgentDef {
   return {
@@ -91,7 +92,7 @@ test("web grant: every real manifest agent ReadOnlyExecutor runs gets an unchang
     await new ReadOnlyExecutor({ runner }).run(task(), agent);
     const baseline = ["claude", "-p", "--output-format", "json", "--permission-mode", "plan", "--model", agent.costProfile.model];
     if (agent.toolAccess.includes("web")) {
-      expect(agent.id).toBe("ai-news-gatherer");
+      expect(GATHERERS).toContain(agent.id);
       expect(cmds[0], agent.id).toEqual([...baseline, "--allowedTools", "WebSearch", "WebFetch"]);
     } else {
       expect(cmds[0], agent.id).toEqual(baseline);
@@ -126,8 +127,8 @@ test("manifest: the three news agents load as readonly pipeline-handoff agents o
     expect(others.some((o) => o.tags.includes(a!.tags[0]!)), `${id}'s tag ${a!.tags[0]} is shared`).toBe(false);
     expect(a!.toolAccess.includes("write") || a!.toolAccess.includes("bash"), id).toBe(false);
   }
-  // The gatherer is the only agent in the whole manifest with web.
-  expect(all.filter((a) => a.toolAccess.includes("web")).map((a) => a.id)).toEqual(["ai-news-gatherer"]);
+  // The two gatherers are the only agents in the whole manifest with web.
+  expect(all.filter((a) => a.toolAccess.includes("web")).map((a) => a.id)).toEqual(GATHERERS);
 });
 
 test("manifest: each output contract names the exact handoff data shape from the SDD", async () => {
@@ -508,4 +509,41 @@ test("pipelineNeedsRepo: true until agents are loaded, false for an unknown agen
   expect(pipelineNeedsRepo(p(["ghost"]), agents)).toBe(false);
   expect(pipelineNeedsRepo(p(["reader", "writer"]), agents)).toBe(true);
   expect(pipelineNeedsRepo(null, agents)).toBe(false);
+});
+
+// ---- §3.8 the World news podcast ---------------------------------------
+
+test("world news podcast: same explain, script and audio steps as the AI one, only the gather agent differs", () => {
+  const ai = aiNewsPodcastDraft().graph;
+  const world = worldNewsPodcastDraft().graph;
+  expect(world.edges).toEqual(ai.edges);
+  expect(world.steps.map((s) => s.id)).toEqual(ai.steps.map((s) => s.id));
+  expect(world.steps.map((s) => s.agentId)).toEqual(["world-news-gatherer", "eli5-explainer", "podcast-scriptwriter", "podcast-audio"]);
+  expect(world.steps.slice(1)).toEqual(ai.steps.slice(1));
+});
+
+test("world-news-gatherer: contract covers world, spain and netherlands with a region field, a 48 hour window and the same source rules", async () => {
+  const c = (await Registry.load()).get("world-news-gatherer")!.outputContract!;
+  for (const key of ['"region"', '"world"', '"spain"', '"netherlands"', '"generatedAt"', '"stories"', '"sources"', '"facts"', "last 48 hours", "more than 2 days", "No URL may appear in more than one story", "At most 3 stories"]) {
+    expect(c).toContain(key);
+  }
+  // The shared steps pass region through and group by it.
+  const reg = await Registry.load();
+  expect(reg.get("eli5-explainer")!.outputContract).toContain("`region` (when present)");
+  expect(reg.get("podcast-scriptwriter")!.outputContract).toContain("grouped in input order (world, then Spain, then the");
+});
+
+test("seed: both news pipelines coexist with their own ids, and reseeding changes neither", async () => {
+  const board = new SqliteBoard();
+  const store = new SqlitePipelineStore(board.db);
+  const registry = await Registry.load();
+  const ai = await seedAiNewsPipeline(store, registry);
+  const world = await seedWorldNewsPipeline(store, registry);
+  expect(world.outcome).toBe("created");
+  expect(world.pipeline.name).toBe(WORLD_NEWS_PODCAST_NAME);
+  expect(world.pipeline.id).not.toBe(ai.pipeline.id);
+  expect(world.pipeline.graph).toEqual(worldNewsPodcastDraft().graph);
+  expect((await seedAiNewsPipeline(store, registry)).outcome).toBe("unchanged");
+  expect((await seedWorldNewsPipeline(store, registry)).outcome).toBe("unchanged");
+  expect((await store.list()).map((p) => p.name).sort()).toEqual([AI_NEWS_PODCAST_NAME, WORLD_NEWS_PODCAST_NAME].sort());
 });

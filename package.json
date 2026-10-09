@@ -18,6 +18,7 @@
     "test:e2e:affected": "bun run scripts/e2e-affected.ts --run",
     "seed:ai-news": "bun run scripts/seed-ai-news-pipeline.ts",
     "eval:ai-news": "bun run eval/ai-news-podcast.eval.ts",
+    "eval:world-news": "bun run eval/ai-news-podcast.eval.ts --world",
     "eval:readonly": "bun run eval/readonly.eval.ts",
     "eval:implementer-reviewer": "bun run eval/implementer-reviewer.eval.ts",
     "eval:planner-subtask-plan": "bun run eval/planner-subtask-plan.eval.ts",

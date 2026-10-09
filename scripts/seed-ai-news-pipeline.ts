@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * Creates the stored "AI news podcast" pipeline (docs/SDD-ai-news-podcast.md
- * §3.3) through the same PipelineStore `POST /pipelines` writes to, on the
+ * Creates the stored "AI news podcast" and "World news podcast" pipelines
+ * (docs/SDD-ai-news-podcast.md §3.3, §3.8) through the same PipelineStore `POST /pipelines` writes to, on the
  * board database the server uses (`WISSEL_DB_PATH`, default
  * `~/.wissel/board.sqlite`).
  *
@@ -16,7 +16,7 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { aiNewsPodcastDraft } from "../pipeline-editor/src/templates.ts";
+import { aiNewsPodcastDraft, worldNewsPodcastDraft, type PipelineDraft } from "../pipeline-editor/src/templates.ts";
 import { Registry } from "../src/core/registry.ts";
 import type { PipelineDef } from "../src/core/types.ts";
 import { SqliteBoard } from "../src/services/board.ts";
@@ -33,7 +33,16 @@ export interface SeedResult {
  *  step's agent isn't in `registry`, so a manifest without the news
  *  agents can't seed a pipeline that would only fail at run time. */
 export async function seedAiNewsPipeline(store: PipelineStore, registry: Registry): Promise<SeedResult> {
-  const draft = aiNewsPodcastDraft();
+  return seedPipeline(store, registry, aiNewsPodcastDraft());
+}
+
+/** The "World news podcast" pipeline, seeded the same way. */
+export async function seedWorldNewsPipeline(store: PipelineStore, registry: Registry): Promise<SeedResult> {
+  return seedPipeline(store, registry, worldNewsPodcastDraft());
+}
+
+/** Creates or upgrades one news pipeline from its template, keyed by name. */
+export async function seedPipeline(store: PipelineStore, registry: Registry, draft: PipelineDraft): Promise<SeedResult> {
   const missing = draft.graph.steps.filter((s) => !registry.get(s.agentId)).map((s) => s.agentId);
   if (missing.length > 0) {
     throw new Error(`agents/manifest.yaml has no agent(s) ${missing.join(", ")}; the "${draft.name}" pipeline needs them`);
@@ -48,13 +57,16 @@ export async function seedAiNewsPipeline(store: PipelineStore, registry: Registr
 if (import.meta.main) {
   const dbPath = process.env.WISSEL_DB_PATH ?? join(homedir(), ".wissel", "board.sqlite");
   const board = new SqliteBoard(dbPath);
-  const { pipeline, outcome } = await seedAiNewsPipeline(new SqlitePipelineStore(board.db), await Registry.load());
-  const steps = pipeline.graph.steps.map((s) => s.name).join(" -> ");
-  console.log(
-    outcome === "created"
-      ? `Created "${pipeline.name}" (${pipeline.id}) in ${dbPath}: ${steps}.`
-      : outcome === "updated"
-        ? `Updated "${pipeline.name}" (${pipeline.id}) in place in ${dbPath}: ${steps}.`
-        : `"${pipeline.name}" (${pipeline.id}) in ${dbPath} already matches the template; left unchanged.`,
-  );
+  const store = new SqlitePipelineStore(board.db);
+  const registry = await Registry.load();
+  for (const { pipeline, outcome } of [await seedAiNewsPipeline(store, registry), await seedWorldNewsPipeline(store, registry)]) {
+    const steps = pipeline.graph.steps.map((s) => s.name).join(" -> ");
+    console.log(
+      outcome === "created"
+        ? `Created "${pipeline.name}" (${pipeline.id}) in ${dbPath}: ${steps}.`
+        : outcome === "updated"
+          ? `Updated "${pipeline.name}" (${pipeline.id}) in place in ${dbPath}: ${steps}.`
+          : `"${pipeline.name}" (${pipeline.id}) in ${dbPath} already matches the template; left unchanged.`,
+    );
+  }
 }

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ageInDays, checkAiNewsRun, countWords, gatherSourceSet, siteOf, type AiNewsRunOutputs } from "../eval/ai-news-checks.ts";
+import { ageInDays, checkAiNewsRun, checkWorldNewsRun, countWords, gatherSourceSet, siteOf, type AiNewsRunOutputs } from "../eval/ai-news-checks.ts";
 
 // The deterministic half of eval/ai-news-podcast.eval.ts
 // (docs/SDD-ai-news-podcast.md §5), proven here so the paid eval only
@@ -128,4 +128,34 @@ test("siteOf strips www and rejects non-URLs", () => {
   expect(siteOf("https://www.anthropic.com/news/x")).toBe("anthropic.com");
   expect(siteOf("not a url")).toBeNull();
   expect(siteOf(undefined)).toBeNull();
+});
+
+// ---- World news podcast (SDD §3.8) ----
+
+function worldRun(regions: (string | undefined)[], date = "2026-10-07"): AiNewsRunOutputs {
+  const stories = regions.map((region, i) => ({ ...story(i + 1, date), ...(region === undefined ? {} : { region }) }));
+  return goodRun({
+    gather: { generatedAt: "2026-10-07", stories },
+    final: { quickRead: stories.map((s) => ({ headline: s.title, oneLine: "x", source: s.sources[0] })), script: `${words(400)}\n\n${words(400)}`, wordCount: 800 },
+  });
+}
+const worldFailing = (run: AiNewsRunOutputs) => checkWorldNewsRun(run).filter((c) => !c.pass).map((c) => c.name);
+
+test("world run: world, spain and netherlands all covered passes every check, regions included", () => {
+  const run = worldRun(["world", "world", "world", "world", "spain", "spain", "netherlands", "netherlands"]);
+  expect(worldFailing(run)).toEqual([]);
+  expect(checkWorldNewsRun(run).find((c) => c.name === "regions")!.detail).toBe("world 4, spain 2, netherlands 2");
+});
+
+test("world run: a missing region, or a story with none, fails the regions check", () => {
+  expect(worldFailing(worldRun(["world", "world", "world", "spain", "spain"]))).toEqual(["regions"]);
+  expect(checkWorldNewsRun(worldRun(["world", "world", "world", "spain", "spain"])).find((c) => c.name === "regions")!.detail).toBe("no story for: netherlands");
+  expect(worldFailing(worldRun(["world", "world", "spain", "netherlands", undefined]))).toEqual(["regions"]);
+});
+
+test("world run: the window is 2 days, not 7", () => {
+  // 2026-10-04 is 3 days before NOW: fine for AI news, too old for headlines.
+  const old = worldRun(["world", "world", "world", "spain", "netherlands"], "2026-10-04");
+  expect(worldFailing(old)).toEqual(["dates-recent"]);
+  expect(failing(old)).toEqual([]);
 });

@@ -56,6 +56,7 @@ bun run eval:conflict-integrator
 bun run eval:memory-curation-quality
 bun run eval:claude-cli-429-replay
 bun run eval:ai-news
+bun run eval:world-news
 ```
 
 The pipeline editor is a separate Vite bundle. `pipeline-editor/dist/` is
@@ -165,6 +166,12 @@ a template" list under New pipeline; check it with `bun run eval:ai-news`
 (paid, uses the web and Kokoro). The seed is safe to rerun: it creates the
 pipeline, or replaces a stored one's graph in place (same id) when it
 differs from the template, or does nothing.
+
+**World news podcast** (SDD §3.8): the same pipeline with a different
+gather step (`world-news-gatherer`): the last 48 hours' top world
+headlines plus the main news from Spain and the Netherlands, each story
+tagged with its region. `bun run seed:ai-news` seeds both pipelines;
+check it with `bun run eval:world-news`.
 
 The "Make audio" step is not an agent: `src/executors/tts.ts` sends the
 script to a local [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)
