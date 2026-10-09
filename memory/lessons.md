@@ -3,6 +3,8 @@ Task worktrees symlink `node_modules` to the main checkout, which sits outside y
 
 `src/services/worktree.ts:101` links `<worktree>/node_modules` to `<repo>/node_modules`. An operator can grant access per card via `extraAllowedDirs` (passed as `--add-dir`, see `src/executors/write.ts:115`). e2e commands are pre-approved in the repo's `.claude/settings.json` (`bunx playwright test`, `npx playwright test`, `bun run test:e2e*`), so run the specs you touch; a denial there means the settings file is missing from your worktree. Never claim "tests pass" from a sub-agent's summary or a partial run; say what you actually ran. Chromium for e2e is resolved from `~/.cache/ms-playwright` (`playwright.config.ts`); the old `/opt/pw-browsers/chromium` error is fixed.
 
+When Playwright is denied but `bun test` works, a throwaway bun test that drives Chromium against the real `createApp` can check board behaviour (layout sizes, SSE updates, click-through). Delete it afterwards and say in the report that the real e2e specs were never run.
+
 A fresh worktree has no `pipeline-editor/dist` (gitignored), and a headless agent can't `bun install` to build it, so the editor bundle `/pipelines/edit/pipeline-editor.js` returns 503, the board's editor page (`#/pipelines/new`) shows the build command, and `e2e/pipeline-editor.spec.ts` fails at "New pipeline" / "Start blank". The editor's TSX can't be typechecked there either (root `tsc` doesn't cover `pipeline-editor/`). Say so instead of calling it your regression. A board-side spec that only needs the board's half should stub the bundle with a module exporting `mountPipelineEditor`, as `e2e/pipelines.spec.ts` does. Keep editor logic you want gated in dependency-free modules (`templates.ts`, `theme.ts`) so `test/` can import them.
 
 ## Implementers can't commit, and reviewers must not demand it
@@ -28,8 +30,18 @@ Change `src/core/types.ts` and add one entry to `STATUS_DISPLAY` in `src/api/pub
 ## Pipeline step cards never draw on the board by themselves
 A step card (`pipelineRunId` set) folds into its run's root card (`partitionRunBoard`, `src/api/public/board-runs.js`). A new board view must go through it, not `partitionBoard` alone. An e2e test that counts "cards needing a human" from `GET /tasks` has to count a needing step as its root (see T4 in `e2e/board.spec.ts`). To show a task's detail somewhere new, move `#tdDetail` there (`attachTaskDetail`) instead of copying sections, so the actions keep working. Run e2e specs in one command with `--workers=1` when they share global counts: with 2 workers, `board.spec.ts`'s Deny test (compares total task counts) and T2 race other spec files on the one shared server.
 
+Step cards also never set `routedTo`, so anything that needs a step's agent (such as the model shown in `GET /status/accounts`) must read it from the saved pipeline step, the same place the pipeline runner gets it.
+
+## Repo-less pipelines: fixtures and the two "needs repo" checks
+A pipeline whose steps are all readonly with no write or bash access runs with no repo, and the Run dialog hides the repo field. The server decides with `stepsNeedingRepo` and the board with `pipelineNeedsRepo`; `test/` asserts they agree for every real agent, so change both together. Unknown agents count as repo-less and fail on their own with "unknown agent".
+
+An e2e fixture pipeline built only from readonly agents (planner, reviewer, triager) now has no repo field. A test that exercises the repo field needs a write-tier step such as `implementer` in the pipeline (see `e2e/new-task.spec.ts`, `e2e/pipelines.spec.ts`).
+
 ## SQLite schema changes
 New column on an existing table: `ALTER TABLE ... ADD COLUMN` in a try/catch at DB open, like the existing ones in `src/services/board.ts`. New table: `CREATE TABLE IF NOT EXISTS`. No migration tooling needed.
+
+## README is test-guarded against drift
+`test/readme.test.ts` fails if the README names a `bun run` script that doesn't exist, a `WISSEL_*` var that `src/` doesn't read, or a `docs/*.md` path that doesn't exist. It also fails if `src/` reads a `WISSEL_*` var from `process.env` that the README's env table doesn't list, if the README contains an em dash, or if the first line under `# wissel` isn't the personal-research-project notice. So adding an env var means adding a row to the README table in the same change.
 
 ## Agent output that gets parsed as data
 If an agent's final message is parsed (verdict, plan, handoff, file body), give it an `outputContract` in `agents/manifest.yaml` and a parser that rejects bad output. Never default to approve, success or empty.
