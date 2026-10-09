@@ -130,6 +130,18 @@ paragraphs) lives in a small public module
 (`src/api/public/board-news.js`, CJS guard like its siblings) so it is
 unit-tested without a browser.
 
+As built (card 2): `task_results` doesn't store a step's parsed
+`pipelineHandoff`, so the drawer reads the last and first steps' raw
+`summary` from `GET /tasks/:id/result` and `parseHandoffData` parses the
+block back out (held to the same answers as `parsePipelineHandoff` by
+`test/board-news.test.ts`). The tabs show only once the last step is
+`done`. A last step running `podcast-scriptwriter` whose data can't be
+shaped shows its raw output and the reason; any other pipeline's drawer
+is unchanged. Sources that aren't http(s) are never linked. Read aloud
+prefers an on-device English voice and calls `cancel()` before a fresh
+read only when something is already queued. Speech stops on Stop, on
+closing the drawer, on any route change and on `pagehide`.
+
 ### 3.6 Guarding against invented content
 
 The gather step's prompt forbids inventing stories, dates or URLs. A

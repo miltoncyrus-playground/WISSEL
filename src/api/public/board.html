@@ -581,6 +581,24 @@
   .rd-step-body { padding: 4px 12px 14px 36px; border-top: 1px dashed var(--line); }
   .rd-step-body .drawer-body { padding: 10px 0 0; overflow: visible; }
   .rd-total { font-size: 11.5px; color: var(--ink-muted); margin: 8px 0 0; }
+  /* AI news result (docs/SDD-ai-news-podcast.md §3.5): Quick read and
+     Listen tabs over the run's last step output. */
+  .rd-news .new-tabs { padding: 0; margin-bottom: 12px; }
+  .rd-news [role="tabpanel"] { min-width: 0; }
+  .rd-news-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+  .rd-news-item { min-width: 0; }
+  .rd-news-headline { font-size: 13.5px; font-weight: 700; color: var(--ink-1); margin: 0; overflow-wrap: anywhere; }
+  .rd-news-line { font-size: 13px; line-height: 1.5; color: var(--ink-2); margin: 2px 0 0; overflow-wrap: anywhere; }
+  .rd-news-source { font-size: 11.5px; margin: 3px 0 0; overflow-wrap: anywhere; color: var(--ink-muted); }
+  .rd-news-source a { color: var(--accent); }
+  .rd-news-item[data-flagged="true"] { border-left: 3px solid var(--critical); padding-left: 9px; }
+  .rd-news-flag { display: inline-block; font-size: 11px; font-weight: 700; color: var(--critical); margin-top: 3px; }
+  .rd-news-note { font-size: 12px; color: var(--critical); margin: 0 0 10px; }
+  .rd-news-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .rd-news-controls .pl-btn:disabled { opacity: 0.45; cursor: default; border-color: var(--border); color: var(--ink-2); }
+  .rd-news-script p { font-size: 13.5px; line-height: 1.6; color: var(--ink-2); margin: 0 0 10px; overflow-wrap: anywhere; border-radius: 4px; }
+  .rd-news-script p.speaking { background: var(--accent-wash); color: var(--ink-1); }
+  .rd-news-raw { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; background: var(--page); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 8px 0 0; }
   .new-tabs { display: flex; gap: 4px; padding: 10px 16px 0; border-bottom: 1px solid var(--line); }
   .new-tabs button {
     appearance: none; border: none; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-2);
@@ -1142,6 +1160,35 @@
       <p class="rd-total" id="rdTotal"></p>
       <a class="pl-btn" id="rdCanvas" href="#/pipelines">View on canvas</a>
     </section>
+    <!-- AI news result (docs/SDD-ai-news-podcast.md §3.5, §3.6): shown
+         when the run's last step handed off quickRead + script. Shaped
+         by board-news.js; filled by syncRunNews. -->
+    <section class="drawer-section rd-news" id="rdNews" hidden>
+      <p class="eyebrow">Result</p>
+      <div id="rdNewsShaped">
+        <div class="new-tabs" role="tablist" aria-label="Result view">
+          <button type="button" role="tab" id="rdNewsTabQuick" data-news-tab="quick" aria-controls="rdNewsQuick" aria-selected="true">Quick read</button>
+          <button type="button" role="tab" id="rdNewsTabListen" data-news-tab="listen" aria-controls="rdNewsListen" aria-selected="false" tabindex="-1">Listen</button>
+        </div>
+        <div role="tabpanel" id="rdNewsQuick" aria-labelledby="rdNewsTabQuick">
+          <p class="rd-news-note" id="rdNewsFlagNote" hidden></p>
+          <ol class="rd-news-list" id="rdNewsList"></ol>
+        </div>
+        <div role="tabpanel" id="rdNewsListen" aria-labelledby="rdNewsTabListen" hidden>
+          <div class="rd-news-controls" id="rdNewsControls">
+            <button type="button" class="pl-btn primary" id="rdNewsPlay">Read aloud</button>
+            <button type="button" class="pl-btn" id="rdNewsPause" disabled>Pause</button>
+            <button type="button" class="pl-btn" id="rdNewsStop" disabled>Stop</button>
+          </div>
+          <p class="field-hint" id="rdNewsNoSpeech" hidden>Read aloud isn't available in this browser (it has no speech synthesis). Select the text below to copy it.</p>
+          <div class="rd-news-script" id="rdNewsScript"></div>
+        </div>
+      </div>
+      <div id="rdNewsRawWrap" hidden>
+        <p class="field-error" id="rdNewsRawReason"></p>
+        <pre class="rd-news-raw mono" id="rdNewsRaw"></pre>
+      </div>
+    </section>
     <section class="drawer-section">
       <p class="eyebrow">Input</p>
       <p class="drawer-desc" id="rdInput"></p>
@@ -1305,6 +1352,7 @@
 <script src="/board-pipelines.js"></script>
 <script src="/board-runs.js"></script>
 <script src="/board-run-canvas.js"></script>
+<script src="/board-news.js"></script>
 <script>
 (function () {
   "use strict";
@@ -2388,6 +2436,7 @@
     total.textContent = total.hidden ? "" : "Total cost " + formatCost(runSummary.totalCost);
     document.getElementById("rdCanvas").href = boardRouteHash(RUN_CANVAS_ROUTE, { runId: root.id });
     renderRunSteps();
+    syncRunNews(run);
   }
 
   // `expandId`, when given, opens with that row's detail showing (the
@@ -2401,6 +2450,7 @@
       document.getElementById("rdSteps").textContent = "";
       document.getElementById("rdError").hidden = true;
       runSummary = null;
+      resetRunNews();
     }
     runDrawerId = rootId;
     renderRunDrawer();
@@ -2416,6 +2466,7 @@
 
   function closeRunDrawer() {
     collapseRunStep();
+    resetRunNews();
     runDrawerId = null;
     runSummary = null;
     document.getElementById("runOverlay").classList.remove("open");
@@ -2453,6 +2504,170 @@
     renderRunDrawer();
     loadRunSummary();
   }
+
+  // --- AI news result in the run drawer (docs/SDD-ai-news-podcast.md
+  // §3.5, §3.6). When the run's last step is done and handed off
+  // quickRead + script, newsView (board-news.js) shapes it into Quick
+  // read rows (each source checked against the first step's, the gather
+  // step's, URLs) and script paragraphs; Listen reads them aloud through
+  // the browser's speechSynthesis, one utterance per paragraph. Fetched
+  // once per (last step card, status): SSE refreshes don't rebuild it,
+  // so the paragraph being read keeps its highlight.
+  var runNewsKey = null;
+  var runNewsSeq = 0;
+  var runNewsParagraphs = [];
+  var newsSpeech = hasSpeech(window);
+  var newsReader = newsSpeech ? createNewsReader(window.speechSynthesis, window.SpeechSynthesisUtterance, renderNewsControls) : null;
+
+  function stopNewsSpeech() {
+    if (newsReader) newsReader.stop();
+  }
+
+  function resetRunNews() {
+    stopNewsSpeech();
+    runNewsKey = null;
+    runNewsSeq++;
+    runNewsParagraphs = [];
+    document.getElementById("rdNews").hidden = true;
+  }
+
+  // The last step card and the first step's latest card (a retried
+  // step has several), or null for a run with no steps yet.
+  function runNewsCards(run) {
+    var steps = run.steps;
+    if (!steps.length) return null;
+    var final = steps[steps.length - 1];
+    var firstStepId = steps[0].pipelineStepId;
+    var gather = null;
+    steps.forEach(function (s) { if (s.pipelineStepId === firstStepId) gather = s; });
+    return { final: final, gather: gather && gather.id !== final.id ? gather : null };
+  }
+
+  function fetchResultSummary(taskId) {
+    if (!taskId) return Promise.resolve(undefined);
+    return fetch("/tasks/" + encodeURIComponent(taskId) + "/result").then(function (r) {
+      if (!r.ok) return undefined;
+      return r.json().then(function (res) { return res && typeof res.summary === "string" ? res.summary : undefined; });
+    }).catch(function () { return undefined; });
+  }
+
+  function syncRunNews(run) {
+    var cards = runNewsCards(run);
+    if (!cards || cards.final.status !== "done") {
+      if (runNewsKey !== null) resetRunNews();
+      return;
+    }
+    var defStep = null;
+    ((run.def && run.def.graph && run.def.graph.steps) || []).forEach(function (d) { if (d.id === cards.final.pipelineStepId) defStep = d; });
+    var expected = (defStep ? defStep.agentId : cards.final.routedTo) === "podcast-scriptwriter";
+    var key = cards.final.id + "|" + (cards.gather ? cards.gather.id : "") + "|" + expected;
+    if (key === runNewsKey) return;
+    resetRunNews();
+    runNewsKey = key;
+    var seq = runNewsSeq;
+    var runId = runDrawerId;
+    Promise.all([fetchResultSummary(cards.final.id), fetchResultSummary(cards.gather && cards.gather.id)]).then(function (got) {
+      if (seq !== runNewsSeq || runDrawerId !== runId) return;
+      renderRunNews(newsView(got[0], got[1], expected));
+    });
+  }
+
+  function renderRunNews(view) {
+    var section = document.getElementById("rdNews");
+    section.hidden = view.kind === "none";
+    if (view.kind === "none") return;
+    var shaped = document.getElementById("rdNewsShaped");
+    var rawWrap = document.getElementById("rdNewsRawWrap");
+    shaped.hidden = view.kind !== "news";
+    rawWrap.hidden = view.kind !== "raw";
+    if (view.kind === "raw") {
+      document.getElementById("rdNewsRawReason").textContent = "Couldn't show the quick read: " + view.reason + " Raw output below.";
+      document.getElementById("rdNewsRaw").textContent = view.raw || "(no output)";
+      return;
+    }
+
+    var list = document.getElementById("rdNewsList");
+    list.textContent = "";
+    view.rows.forEach(function (row) {
+      var li = document.createElement("li");
+      li.className = "rd-news-item";
+      li.dataset.flagged = row.flag ? "true" : "false";
+      var h = document.createElement("p"); h.className = "rd-news-headline"; h.textContent = row.headline;
+      li.appendChild(h);
+      if (row.oneLine) {
+        var line = document.createElement("p"); line.className = "rd-news-line"; line.textContent = row.oneLine;
+        li.appendChild(line);
+      }
+      if (row.source) {
+        var src = document.createElement("p"); src.className = "rd-news-source";
+        if (row.href) {
+          var a = document.createElement("a");
+          a.href = row.href; a.target = "_blank"; a.rel = "noopener";
+          a.textContent = row.source;
+          src.appendChild(a);
+        } else {
+          src.textContent = row.source;
+        }
+        li.appendChild(src);
+      }
+      if (row.flag) {
+        var flag = document.createElement("span"); flag.className = "rd-news-flag"; flag.textContent = "⚠ " + row.flag;
+        li.appendChild(flag);
+      }
+      list.appendChild(li);
+    });
+    var note = document.getElementById("rdNewsFlagNote");
+    note.hidden = view.flaggedCount === 0;
+    note.textContent = view.flaggedCount === 0 ? "" : view.flaggedCount + " of " + view.rows.length + (view.rows.length === 1 ? " story has" : " stories have") + " a source that can't be trusted. Check it before relying on it.";
+
+    runNewsParagraphs = view.paragraphs;
+    var script = document.getElementById("rdNewsScript");
+    script.textContent = "";
+    view.paragraphs.forEach(function (text, i) {
+      var p = document.createElement("p"); p.dataset.paragraph = String(i); p.textContent = text;
+      script.appendChild(p);
+    });
+    document.getElementById("rdNewsControls").hidden = !newsSpeech;
+    document.getElementById("rdNewsNoSpeech").hidden = newsSpeech;
+    setNewsTab("quick");
+    renderNewsControls(newsReader ? newsReader.state() : "idle", -1);
+  }
+
+  function renderNewsControls(state, index) {
+    document.getElementById("rdNewsPlay").disabled = state === "speaking";
+    document.getElementById("rdNewsPlay").textContent = state === "paused" ? "Resume" : "Read aloud";
+    document.getElementById("rdNewsPause").disabled = state !== "speaking";
+    document.getElementById("rdNewsStop").disabled = state === "idle";
+    Array.prototype.forEach.call(document.querySelectorAll("#rdNewsScript p"), function (p) {
+      p.classList.toggle("speaking", state !== "idle" && p.dataset.paragraph === String(index));
+    });
+  }
+
+  function setNewsTab(tab) {
+    document.querySelectorAll("#rdNews [data-news-tab]").forEach(function (b) {
+      var on = b.getAttribute("data-news-tab") === tab;
+      b.setAttribute("aria-selected", on ? "true" : "false");
+      b.tabIndex = on ? 0 : -1;
+    });
+    document.getElementById("rdNewsQuick").hidden = tab !== "quick";
+    document.getElementById("rdNewsListen").hidden = tab !== "listen";
+  }
+
+  document.querySelectorAll("#rdNews [data-news-tab]").forEach(function (b) {
+    b.addEventListener("click", function () { setNewsTab(b.getAttribute("data-news-tab")); });
+    b.addEventListener("keydown", function (ev) {
+      if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight") return;
+      var next = b.getAttribute("data-news-tab") === "quick" ? "listen" : "quick";
+      setNewsTab(next);
+      document.querySelector('#rdNews [data-news-tab="' + next + '"]').focus();
+    });
+  });
+  document.getElementById("rdNewsPlay").addEventListener("click", function () { if (newsReader) newsReader.play(runNewsParagraphs); });
+  document.getElementById("rdNewsPause").addEventListener("click", function () { if (newsReader) newsReader.pause(); });
+  document.getElementById("rdNewsStop").addEventListener("click", stopNewsSpeech);
+  // Speech outlives the page in some browsers; leaving it stops it too.
+  window.addEventListener("hashchange", stopNewsSpeech);
+  window.addEventListener("pagehide", stopNewsSpeech);
 
   document.getElementById("rdClose").addEventListener("click", closeRunDrawer);
   document.getElementById("runOverlay").addEventListener("click", closeRunDrawer);

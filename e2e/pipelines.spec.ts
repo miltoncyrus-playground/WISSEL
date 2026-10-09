@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -708,5 +709,246 @@ test.describe("A run on its pipeline canvas", () => {
     await expect(page.locator("#rcMessage")).toHaveText("No pipeline run no-such-run on the board. It may have been deleted.");
     await expect(page.locator("#rcScroll")).toBeHidden();
     await expect(page.locator("#rcDetails")).toBeHidden();
+  });
+});
+
+// docs/SDD-ai-news-podcast.md §3.5, §3.6 (card 2): an AI news run's
+// drawer shows a Quick read (headline, one line, source link; a source
+// the gather step never handed off is flagged) and a Listen tab that
+// reads the script aloud through speechSynthesis, one utterance per
+// paragraph. Served board: the run, its pipeline and each step's result
+// are fixtures (the recorded handoffs in test/fixtures/ai-news), so no
+// paid call. board-news.js is reached through the page's globals, never
+// imported (test/e2e-public-imports.test.ts).
+
+const NEWS_FIXTURES = join(process.cwd(), "test", "fixtures", "ai-news");
+const NEWS_GATHER = readFileSync(join(NEWS_FIXTURES, "gather-summary.md"), "utf8");
+const NEWS_SCRIPT = readFileSync(join(NEWS_FIXTURES, "script-summary.md"), "utf8");
+const NEWS_INVENTED = "https://invented.example.net/chip";
+// The third story's source swapped for one the gather step never found.
+const NEWS_SCRIPT_FLAGGED = NEWS_SCRIPT.replace("https://chips.example.com/news/inference-x1", NEWS_INVENTED);
+
+type SpeechLog = { calls: string[]; spoken: { text: string; lang: string }[] };
+
+// Replaces speechSynthesis with a recorder before the board's scripts
+// run. The real SpeechSynthesisUtterance stays, so the board builds
+// genuine utterances. getVoices is empty, as in headless Chromium.
+function stubSpeech(page: Page) {
+  return page.addInitScript(() => {
+    const log = { calls: [] as string[], spoken: [] as { text: string; lang: string }[], utterances: [] as SpeechSynthesisUtterance[] };
+    (window as unknown as { __speech: typeof log }).__speech = log;
+    const fake = {
+      paused: false,
+      speak(u: SpeechSynthesisUtterance) { log.calls.push("speak"); log.spoken.push({ text: u.text, lang: u.lang }); log.utterances.push(u); },
+      cancel() { log.calls.push("cancel"); },
+      pause() { log.calls.push("pause"); this.paused = true; },
+      resume() { log.calls.push("resume"); this.paused = false; },
+      getVoices() { return []; },
+      addEventListener() {}, removeEventListener() {},
+    };
+    Object.defineProperty(window, "speechSynthesis", { value: fake, configurable: true });
+  });
+}
+
+const speechLog = (page: Page) => page.evaluate(() => {
+  const { calls, spoken } = (window as unknown as { __speech: SpeechLog }).__speech;
+  return { calls: [...calls], spoken: [...spoken] };
+});
+
+// A finished three-step "AI news podcast" run, served on GET /tasks.
+async function serveNewsRun(page: Page, scriptSummary: string) {
+  const base = { body: "focus on open models", labels: [], pipelineId: "p-news-stub" };
+  const step = (id: string, stepId: string, agent: string) => ({
+    ...base, id, title: `News stub: ${stepId}`, status: "done", parentTaskId: "r-news", pipelineRunId: "r-news", pipelineStepId: stepId, routedTo: agent,
+  });
+  const board = [
+    { ...base, id: "r-news", title: "Pipeline: AI news podcast", status: "done" },
+    step("s-gather", "gather", "ai-news-gatherer"),
+    step("s-explain", "explain", "eli5-explainer"),
+    step("s-script", "script", "podcast-scriptwriter"),
+  ];
+  const def = {
+    id: "p-news-stub", name: "AI news podcast", description: "",
+    graph: {
+      steps: [
+        { id: "gather", name: "Gather news", agentId: "ai-news-gatherer", transition: "all" },
+        { id: "explain", name: "Explain simply", agentId: "eli5-explainer", transition: "all" },
+        { id: "script", name: "Write podcast script", agentId: "podcast-scriptwriter", transition: "all" },
+      ],
+      edges: [{ id: "ge", from: "gather", to: "explain" }, { id: "es", from: "explain", to: "script" }],
+    },
+  };
+  const summaries: Record<string, string> = { "s-gather": NEWS_GATHER, "s-explain": "explained", "s-script": scriptSummary };
+  await page.route((url) => url.pathname === "/tasks", (route) => (route.request().method() === "GET" ? route.fulfill({ json: board }) : route.fallback()));
+  await page.route((url) => url.pathname === "/pipelines", (route) => (route.request().method() === "GET" ? route.fulfill({ json: [def] }) : route.fallback()));
+  await page.route("**/pipeline-runs/r-news", (route) => route.fulfill({ json: { root: board[0], pipeline: def, totalCost: null, steps: [] } }));
+  await page.route(/\/tasks\/s-(gather|explain|script)\/result$/, (route) => {
+    const id = new URL(route.request().url()).pathname.split("/")[2]!;
+    return route.fulfill({ json: { taskId: id, ok: true, summary: summaries[id] } });
+  });
+}
+
+async function openNewsRun(page: Page) {
+  await page.goto("/board");
+  await page.locator('#boardPage .kcard[data-task-id="r-news"]').first().click();
+  await expect(page.locator("#runDrawer")).toBeVisible();
+  await expect(page.locator("#rdNews")).toBeVisible();
+}
+
+test.describe("AI news run: Quick read and Read aloud", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("Quick read is the default tab: headline, one line and a new-tab source link per story, the invented source flagged", async ({ page }) => {
+    await stubSpeech(page);
+    await serveNewsRun(page, NEWS_SCRIPT_FLAGGED);
+    await openNewsRun(page);
+
+    await expect(page.getByRole("tab", { name: "Quick read", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("#rdNewsQuick")).toBeVisible();
+    await expect(page.locator("#rdNewsListen")).toBeHidden();
+    const items = page.locator("#rdNewsList .rd-news-item");
+    await expect(items).toHaveCount(3);
+    await expect(items.locator(".rd-news-headline")).toHaveText(["Open coding model catches up", "Draft rules for AI in hiring", "A faster, cheaper AI chip"]);
+    await expect(items.nth(1).locator(".rd-news-line")).toHaveText("Job seekers may soon have to be told when an AI reads their application.");
+
+    const links = await items.locator(".rd-news-source a").evaluateAll((els) => els.map((a) => [a.getAttribute("href"), a.getAttribute("target"), a.getAttribute("rel")]));
+    expect(links).toEqual([
+      ["https://lab.example.com/blog/open-coder-2", "_blank", "noopener"],
+      ["https://regulator.example.gov/press/ai-hiring-draft", "_blank", "noopener"],
+      [NEWS_INVENTED, "_blank", "noopener"],
+    ]);
+
+    // §3.6: only the source the gather step never handed off is marked.
+    expect(await items.evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.flagged))).toEqual(["false", "false", "true"]);
+    await expect(items.nth(2).locator(".rd-news-flag")).toHaveText("⚠ source not from the gather step");
+    await expect(items.locator(".rd-news-flag")).toHaveCount(1);
+    await expect(page.locator("#rdNewsFlagNote")).toHaveText("1 of 3 stories have a source that can't be trusted. Check it before relying on it.");
+
+    // The page's own board-news.js (a global, no import) agrees with what it drew.
+    const fromModule = await page.evaluate(([finalSummary, gatherSummary]) => {
+      const w = window as unknown as { newsView(f: string, g: string, e: boolean): { rows: { flag: string | null; href: string | null }[] } };
+      return w.newsView(finalSummary!, gatherSummary!, true).rows.map((r) => [r.href, r.flag !== null]);
+    }, [NEWS_SCRIPT_FLAGGED, NEWS_GATHER]);
+    expect(fromModule).toEqual(links.map(([href], i) => [href, i === 2]));
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/news-quick-read-1440x900.png` });
+  });
+
+  test("Listen: Read aloud speaks one utterance per paragraph; Pause, Resume, Stop drive speechSynthesis; closing the drawer or changing route stops it", async ({ page }) => {
+    await stubSpeech(page);
+    await serveNewsRun(page, NEWS_SCRIPT);
+    await openNewsRun(page);
+
+    await page.getByRole("tab", { name: "Listen", exact: true }).click();
+    await expect(page.locator("#rdNewsListen")).toBeVisible();
+    await expect(page.locator("#rdNewsQuick")).toBeHidden();
+    const paragraphs = await page.locator("#rdNewsScript p").allTextContents();
+    expect(paragraphs).toHaveLength(5);
+    expect(paragraphs[0]).toBe("Welcome to this week in AI. Three stories, plain words, about five minutes.");
+    const fromModule = await page.evaluate((summary) => {
+      const w = window as unknown as { newsView(f: string, g: undefined, e: boolean): { paragraphs: string[] } };
+      return w.newsView(summary, undefined, true).paragraphs;
+    }, NEWS_SCRIPT);
+    expect(paragraphs).toEqual(fromModule);
+
+    const play = page.getByRole("button", { name: "Read aloud", exact: true });
+    const pause = page.getByRole("button", { name: "Pause", exact: true });
+    const stop = page.getByRole("button", { name: "Stop", exact: true });
+    await expect(pause).toBeDisabled();
+    await expect(stop).toBeDisabled();
+
+    await play.click();
+    let log = await speechLog(page);
+    expect(log.spoken.map((s) => s.text)).toEqual(paragraphs);
+    expect(log.spoken.every((s) => s.lang === "en-US")).toBe(true);
+    expect(log.calls).toEqual(paragraphs.map(() => "speak"));
+    await expect(play).toBeDisabled();
+    await expect(pause).toBeEnabled();
+    await expect(stop).toBeEnabled();
+
+    // The utterance being read is highlighted.
+    await page.evaluate(() => {
+      const u = (window as unknown as { __speech: { utterances: SpeechSynthesisUtterance[] } }).__speech.utterances[2]!;
+      u.onstart!.call(u, new Event("start") as SpeechSynthesisEvent);
+    });
+    await expect(page.locator("#rdNewsScript p.speaking")).toHaveText(paragraphs[2]!);
+
+    await pause.click();
+    const resume = page.getByRole("button", { name: "Resume", exact: true });
+    await expect(resume).toBeEnabled();
+    await resume.click();
+    log = await speechLog(page);
+    expect(log.calls.slice(-2)).toEqual(["pause", "resume"]);
+    expect(log.spoken).toHaveLength(paragraphs.length); // resumed, not re-queued
+
+    await stop.click();
+    log = await speechLog(page);
+    expect(log.calls.at(-1)).toBe("cancel");
+    await expect(play).toBeEnabled();
+    await expect(stop).toBeDisabled();
+    await expect(page.locator("#rdNewsScript p.speaking")).toHaveCount(0);
+
+    // Closing the drawer mid-read stops the speech.
+    await play.click();
+    const beforeClose = (await speechLog(page)).calls.length;
+    await page.locator("#rdClose").click();
+    await expect(page.locator("#runDrawer")).toBeHidden();
+    expect((await speechLog(page)).calls.slice(beforeClose)).toEqual(["cancel"]);
+
+    // So does a route change with the drawer still open.
+    await page.locator('#boardPage .kcard[data-task-id="r-news"]').first().click();
+    // The result refetches on reopen; its render resets to Quick read.
+    await expect(page.locator("#rdNews")).toBeVisible();
+    await page.getByRole("tab", { name: "Listen", exact: true }).click();
+    await page.getByRole("button", { name: "Read aloud", exact: true }).click();
+    const beforeRoute = (await speechLog(page)).calls.length;
+    await page.evaluate(() => { location.hash = "#/pipelines"; });
+    await expect(page.locator("#pipelinesPage")).toBeVisible();
+    expect((await speechLog(page)).calls.slice(beforeRoute)).toEqual(["cancel"]);
+  });
+
+  test("without speechSynthesis the Read aloud buttons are hidden and the drawer says so; the script is still there", async ({ page }) => {
+    await page.addInitScript(() => { Object.defineProperty(window, "speechSynthesis", { value: undefined, configurable: true }); });
+    await serveNewsRun(page, NEWS_SCRIPT);
+    await openNewsRun(page);
+    await page.getByRole("tab", { name: "Listen", exact: true }).click();
+    await expect(page.locator("#rdNewsControls")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Read aloud", exact: true })).toBeHidden();
+    await expect(page.locator("#rdNewsNoSpeech")).toBeVisible();
+    await expect(page.locator("#rdNewsNoSpeech")).toContainText("Read aloud isn't available in this browser");
+    await expect(page.locator("#rdNewsScript p")).toHaveCount(5);
+  });
+
+  test("a malformed final handoff shows the step's raw output instead of breaking the drawer", async ({ page }) => {
+    await stubSpeech(page);
+    const broken = "Here you go.\n\n```pipeline-handoff\n" + JSON.stringify({ data: { quickRead: "not a list", script: "Hello." } }) + "\n```\n";
+    await serveNewsRun(page, broken);
+    await openNewsRun(page);
+    await expect(page.locator("#rdNewsShaped")).toBeHidden();
+    await expect(page.locator("#rdNewsRawReason")).toHaveText("Couldn't show the quick read: quickRead is missing or not a list. Raw output below.");
+    expect(await page.locator("#rdNewsRaw").textContent()).toBe(broken);
+    // The rest of the drawer still works.
+    await expect(page.locator("#rdSteps .rd-step")).toHaveCount(4);
+  });
+});
+
+test.describe("AI news run on a 390px phone", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("neither tab scrolls the drawer sideways", async ({ page }) => {
+    await stubSpeech(page);
+    await serveNewsRun(page, NEWS_SCRIPT_FLAGGED);
+    await openNewsRun(page);
+    await expect.poll(async () => { const b = await page.locator("#runDrawer").boundingBox(); return b && Math.round(b.x); }).toBe(0);
+    const overflow = () => page.evaluate(() => {
+      const drawer = document.getElementById("runDrawer")!;
+      const body = drawer.querySelector(".drawer-body")!;
+      return { drawer: drawer.scrollWidth - drawer.clientWidth, body: body.scrollWidth - body.clientWidth, page: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+    });
+    expect(await overflow()).toEqual({ drawer: 0, body: 0, page: 0 });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/news-quick-read-390.png` });
+    await page.getByRole("tab", { name: "Listen", exact: true }).click();
+    await expect(page.locator("#rdNewsControls")).toBeVisible();
+    expect(await overflow()).toEqual({ drawer: 0, body: 0, page: 0 });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/news-listen-390.png` });
   });
 });

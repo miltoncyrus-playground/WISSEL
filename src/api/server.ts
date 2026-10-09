@@ -471,6 +471,12 @@ export function createApp(
         return new Response(Bun.file(new URL("board-run-canvas.js", PUBLIC_DIR)));
       }
 
+      // The run drawer's Quick read and Listen tabs for an AI news run
+      // (docs/SDD-ai-news-podcast.md §3.5). Same static-sibling reasoning.
+      if (url.pathname === "/board-news.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("board-news.js", PUBLIC_DIR)));
+      }
+
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
       }
