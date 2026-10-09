@@ -29,6 +29,8 @@ import { WriteExecutor } from "../executors/write.ts";
 import { ApiExecutor } from "../executors/anthropic-api.ts";
 import { CodexReadOnlyExecutor } from "../executors/codex-readonly.ts";
 import { CodexWriteExecutor } from "../executors/codex-write.ts";
+import { DEFAULT_TTS_URL, DEFAULT_TTS_VOICE, TtsExecutor, defaultAudioDir, isSafeRunId } from "../executors/tts.ts";
+import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-audio.ts";
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
@@ -201,6 +203,15 @@ export interface CreateAppOptions {
    *  DEFAULT_MERGE_HEALTH_CHECK_INTERVAL_HOURS there (matches
    *  archive-scheduler's own default). */
   mergeHealthIntervalHours?: number;
+  /** The local Kokoro text-to-speech service the "Make audio" pipeline
+   *  step calls (TtsExecutor, docs/SDD-ai-news-podcast.md §3.7). Read
+   *  once from `WISSEL_TTS_URL` / `WISSEL_TTS_VOICE` at the bootstrap
+   *  entrypoint; undefined fields use TtsExecutor's defaults
+   *  (http://127.0.0.1:8880, af_heart). */
+  tts?: { url?: string; voice?: string };
+  /** Where a run's MP3 is written and served from (`WISSEL_AUDIO_DIR`).
+   *  Defaults to `~/.wissel/audio`; tests point it at a temp dir. */
+  audioDir?: string;
 }
 
 /**
@@ -247,10 +258,14 @@ export function createApp(
   // ReadOnlyExecutor — all three are tier-gated to "readonly" agents
   // (see their canHandle), so there's no write risk to gate behind
   // executeWriteTier the way WriteExecutor/CodexWriteExecutor are.
+  // TtsExecutor too: it only writes an MP3 under audioDir, never a repo.
+  const audioDir = opts.audioDir ?? defaultAudioDir();
+  const ttsExecutor = () => new TtsExecutor({ baseUrl: opts.tts?.url, voice: opts.tts?.voice, audioDir });
   const autoExecutors: Executor[] = [
     new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     new ApiExecutor(),
     new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+    ttsExecutor(),
   ];
   if (executeWriteTier)
     autoExecutors.push(
@@ -263,6 +278,7 @@ export function createApp(
     new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+    ttsExecutor(),
   ];
   // Fail loud before serving anything if an agent's `harnesses` list names
   // an unknown id or a harness of the wrong tool (a typo would otherwise
@@ -805,10 +821,30 @@ export function createApp(
       // step card's own id.
       if (parts[0] === "pipeline-runs" && parts.length === 2 && req.method === "GET") {
         const summary = await buildPipelineRunSummary(
-          { board: board as Board, pipelines, registry, harnesses, readOutput: (taskId) => getTaskOutput(taskId, opts.taskOutputDir) },
+          {
+            board: board as Board,
+            pipelines,
+            registry,
+            harnesses,
+            readOutput: (taskId) => getTaskOutput(taskId, opts.taskOutputDir),
+            audioBytes: (runId) => pipelineAudioBytes(audioDir, runId),
+          },
           parts[1]!,
         );
         return summary ? json(summary) : notFound();
+      }
+
+      // The run's MP3 from its "Make audio" step (docs/SDD-ai-news-podcast.md
+      // §3.7), with Range support so phones can seek. The id must look like
+      // a task id and be a run root on the board before any path is built,
+      // so nothing but a real run's own file can be read. 404 otherwise,
+      // and when the run has no audio.
+      if (parts[0] === "pipeline-runs" && parts.length === 3 && parts[2] === "audio" && (req.method === "GET" || req.method === "HEAD")) {
+        const runId = parts[1]!;
+        if (!isSafeRunId(runId)) return notFound();
+        const root = await board.get(runId);
+        if (!root || !root.pipelineId || root.pipelineRunId) return notFound();
+        return await pipelineAudioResponse(audioDir, root.id, req);
       }
 
       if (parts[0] === "projects") {
@@ -1496,6 +1532,12 @@ if (import.meta.main) {
   const mergeHealthEnabled = ["1", "true"].includes(process.env.WISSEL_MERGE_HEALTH ?? "");
   const mergeHealthIntervalHours = process.env.WISSEL_MERGE_HEALTH_INTERVAL_HOURS ? Number(process.env.WISSEL_MERGE_HEALTH_INTERVAL_HOURS) : 1;
 
+  // The "Make audio" pipeline step's local Kokoro service and where its
+  // MP3s go (docs/SDD-ai-news-podcast.md §3.7). Unset means TtsExecutor's
+  // defaults: http://127.0.0.1:8880, voice af_heart, ~/.wissel/audio.
+  const tts = { url: process.env.WISSEL_TTS_URL || undefined, voice: process.env.WISSEL_TTS_VOICE || undefined };
+  const audioDir = process.env.WISSEL_AUDIO_DIR || undefined;
+
   Bun.serve({
     port,
     fetch: createApp(board, registry, telemetry, {
@@ -1518,6 +1560,8 @@ if (import.meta.main) {
       modelsCachePath,
       mergeHealthEnabled,
       mergeHealthIntervalHours,
+      tts,
+      audioDir,
     }),
   });
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
@@ -1562,5 +1606,8 @@ if (import.meta.main) {
     mergeHealthEnabled
       ? `merge-health checking every ${mergeHealthIntervalHours}h for repos left mid-merge (WISSEL_MERGE_HEALTH=1)`
       : "merge-health checking not started — set WISSEL_MERGE_HEALTH=1 to surface repos left mid-merge on the board",
+  );
+  console.log(
+    `pipeline audio: Kokoro TTS at ${tts.url ?? DEFAULT_TTS_URL} (voice ${tts.voice ?? DEFAULT_TTS_VOICE}), MP3s in ${audioDir ?? defaultAudioDir()} (WISSEL_TTS_URL, WISSEL_TTS_VOICE, WISSEL_AUDIO_DIR)`,
   );
 }

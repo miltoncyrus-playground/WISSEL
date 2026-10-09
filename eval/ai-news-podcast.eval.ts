@@ -13,7 +13,9 @@
  * every final source URL is in the gather step's set, every gathered
  * story is dated within 7 days, 5 to 8 stories, script 600 to 1000
  * words, run cost under $1.50 from the telemetry `result` events of the
- * run's step tasks.
+ * run's step tasks, and (§3.7) the "Make audio" step produced a real MP3
+ * through the local Kokoro service (WISSEL_TTS_URL) whose length fits
+ * the script at a speaking pace (checkAudio). Kokoro must be running.
  *
  * Pass threshold: all checks on at least 2 of 3 runs (web results vary).
  * Stops early once the outcome is decided (2 passes, or 2 failures), so
@@ -32,7 +34,8 @@ import { SqliteBoard } from "../src/services/board.ts";
 import { SqlitePipelineStore } from "../src/services/pipelines.ts";
 import { TelemetryLog } from "../src/services/telemetry.ts";
 import { seedAiNewsPipeline } from "../scripts/seed-ai-news-pipeline.ts";
-import { checkAiNewsRun, type AiNewsCheck } from "./ai-news-checks.ts";
+import { TtsExecutor, audioFilePath } from "../src/executors/tts.ts";
+import { checkAiNewsRun, checkAudio, countWords, type AiNewsCheck } from "./ai-news-checks.ts";
 
 const RUNS = 3;
 const NEEDED = 2;
@@ -67,8 +70,13 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
     const pipelines = new SqlitePipelineStore(board.db);
     const registry = await Registry.load();
     const { pipeline } = await seedAiNewsPipeline(pipelines, registry);
+    const audioDir = join(homeDir, "audio");
     const ctx: PipelineRunnerContext = {
-      executors: [new ReadOnlyExecutor({ runner: runViaBun, homeDir })],
+      executors: [
+        new ReadOnlyExecutor({ runner: runViaBun, homeDir }),
+        // The real local Kokoro service (§3.7), same config the server reads.
+        new TtsExecutor({ baseUrl: process.env.WISSEL_TTS_URL, voice: process.env.WISSEL_TTS_VOICE, audioDir }),
+      ],
       pipelines,
       telemetry: new TelemetryLog(telemetryPath),
     };
@@ -88,15 +96,23 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
     const final = await resultFor("script");
     const gatherHandoff = gather ? parsePipelineHandoff(gather.summary) : null;
     const finalHandoff = final ? parsePipelineHandoff(final.summary) : null;
+    const audio = await resultFor("audio");
+    const audioHandoff = audio ? parsePipelineHandoff(audio.summary) : null;
     const costUsd = await costFromTelemetry(telemetryPath, new Set([root.id, ...steps.map((t) => t.id)]));
+    // Kept next to the run's JSON so it can be listened to; homeDir is deleted below.
+    const mp3 = await readFile(audioFilePath(audioDir, root.id)).catch(() => null);
+    const mp3Copy = join(outDir, `run-${n}.mp3`);
+    if (mp3) await writeFile(mp3Copy, mp3);
+    const script = finalHandoff?.data && typeof finalHandoff.data.script === "string" ? finalHandoff.data.script : "";
 
     const checks: AiNewsCheck[] = [
       {
         name: "run-status",
         pass: root.status === "done",
-        detail: `run ${root.status}; steps: ${steps.map((t) => `${t.pipelineStepId}=${t.status}`).join(", ")}`,
+        detail: `run ${root.status}; steps: ${steps.map((t) => `${t.pipelineStepId}=${t.status}`).join(", ")}${audio && !audio.ok ? `; audio: ${audio.summary}` : ""}`,
       },
       ...checkAiNewsRun({ gather: gatherHandoff?.data, final: finalHandoff?.data, costUsd, now }),
+      checkAudio({ audio: audioHandoff?.data, file: mp3 ? new Uint8Array(mp3) : null, words: countWords(script) }),
     ];
     const pass = checks.every((c) => c.pass);
 
@@ -104,9 +120,13 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
     const file = join(outDir, `run-${n}.json`);
     await writeFile(
       file,
-      JSON.stringify({ pass, root: { id: root.id, status: root.status }, checks, costUsd, gather: gatherHandoff, final: finalHandoff, summaries: { gather: gather?.summary, script: final?.summary } }, null, 2),
+      JSON.stringify(
+        { pass, root: { id: root.id, status: root.status }, checks, costUsd, gather: gatherHandoff, final: finalHandoff, audio: audioHandoff, summaries: { gather: gather?.summary, script: final?.summary, audio: audio?.summary } },
+        null,
+        2,
+      ),
     );
-    console.log(`  ${pass ? "PASS" : "FAIL"}  run ${n}  (outputs: ${file})`);
+    console.log(`  ${pass ? "PASS" : "FAIL"}  run ${n}  (outputs: ${file}${mp3 ? `, audio: ${mp3Copy}` : ""})`);
     return pass;
   } finally {
     await rm(homeDir, { recursive: true, force: true });

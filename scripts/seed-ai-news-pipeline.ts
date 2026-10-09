@@ -5,10 +5,12 @@
  * board database the server uses (`WISSEL_DB_PATH`, default
  * `~/.wissel/board.sqlite`).
  *
- * Idempotent by name: if a pipeline called "AI news podcast" already
- * exists it is left exactly as it is (it may hold your own edits), so
- * running this twice leaves one pipeline. Delete it on the Pipelines page
- * and run this again to get the original back.
+ * Keyed by name. If a pipeline called "AI news podcast" already exists
+ * and its graph differs from the template (the three-step version from
+ * before the "Make audio" step, §3.7, or a hand-edited one), its graph is
+ * replaced in place: same id, so its past runs stay linked; its name and
+ * description are kept. When the graph already matches, nothing is
+ * written, so running this twice changes nothing the second time.
  *
  *   bun run seed:ai-news
  */
@@ -22,13 +24,14 @@ import { SqlitePipelineStore, type PipelineStore } from "../src/services/pipelin
 
 export interface SeedResult {
   pipeline: PipelineDef;
-  created: boolean;
+  /** "created": there was none. "updated": the stored graph differed and
+   *  was replaced (same id). "unchanged": it already matched. */
+  outcome: "created" | "updated" | "unchanged";
 }
 
-/** Creates the pipeline unless one with the same name exists. Throws
- *  before writing anything if a step's agent isn't in `registry`, so a
- *  manifest without the three news agents can't seed a pipeline that
- *  would only fail at run time. */
+/** Creates or upgrades the pipeline. Throws before writing anything if a
+ *  step's agent isn't in `registry`, so a manifest without the news
+ *  agents can't seed a pipeline that would only fail at run time. */
 export async function seedAiNewsPipeline(store: PipelineStore, registry: Registry): Promise<SeedResult> {
   const draft = aiNewsPodcastDraft();
   const missing = draft.graph.steps.filter((s) => !registry.get(s.agentId)).map((s) => s.agentId);
@@ -36,17 +39,22 @@ export async function seedAiNewsPipeline(store: PipelineStore, registry: Registr
     throw new Error(`agents/manifest.yaml has no agent(s) ${missing.join(", ")}; the "${draft.name}" pipeline needs them`);
   }
   const existing = (await store.list()).find((p) => p.name === draft.name);
-  if (existing) return { pipeline: existing, created: false };
-  return { pipeline: await store.create(draft), created: true };
+  if (!existing) return { pipeline: await store.create(draft), outcome: "created" };
+  if (Bun.deepEquals(existing.graph, draft.graph)) return { pipeline: existing, outcome: "unchanged" };
+  const pipeline = await store.update(existing.id, { name: existing.name, description: existing.description, graph: draft.graph });
+  return { pipeline, outcome: "updated" };
 }
 
 if (import.meta.main) {
   const dbPath = process.env.WISSEL_DB_PATH ?? join(homedir(), ".wissel", "board.sqlite");
   const board = new SqliteBoard(dbPath);
-  const { pipeline, created } = await seedAiNewsPipeline(new SqlitePipelineStore(board.db), await Registry.load());
+  const { pipeline, outcome } = await seedAiNewsPipeline(new SqlitePipelineStore(board.db), await Registry.load());
+  const steps = pipeline.graph.steps.map((s) => s.name).join(" -> ");
   console.log(
-    created
-      ? `Created "${pipeline.name}" (${pipeline.id}) in ${dbPath}.`
-      : `"${pipeline.name}" already exists (${pipeline.id}) in ${dbPath}; left unchanged.`,
+    outcome === "created"
+      ? `Created "${pipeline.name}" (${pipeline.id}) in ${dbPath}: ${steps}.`
+      : outcome === "updated"
+        ? `Updated "${pipeline.name}" (${pipeline.id}) in place in ${dbPath}: ${steps}.`
+        : `"${pipeline.name}" (${pipeline.id}) in ${dbPath} already matches the template; left unchanged.`,
   );
 }

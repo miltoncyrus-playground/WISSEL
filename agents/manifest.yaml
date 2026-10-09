@@ -503,6 +503,26 @@ agents:
         trailing commas, no comments, no nested code fences. A missing or
         malformed block fails the run.
 
+  # The fourth step, "Make audio" (docs/SDD-ai-news-podcast.md §3.7): not
+  # an LLM. TtsExecutor (src/executors/tts.ts) sends the scriptwriter's
+  # script to the local Kokoro service (WISSEL_TTS_URL) and saves an MP3
+  # per run. tier readonly with no tools, so the pipeline still runs with
+  # no repo (stepsNeedingRepo); executor tts keeps every LLM executor off
+  # it. No harness, no spend.
+  - id: podcast-audio
+    name: Podcast audio
+    kind: skill
+    tier: readonly
+    description: Turns the podcast script into an MP3 with the local Kokoro text-to-speech service. Deterministic, no LLM.
+    whenToUse: The audio step of the "AI news podcast" pipeline. Never routed by the fuzzy Router (see its tag).
+    tags: [ai-news-audio-step]
+    executor: tts
+    inputs: [podcast-script]
+    outputs: [podcast-audio]
+    trustLevel: medium
+    toolAccess: []
+    costProfile: { model: kokoro, estUsdPerTask: 0 }
+
   - id: repo-briefer
     name: Repo briefer
     kind: agent

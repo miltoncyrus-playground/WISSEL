@@ -352,8 +352,10 @@ function isJoinSatisfied(pipelineDef: PipelineDef, targetStep: PipelineStepDef, 
  *  handed-off text is fenced before it ever reaches the next step's
  *  prompt. `nonce` is derived from the run id (itself a fresh randomUUID
  *  per run — see startPipelineRun) rather than generated separately, so
- *  it's already both "random" and "differs run to run" for free. */
-function buildNextStepBody(originalInput: string, handoff: { note?: string; data?: Record<string, unknown> } | undefined, nonce: string): string {
+ *  it's already both "random" and "differs run to run" for free.
+ *  Exported for TtsExecutor's tests (src/executors/tts.ts reads this
+ *  block back out), so they build a step body the way a real run does. */
+export function buildNextStepBody(originalInput: string, handoff: { note?: string; data?: Record<string, unknown> } | undefined, nonce: string): string {
   if (handoff?.note === undefined && handoff?.data === undefined) return originalInput;
   const payload = JSON.stringify({ note: handoff.note, data: handoff.data }, null, 2);
   return [

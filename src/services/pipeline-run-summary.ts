@@ -43,6 +43,10 @@ export interface PipelineRunSummary {
   steps: PipelineRunStepSummary[];
   /** Sum of every step's known cost; null when no step has one. */
   totalCost: number | null;
+  /** The run's MP3 from a "Make audio" step (TtsExecutor,
+   *  docs/SDD-ai-news-podcast.md §3.7): where the drawer plays it from
+   *  and its size; null when the run has none. */
+  audio: { url: string; bytes: number } | null;
 }
 
 export interface PipelineRunSummaryDeps {
@@ -52,6 +56,10 @@ export interface PipelineRunSummaryDeps {
   harnesses: HarnessPool;
   /** A task's durable output lines (getTaskOutput, src/services/task-output.ts). */
   readOutput: (taskId: string) => Promise<string[]>;
+  /** Size of the run's MP3, or null when it has none
+   *  (pipelineAudioBytes, src/services/pipeline-audio.ts). Omitted means
+   *  audio is never reported. */
+  audioBytes?: (runId: string) => Promise<number | null>;
 }
 
 /**
@@ -148,10 +156,12 @@ export async function buildPipelineRunSummary(deps: PipelineRunSummaryDeps, runI
   }
 
   const costs = steps.map((s) => s.cost).filter((c): c is number => c !== null);
+  const audioBytes = deps.audioBytes ? await deps.audioBytes(root.id) : null;
   return {
     root,
     pipeline: def ? { id: def.id, name: def.name, stepCount: def.graph.steps.length } : null,
     steps,
     totalCost: costs.length ? costs.reduce((a, b) => a + b, 0) : null,
+    audio: audioBytes === null ? null : { url: `/pipeline-runs/${encodeURIComponent(root.id)}/audio`, bytes: audioBytes },
   };
 }

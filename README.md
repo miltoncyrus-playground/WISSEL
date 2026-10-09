@@ -159,10 +159,21 @@ optional input; the Run dialog hides the repo field for it. Any other
 pipeline without a repo is a 400.
 
 **AI news podcast** (`docs/SDD-ai-news-podcast.md`): gather the week's AI
-news from the web, explain it simply, write a 5 minute podcast script.
-Create it with `bun run seed:ai-news` (idempotent) or from the "Start from
+news from the web, explain it simply, write a 5 minute podcast script,
+make audio. Create it with `bun run seed:ai-news` or from the "Start from
 a template" list under New pipeline; check it with `bun run eval:ai-news`
-(paid, uses the web).
+(paid, uses the web and Kokoro). The seed is safe to rerun: it creates the
+pipeline, or replaces a stored one's graph in place (same id) when it
+differs from the template, or does nothing.
+
+The "Make audio" step is not an agent: `src/executors/tts.ts` sends the
+script to a local [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)
+service (`WISSEL_TTS_URL`, docker container `kokoro-tts`) and saves
+`~/.wissel/audio/<runId>.mp3`, served at `GET /pipeline-runs/:runId/audio`
+(Range supported). The run drawer's Listen tab plays it with a Download
+link; it shows "Making audio..." while the step runs, and falls back to
+the browser's Read aloud when there is no audio. If Kokoro is down the
+step fails with the reason; Quick read and the script still show.
 
 ## Configuration
 
@@ -192,6 +203,9 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_TELEMETRY_PATH` | `~/.wissel/telemetry.jsonl` | Per-run cost and outcome log. |
 | `WISSEL_HARNESSES_PATH` | `harnesses.yaml` | Harness manifest. |
 | `WISSEL_MCP_SERVERS_PATH` | `mcp-servers.yaml` | MCP server registry. |
+| `WISSEL_TTS_URL` | `http://127.0.0.1:8880` | Local Kokoro-FastAPI service the "Make audio" pipeline step calls. |
+| `WISSEL_TTS_VOICE` | `af_heart` | Kokoro voice for that step. |
+| `WISSEL_AUDIO_DIR` | `~/.wissel/audio` | Where each run's MP3 is written and served from. |
 | `WISSEL_API_URL` | `http://localhost:8787` | Server the CLI (`src/cli.ts`) talks to. |
 | `WISSEL_COMMIT` | from git | Commit to report when there's no `.git` (`src/core/version.ts`). |
 

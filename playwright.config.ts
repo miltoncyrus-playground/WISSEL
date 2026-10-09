@@ -170,6 +170,13 @@ export default defineConfig({
       // leak in and flip the Memory tab's injected-state wording e2e
       // checks assert against (see docs/SDD-memory-injection-toggle.md).
       WISSEL_MEMORY_INJECTION: "0",
+      // The "Make audio" pipeline step (docs/SDD-ai-news-podcast.md §3.7):
+      // pinned so an e2e server never writes into ~/.wissel/audio and
+      // never reaches the real Kokoro on :8880. Port 9 (discard) refuses
+      // connections, so a step that did run would fail fast and loud.
+      WISSEL_AUDIO_DIR: "/tmp/wissel-e2e-audio",
+      WISSEL_TTS_URL: "http://127.0.0.1:9",
+      WISSEL_TTS_VOICE: "af_heart",
     },
   },
 });

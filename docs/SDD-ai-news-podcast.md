@@ -218,6 +218,19 @@ in place when it's the old three-step version (it's idempotent by name
 today, so it would leave the old one unchanged): replace the graph when
 the stored one differs from the template, keep the id.
 
+As built (card 3): TtsExecutor checks `GET /health` before synthesis
+and writes `<id>.mp3.part` then renames it, so a failed or interrupted
+write never leaves a file the drawer would offer. `WISSEL_AUDIO_DIR`
+exists (pinned to `/tmp/wissel-e2e-audio` in playwright.config.ts, with
+`WISSEL_TTS_URL` pointed at a closed port). Audio presence is the
+`audio: { url, bytes } | null` field on `GET /pipeline-runs/:id`; the
+audio route also answers HEAD and returns 416 for a range past the end.
+The telemetry `result` event of the audio step carries
+`audio: { bytes, synthesisSeconds }`. In the drawer, `newsStepCards`
+(board-news.js) picks the scriptwriter, gather and audio cards by
+definition agentId (falling back to the card's `routedTo`), and
+`newsAudioView` maps them to ready / making / failed / none.
+
 ## 4. Tests (gate lane, every card)
 
 - `web` grant: a readonly agent with `toolAccess: [web]` gets

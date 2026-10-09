@@ -18,10 +18,15 @@ export const AI_NEWS_LIMITS = {
    *  stories from one site means a roundup was cited instead of the
    *  originals (the first live run, 2026-10-07: aiweekly.co, 6 of 8). */
   maxStoriesPerSite: 3,
+  /** Spoken pace the audio's length must fit, in words per minute
+   *  (§3.7). Kokoro measured 829 words in 303 s, about 164 wpm. Outside
+   *  90 to 240 the audio is cut short or isn't the script. */
+  minWordsPerMinute: 90,
+  maxWordsPerMinute: 240,
 } as const;
 
 export interface AiNewsCheck {
-  name: "run-status" | "gather-shape" | "final-shape" | "sources-from-gather" | "dates-recent" | "story-count" | "word-count" | "cost" | "sources-per-story" | "source-spread";
+  name: "run-status" | "gather-shape" | "final-shape" | "sources-from-gather" | "dates-recent" | "story-count" | "word-count" | "cost" | "sources-per-story" | "source-spread" | "audio";
   pass: boolean;
   detail: string;
 }
@@ -178,4 +183,61 @@ export function checkAiNewsRun(run: AiNewsRunOutputs): AiNewsCheck[] {
   });
 
   return checks;
+}
+
+const MP3_KBPS_V1_L3 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+const MP3_KBPS_V2_L3 = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+const MP3_RATES: Record<number, number[]> = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] };
+
+/** The first MPEG Layer III frame header's bitrate and sample rate,
+ *  after an ID3v2 tag if there is one; null when the bytes aren't an
+ *  MP3. Enough to tell an MP3 from an error page and to estimate its
+ *  length (CBR: bytes * 8 / bitrate). */
+export function mp3Info(bytes: Uint8Array): { kbps: number; sampleRate: number; offset: number } | null {
+  let i = 0;
+  if (bytes.length >= 10 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
+    // ID3v2: 10-byte header, size as four 7-bit bytes.
+    i = 10 + ((bytes[6]! << 21) | (bytes[7]! << 14) | (bytes[8]! << 7) | bytes[9]!);
+  }
+  if (i + 4 > bytes.length || bytes[i] !== 0xff || (bytes[i + 1]! & 0xe0) !== 0xe0) return null;
+  const version = (bytes[i + 1]! >> 3) & 0x3; // 3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5
+  const layer = (bytes[i + 1]! >> 1) & 0x3; // 1 = Layer III
+  const bitrateIndex = bytes[i + 2]! >> 4;
+  const rateIndex = (bytes[i + 2]! >> 2) & 0x3;
+  if (version === 1 || layer !== 1 || bitrateIndex === 0 || bitrateIndex === 15 || rateIndex === 3) return null;
+  const kbps = (version === 3 ? MP3_KBPS_V1_L3 : MP3_KBPS_V2_L3)[bitrateIndex]!;
+  return { kbps, sampleRate: MP3_RATES[version]![rateIndex]!, offset: i };
+}
+
+export interface AiNewsAudioOutputs {
+  /** The audio step's pipeline-handoff `data` (TtsExecutor). */
+  audio: unknown;
+  /** The MP3 the step wrote, read back from disk; null when missing. */
+  file: Uint8Array | null;
+  /** Words in the script that was spoken (countWords). */
+  words: number;
+}
+
+/** §3.7: the audio step handed off {file, voice, bytes,
+ *  synthesisSeconds}, the file on disk is that many bytes of real MP3,
+ *  and its length fits the script at a speaking pace. */
+export function checkAudio(run: AiNewsAudioOutputs): AiNewsCheck {
+  const L = AI_NEWS_LIMITS;
+  const a = isRecord(run.audio) && isRecord(run.audio.audio) ? run.audio.audio : null;
+  const fail = (detail: string): AiNewsCheck => ({ name: "audio", pass: false, detail });
+  if (!a || typeof a.file !== "string" || typeof a.bytes !== "number" || typeof a.synthesisSeconds !== "number" || typeof a.voice !== "string") {
+    return fail(`audio step handed off no {file, voice, bytes, synthesisSeconds}: ${JSON.stringify(run.audio)}`);
+  }
+  if (!run.file) return fail(`no file at ${a.file}`);
+  if (run.file.byteLength !== a.bytes) return fail(`file is ${run.file.byteLength} bytes, handoff says ${a.bytes}`);
+  const info = mp3Info(run.file);
+  if (!info) return fail("file doesn't start with an MP3 frame");
+  const seconds = ((run.file.byteLength - info.offset) * 8) / (info.kbps * 1000);
+  const wpm = seconds > 0 ? (run.words / seconds) * 60 : Infinity;
+  const pass = wpm >= L.minWordsPerMinute && wpm <= L.maxWordsPerMinute;
+  return {
+    name: "audio",
+    pass,
+    detail: `${a.bytes} bytes, ${info.kbps} kbps ${info.sampleRate} Hz, about ${Math.round(seconds)} s for ${run.words} words (${Math.round(wpm)} wpm, want ${L.minWordsPerMinute} to ${L.maxWordsPerMinute}); synthesis ${a.synthesisSeconds} s, voice ${a.voice}`,
+  };
 }

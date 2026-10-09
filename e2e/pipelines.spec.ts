@@ -755,17 +755,27 @@ const speechLog = (page: Page) => page.evaluate(() => {
   return { calls: [...calls], spoken: [...spoken] };
 });
 
-// A finished three-step "AI news podcast" run, served on GET /tasks.
-async function serveNewsRun(page: Page, scriptSummary: string) {
+// §3.7 (card 3): the fourth step, "Make audio", and the run's MP3.
+const NEWS_MP3 = readFileSync(join(NEWS_FIXTURES, "silence.mp3"));
+const NEWS_AUDIO_URL = "/pipeline-runs/r-news/audio";
+const NEWS_AUDIO_FAILED = "Audio not made: Kokoro TTS isn't reachable at http://127.0.0.1:8880 (Unable to connect). Is the kokoro-tts container running?";
+
+// A finished "AI news podcast" run, served on GET /tasks. Without
+// `audio` it's the three-step run from before §3.7; with it, the run has
+// a fourth "Make audio" step in that status after the scriptwriter, and
+// GET /pipeline-runs/r-news reports the MP3 (served from the fixture)
+// only when that step is done.
+async function serveNewsRun(page: Page, scriptSummary: string, audio?: "done" | "failed" | "running") {
   const base = { body: "focus on open models", labels: [], pipelineId: "p-news-stub" };
-  const step = (id: string, stepId: string, agent: string) => ({
-    ...base, id, title: `News stub: ${stepId}`, status: "done", parentTaskId: "r-news", pipelineRunId: "r-news", pipelineStepId: stepId, routedTo: agent,
+  const step = (id: string, stepId: string, agent: string, status = "done") => ({
+    ...base, id, title: `News stub: ${stepId}`, status, parentTaskId: "r-news", pipelineRunId: "r-news", pipelineStepId: stepId, routedTo: agent,
   });
   const board = [
-    { ...base, id: "r-news", title: "Pipeline: AI news podcast", status: "done" },
+    { ...base, id: "r-news", title: "Pipeline: AI news podcast", status: audio === "failed" ? "failed" : audio === "running" ? "running" : "done" },
     step("s-gather", "gather", "ai-news-gatherer"),
     step("s-explain", "explain", "eli5-explainer"),
     step("s-script", "script", "podcast-scriptwriter"),
+    ...(audio ? [step("s-audio", "audio", "podcast-audio", audio)] : []),
   ];
   const def = {
     id: "p-news-stub", name: "AI news podcast", description: "",
@@ -774,17 +784,28 @@ async function serveNewsRun(page: Page, scriptSummary: string) {
         { id: "gather", name: "Gather news", agentId: "ai-news-gatherer", transition: "all" },
         { id: "explain", name: "Explain simply", agentId: "eli5-explainer", transition: "all" },
         { id: "script", name: "Write podcast script", agentId: "podcast-scriptwriter", transition: "all" },
+        ...(audio ? [{ id: "audio", name: "Make audio", agentId: "podcast-audio", transition: "all" }] : []),
       ],
-      edges: [{ id: "ge", from: "gather", to: "explain" }, { id: "es", from: "explain", to: "script" }],
+      edges: [
+        { id: "ge", from: "gather", to: "explain" },
+        { id: "es", from: "explain", to: "script" },
+        ...(audio ? [{ id: "sa", from: "script", to: "audio" }] : []),
+      ],
     },
   };
-  const summaries: Record<string, string> = { "s-gather": NEWS_GATHER, "s-explain": "explained", "s-script": scriptSummary };
+  const audioSummary = audio === "failed"
+    ? NEWS_AUDIO_FAILED
+    : "Audio made.\n\n```pipeline-handoff\n" + JSON.stringify({ data: { audio: { file: "/x/r-news.mp3", voice: "af_heart", bytes: NEWS_MP3.byteLength, synthesisSeconds: 1.2 } } }) + "\n```";
+  const summaries: Record<string, string> = { "s-gather": NEWS_GATHER, "s-explain": "explained", "s-script": scriptSummary, "s-audio": audioSummary };
   await page.route((url) => url.pathname === "/tasks", (route) => (route.request().method() === "GET" ? route.fulfill({ json: board }) : route.fallback()));
   await page.route((url) => url.pathname === "/pipelines", (route) => (route.request().method() === "GET" ? route.fulfill({ json: [def] }) : route.fallback()));
-  await page.route("**/pipeline-runs/r-news", (route) => route.fulfill({ json: { root: board[0], pipeline: def, totalCost: null, steps: [] } }));
-  await page.route(/\/tasks\/s-(gather|explain|script)\/result$/, (route) => {
+  const summaryAudio = audio === "done" ? { url: NEWS_AUDIO_URL, bytes: NEWS_MP3.byteLength } : null;
+  await page.route("**/pipeline-runs/r-news", (route) => route.fulfill({ json: { root: board[0], pipeline: def, totalCost: null, steps: [], audio: summaryAudio } }));
+  await page.route((url) => url.pathname === NEWS_AUDIO_URL, (route) =>
+    audio === "done" ? route.fulfill({ status: 200, contentType: "audio/mpeg", body: NEWS_MP3 }) : route.fulfill({ status: 404, body: "no audio for this run" }));
+  await page.route(/\/tasks\/s-(gather|explain|script|audio)\/result$/, (route) => {
     const id = new URL(route.request().url()).pathname.split("/")[2]!;
-    return route.fulfill({ json: { taskId: id, ok: true, summary: summaries[id] } });
+    return route.fulfill({ json: { taskId: id, ok: id !== "s-audio" || audio !== "failed", summary: summaries[id] } });
   });
 }
 
@@ -931,6 +952,99 @@ test.describe("AI news run: Quick read and Read aloud", () => {
   });
 });
 
+test.describe("AI news run: the MP3 from Make audio", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("a finished four-step run: Quick read is still the default; Listen has the player and Download above the script, and no Read aloud", async ({ page }) => {
+    await stubSpeech(page);
+    await serveNewsRun(page, NEWS_SCRIPT, "done");
+    await openNewsRun(page);
+
+    // The scriptwriter is found by agent although Make audio ran last.
+    await expect(page.getByRole("tab", { name: "Quick read", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("#rdNewsList .rd-news-item")).toHaveCount(3);
+    await expect(page.locator("#rdNewsRawReason")).toBeHidden();
+
+    await page.getByRole("tab", { name: "Listen", exact: true }).click();
+    const player = page.locator("#rdNewsAudio audio");
+    await expect(player).toBeVisible();
+    expect(await player.evaluate((a: HTMLAudioElement) => ({ src: new URL(a.src).pathname, preload: a.getAttribute("preload"), controls: a.controls }))).toEqual({
+      src: NEWS_AUDIO_URL,
+      preload: "none",
+      controls: true,
+    });
+    const download = page.getByRole("link", { name: /^Download MP3/ });
+    await expect(download).toBeVisible();
+    await expect(download).toHaveAttribute("href", NEWS_AUDIO_URL);
+    await expect(download).toHaveAttribute("download", /\.mp3$/);
+    await expect(page.locator("#rdNewsAudioStatus")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Read aloud", exact: true })).toBeHidden();
+    await expect(page.locator("#rdNewsScript p")).toHaveCount(5);
+    // Player above the script text.
+    const order = await page.evaluate(() => {
+      const a = document.getElementById("rdNewsAudio")!, s = document.getElementById("rdNewsScript")!;
+      return Boolean(a.compareDocumentPosition(s) & Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+    expect(order).toBe(true);
+
+    // The fixture is a real MP3 the browser decodes (about 1.5 s).
+    const duration = await player.evaluate((a: HTMLAudioElement) => new Promise<number>((resolve, reject) => {
+      a.addEventListener("loadedmetadata", () => resolve(a.duration), { once: true });
+      a.addEventListener("error", () => reject(new Error("audio error " + (a.error && a.error.code))), { once: true });
+      a.load();
+    }));
+    expect(duration).toBeGreaterThan(1);
+    expect(duration).toBeLessThan(2);
+
+    // The page's own board-news.js (a global, no import) agrees.
+    const fromModule = await page.evaluate((url) => {
+      const w = window as unknown as {
+        newsStepCards(s: unknown[], d: unknown[]): { news: { id: string }; audio: { id: string } | null };
+        newsAudioView(c: unknown, a: unknown): { state: string };
+      };
+      const steps = [
+        { id: "g", pipelineStepId: "gather", status: "done" },
+        { id: "s", pipelineStepId: "script", status: "done" },
+        { id: "a", pipelineStepId: "audio", status: "done" },
+      ];
+      const defs = [{ id: "gather", agentId: "ai-news-gatherer" }, { id: "script", agentId: "podcast-scriptwriter" }, { id: "audio", agentId: "podcast-audio" }];
+      const cards = w.newsStepCards(steps, defs);
+      return [cards.news.id, cards.audio && cards.audio.id, w.newsAudioView(cards.audio, { url, bytes: 1 }).state];
+    }, NEWS_AUDIO_URL);
+    expect(fromModule).toEqual(["s", "a", "ready"]);
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/news-listen-audio-1440x900.png` });
+  });
+
+  test("the audio step failed: Quick read and the script still show, the failure is said, and Read aloud is the fallback", async ({ page }) => {
+    await stubSpeech(page);
+    await serveNewsRun(page, NEWS_SCRIPT, "failed");
+    await openNewsRun(page);
+
+    await expect(page.getByRole("tab", { name: "Quick read", exact: true })).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator("#rdNewsList .rd-news-item")).toHaveCount(3);
+
+    await page.getByRole("tab", { name: "Listen", exact: true }).click();
+    await expect(page.locator("#rdNewsAudio")).toBeHidden();
+    await expect(page.getByRole("link", { name: /^Download MP3/ })).toBeHidden();
+    await expect(page.locator("#rdNewsAudioStatus")).toBeVisible();
+    await expect(page.locator("#rdNewsAudioStatus")).toContainText("Make audio step failed");
+    await expect(page.locator("#rdNewsScript p")).toHaveCount(5);
+    await page.getByRole("button", { name: "Read aloud", exact: true }).click();
+    expect((await speechLog(page)).spoken).toHaveLength(5);
+  });
+
+  test("while the audio step runs the Listen tab says Making audio... and Read aloud works meanwhile", async ({ page }) => {
+    await stubSpeech(page);
+    await serveNewsRun(page, NEWS_SCRIPT, "running");
+    await openNewsRun(page);
+    await page.getByRole("tab", { name: "Listen", exact: true }).click();
+    await expect(page.locator("#rdNewsAudioStatus")).toBeVisible();
+    await expect(page.locator("#rdNewsAudioStatus")).toContainText("Making audio...");
+    await expect(page.locator("#rdNewsAudio")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Read aloud", exact: true })).toBeVisible();
+  });
+});
+
 test.describe("AI news run on a 390px phone", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
@@ -950,5 +1064,22 @@ test.describe("AI news run on a 390px phone", () => {
     await expect(page.locator("#rdNewsControls")).toBeVisible();
     expect(await overflow()).toEqual({ drawer: 0, body: 0, page: 0 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/news-listen-390.png` });
+  });
+
+  test("the Listen tab with the audio player and Download link doesn't scroll sideways either", async ({ page }) => {
+    await stubSpeech(page);
+    await serveNewsRun(page, NEWS_SCRIPT, "done");
+    await openNewsRun(page);
+    await expect.poll(async () => { const b = await page.locator("#runDrawer").boundingBox(); return b && Math.round(b.x); }).toBe(0);
+    await page.getByRole("tab", { name: "Listen", exact: true }).click();
+    await expect(page.locator("#rdNewsAudio audio")).toBeVisible();
+    await expect(page.getByRole("link", { name: /^Download MP3/ })).toBeVisible();
+    const overflow = await page.evaluate(() => {
+      const drawer = document.getElementById("runDrawer")!;
+      const body = drawer.querySelector(".drawer-body")!;
+      return { drawer: drawer.scrollWidth - drawer.clientWidth, body: body.scrollWidth - body.clientWidth, page: document.documentElement.scrollWidth - document.documentElement.clientWidth };
+    });
+    expect(overflow).toEqual({ drawer: 0, body: 0, page: 0 });
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/news-listen-audio-390.png` });
   });
 });
