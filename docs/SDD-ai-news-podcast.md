@@ -150,6 +150,74 @@ deterministic check in `board-news.js` (and in the eval) compares every
 handoff; a source that isn't in that set is flagged in the drawer
 ("source not from the gather step") instead of being shown as normal.
 
+### 3.7 Audio with a local voice (Kokoro), revision 2026-10-09
+
+Milton asked for a more human voice than browser speech and chose a
+local model: [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)
+(Kokoro-82M, Apache 2.0) in Docker. Not an LLM and not a hosted API, so
+CLAUDE.md's rules are met.
+
+**Service (already running, set up 2026-10-09):** container
+`kokoro-tts`, image `ghcr.io/remsky/kokoro-fastapi-cpu:latest`, bound to
+`127.0.0.1:8880` only (not on the LAN), `--restart unless-stopped`
+(Docker starts at boot). OpenAI-compatible endpoint
+`POST /v1/audio/speech` with `{"model":"kokoro","voice":"af_heart",
+"input": script, "response_format":"mp3"}`; it splits long text at
+sentence boundaries itself. `GET /health` returns
+`{"status":"healthy"}`. Measured on this machine (i5-4308U, 2 cores):
+the 829-word script became 303 s of audio in 253 s, 1.2x real time,
+about 2.3 GB RAM. A briefing's audio step takes about 4 to 5 minutes.
+
+**Pipeline step:** a fourth step "Make audio" after the scriptwriter,
+run by a new deterministic executor, not an agent prompt:
+
+- New agent entry `podcast-audio` in agents/manifest.yaml with
+  `executor: tts` (one unique tag, `toolAccess: []`, costProfile model
+  `kokoro`, estUsdPerTask 0). A new `TtsExecutor` (src/executors/tts.ts)
+  handles `executor === "tts"`. It has no `harnessTool`, so the pipeline
+  runner acquires no harness for it (pipeline-runner.ts:280 already
+  skips acquire when `harnessTool` is undefined).
+- It reads the script from its input (the scriptwriter's handoff, fenced
+  by buildNextStepBody), calls Kokoro, and writes
+  `~/.wissel/audio/<pipelineRunId>.mp3` (dir overridable for tests via
+  an option; `WISSEL_AUDIO_DIR` env if a flag is needed, pinned in
+  playwright.config.ts like every WISSEL_* flag). Its result is a
+  pipeline-handoff with `data: { audio: { file, voice, bytes,
+  synthesisSeconds } }`.
+- Config: `WISSEL_TTS_URL` (default `http://127.0.0.1:8880`) and
+  `WISSEL_TTS_VOICE` (default `af_heart`). Both documented in the README
+  (test/readme.test.ts requires it).
+- Timeout: 20 minutes (longer scripts on this CPU). Kokoro down,
+  unhealthy, timing out or returning non-audio fails the step loud with
+  the reason. The run is then "failed" overall but the drawer still
+  shows Quick read and the script (with browser speech) because those
+  come from the scriptwriter step (see below).
+- Telemetry: record `synthesisSeconds` and audio bytes on the result so
+  speed can be tracked over time.
+
+**Serving:** `GET /pipeline-runs/:id/audio` streams the MP3 with
+`Content-Type: audio/mpeg` and HTTP Range support (phones seek with
+Range; Bun.file in a Response handles it). 404 when there's no file.
+The id is validated as a known run id before touching the filesystem
+(no path traversal).
+
+**Drawer:** today runNewsCards (board.html) takes the run's LAST step as
+the scriptwriter's output. With the audio step last, it must instead
+find the step whose definition agent is `podcast-scriptwriter` for
+Quick read and the script, and the gather step as now. The Listen tab
+shows an `<audio controls preload="none">` player and a Download link
+when the audio exists (check with a HEAD request or a field on
+GET /pipeline-runs/:id), above the script text. Browser Read aloud stays
+as the fallback when there is no audio (run made before this change,
+Kokoro failed, or still synthesizing: show "Making audio..." while the
+audio step is running).
+
+**Seeding:** seed-ai-news-pipeline.ts and the editor template add the
+fourth step. The seed must update the stored "AI news podcast" pipeline
+in place when it's the old three-step version (it's idempotent by name
+today, so it would leave the old one unchanged): replace the graph when
+the stored one differs from the template, keep the id.
+
 ## 4. Tests (gate lane, every card)
 
 - `web` grant: a readonly agent with `toolAccess: [web]` gets
@@ -182,10 +250,10 @@ run cost under $1.50 from telemetry. Pass threshold: all checks, 2 of
 
 ## 6. Non-goals
 
-- Audio files (MP3) or server-side text to speech. That would need a
-  hosted TTS service, which CLAUDE.md rules out without Milton's say-so.
-  Browser read-aloud covers "read-out" for now; an audio file is a
-  follow-up if he wants one.
+- A hosted TTS service. Audio comes from the local Kokoro service
+  (§3.7); browser read-aloud remains the fallback.
+- Two-host dialogue (different voices per host). Possible later with
+  Kokoro voices per segment; not in this revision.
 - A daily schedule. Runs are on demand. A schedule (like the memory
   curator's) is an easy follow-up once the output is good.
 - Delivery to email or phone notifications.
@@ -197,3 +265,4 @@ run cost under $1.50 from telemetry. Pass threshold: all checks, 2 of
    Labels: `code`.
 2. **Presentation:** §3.5 and §3.6 in the run drawer, `board-news.js`,
    unit and e2e tests. Depends on card 1. Labels: `code`.
+3. **Audio (Kokoro):** §3.7. Labels: `code`. Done after 1 and 2.
