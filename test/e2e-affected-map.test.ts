@@ -109,6 +109,14 @@ describe("resolveAffectedSpecs", () => {
     }
   });
 
+  test("board-news.js (the run drawer's AI news tabs) resolves to pipelines.spec.ts only", () => {
+    for (const path of ["src/api/public/board-news.js", "src/api/public/board-news.d.ts"]) {
+      const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
+      expect(result.specs).toEqual(["pipelines.spec.ts"]);
+      expect(result.fullSuite).toBe(false);
+    }
+  });
+
   test("board.html change where every changed line is theme-related resolves to theme.spec.ts only", () => {
     const result = resolveAffectedSpecs(
       [

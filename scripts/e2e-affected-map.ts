@@ -132,6 +132,12 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
+      "board-news.js/.d.ts is only the run drawer's Quick read and Listen tabs for an AI news run. Verified (grep): newsView and createNewsReader are called only by board.html's run drawer (syncRunNews), and only pipelines.spec.ts opens the run drawer.",
+    match: (p) => p === "src/api/public/board-news.js" || p === "src/api/public/board-news.d.ts",
+    resolve: () => ["pipelines.spec.ts"],
+  },
+  {
+    description:
       "board.html is shared by nearly every spec (see BOARD_HTML_DEFAULT_SPECS's own comment) — defaults to that broad set, UNLESS every changed line matches the theme-only marker, which is verified to appear nowhere else in the file.",
     match: (p) => p === "src/api/public/board.html",
     resolve: (_p, changedLines) => resolveBoardHtml(changedLines),
