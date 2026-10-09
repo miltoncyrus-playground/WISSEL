@@ -13,10 +13,15 @@ export const AI_NEWS_LIMITS = {
   minWords: 600,
   maxWords: 1000,
   maxCostUsd: 1.5,
+  /** Most stories whose lead source (sources[0]) may share one site.
+   *  A lab can legitimately announce two or three things in a week; six
+   *  stories from one site means a roundup was cited instead of the
+   *  originals (the first live run, 2026-10-07: aiweekly.co, 6 of 8). */
+  maxStoriesPerSite: 3,
 } as const;
 
 export interface AiNewsCheck {
-  name: "run-status" | "gather-shape" | "final-shape" | "sources-from-gather" | "dates-recent" | "story-count" | "word-count" | "cost";
+  name: "run-status" | "gather-shape" | "final-shape" | "sources-from-gather" | "dates-recent" | "story-count" | "word-count" | "cost" | "sources-per-story" | "source-spread";
   pass: boolean;
   detail: string;
 }
@@ -45,6 +50,16 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function gatherStories(gather: unknown): GatherStory[] | null {
   if (!isRecord(gather) || !Array.isArray(gather.stories)) return null;
   return gather.stories.filter(isRecord) as unknown as GatherStory[];
+}
+
+/** Hostname without a leading "www.", or null for a non-URL. */
+export function siteOf(url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return null;
+  }
 }
 
 /** Every URL the gather step handed off, across all its stories. */
@@ -102,6 +117,33 @@ export function checkAiNewsRun(run: AiNewsRunOutputs): AiNewsCheck[] {
     name: "sources-from-gather",
     pass: quickRead !== null && quickRead.length > 0 && strays.length === 0,
     detail: strays.length === 0 ? `${quickRead?.length ?? 0} quick-read sources all in the gather set (${sources.size} URLs)` : `not in the gather set: ${strays.map((s) => JSON.stringify(s)).join(", ")}`,
+  });
+
+  // Each story cites its own page: a URL shared by two stories is a
+  // roundup or digest page, not the story's source.
+  const urlStories = new Map<string, number>();
+  for (const st of stories ?? []) {
+    for (const u of new Set(Array.isArray(st.sources) ? st.sources.filter((x): x is string => typeof x === "string") : [])) {
+      urlStories.set(u, (urlStories.get(u) ?? 0) + 1);
+    }
+  }
+  const shared = [...urlStories].filter(([, n]) => n > 1);
+  checks.push({
+    name: "sources-per-story",
+    pass: stories !== null && stories.length > 0 && shared.length === 0,
+    detail: shared.length === 0 ? "no source URL is shared between stories" : `shared by several stories: ${shared.map(([u, n]) => `${u} (${n})`).join(", ")}`,
+  });
+
+  const bySite = new Map<string, number>();
+  for (const st of stories ?? []) {
+    const site = siteOf(Array.isArray(st.sources) ? st.sources[0] : undefined);
+    if (site) bySite.set(site, (bySite.get(site) ?? 0) + 1);
+  }
+  const crowded = [...bySite].filter(([, n]) => n > L.maxStoriesPerSite);
+  checks.push({
+    name: "source-spread",
+    pass: stories !== null && stories.length > 0 && crowded.length === 0,
+    detail: crowded.length === 0 ? `lead sources from ${bySite.size} sites, none over ${L.maxStoriesPerSite} stories` : `too many stories from one site: ${crowded.map(([d, n]) => `${d} (${n})`).join(", ")}`,
   });
 
   // A day of slack into the future covers a source in a timezone ahead of UTC.

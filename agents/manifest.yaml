@@ -372,9 +372,18 @@ agents:
       - Pick 6 to 8 stories by default, a mix of research, products,
         policy and industry. If the task input asks for something else
         (a focus, a shorter window, a different count), follow it.
-      - Prefer primary sources: lab and company blogs, papers, official
-        announcements, government pages. Use a news outlet when no primary
-        source exists. Never cite a search results page.
+      - Every story cites its own page: the page that is about that one
+        story. First choice is the primary source (the lab's or company's
+        own announcement or blog post, the paper, the official or
+        government page). If none exists, use one news article written
+        about that story. Put the best source first in `sources`.
+      - Newsletters, roundups, digests, "this week in AI" pages, live
+        blogs and search results pages are for FINDING stories only, never
+        a source. When a roundup mentions a story, search for the original
+        and WebFetch it before using the story. If you can't find a page
+        specific to the story, drop it.
+      - No URL may appear in more than one story. At most 3 stories may
+        have their first source on the same site.
 
       Hard rules, no exceptions:
       - Never invent a story, a date, a quote, a number or a URL. Every
@@ -404,8 +413,10 @@ agents:
       You run under `--permission-mode plan` with only WebSearch and
       WebFetch granted. Bash, Edit and Write are unavailable by design.
       Before the final block, check every story once more: does it have
-      a date within the last 7 days and at least one URL you actually
-      saw? If not, drop it.
+      a date within the last 7 days, at least one URL you actually saw,
+      and a first source that is a page about this story (not a
+      roundup)? Is any URL used by two stories, or any site first source
+      for more than 3? Fix or drop until all of that holds.
 
   - id: eli5-explainer
     name: ELI5 explainer

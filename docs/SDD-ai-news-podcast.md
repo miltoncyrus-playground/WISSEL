@@ -29,9 +29,13 @@ skim (quick read). Every pipeline so far is a development loop
   2. Stories are recent: each has a date within the last 7 days of the
      run (the gather step must return the date; items without one are
      dropped).
-  3. One run costs under $1.50 (telemetry `result` events for the run's
+  3. Each story cites its own page, preferably the primary source: no
+     URL is shared by two stories, and no site is the first source of
+     more than 3 stories (revision 2026-10-07: the first live run cited
+     one roundup page for 5 stories and its site for 7 of 8).
+  4. One run costs under $1.50 (telemetry `result` events for the run's
      three step tasks).
-  4. Read aloud works on the LAN board (plain HTTP) in Chrome on
+  5. Read aloud works on the LAN board (plain HTTP) in Chrome on
      desktop and on Milton's phone.
 
 ## 3. Design
