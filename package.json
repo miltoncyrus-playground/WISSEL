@@ -17,6 +17,7 @@
     "live-check:shutdown": "bun test scripts/live-check-shutdown.test.ts",
     "test:e2e:affected": "bun run scripts/e2e-affected.ts --run",
     "seed:ai-news": "bun run scripts/seed-ai-news-pipeline.ts",
+    "check:news-run": "bun run scripts/check-news-run.ts",
     "eval:ai-news": "bun run eval/ai-news-podcast.eval.ts",
     "eval:world-news": "bun run eval/ai-news-podcast.eval.ts --world",
     "eval:wissel-retro": "bun run eval/wissel-retro-podcast.eval.ts",

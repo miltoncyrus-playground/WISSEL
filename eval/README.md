@@ -19,6 +19,17 @@ wall-clock time. Run explicitly before ship, and nightly.
 | `eval/ai-news-podcast.eval.ts` | `bun run eval:ai-news` | The seeded "AI news podcast" pipeline, run for real with no repo (gather step uses WebSearch/WebFetch), meets the deterministic checks in `eval/ai-news-checks.ts`: every final source URL came from the gather step, every story dated within 7 days, 5 to 8 stories, script 600 to 1000 words, run cost under $1.50 from telemetry, and (§3.9) the explain step keeps the stories in order with their sources, keeps at least 90% of the numbers and 80% of the names in the gathered `facts`, and gives each story a summary of at most 30 words and a detail of at least 60. `bun run eval:world-news` (`--world`) runs the "World news podcast" with a 2 day window (4 for Spain and the Netherlands), every region covered and a detail of at least 50 words. Passes on 2 of 3 runs (stops early once decided); outputs in `/tmp/wissel-eval-ai-news/`. See docs/SDD-ai-news-podcast.md §5, §3.8, §3.9. |
 | `eval/wissel-retro-podcast.eval.ts` | `bun run eval:wissel-retro` | The seeded "Wissel retrospective podcast" pipeline, run for real with no repo over a copy of the local board (`~/.wissel/board.sqlite`), the real telemetry, lessons and docs (input `last 14 days`, or `-- --input "..."`), meets `checkRetroRun` in `eval/ai-news-checks.ts` plus a real MP3: every quick-read link and analysis source came from the digest, all four groups (done, learnings, improve, ideas) present, every learnings and improve item cites a source, script 600 to 1000 words, run cost under $1.00. Passes on 2 of 3 runs (stops early once decided); outputs in `/tmp/wissel-eval-wissel-retro/`. See docs/SDD-wissel-retro-podcast.md §2, §3.4. |
 
+### Checking a run you already have
+
+`bun run check:news-run` applies the same checks (`eval/ai-news-checks.ts`
+plus `checkAudio`) to the latest real run of each podcast pipeline on the
+live board, for free: no `claude` calls, no new run, a snapshot of
+`~/.wissel/board.sqlite` (never the live file), cost from
+`~/.wissel/telemetry.jsonl`, and dates judged at the run's first
+telemetry event. Pass a pipeline name or a run id to check one run.
+Exits 1 on any failed check. Use it on the 06:00 timer's runs instead of
+paying for a fresh eval.
+
 ## implementer-reviewer eval
 
 `test/orchestrator-review-lifecycle.test.ts` (gate lane) already proves

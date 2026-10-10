@@ -17,7 +17,9 @@ systemctl --user enable --now wissel-morning-podcasts.timer
 
 Check: `systemctl --user list-timers wissel-*`, logs:
 `journalctl --user -u wissel-morning-podcasts.service`. Run now:
-`systemctl --user start wissel-morning-podcasts.service`.
+`systemctl --user start wissel-morning-podcasts.service`. Check what
+the runs produced against the eval checks, free:
+`bun run check:news-run`.
 
 The wissel server itself must be running; the script waits up to 10
 minutes for it after a boot, then fails (logged) if it isn't up.

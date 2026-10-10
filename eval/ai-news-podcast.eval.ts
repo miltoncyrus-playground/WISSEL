@@ -38,6 +38,7 @@ import { SqliteBoard } from "../src/services/board.ts";
 import { SqlitePipelineStore } from "../src/services/pipelines.ts";
 import { TelemetryLog } from "../src/services/telemetry.ts";
 import { seedAiNewsPipeline, seedWorldNewsPipeline } from "../scripts/seed-ai-news-pipeline.ts";
+import { costFromTelemetry } from "../scripts/check-news-run.ts";
 import { TtsExecutor, audioFilePath } from "../src/executors/tts.ts";
 import { checkAiNewsRun, checkAudio, checkWorldNewsRun, countWords, type AiNewsCheck } from "./ai-news-checks.ts";
 
@@ -48,28 +49,6 @@ const WORLD = process.argv.includes("--world");
 
 const RUNS = 3;
 const NEEDED = 2;
-
-/** Sums actualCost over telemetry `result` events for these task ids. */
-async function costFromTelemetry(path: string, taskIds: Set<string>): Promise<number | undefined> {
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch {
-    return undefined;
-  }
-  let total: number | undefined;
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    let e: { type?: string; taskId?: string; actualCost?: number };
-    try {
-      e = JSON.parse(line) as typeof e;
-    } catch {
-      continue;
-    }
-    if (e.type === "result" && e.taskId && taskIds.has(e.taskId) && typeof e.actualCost === "number") total = (total ?? 0) + e.actualCost;
-  }
-  return total;
-}
 
 async function runOnce(n: number, outDir: string): Promise<boolean> {
   const homeDir = await mkdtemp(join(tmpdir(), "wissel-eval-ai-news-home-"));

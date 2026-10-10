@@ -23,8 +23,7 @@
  * Pass threshold: all checks on at least 2 of 3 runs, stopping early once
  * decided. Outputs per run in /tmp/wissel-eval-wissel-retro/<timestamp>/.
  */
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Registry } from "../src/core/registry.ts";
@@ -39,6 +38,7 @@ import { SqlitePipelineStore } from "../src/services/pipelines.ts";
 import { TelemetryLog } from "../src/services/telemetry.ts";
 import { seedWisselRetroPipeline } from "../scripts/seed-ai-news-pipeline.ts";
 import { checkAudio, checkRetroRun, countWords, type AiNewsCheck } from "./ai-news-checks.ts";
+import { costFromTelemetry, snapshotBoard } from "../scripts/check-news-run.ts";
 
 const RUNS = 3;
 const NEEDED = 2;
@@ -47,36 +47,16 @@ const NEEDED = 2;
 const inputAt = process.argv.indexOf("--input");
 const INPUT = inputAt > -1 && process.argv[inputAt + 1] ? process.argv[inputAt + 1]! : "last 14 days";
 
-async function costFromTelemetry(path: string, taskIds: Set<string>): Promise<number | undefined> {
-  const raw = await readFile(path, "utf8").catch(() => "");
-  let total: number | undefined;
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      const e = JSON.parse(line) as { type?: string; taskId?: string; actualCost?: number };
-      if (e.type === "result" && e.taskId && taskIds.has(e.taskId) && typeof e.actualCost === "number") total = (total ?? 0) + e.actualCost;
-    } catch {
-      // skip a torn line
-    }
-  }
-  return total;
-}
-
-/** A read-only snapshot of the real board: the file and its WAL copied
- *  into `dir`, opened there, so nothing touches the live database. */
-async function snapshotBoard(dir: string): Promise<SqliteBoard> {
-  const real = process.env.WISSEL_DB_PATH ?? join(homedir(), ".wissel", "board.sqlite");
-  const copy = join(dir, "board.sqlite");
-  await copyFile(real, copy);
-  if (existsSync(`${real}-wal`)) await copyFile(`${real}-wal`, `${copy}-wal`);
-  return new SqliteBoard(copy);
+/** A read-only snapshot of the real board (scripts/check-news-run.ts). */
+function snapshotRealBoard(dir: string): Promise<SqliteBoard> {
+  return snapshotBoard(process.env.WISSEL_DB_PATH ?? join(homedir(), ".wissel", "board.sqlite"), dir);
 }
 
 async function runOnce(n: number, outDir: string): Promise<boolean> {
   const homeDir = await mkdtemp(join(tmpdir(), "wissel-eval-retro-home-"));
   const telemetryPath = join(homeDir, "telemetry.jsonl");
   try {
-    const realBoard = await snapshotBoard(homeDir);
+    const realBoard = await snapshotRealBoard(homeDir);
     const board = new SqliteBoard();
     const pipelines = new SqlitePipelineStore(board.db);
     const registry = await Registry.load();
