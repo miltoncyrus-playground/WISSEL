@@ -61,13 +61,17 @@ const BOARD_HTML_DEFAULT_SPECS: string[] = [
   "pipelines.spec.ts",
 ];
 
+/** board.html itself (not its JS modules) also carries the header link
+ *  to /app that app.spec.ts follows (docs/SDD-wissel-app.md §3.1). */
+const BOARD_HTML_FILE_SPECS: string[] = [...BOARD_HTML_DEFAULT_SPECS, "app.spec.ts"];
+
 function resolveBoardHtml(changedLines: string[] | undefined): SpecList {
   // No hunk content available (e.g. a rename, or a diff this script
   // couldn't read) — can't prove the change is theme-only, so fall
   // back to the documented default rather than guess narrow.
-  if (!changedLines || changedLines.length === 0) return BOARD_HTML_DEFAULT_SPECS;
+  if (!changedLines || changedLines.length === 0) return BOARD_HTML_FILE_SPECS;
   const everyLineIsThemeRelated = changedLines.every((line) => THEME_MARKER.test(line));
-  return everyLineIsThemeRelated ? ["theme.spec.ts"] : BOARD_HTML_DEFAULT_SPECS;
+  return everyLineIsThemeRelated ? ["theme.spec.ts"] : BOARD_HTML_FILE_SPECS;
 }
 
 export const FILE_RULES: FileRule[] = [
@@ -81,6 +85,12 @@ export const FILE_RULES: FileRule[] = [
       "pipeline-editor/ is its own isolated Vite app (pipeline-editor/src/**) — only pipeline-editor.spec.ts drives it, over the real /pipelines/* API (covered separately by the server.ts rule below).",
     match: (p) => p === "pipeline-editor" || p.startsWith("pipeline-editor/"),
     resolve: () => ["pipeline-editor.spec.ts"],
+  },
+  {
+    description:
+      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; only app.spec.ts opens /app.",
+    match: (p) => p === "app" || p.startsWith("app/") || p === "src/api/serve-app.ts",
+    resolve: () => ["app.spec.ts"],
   },
   {
     description:

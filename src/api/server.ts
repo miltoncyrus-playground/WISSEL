@@ -42,6 +42,7 @@ import { checkHarnessAuth } from "../core/harness-discovery.ts";
 import { setHarnessEnabled, setHarnessModel } from "../core/harness-manifest.ts";
 import { getVersionInfo } from "../core/version.ts";
 import { installShutdownHandlers } from "../executors/child-processes.ts";
+import { DEFAULT_APP_DIST, isAppPath, serveAppAsset } from "./serve-app.ts";
 import type { Executor, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -192,6 +193,11 @@ export interface CreateAppOptions {
    *  Overridable so tests point it at a fixture directory instead of
    *  requiring a real `vite build` to exist on disk. */
   pipelineEditorDist?: URL;
+  /** Directory the wissel app (app/) is served from at `/app` — see
+   *  src/api/serve-app.ts. Defaults to `app/dist/` at the repo root;
+   *  overridable so tests use a fixture directory, same as
+   *  pipelineEditorDist. */
+  appDist?: URL;
   /** Starts the in-process dangling-merge detection scheduler (see
    *  src/core/merge-health-scheduler.ts and
    *  docs/SDD-crash-recovery.md §3.2/§4) — off by default, same gate
@@ -307,6 +313,7 @@ export function createApp(
   // executeWriteTier-gated one.
   const pipelines: PipelineStore = opts.pipelines ?? new SqlitePipelineStore((board as SqliteBoard).db);
   const pipelineEditorDist = opts.pipelineEditorDist ?? DEFAULT_PIPELINE_EDITOR_DIST;
+  const appDist = opts.appDist ?? DEFAULT_APP_DIST;
   const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
   const commandRunner = opts.commandRunner ?? runViaBun;
   const projectEli5ClientFactory = opts.projectEli5ClientFactory;
@@ -440,6 +447,13 @@ export function createApp(
 
       if ((url.pathname === "/" || url.pathname === "/board") && req.method === "GET") {
         return new Response(Bun.file(new URL("board.html", PUBLIC_DIR)));
+      }
+
+      // The wissel app (app/, its own Vite build — docs/SDD-wissel-app.md
+      // §3.1): static files plus an SPA fallback, see serveAppAsset.
+      if (isAppPath(url.pathname)) {
+        if (req.method !== "GET") return notFound();
+        return serveAppAsset(url.pathname, appDist);
       }
 
       // The task-output row renderer (docs/SDD-live-task-output.md §3.5)

@@ -116,8 +116,10 @@ export default defineConfig({
     // and the server serves it as is, so a template change (2026-10-10:
     // the explain step's rename) otherwise runs the e2e suite against
     // the previous bundle and fails for no reason in the code under test.
+    // `bun run build:app` likewise for app/dist/, the /app bundle
+    // (docs/SDD-wissel-app.md §3.1).
     command:
-      "bun run build:editor && mkdir -p /tmp/wissel-e2e-repo && rm -f /tmp/wissel-e2e-memory-lessons.md /tmp/wissel-e2e-telemetry.jsonl && cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
+      "bun run build:editor && bun run build:app && mkdir -p /tmp/wissel-e2e-repo && rm -f /tmp/wissel-e2e-memory-lessons.md /tmp/wissel-e2e-telemetry.jsonl && cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
     url: `http://localhost:${PORT}/health`,
     reuseExistingServer: false,
     env: {

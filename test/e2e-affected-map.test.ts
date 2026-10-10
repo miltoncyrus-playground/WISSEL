@@ -8,6 +8,7 @@ import { resolveAffectedSpecs } from "../scripts/e2e-affected-map.ts";
 // requirement. The cross-check test below guards against this list
 // silently drifting from the real e2e/ directory.
 const ALL_SPECS = [
+  "app.spec.ts",
   "board.spec.ts",
   "live-task-output.spec.ts",
   "new-task.spec.ts",
@@ -42,6 +43,16 @@ describe("resolveAffectedSpecs", () => {
     const result = resolveAffectedSpecs([{ path: "pipeline-editor/src/components/StepNode.tsx" }], ALL_SPECS);
     expect(result.specs).toEqual(["pipeline-editor.spec.ts"]);
     expect(result.fullSuite).toBe(false);
+  });
+
+  test("app/** and its server file resolve to app.spec.ts only", () => {
+    for (const path of ["app/src/App.tsx", "app/package.json", "src/api/serve-app.ts"]) {
+      const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
+      expect(result.specs).toEqual(["app.spec.ts"]);
+      expect(result.fullSuite).toBe(false);
+    }
+    // Not a prefix match on "app": a top-level "apps/" would be novel.
+    expect(resolveAffectedSpecs([{ path: "apps/x.ts" }], ALL_SPECS).fullSuite).toBe(true);
   });
 
   test("render-task-output.js resolves to live-task-output.spec.ts only", () => {

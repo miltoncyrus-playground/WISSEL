@@ -186,6 +186,8 @@
   .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); margin: 0 0 6px; }
   .lede { color: var(--ink-2); font-size: 14px; line-height: 1.5; max-width: 62ch; margin: 0; }
   .version-badge { color: var(--ink-muted); font-size: 11px; font-family: "IBM Plex Mono", monospace; margin: 0; cursor: default; white-space: nowrap; }
+  /* The way to the new app (docs/SDD-wissel-app.md §3.1). */
+  .app-link { color: var(--accent); font-size: 13px; font-weight: 600; white-space: nowrap; flex: none; }
 
   .segmented { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; padding: 3px; gap: 2px; background: var(--surface); }
   .segmented button {
@@ -809,6 +811,7 @@
     <span class="topbar-spacer"></span>
     <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
     <span class="version-badge" id="versionBadge"></span>
+    <a class="app-link" id="appLink" href="/app">Try the new app</a>
     <button type="button" class="new-btn" id="newBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="newDrawer">+ New</button>
   </header>
 
