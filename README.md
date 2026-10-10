@@ -17,7 +17,8 @@ bun install
 WISSEL_ORCHESTRATOR=1 WISSEL_EXECUTE_WRITE_TIER=1 bun run serve   # how it's normally run
 ```
 
-The board is at `http://localhost:8787`.
+The board is at `http://localhost:8787`, the new app at
+`http://localhost:8787/app` (see "The app" below).
 
 Defaults, if you start it with no env vars (`src/api/server.ts:1424-1425`):
 both flags are off. Nothing is routed until you click **Run** on a card,
@@ -32,6 +33,7 @@ runs write-tier work locally in a worktree.
 |---|---|
 | `bun run serve` | Board API and UI on :8787. Use this one. |
 | `bun run dev` | Same with `--watch`. Restarts whenever a file under `src/` changes, including when wissel merges its own work into this checkout (see below). |
+| `bun run build:app` | Build the app at `/app` into `app/dist/` (`serve` does this for you). |
 | `bun run agents` | List the fleet. |
 | `bun run why <task-id>` | Show what the router matched for a task, and why. |
 | `bun run team create <prefix>` | Scaffold a coordinator and 3 specialists in `agents/manifest.yaml`. |
@@ -59,15 +61,20 @@ bun run eval:ai-news
 bun run eval:world-news
 ```
 
-The pipeline editor is a separate Vite bundle. `pipeline-editor/dist/` is
-gitignored, so build it once per checkout, and again after changing
-`pipeline-editor/src/`. A browser reload picks it up; no server restart.
+The pipeline editor and the app are separate Vite bundles.
+`pipeline-editor/dist/` and `app/dist/` are gitignored; `bun run serve`
+and the e2e web server build both before starting
+(`bun run build:editor`, `bun run build:app`). Each needs its own
+dependencies installed once per checkout. A rebuild while the server runs
+is picked up by a browser reload; no server restart.
 
 ```bash
 cd pipeline-editor
 bun install
 bun run build
 cd ..
+(cd app && bun install)
+bun run build:app
 ```
 
 ### Restarting safely
@@ -144,6 +151,32 @@ in the error text instead of failing it (`docs/SDD-pipeline-automation.md`
   the run drawer; "View on canvas" shows the graph with live step status.
 - **Archive.** Archived cards and their subtrees. Auto-archive of `done`
   cards after 24h is behind `WISSEL_AUTO_ARCHIVE`.
+
+## The app
+
+`app/` (Vite, React, TypeScript, vitest), served at `/app`
+(`docs/SDD-wissel-app.md`). Phone first (390 px) and desktop. The board
+stays at `/board`, unchanged apart from a "Try the new app" link in its
+top bar.
+
+- **Shell.** Phone: a bottom tab bar (Feed, Ask, Board, Listen, You).
+  Desktop (1024 px and up): a left rail and a right **Live** panel
+  (running, needs you, landed today). Screens are hash routes
+  (`#/feed`, `#/ask`, ...); `/app` opens Ask.
+- **Command palette.** Cmd-K or Ctrl-K (or the search button): jump to a
+  screen, open a card by title, run a pipeline by name, New card.
+- **Board tab.** Running, Needs you, Review and Done today from `/tasks`,
+  a read-only card view at `#/board/<id>`, and a link to the full board.
+- **Live.** One shared `EventSource('/events')` keeps every screen
+  current.
+- **Look.** Dark design tokens in `app/src/tokens.ts` (contrast checked
+  by a unit test), self-hosted fonts (Bricolage Grotesque, Geist, Geist
+  Mono via `@fontsource`): no internet needed on the LAN.
+- Feed, Ask, Listen and You are placeholders until their cards land
+  (`docs/SDD-wissel-app.md` §6).
+
+Tests: `cd app && npm test` (vitest) and `e2e/app.spec.ts` at 390 and
+1440 px.
 
 ## Pipelines
 
@@ -297,5 +330,6 @@ The checked-in file registers none.
 - `docs/SDD-pipeline-automation.md`: unattended mode, concurrency and spend caps, 429 retry.
 - `docs/SDD-crash-recovery.md`: restart recovery, merge health.
 - `docs/SDD-pipelines.md`, `docs/SDD-ui-cleanup.md`: pipelines and the board UI.
+- `docs/SDD-wissel-app.md`: the app at `/app`.
 - `docs/SDD-memory-curator.md`, `docs/SDD-memory-injection-toggle.md`: memory.
 - `docs/SDD-task-archiving.md`, `docs/SDD-version-info.md`, `docs/SDD-live-task-output.md`.

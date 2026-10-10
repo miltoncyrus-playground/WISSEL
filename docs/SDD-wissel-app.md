@@ -60,6 +60,40 @@ New app at **`/app`**, phone first (390 px) and desktop (1440 px).
   `board.html` gains one link to `/app` in its header.
 - Live updates: one `EventSource('/events')` shared by the app.
 
+**As built (card 1).** Where the build fills in or departs from the above:
+
+- Serving lives in `src/api/serve-app.ts` (`serveAppAsset`), not inline
+  in server.ts. It decodes the path and resolves it against `app/dist/`
+  itself, because an encoded slash (`..%2f`) survives `new URL()`
+  normalisation. A missing file name (`x.js`) is a 404, not
+  `index.html`; hashed `assets/` are cached for a year, everything else
+  revalidates; 503 while unbuilt.
+- `/app` with no hash opens **Ask** (chat-first). Unknown hashes fall
+  back to Ask.
+- "Open a card by title" opens `#/board/<id>`, a read-only card view in
+  the app (status, agent, account, labels, repo, body, link to the full
+  board), since `/board` has no deep link to a card and card 1 must not
+  change its behaviour.
+- "New card" opens `/board#/new` (the board's New drawer) until Ask
+  (card 4) can create cards. "Run a pipeline" posts
+  `/pipelines/:id/run` with no repo or input, which suits the repo-less
+  podcast pipelines; others fail with the server's message in a status
+  line.
+- Board tab lanes: Running = `running` + `dispatched`; Needs you = the
+  board's set (review, escalated, failed, no-match, open MCP approval);
+  Review = `pending-review`; Done today = `done` with `doneAt` since
+  local midnight. Inbox and ready are left to the full board.
+- The hub closes the EventSource when the last subscriber leaves and
+  reopens on the next; the shell subscribes for its lifetime, so in
+  practice there is one connection.
+- Tokens are injected as a `<style>` from `tokens.ts` at startup, so
+  the TS object is the only copy. The contrast test covers every text
+  colour on ground, surface and surface-2, plus ground on the three
+  accent fills.
+- `e2e/app.spec.ts` adds `app.spec.ts` to the e2e-affected map (`app/**`
+  and `serve-app.ts` map to it; a board.html change also runs it, for
+  the header link).
+
 ### 3.2 Feed and Stories (card 2)
 
 `src/services/feed.ts`, pure: `buildFeed({tasks, runs, telemetry, now,
