@@ -13,7 +13,11 @@
  * every final source URL is in the gather step's set, every gathered
  * story is dated within 7 days, 5 to 8 stories, script 600 to 1000
  * words, run cost under $1.50 from the telemetry `result` events of the
- * run's step tasks, and (§3.7) the "Make audio" step produced a real MP3
+ * run's step tasks, (§3.9) the explain step keeps the gather step's
+ * stories in order with their sources (explain-shape), keeps 90% of the
+ * numbers and 80% of the names in their `facts` (facts-retained), and
+ * writes a summary of at most 30 words and a detail of at least 60 (world
+ * 50) per story (depth), and (§3.7) the "Make audio" step produced a real MP3
  * through the local Kokoro service (WISSEL_TTS_URL) whose length fits
  * the script at a speaking pace (checkAudio). Kokoro must be running.
  *
@@ -98,8 +102,10 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
     // task_results doesn't store pipelineHandoff; a step's summary is its
     // raw final message, so the handoff is parsed back out of it.
     const gather = await resultFor("gather");
+    const explain = await resultFor("explain");
     const final = await resultFor("script");
     const gatherHandoff = gather ? parsePipelineHandoff(gather.summary) : null;
+    const explainHandoff = explain ? parsePipelineHandoff(explain.summary) : null;
     const finalHandoff = final ? parsePipelineHandoff(final.summary) : null;
     const audio = await resultFor("audio");
     const audioHandoff = audio ? parsePipelineHandoff(audio.summary) : null;
@@ -116,7 +122,7 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
         pass: root.status === "done",
         detail: `run ${root.status}; steps: ${steps.map((t) => `${t.pipelineStepId}=${t.status}`).join(", ")}${audio && !audio.ok ? `; audio: ${audio.summary}` : ""}`,
       },
-      ...(WORLD ? checkWorldNewsRun : checkAiNewsRun)({ gather: gatherHandoff?.data, final: finalHandoff?.data, costUsd, now }),
+      ...(WORLD ? checkWorldNewsRun : checkAiNewsRun)({ gather: gatherHandoff?.data, explain: explainHandoff?.data, final: finalHandoff?.data, costUsd, now }),
       checkAudio({ audio: audioHandoff?.data, file: mp3 ? new Uint8Array(mp3) : null, words: countWords(script) }),
     ];
     const pass = checks.every((c) => c.pass);
@@ -126,7 +132,7 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
     await writeFile(
       file,
       JSON.stringify(
-        { pass, root: { id: root.id, status: root.status }, checks, costUsd, gather: gatherHandoff, final: finalHandoff, audio: audioHandoff, summaries: { gather: gather?.summary, script: final?.summary, audio: audio?.summary } },
+        { pass, root: { id: root.id, status: root.status }, checks, costUsd, gather: gatherHandoff, explain: explainHandoff, final: finalHandoff, audio: audioHandoff, summaries: { gather: gather?.summary, explain: explain?.summary, script: final?.summary, audio: audio?.summary } },
         null,
         2,
       ),

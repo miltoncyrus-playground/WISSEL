@@ -160,8 +160,9 @@ optional input; the Run dialog hides the repo field for it. Any other
 pipeline without a repo is a 400.
 
 **AI news podcast** (`docs/SDD-ai-news-podcast.md`): gather the week's AI
-news from the web, explain it simply, write a 5 minute podcast script,
-make audio. Create it with `bun run seed:ai-news` or from the "Start from
+news from the web, explain it for a software engineer who follows AI
+(`ai-news-explainer`), write a 5 minute podcast script, make audio.
+Create it with `bun run seed:ai-news` or from the "Start from
 a template" list under New pipeline; check it with `bun run eval:ai-news`
 (paid, uses the web and Kokoro). The seed is safe to rerun: it creates the
 pipeline, or replaces a stored one's graph in place (same id) when it
@@ -170,8 +171,13 @@ differs from the template, or does nothing.
 **World news podcast** (SDD §3.8): the same pipeline with a different
 gather step (`world-news-gatherer`): the last 48 hours' top world
 headlines plus the main news from Spain and the Netherlands, each story
-tagged with its region. `bun run seed:ai-news` seeds both pipelines;
+tagged with its region, explained for an informed adult
+(`world-news-explainer`). `bun run seed:ai-news` seeds both pipelines;
 check it with `bun run eval:world-news`.
+
+Each explained story carries a one-sentence `summary` and a 60 to 150
+word `detail` (SDD §3.9). In the run drawer a Quick read row expands to
+its story's detail, why it matters and what is not known yet.
 
 **Wissel retrospective podcast** (`docs/SDD-wissel-retro-podcast.md`):
 a podcast about your own work in wissel. "Collect activity" is not an

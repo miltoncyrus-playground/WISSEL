@@ -21,14 +21,26 @@ export interface NewsRow {
   href: string | null;
   /** Why this row's source can't be trusted, or null. */
   flag: string | null;
+  /** The joined explained story's detail (§3.9), or null: no detail to show. */
+  explained: NewsExplained | null;
 }
+
+/** `detail` is the story's `detail`, else its `explanation`; the other
+ *  two are "" when the story has none. */
+export interface NewsExplained {
+  detail: string;
+  whyItMatters: string;
+  unknowns: string;
+}
+
+export function joinExplained(quickRead: unknown[], explainData: unknown): (NewsExplained | null)[];
 
 export type NewsView =
   | { kind: "none" }
   | { kind: "raw"; reason: string; raw: string }
   | { kind: "news"; rows: NewsRow[]; paragraphs: string[]; wordCount: number; flaggedCount: number; gatherChecked: boolean };
 
-export function newsView(finalSummary: unknown, gatherSummary: unknown, expected: boolean): NewsView;
+export function newsView(finalSummary: unknown, gatherSummary: unknown, expected: boolean, explainSummary?: unknown): NewsView;
 
 export const NEWS_SCRIPT_AGENT: string;
 export const NEWS_AUDIO_AGENT: string;
@@ -43,7 +55,8 @@ export interface NewsStepCard {
 export function newsStepCards<C extends NewsStepCard>(
   steps: C[] | null | undefined,
   defSteps: { id: string; agentId: string }[] | null | undefined,
-): { news: C; expected: boolean; gather: C | null; audio: C | null } | null;
+  defEdges?: { from: string; to: string }[] | null,
+): { news: C; expected: boolean; gather: C | null; audio: C | null; explain: C | null } | null;
 
 export type NewsAudioView =
   | { state: "ready"; url: string; bytes: number | null }

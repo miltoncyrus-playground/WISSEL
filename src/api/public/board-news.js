@@ -84,16 +84,51 @@ function newsRaw(reason, finalSummary) {
   return { kind: "raw", reason: reason, raw: typeof finalSummary === "string" ? finalSummary : "" };
 }
 
+function newsText(v) {
+  return typeof v === "string" ? v.trim() : "";
+}
+
+// One explained story's expandable detail (§3.9): its `detail`, or an
+// older explainer's (or the retro analyst's) `explanation`; null when it
+// has neither, so the row renders as a plain row.
+function newsExplained(story) {
+  if (!newsIsRecord(story)) return null;
+  var detail = newsText(story.detail) || newsText(story.explanation);
+  if (!detail) return null;
+  return { detail: detail, whyItMatters: newsText(story.whyItMatters), unknowns: newsText(story.unknowns) };
+}
+
+// Joins Quick read rows to the explain step's stories, deterministically
+// (§3.9): a row whose `source` is in a story's `sources` takes that
+// story; otherwise, when there are exactly as many stories as rows, the
+// story at the row's position; otherwise none. Returns one entry per
+// row: newsExplained of the joined story, or null.
+function joinExplained(quickRead, explainData) {
+  var stories = newsIsRecord(explainData) && Array.isArray(explainData.stories) ? explainData.stories : [];
+  var sameCount = stories.length === quickRead.length;
+  return quickRead.map(function (item, i) {
+    var source = newsIsRecord(item) ? newsText(item.source) : "";
+    var bySource = source ? stories.filter(function (s) {
+      return newsIsRecord(s) && Array.isArray(s.sources) && s.sources.indexOf(source) !== -1;
+    })[0] : undefined;
+    if (bySource) return newsExplained(bySource);
+    return sameCount ? newsExplained(stories[i]) : null;
+  });
+}
+
 // What the drawer shows for a run's news step (newsStepCards' `news`):
 //   { kind: "none" }  not a news result; the drawer adds nothing.
 //   { kind: "raw", reason, raw }  a news result that can't be shaped;
 //     the drawer shows the step's raw output and why.
 //   { kind: "news", rows, paragraphs, wordCount, flaggedCount, gatherChecked }
-// `finalSummary` / `gatherSummary` are the news and first steps' raw
-// result summaries (undefined when they have none). `expected` is true
-// when the news step is the podcast scriptwriter, so its missing data is
-// an error to show rather than "some other pipeline". Never throws.
-function newsView(finalSummary, gatherSummary, expected) {
+//     each row { headline, oneLine, source, href, flag, explained }, where
+//     `explained` is { detail, whyItMatters, unknowns } or null.
+// `finalSummary` / `gatherSummary` / `explainSummary` are the news, first
+// and explain steps' raw result summaries (undefined when they have
+// none). `expected` is true when the news step is the podcast
+// scriptwriter, so its missing data is an error to show rather than
+// "some other pipeline". Never throws.
+function newsView(finalSummary, gatherSummary, expected, explainSummary) {
   var data = parseHandoffData(finalSummary);
   var looksLikeNews = !!data && ("quickRead" in data || "script" in data);
   if (!looksLikeNews) {
@@ -107,6 +142,7 @@ function newsView(finalSummary, gatherSummary, expected) {
   if (paragraphs.length === 0) return newsRaw("script is missing or empty.", finalSummary);
 
   var urls = gatherUrlSet(parseHandoffData(gatherSummary));
+  var explained = joinExplained(data.quickRead, parseHandoffData(explainSummary));
   var rows = [];
   for (var i = 0; i < data.quickRead.length; i++) {
     var item = data.quickRead[i];
@@ -123,7 +159,7 @@ function newsView(finalSummary, gatherSummary, expected) {
     else if (!href) flag = NEWS_FLAG_NOT_A_LINK;
     else if (!urls) flag = NEWS_FLAG_UNCHECKED;
     else if (!urls.has(source)) flag = NEWS_FLAG_NOT_FROM_GATHER;
-    rows.push({ headline: item.headline.trim(), oneLine: (item.oneLine || "").trim(), source: source, href: href, flag: flag });
+    rows.push({ headline: item.headline.trim(), oneLine: (item.oneLine || "").trim(), source: source, href: href, flag: flag, explained: explained[i] });
   }
   return {
     kind: "news",
@@ -148,8 +184,12 @@ var NEWS_AUDIO_AGENT = "podcast-audio";
 //     shows, as before); `expected` says which.
 //   gather: the first step's latest card, unless that is `news` itself.
 //   audio: the audio step's latest card, or null.
+//   explain: the latest card of the step with an edge (`defEdges`) into
+//     the scriptwriter's step (§3.9); with no definition edges, the card
+//     that ran just before the scriptwriter's. null when there is no
+//     scriptwriter or it is `gather` itself.
 // null for a run with no steps yet.
-function newsStepCards(steps, defSteps) {
+function newsStepCards(steps, defSteps, defEdges) {
   if (!steps || !steps.length) return null;
   var agentByStep = Object.create(null);
   (defSteps || []).forEach(function (d) { if (d && d.id) agentByStep[d.id] = d.agentId; });
@@ -165,7 +205,19 @@ function newsStepCards(steps, defSteps) {
     if (card.pipelineStepId === firstStepId) gather = card;
   });
   var news = script || steps[steps.length - 1];
-  return { news: news, expected: !!script, gather: gather && gather.id !== news.id ? gather : null, audio: audio };
+  gather = gather && gather.id !== news.id ? gather : null;
+  var explain = null;
+  if (script) {
+    var into = (defEdges || []).filter(function (e) { return e && e.to === script.pipelineStepId; })[0];
+    if (into) {
+      steps.forEach(function (card) { if (card.pipelineStepId === into.from) explain = card; });
+    } else {
+      var at = steps.indexOf(script);
+      explain = at > 0 ? steps[at - 1] : null;
+    }
+    if (explain && gather && explain.id === gather.id) explain = null;
+  }
+  return { news: news, expected: !!script, gather: gather, audio: audio, explain: explain };
 }
 
 // The Listen tab's audio, from the audio step's card and the run
@@ -278,6 +330,7 @@ if (typeof module !== "undefined") {
     NEWS_FLAG_MISSING: NEWS_FLAG_MISSING,
     parseHandoffData: parseHandoffData,
     gatherUrlSet: gatherUrlSet,
+    joinExplained: joinExplained,
     splitScript: splitScript,
     newsView: newsView,
     NEWS_SCRIPT_AGENT: NEWS_SCRIPT_AGENT,

@@ -153,9 +153,9 @@ test("template: collect -> analyse -> the AI pipeline's own script and audio ste
   expect(pipelineNeedsRepo(def, registry.all())).toBe(false);
 });
 
-test("template: the AI and world templates are unchanged", () => {
-  expect(aiNewsPodcastDraft().graph.steps.map((s) => s.agentId)).toEqual(["ai-news-gatherer", "eli5-explainer", "podcast-scriptwriter", "podcast-audio"]);
-  expect(worldNewsPodcastDraft().graph.steps.map((s) => s.agentId)).toEqual(["world-news-gatherer", "eli5-explainer", "podcast-scriptwriter", "podcast-audio"]);
+test("template: the AI and world templates keep their own steps (their explainers are per pipeline since SDD-ai-news-podcast §3.9)", () => {
+  expect(aiNewsPodcastDraft().graph.steps.map((s) => s.agentId)).toEqual(["ai-news-gatherer", "ai-news-explainer", "podcast-scriptwriter", "podcast-audio"]);
+  expect(worldNewsPodcastDraft().graph.steps.map((s) => s.agentId)).toEqual(["world-news-gatherer", "world-news-explainer", "podcast-scriptwriter", "podcast-audio"]);
 });
 
 test("seed: all three podcast pipelines coexist with their own ids; reseeding is a no-op", async () => {
