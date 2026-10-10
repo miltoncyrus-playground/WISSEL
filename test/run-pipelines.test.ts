@@ -3,12 +3,12 @@ import { runPipelineByName, runPipelines, waitForServer } from "../scripts/run-p
 
 // The 06:00 timer's runner (ops/systemd/wissel-morning-podcasts.*).
 
-type Call = { url: string; method: string };
+type Call = { url: string; method: string; init?: BunFetchRequestInit };
 
 function fakeServer(pipelines: { id: string; name: string }[], runStatus: Record<string, number | string> = {}) {
   const calls: Call[] = [];
-  const fetchImpl = async (url: string, init?: RequestInit) => {
-    calls.push({ url, method: init?.method ?? "GET" });
+  const fetchImpl = async (url: string, init?: BunFetchRequestInit) => {
+    calls.push({ url, method: init?.method ?? "GET", init });
     if (url.endsWith("/pipelines")) return Response.json(pipelines);
     const m = url.match(/\/pipelines\/([^/]+)\/run$/);
     if (m) {
@@ -59,4 +59,13 @@ test("waitForServer: true once /version answers, false after the deadline", asyn
   expect(await waitForServer("http://x", 60, upOnThird, async () => {})).toBe(true);
   expect(n).toBe(3);
   expect(await waitForServer("http://x", 0, async () => new Response("", { status: 503 }), async () => {})).toBe(false);
+});
+
+test("the run request disables Bun's 5 minute idle timeout and carries its own 90 minute deadline", async () => {
+  const { calls, fetchImpl } = fakeServer(P);
+  await runPipelineByName("http://x", "AI news podcast", fetchImpl);
+  const post = calls.find((c) => c.method === "POST")!;
+  expect(post.init!.timeout).toBe(false);
+  expect(post.init!.signal).toBeInstanceOf(AbortSignal);
+  expect(post.init!.signal!.aborted).toBe(false);
 });

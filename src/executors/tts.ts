@@ -25,6 +25,29 @@ export const DEFAULT_TTS_VOICE = "af_heart";
  *  script takes 4 to 5 minutes. 20 minutes leaves room for longer ones. */
 export const DEFAULT_TTS_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 10_000;
+/** How long to keep retrying /health before failing. Kokoro serves one
+ *  synthesis at a time and doesn't answer /health while one runs (seen
+ *  2026-10-10 06:00: the World news audio step failed with "no answer
+ *  within 10 s" while the AI news synthesis held the CPU). Also covers
+ *  Kokoro still starting after a boot. */
+export const DEFAULT_HEALTH_WAIT_MS = 10 * 60_000;
+const DEFAULT_HEALTH_RETRY_MS = 15_000;
+
+/** One synthesis at a time per Kokoro URL, across every TtsExecutor in
+ *  this process: two at once only slow both down on this CPU and starve
+ *  /health. Each entry is the tail of that URL's queue. */
+const kokoroQueues = new Map<string, Promise<unknown>>();
+
+function inKokoroQueue<T>(baseUrl: string, fn: () => Promise<T>): Promise<T> {
+  const prev = kokoroQueues.get(baseUrl) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  const tail = next.catch(() => undefined);
+  kokoroQueues.set(baseUrl, tail);
+  void tail.then(() => {
+    if (kokoroQueues.get(baseUrl) === tail) kokoroQueues.delete(baseUrl);
+  });
+  return next;
+}
 
 export function defaultAudioDir(home = homedir()): string {
   return join(home, ".wissel", "audio");
@@ -52,7 +75,11 @@ export interface TtsExecutorOptions {
   audioDir?: string;
   /** Whole synthesis request, body included. Tests shorten it. */
   timeoutMs?: number;
+  /** One /health request. */
   healthTimeoutMs?: number;
+  /** Keep retrying /health this long before failing (0: one attempt). */
+  healthWaitMs?: number;
+  healthRetryMs?: number;
 }
 
 export interface TtsAudio {
@@ -107,6 +134,8 @@ export class TtsExecutor implements Executor {
   private audioDir: string;
   private timeoutMs: number;
   private healthTimeoutMs: number;
+  private healthWaitMs: number;
+  private healthRetryMs: number;
 
   constructor(opts: TtsExecutorOptions = {}) {
     this.baseUrl = (opts.baseUrl || DEFAULT_TTS_URL).replace(/\/+$/, "");
@@ -114,6 +143,8 @@ export class TtsExecutor implements Executor {
     this.audioDir = opts.audioDir || defaultAudioDir();
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TTS_TIMEOUT_MS;
     this.healthTimeoutMs = opts.healthTimeoutMs ?? DEFAULT_HEALTH_TIMEOUT_MS;
+    this.healthWaitMs = opts.healthWaitMs ?? DEFAULT_HEALTH_WAIT_MS;
+    this.healthRetryMs = opts.healthRetryMs ?? DEFAULT_HEALTH_RETRY_MS;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -128,7 +159,11 @@ export class TtsExecutor implements Executor {
     if ("error" in extracted) return fail(extracted.error);
     if (!isSafeRunId(runId!)) return fail(`run id "${runId}" can't be used as a file name`);
 
-    const health = await this.checkHealth();
+    return inKokoroQueue(this.baseUrl, () => this.synthesize(task, agent, runId!, extracted.script, fail));
+  }
+
+  private async synthesize(task: TaskCard, agent: AgentDef, runId: string, script: string, fail: (reason: string) => TaskResult): Promise<TaskResult> {
+    const health = await this.waitForHealth();
     if (health) return fail(health);
 
     const started = performance.now();
@@ -139,8 +174,12 @@ export class TtsExecutor implements Executor {
       const res = await fetch(`${this.baseUrl}/v1/audio/speech`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: "kokoro", voice: this.voice, input: extracted.script, response_format: "mp3" }),
+        body: JSON.stringify({ model: "kokoro", voice: this.voice, input: script, response_format: "mp3" }),
         signal: controller.signal,
+        // Bun's fetch gives up after 300 s by default, below a normal
+        // synthesis on this CPU (233 to 273 s so far); our own timeoutMs
+        // above is the limit.
+        timeout: false,
       });
       if (!res.ok) return fail(`Kokoro TTS at ${this.baseUrl} returned HTTP ${res.status}: ${snippet(await res.text())}`);
       const type = res.headers.get("content-type") ?? "";
@@ -160,7 +199,7 @@ export class TtsExecutor implements Executor {
     // Written next to the target and renamed into place, so a crash or a
     // full disk mid-write never leaves a truncated MP3 the drawer would
     // offer as finished.
-    const file = audioFilePath(this.audioDir, runId!);
+    const file = audioFilePath(this.audioDir, runId);
     const part = `${file}.part`;
     try {
       await mkdir(this.audioDir, { recursive: true });
@@ -188,6 +227,20 @@ export class TtsExecutor implements Executor {
       actualCost: 0,
       pipelineHandoff: { data },
     };
+  }
+
+  /** checkHealth, retried every healthRetryMs until healthWaitMs has
+   *  passed. null once healthy, else the last reason, with the wait. */
+  private async waitForHealth(): Promise<string | null> {
+    const deadline = Date.now() + this.healthWaitMs;
+    for (;;) {
+      const why = await this.checkHealth();
+      if (!why) return null;
+      if (Date.now() + this.healthRetryMs > deadline) {
+        return this.healthWaitMs > 0 ? `${why} (still not ready after waiting ${formatSeconds(this.healthWaitMs)})` : why;
+      }
+      await Bun.sleep(this.healthRetryMs);
+    }
   }
 
   /** null when Kokoro says it's healthy, else why not. */

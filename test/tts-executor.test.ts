@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -35,7 +35,7 @@ function audioTask(overrides: Partial<TaskCard> = {}): TaskCard {
   return {
     id: "step-audio",
     title: "AI news podcast: Make audio",
-    body: buildNextStepBody("focus on open models", handoff, RUN_ID.slice(0, 8)),
+    body: buildNextStepBody("focus on open models", handoff, (overrides.pipelineRunId ?? RUN_ID).slice(0, 8)),
     labels: [],
     status: "running",
     pipelineId: "p",
@@ -53,17 +53,27 @@ interface FakeKokoro {
   url: string;
   mode: Mode;
   requests: { path: string; body: unknown }[];
+  /** /health answers 503 this many more times before behaving per mode
+   *  (Kokoro busy with another synthesis, or still starting). */
+  healthBusy: number;
+  /** Speech requests in flight now, and the most seen at once. */
+  inFlight: number;
+  maxInFlight: number;
   stop(): void;
 }
 
 function startFakeKokoro(): FakeKokoro {
-  const state: FakeKokoro = { url: "", mode: "ok", requests: [], stop: () => {} };
+  const state: FakeKokoro = { url: "", mode: "ok", requests: [], healthBusy: 0, inFlight: 0, maxInFlight: 0, stop: () => {} };
   const server = Bun.serve({
     port: 0,
     async fetch(req) {
       const path = new URL(req.url).pathname;
       if (path === "/health") {
         state.requests.push({ path, body: null });
+        if (state.healthBusy > 0) {
+          state.healthBusy--;
+          return new Response("busy", { status: 503 });
+        }
         if (state.mode === "health500") return new Response("boom", { status: 500 });
         return Response.json({ status: state.mode === "unhealthy" ? "loading" : "healthy" });
       }
@@ -72,7 +82,13 @@ function startFakeKokoro(): FakeKokoro {
         if (state.mode === "http500") return new Response('{"detail":"voice not found"}', { status: 500, headers: { "content-type": "application/json" } });
         if (state.mode === "html") return new Response("<html>proxy error</html>", { headers: { "content-type": "text/html" } });
         if (state.mode === "empty") return new Response(new Uint8Array(0), { headers: { "content-type": "audio/mpeg" } });
-        if (state.mode === "slow") await Bun.sleep(400);
+        state.inFlight++;
+        state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
+        try {
+          if (state.mode === "slow") await Bun.sleep(400);
+        } finally {
+          state.inFlight--;
+        }
         return new Response(MP3, { headers: { "content-type": "audio/mpeg" } });
       }
       return new Response("not found", { status: 404 });
@@ -175,7 +191,7 @@ describe("TtsExecutor", () => {
       const dir = await freshDir();
       try {
         const opts = f.setup();
-        const result = await new TtsExecutor({ ...opts, audioDir: dir }).run(audioTask(), audioAgent);
+        const result = await new TtsExecutor({ healthWaitMs: 0, ...opts, audioDir: dir }).run(audioTask(), audioAgent);
         expect(result.ok).toBe(false);
         expect(result.summary).toMatch(f.reason);
         expect(result.pipelineHandoff).toBeUndefined();
@@ -186,6 +202,73 @@ describe("TtsExecutor", () => {
       }
     });
   }
+
+  // Regression, 2026-10-10 06:00: both news pipelines reached "Make
+  // audio" together; the second step's /health got no answer within 10 s
+  // while Kokoro synthesized the first, and the step failed.
+  test("two audio steps at once are queued: Kokoro never gets two syntheses at the same time, and both succeed", async () => {
+    const dirA = await freshDir();
+    const dirB = await freshDir();
+    try {
+      // An earlier test's aborted request may still be sleeping in the
+      // fake server; start from an idle server.
+      while (kokoro.inFlight > 0) await Bun.sleep(20);
+      kokoro.mode = "slow";
+      kokoro.maxInFlight = 0;
+      const a = new TtsExecutor({ baseUrl: kokoro.url, audioDir: dirA });
+      const b = new TtsExecutor({ baseUrl: kokoro.url, audioDir: dirB });
+      const [ra, rb] = await Promise.all([a.run(audioTask(), audioAgent), b.run(audioTask({ pipelineRunId: "9b8c7d6e-0000-4000-8000-000000000002", id: "step-b" }), audioAgent)]);
+      expect([ra.ok, rb.ok]).toEqual([true, true]);
+      expect(kokoro.maxInFlight).toBe(1);
+      expect(await filesIn(dirA)).toEqual([`${RUN_ID}.mp3`]);
+      expect(await filesIn(dirB)).toEqual(["9b8c7d6e-0000-4000-8000-000000000002.mp3"]);
+    } finally {
+      kokoro.mode = "ok";
+      await rm(dirA, { recursive: true, force: true });
+      await rm(dirB, { recursive: true, force: true });
+    }
+  });
+
+  test("a busy /health is retried until Kokoro answers, then the audio is made", async () => {
+    const dir = await freshDir();
+    try {
+      kokoro.healthBusy = 2;
+      const result = await new TtsExecutor({ baseUrl: kokoro.url, audioDir: dir, healthWaitMs: 5000, healthRetryMs: 20 }).run(audioTask(), audioAgent);
+      expect(result.ok).toBe(true);
+      expect(kokoro.healthBusy).toBe(0);
+    } finally {
+      kokoro.healthBusy = 0;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a /health that stays busy past the wait fails loud, naming the wait, and writes nothing", async () => {
+    const dir = await freshDir();
+    try {
+      kokoro.healthBusy = 1000;
+      const result = await new TtsExecutor({ baseUrl: kokoro.url, audioDir: dir, healthWaitMs: 150, healthRetryMs: 40 }).run(audioTask(), audioAgent);
+      expect(result.ok).toBe(false);
+      expect(result.summary).toMatch(/returned HTTP 503: busy \(still not ready after waiting [0-9.]+ s\)$/);
+      expect(await filesIn(dir)).toEqual([]);
+    } finally {
+      kokoro.healthBusy = 0;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the synthesis request turns off Bun's 5 minute idle timeout (syntheses take 4 to 5 minutes here)", async () => {
+    const dir = await freshDir();
+    const spy = spyOn(globalThis, "fetch");
+    try {
+      await new TtsExecutor({ baseUrl: kokoro.url, audioDir: dir }).run(audioTask(), audioAgent);
+      const speech = spy.mock.calls.find((c) => String(c[0]).endsWith("/v1/audio/speech"));
+      expect(speech).toBeDefined();
+      expect((speech![1] as BunFetchRequestInit).timeout).toBe(false);
+    } finally {
+      spy.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 
   test("a body with no handed-off script fails before calling Kokoro", async () => {
     kokoro.requests = [];

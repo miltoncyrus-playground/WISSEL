@@ -27,7 +27,10 @@ export interface RunOutcome {
   seconds: number;
 }
 
-type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
+type FetchInit = BunFetchRequestInit;
+type Fetch = (input: string, init?: FetchInit) => Promise<Response>;
+
+export const RUN_REQUEST_TIMEOUT_MS = 90 * 60_000;
 
 export async function waitForServer(base: string, waitSeconds: number, fetchImpl: Fetch = fetch, sleep = (ms: number) => Bun.sleep(ms)): Promise<boolean> {
   const deadline = Date.now() + waitSeconds * 1000;
@@ -51,10 +54,17 @@ export async function runPipelineByName(base: string, name: string, fetchImpl: F
     const matches = list.filter((p) => p.name === name);
     if (matches.length === 0) return { name, ok: false, error: `no stored pipeline named "${name}"`, seconds: seconds() };
     if (matches.length > 1) return { name, ok: false, error: `${matches.length} stored pipelines are named "${name}"; rename one`, seconds: seconds() };
+    // The run endpoint answers only when the whole run has settled
+    // (about 10 minutes with audio). Bun's fetch drops a connection idle
+    // for 5 minutes by default, which made the 2026-10-10 06:00 AI run
+    // report "The operation timed out." while it finished fine on the
+    // server; disable that and cap the whole request at 90 minutes.
     const res = await fetchImpl(`${base}/pipelines/${matches[0]!.id}/run`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
+      timeout: false,
+      signal: AbortSignal.timeout(RUN_REQUEST_TIMEOUT_MS),
     });
     const body = (await res.json().catch(() => ({}))) as { id?: string; status?: string; error?: string };
     if (!res.ok) return { name, ok: false, error: body.error ?? `HTTP ${res.status}`, seconds: seconds() };
