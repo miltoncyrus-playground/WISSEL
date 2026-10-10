@@ -724,6 +724,8 @@ test.describe("A run on its pipeline canvas", () => {
 const NEWS_FIXTURES = join(process.cwd(), "test", "fixtures", "ai-news");
 const NEWS_GATHER = readFileSync(join(NEWS_FIXTURES, "gather-summary.md"), "utf8");
 const NEWS_SCRIPT = readFileSync(join(NEWS_FIXTURES, "script-summary.md"), "utf8");
+// §3.9: the explain step's stories, each with summary + detail.
+const NEWS_EXPLAIN = readFileSync(join(NEWS_FIXTURES, "explain-summary.md"), "utf8");
 const NEWS_INVENTED = "https://invented.example.net/chip";
 // The third story's source swapped for one the gather step never found.
 const NEWS_SCRIPT_FLAGGED = NEWS_SCRIPT.replace("https://chips.example.com/news/inference-x1", NEWS_INVENTED);
@@ -765,7 +767,7 @@ const NEWS_AUDIO_FAILED = "Audio not made: Kokoro TTS isn't reachable at http://
 // a fourth "Make audio" step in that status after the scriptwriter, and
 // GET /pipeline-runs/r-news reports the MP3 (served from the fixture)
 // only when that step is done.
-async function serveNewsRun(page: Page, scriptSummary: string, audio?: "done" | "failed" | "running") {
+async function serveNewsRun(page: Page, scriptSummary: string, audio?: "done" | "failed" | "running", explainSummary = NEWS_EXPLAIN) {
   const base = { body: "focus on open models", labels: [], pipelineId: "p-news-stub" };
   const step = (id: string, stepId: string, agent: string, status = "done") => ({
     ...base, id, title: `News stub: ${stepId}`, status, parentTaskId: "r-news", pipelineRunId: "r-news", pipelineStepId: stepId, routedTo: agent,
@@ -773,7 +775,7 @@ async function serveNewsRun(page: Page, scriptSummary: string, audio?: "done" | 
   const board = [
     { ...base, id: "r-news", title: "Pipeline: AI news podcast", status: audio === "failed" ? "failed" : audio === "running" ? "running" : "done" },
     step("s-gather", "gather", "ai-news-gatherer"),
-    step("s-explain", "explain", "eli5-explainer"),
+    step("s-explain", "explain", "ai-news-explainer"),
     step("s-script", "script", "podcast-scriptwriter"),
     ...(audio ? [step("s-audio", "audio", "podcast-audio", audio)] : []),
   ];
@@ -782,7 +784,7 @@ async function serveNewsRun(page: Page, scriptSummary: string, audio?: "done" | 
     graph: {
       steps: [
         { id: "gather", name: "Gather news", agentId: "ai-news-gatherer", transition: "all" },
-        { id: "explain", name: "Explain simply", agentId: "eli5-explainer", transition: "all" },
+        { id: "explain", name: "Explain", agentId: "ai-news-explainer", transition: "all" },
         { id: "script", name: "Write podcast script", agentId: "podcast-scriptwriter", transition: "all" },
         ...(audio ? [{ id: "audio", name: "Make audio", agentId: "podcast-audio", transition: "all" }] : []),
       ],
@@ -796,7 +798,7 @@ async function serveNewsRun(page: Page, scriptSummary: string, audio?: "done" | 
   const audioSummary = audio === "failed"
     ? NEWS_AUDIO_FAILED
     : "Audio made.\n\n```pipeline-handoff\n" + JSON.stringify({ data: { audio: { file: "/x/r-news.mp3", voice: "af_heart", bytes: NEWS_MP3.byteLength, synthesisSeconds: 1.2 } } }) + "\n```";
-  const summaries: Record<string, string> = { "s-gather": NEWS_GATHER, "s-explain": "explained", "s-script": scriptSummary, "s-audio": audioSummary };
+  const summaries: Record<string, string> = { "s-gather": NEWS_GATHER, "s-explain": explainSummary, "s-script": scriptSummary, "s-audio": audioSummary };
   await page.route((url) => url.pathname === "/tasks", (route) => (route.request().method() === "GET" ? route.fulfill({ json: board }) : route.fallback()));
   await page.route((url) => url.pathname === "/pipelines", (route) => (route.request().method() === "GET" ? route.fulfill({ json: [def] }) : route.fallback()));
   const summaryAudio = audio === "done" ? { url: NEWS_AUDIO_URL, bytes: NEWS_MP3.byteLength } : null;
@@ -852,6 +854,56 @@ test.describe("AI news run: Quick read and Read aloud", () => {
     }, [NEWS_SCRIPT_FLAGGED, NEWS_GATHER]);
     expect(fromModule).toEqual(links.map(([href], i) => [href, i === 2]));
     await page.screenshot({ path: `${SCREENSHOT_DIR}/news-quick-read-1440x900.png` });
+  });
+
+  test("§3.9: a Quick read row expands to its story's detail, Why it matters and Not known yet", async ({ page }) => {
+    await stubSpeech(page);
+    await serveNewsRun(page, NEWS_SCRIPT);
+    await openNewsRun(page);
+
+    const items = page.locator("#rdNewsList .rd-news-item");
+    await expect(items).toHaveCount(3);
+    await expect(items.locator("details.rd-news-more")).toHaveCount(3);
+    const second = items.nth(1).locator("details.rd-news-more");
+    // Closed by default: the row reads as before until it's opened.
+    await expect(second).not.toHaveAttribute("open", "");
+    await expect(second.locator(".rd-news-detail").first()).toBeHidden();
+
+    await second.locator("summary").click();
+    await expect(second).toHaveAttribute("open", "");
+    const detail = second.locator(".rd-news-detail");
+    await expect(detail.nth(0)).toBeVisible();
+    await expect(detail.nth(0)).toContainText("public comments are open for 60 days");
+    await expect(second.locator('[data-part="why"]')).toHaveText("Why it matters: Vendors and employers using AI screening would need a disclosure step in their hiring flow.");
+    await expect(second.locator('[data-part="unknowns"]')).toHaveText("Not known yet: When the final rules apply and what happens to an employer that doesn't disclose.");
+    // Only the opened row expanded.
+    await expect(items.nth(0).locator(".rd-news-detail").first()).toBeHidden();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/news-quick-read-detail-1440x900.png` });
+
+    // The page's own board-news.js joined the same detail.
+    const joined = await page.evaluate(([f, g, e]) => {
+      const w = window as unknown as { newsView(f: string, g: string, x: boolean, e: string): { rows: { explained: { detail: string } | null }[] } };
+      return w.newsView(f!, g!, true, e!).rows.map((r) => r.explained && r.explained.detail);
+    }, [NEWS_SCRIPT, NEWS_GATHER, NEWS_EXPLAIN]);
+    expect(await items.evaluateAll((els) => els.map((el) => el.querySelector(".rd-news-detail")!.textContent))).toEqual(joined);
+  });
+
+  test("§3.9: an old run whose explainer wrote `explanation` still expands to it", async ({ page }) => {
+    const old = NEWS_EXPLAIN.replace(/"detail":/g, '"explanation":').replace(/"summary": "[^"]*", /g, "");
+    await stubSpeech(page);
+    await serveNewsRun(page, NEWS_SCRIPT, undefined, old);
+    await openNewsRun(page);
+    const first = page.locator("#rdNewsList .rd-news-item").first().locator("details.rd-news-more");
+    await first.locator("summary").click();
+    await expect(first.locator(".rd-news-detail").first()).toContainText("A research lab released an open-weights coding model");
+  });
+
+  test("§3.9: an explain step with no usable output leaves plain rows, no disclosure", async ({ page }) => {
+    await stubSpeech(page);
+    await serveNewsRun(page, NEWS_SCRIPT, undefined, "explained, but no handoff block");
+    await openNewsRun(page);
+    await expect(page.locator("#rdNewsList .rd-news-item")).toHaveCount(3);
+    await expect(page.locator("#rdNewsList details")).toHaveCount(0);
   });
 
   test("Listen: Read aloud speaks one utterance per paragraph; Pause, Resume, Stop drive speechSynthesis; closing the drawer or changing route stops it", async ({ page }) => {

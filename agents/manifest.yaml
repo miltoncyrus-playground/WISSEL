@@ -339,7 +339,7 @@ agents:
     reviewTarget: tool-calls
 
   # The "AI news podcast" pipeline (docs/SDD-ai-news-podcast.md):
-  # gather -> explain simply -> podcast script. All three are pipeline-only
+  # gather -> explain -> podcast script. All three are pipeline-only
   # agents with one unique tag each, for the same reason as
   # pipeline-reviewer and mcp-tool-caller above: pipeline-runner.ts looks
   # them up by id, and a tag shared with any other agent would change
@@ -393,8 +393,15 @@ agents:
         no source URL, is DROPPED. Do not guess a date. Do not keep it
         "with a note". Leave it out.
       - A story dated more than 7 days before today is dropped.
-      - `facts` says only what the sources say: 2 to 4 plain sentences,
-        no speculation, no hype words.
+      - `facts` says only what the sources say, in 4 to 8 plain
+        sentences, no speculation, no hype words. Cover, as far as the
+        sources give it: what happened; who, by name (people,
+        organisations, models, products); the key numbers exactly as
+        the source gives them (benchmark scores, parameter counts,
+        context sizes, prices, dates, amounts); how it works or what
+        changed compared with before; and who said what, attributed
+        ("X said ..."). The next step may only use what is in `facts`,
+        so a name or number left out here is lost.
 
       Output contract, mandatory and machine-parsed: your final message
       MUST end with a fenced block of exactly this form, nothing after it:
@@ -476,8 +483,15 @@ agents:
       - A `world` story dated more than 2 days before today is dropped.
         A `spain` or `netherlands` story dated more than 4 days before
         today is dropped.
-      - `facts` says only what the sources say: 2 to 4 plain sentences,
-        no speculation.
+      - `facts` says only what the sources say, in 4 to 8 plain
+        sentences, no speculation, no hype words. Cover, as far as the
+        sources give it: what happened; who, by name (people, parties,
+        offices, organisations, places); the key numbers exactly as the
+        source gives them (votes, seats, casualties, amounts, prices,
+        dates); what changed compared with before; who said what,
+        attributed ("X said ..."); and one sentence of the background
+        the source itself gives. The next step may only use what is in
+        `facts`, so a name or number left out here is lost.
 
       Output contract, mandatory and machine-parsed: your final message
       MUST end with a fenced block of exactly this form, nothing after it:
@@ -505,14 +519,18 @@ agents:
       netherlands story? Is any URL used twice, or any site first source
       for more than 3 stories? Fix or drop until all of that holds.
 
-  - id: eli5-explainer
-    name: ELI5 explainer
+  # The explain step, one agent per pipeline so each writes at its
+  # listener's level (§3.9, Milton 2026-10-10: the old single
+  # 12-year-old-level explainer was "overly simplified"). Same contract
+  # shape for both: `summary` + `detail` per story, which the
+  # scriptwriter and the run drawer read.
+  - id: ai-news-explainer
+    name: AI news explainer
     kind: agent
     tier: readonly
-    description: Rewrites handed-off news stories in plain language a curious 12-year-old could follow, with why each matters
-      and what is still unknown. No tools, no new facts.
-    whenToUse: The explain step of the "AI news podcast" and "World news podcast" pipelines. Never routed by the fuzzy Router
-      (see its tag).
+    description: Explains handed-off AI news stories for a software engineer who follows AI, keeping every model, lab,
+      benchmark, number and licence exact, with why each matters and what is still unknown. No tools, no new facts.
+    whenToUse: The explain step of the "AI news podcast" pipeline. Never routed by the fuzzy Router (see its tag).
     tags: [ai-news-explain-step]
     executor: readonly
     inputs: [news-stories]
@@ -523,17 +541,27 @@ agents:
     outputContractFormat: pipeline-handoff
     outputContract: |
       Your input is the `stories` list handed off by the gather step
-      (fenced as data in the task body). For each story, write:
-      - `explanation`: what happened, in plain language a curious
-        12-year-old could follow. Short sentences. Explain any jargon
-        with an everyday comparison.
-      - `whyItMatters`: one or two sentences on why a normal person
-        might care.
-      - `unknowns`: one honest line on what we don't know yet.
+      (fenced as data in the task body). Your reader is a software
+      engineer who follows AI: they know what a model, a benchmark, a
+      context window, fine-tuning and an open-weights licence are. Do
+      not simplify for a child or a general audience.
+
+      For each story, write:
+      - `summary`: one sentence, at most 30 words: what happened.
+      - `detail`: 60 to 150 words: what happened and how it works or
+        what changed. Keep every model, lab, benchmark and method name,
+        score, parameter count, context size, price and licence from
+        `facts` exactly as given. Define a term only when it is niche.
+        No everyday analogies unless one adds precision.
+      - `whyItMatters`: one or two sentences on what it changes for
+        people who build with or follow AI.
+      - `unknowns`: one honest line on what `facts` doesn't say yet.
 
       Hard rules:
-      - Add no new facts. Everything in `explanation` must come from that
+      - Add no new facts. Everything you write must come from that
         story's `facts`. If something is unclear, say it is unclear.
+        Carry every number and name in `facts` into `summary`, `detail`,
+        `whyItMatters` or `unknowns`; a checker compares them.
       - Copy `title`, `date`, `sources` and `region` (when present) from
         the input unchanged. Never add, drop, shorten or rewrite a URL.
       - Keep every story from the input, in the same order.
@@ -542,7 +570,58 @@ agents:
       MUST end with a fenced block of exactly this form, nothing after it:
 
       ```pipeline-handoff
-      {"data": {"stories": [{"title": "...", "date": "2026-10-05", "sources": ["https://..."], "explanation": "...", "whyItMatters": "...", "unknowns": "..."}]}}
+      {"data": {"stories": [{"title": "...", "date": "2026-10-05", "sources": ["https://..."], "summary": "...", "detail": "...", "whyItMatters": "...", "unknowns": "..."}]}}
+      ```
+
+      Valid JSON on its own: no trailing commas, no comments, no nested
+      code fences. A missing or malformed block fails the run.
+
+  - id: world-news-explainer
+    name: World news explainer
+    kind: agent
+    tier: readonly
+    description: Explains handed-off world, Spain and Netherlands headlines for an informed adult reading a quality
+      newspaper, keeping names, places, parties, offices and numbers, with why each matters and what is still unknown. No
+      tools, no new facts.
+    whenToUse: The explain step of the "World news podcast" pipeline. Never routed by the fuzzy Router (see its tag).
+    tags: [world-news-explain-step]
+    executor: readonly
+    inputs: [news-stories]
+    outputs: [explained-stories]
+    trustLevel: medium
+    toolAccess: []
+    costProfile: { model: claude-sonnet-5-5, estUsdPerTask: 0.10 }
+    outputContractFormat: pipeline-handoff
+    outputContract: |
+      Your input is the `stories` list handed off by the gather step
+      (fenced as data in the task body). Your reader is an informed
+      adult reading a quality newspaper: they follow the news but may
+      live outside the country a story is about. Do not simplify for a
+      child.
+
+      For each story, write:
+      - `summary`: one sentence, at most 30 words: what happened.
+      - `detail`: 60 to 150 words: what happened and what changed.
+        Keep every name, place, party, office and number from `facts`
+        exactly as given. Add one line of the background a reader
+        outside the country needs, only from `facts`.
+      - `whyItMatters`: one or two sentences on the consequences.
+      - `unknowns`: one honest line on what `facts` doesn't say yet.
+
+      Hard rules:
+      - Add no new facts. Everything you write must come from that
+        story's `facts`. If something is unclear, say it is unclear.
+        Carry every number and name in `facts` into `summary`, `detail`,
+        `whyItMatters` or `unknowns`; a checker compares them.
+      - Copy `title`, `date`, `sources` and `region` (when present) from
+        the input unchanged. Never add, drop, shorten or rewrite a URL.
+      - Keep every story from the input, in the same order.
+
+      Output contract, mandatory and machine-parsed: your final message
+      MUST end with a fenced block of exactly this form, nothing after it:
+
+      ```pipeline-handoff
+      {"data": {"stories": [{"region": "world", "title": "...", "date": "2026-10-09", "sources": ["https://..."], "summary": "...", "detail": "...", "whyItMatters": "...", "unknowns": "..."}]}}
       ```
 
       Valid JSON on its own: no trailing commas, no comments, no nested
@@ -570,7 +649,11 @@ agents:
 
       1. `script`: a single-host spoken script of about 5 minutes,
          700 to 900 words. A short intro, one segment per story with a
-         spoken transition between them, a short outro. Written for the
+         spoken transition between them, a short outro. Build each
+         segment from the story's `detail`, `whyItMatters` and
+         `unknowns` (or its `explanation` when it has no `detail`),
+         keeping its names and numbers; use `summary` for the
+         transitions and the intro. Written for the
          ear: short sentences, plain words, no markdown, no bullet
          points, no tables, no headings, no URLs read out, no stage
          directions. Separate paragraphs with a blank line. Use only what

@@ -24,8 +24,9 @@ import { seedAiNewsPipeline, seedWorldNewsPipeline } from "../scripts/seed-ai-ne
 
 // docs/SDD-ai-news-podcast.md §3.1 to §3.4, gate tests from §4.
 
-const NEWS_AGENTS = ["ai-news-gatherer", "world-news-gatherer", "eli5-explainer", "podcast-scriptwriter"] as const;
+const NEWS_AGENTS = ["ai-news-gatherer", "world-news-gatherer", "ai-news-explainer", "world-news-explainer", "podcast-scriptwriter"] as const;
 const GATHERERS = ["ai-news-gatherer", "world-news-gatherer"];
+const EXPLAINERS = ["ai-news-explainer", "world-news-explainer"];
 
 function agentDef(overrides: Partial<AgentDef> = {}): AgentDef {
   return {
@@ -111,7 +112,7 @@ test("web grant: the registry rejects web on a write-tier agent, or on a readonl
 
 // ---- §3.2 the three agents ------------------------------------------
 
-test("manifest: the three news agents load as readonly pipeline-handoff agents on claude-sonnet-5-5 (Milton, 2026-10-07: cheaper model where it makes sense), each with one tag nobody else uses", async () => {
+test("manifest: the news agents load as readonly pipeline-handoff agents on claude-sonnet-5-5 (Milton, 2026-10-07: cheaper model where it makes sense), each with one tag nobody else uses", async () => {
   const registry = await Registry.load();
   const all = registry.all();
   for (const id of NEWS_AGENTS) {
@@ -135,9 +136,62 @@ test("manifest: each output contract names the exact handoff data shape from the
   const registry = await Registry.load();
   const contract = (id: string) => registry.get(id)!.outputContract ?? "";
   for (const key of ['"generatedAt"', '"stories"', '"title"', '"date"', '"sources"', '"facts"']) expect(contract("ai-news-gatherer")).toContain(key);
-  for (const key of ['"stories"', '"sources"', '"explanation"', '"whyItMatters"', '"unknowns"']) expect(contract("eli5-explainer")).toContain(key);
+  for (const id of EXPLAINERS) {
+    for (const key of ['"stories"', '"title"', '"date"', '"sources"', '"summary"', '"detail"', '"whyItMatters"', '"unknowns"']) expect(contract(id), `${id} ${key}`).toContain(key);
+    expect(contract(id), id).not.toContain('"explanation"');
+  }
   for (const key of ['"quickRead"', '"headline"', '"oneLine"', '"source"', '"script"', '"wordCount"']) expect(contract("podcast-scriptwriter")).toContain(key);
   for (const id of NEWS_AGENTS) expect(contract(id)).toContain("```pipeline-handoff");
+});
+
+// ---- §3.9 explain at the listener's level -------------------------------
+
+test("§3.9 manifest: eli5-explainer is gone; the two explainers keep and add their unique tags, with the SDD's names", async () => {
+  const registry = await Registry.load();
+  expect(registry.get("eli5-explainer")).toBeUndefined();
+  expect(registry.all().some((a) => /eli5/i.test(a.id) || a.tags.some((t) => /eli5/i.test(t)))).toBe(false);
+  expect(registry.get("ai-news-explainer")).toMatchObject({ name: "AI news explainer", tags: ["ai-news-explain-step"], toolAccess: [] });
+  expect(registry.get("world-news-explainer")).toMatchObject({ name: "World news explainer", tags: ["world-news-explain-step"], toolAccess: [] });
+});
+
+/** A contract with its line wrapping collapsed, so phrases match across lines. */
+const flatContract = async (id: string) => ((await Registry.load()).get(id)!.outputContract ?? "").replace(/\s+/g, " ");
+
+test("§3.9 manifest: each explainer names its audience, keeps the hard rules and asks for summary (30 words) and detail (60 to 150)", async () => {
+  const ai = await flatContract("ai-news-explainer");
+  const world = await flatContract("world-news-explainer");
+  expect(ai).toContain("a software engineer who follows AI");
+  expect(ai).toMatch(/model, lab, benchmark and method names?, score/);
+  expect(ai).toContain("Define a term only when it is niche");
+  expect(world).toContain("an informed adult reading a quality newspaper");
+  expect(world).toMatch(/name, place, party, office and number/);
+  expect(world).toMatch(/one line of the background[\s\S]*only from `facts`/);
+  for (const c of [ai, world]) {
+    expect(c).toContain("at most 30 words");
+    expect(c).toContain("60 to 150 words");
+    expect(c).toContain("Add no new facts");
+    expect(c).toContain("Copy `title`, `date`, `sources` and `region` (when present)");
+    expect(c).toContain("Keep every story from the input, in the same order");
+    expect(c).not.toMatch(/12-year-old|everyday comparison/);
+  }
+});
+
+test("§3.9 manifest: both gatherers ask for 4 to 8 sentences of facts with names, exact numbers and attributed quotes; world adds source-given background", async () => {
+  for (const id of GATHERERS) {
+    const c = await flatContract(id);
+    expect(c, id).toContain("in 4 to 8 plain sentences");
+    expect(c, id).not.toContain("2 to 4");
+    expect(c, id).toContain("the key numbers exactly as the source gives them");
+    expect(c, id).toContain('who said what, attributed ("X said ...")');
+    expect(c, id).toContain("Never invent a story, a date, a quote, a number or a URL");
+  }
+  expect(await flatContract("world-news-gatherer")).toContain("one sentence of the background the source itself gives");
+});
+
+test("§3.9 manifest: the scriptwriter builds each segment from `detail`, falling back to `explanation`", async () => {
+  expect(await flatContract("podcast-scriptwriter")).toContain(
+    "Build each segment from the story's `detail`, `whyItMatters` and `unknowns` (or its `explanation` when it has no `detail`)",
+  );
 });
 
 test("manifest: the gatherer's prompt forbids invented stories, dates and URLs and drops undated or unsourced items", async () => {
@@ -173,7 +227,7 @@ function fakeKokoro(failSpeech = false): { url: string; inputs: string[]; stop()
 }
 
 const GATHER_OUT = handoff({ generatedAt: "2026-10-07", stories: [{ title: "T", date: "2026-10-06", sources: ["https://example.com/a"], facts: "F." }] });
-const EXPLAIN_OUT = handoff({ stories: [{ title: "T", date: "2026-10-06", sources: ["https://example.com/a"], explanation: "E", whyItMatters: "W", unknowns: "U" }] });
+const EXPLAIN_OUT = handoff({ stories: [{ title: "T", date: "2026-10-06", sources: ["https://example.com/a"], summary: "S", detail: "D", whyItMatters: "W", unknowns: "U" }] });
 const SCRIPT_OUT = handoff({ quickRead: [{ headline: "H", oneLine: "O", source: "https://example.com/a" }], script: "Hello there.\n\nBye now.", wordCount: 4 });
 
 test("repo-less run: the real AI news pipeline starts with no repo; the LLM steps run in their own scratch workspaces and Make audio speaks the script into <audioDir>/<runId>.mp3", async () => {
@@ -216,6 +270,7 @@ test("repo-less run: the real AI news pipeline starts with no repo; the LLM step
     // Each step's data reaches the next one as fenced data.
     expect(stdins[1]).toContain('"facts": "F."');
     expect(stdins[2]).toContain('"whyItMatters": "W"');
+    expect(stdins[2]).toContain('"detail": "D"');
     // The scriptwriter's script, exactly, is what Kokoro was asked to say.
     expect(kokoro.inputs).toEqual(["Hello there.\n\nBye now."]);
     const audioFile = join(audioDir, `${root.id}.mp3`);
@@ -419,7 +474,8 @@ test("seed: running twice leaves exactly one AI news podcast pipeline; the secon
   expect((await store.list()).filter((p) => p.name === AI_NEWS_PODCAST_NAME)).toHaveLength(1);
 });
 
-// §3.7: the pipeline stored before "Make audio" existed, as card 1 seeded it.
+// §3.7: the pipeline stored before "Make audio" existed, as card 1 seeded
+// it. A historical stored graph, so it still names the old explainer.
 const THREE_STEP_GRAPH: PipelineGraph = {
   steps: [
     { id: "gather", name: "Gather news", agentId: "ai-news-gatherer", transition: "all" },
@@ -444,7 +500,7 @@ test("seed: the stored three-step pipeline is upgraded to four steps in place (s
   expect(upgraded.pipeline.id).toBe(old.id);
   expect(upgraded.pipeline.description).toBe("the old one");
   expect(upgraded.pipeline.graph).toEqual(aiNewsPodcastDraft().graph);
-  expect(upgraded.pipeline.graph.steps.map((s) => s.name)).toEqual(["Gather news", "Explain simply", "Write podcast script", "Make audio"]);
+  expect(upgraded.pipeline.graph.steps.map((s) => s.name)).toEqual(["Gather news", "Explain", "Write podcast script", "Make audio"]);
   expect(await store.list()).toHaveLength(1);
   expect((await store.get((await board.get(pastRun.id))!.pipelineId!))!.graph.steps).toHaveLength(4);
 
@@ -459,7 +515,7 @@ test("seed: a manifest missing the news agents throws and writes nothing", async
   const board = new SqliteBoard();
   const store = new SqlitePipelineStore(board.db);
   await expect(seedAiNewsPipeline(store, Registry.from([agentDef()]))).rejects.toThrow(
-    "agents/manifest.yaml has no agent(s) ai-news-gatherer, eli5-explainer, podcast-scriptwriter, podcast-audio",
+    "agents/manifest.yaml has no agent(s) ai-news-gatherer, ai-news-explainer, podcast-scriptwriter, podcast-audio",
   );
   expect(await store.list()).toEqual([]);
 });
@@ -469,7 +525,7 @@ test("template: gather -> explain -> script -> audio in a line, transition all, 
   const registry = await Registry.load();
   expect(draft.graph.steps.map((s) => [s.id, s.name, s.agentId, s.transition])).toEqual([
     ["gather", "Gather news", "ai-news-gatherer", "all"],
-    ["explain", "Explain simply", "eli5-explainer", "all"],
+    ["explain", "Explain", "ai-news-explainer", "all"],
     ["script", "Write podcast script", "podcast-scriptwriter", "all"],
     ["audio", "Make audio", "podcast-audio", "all"],
   ]);
@@ -513,13 +569,78 @@ test("pipelineNeedsRepo: true until agents are loaded, false for an unknown agen
 
 // ---- §3.8 the World news podcast ---------------------------------------
 
-test("world news podcast: same explain, script and audio steps as the AI one, only the gather agent differs", () => {
+test("world news podcast: same steps, edges and script and audio as the AI one; the gather and explain agents differ (§3.9)", () => {
   const ai = aiNewsPodcastDraft().graph;
   const world = worldNewsPodcastDraft().graph;
   expect(world.edges).toEqual(ai.edges);
   expect(world.steps.map((s) => s.id)).toEqual(ai.steps.map((s) => s.id));
-  expect(world.steps.map((s) => s.agentId)).toEqual(["world-news-gatherer", "eli5-explainer", "podcast-scriptwriter", "podcast-audio"]);
-  expect(world.steps.slice(1)).toEqual(ai.steps.slice(1));
+  expect(world.steps.map((s) => s.agentId)).toEqual(["world-news-gatherer", "world-news-explainer", "podcast-scriptwriter", "podcast-audio"]);
+  expect(world.steps.map((s) => s.name)).toEqual(["Gather headlines", "Explain", "Write podcast script", "Make audio"]);
+  expect(world.steps.slice(2)).toEqual(ai.steps.slice(2));
+});
+
+test("§3.9 templates: descriptions no longer say \"simply\"", () => {
+  for (const d of [aiNewsPodcastDraft(), worldNewsPodcastDraft()]) {
+    expect(d.description, d.name).not.toMatch(/simpl/i);
+    expect(d.graph.steps.some((s) => /simpl|eli5/i.test(`${s.name} ${s.agentId}`)), d.name).toBe(false);
+  }
+});
+
+// §3.9: the four-step pipelines as `bun run seed:ai-news` stored them
+// before the explainers were split. Historical stored graphs, so they
+// still name the old explainer.
+const OLD_AI_DESCRIPTION = "Gathers the week's AI news from the web, explains it simply, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.";
+const OLD_WORLD_DESCRIPTION = "Gathers today's top world headlines plus the main news from Spain and the Netherlands, explains them simply, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.";
+function preSplitGraph(gatherName: string, gatherAgent: string): PipelineGraph {
+  return {
+    steps: [
+      { id: "gather", name: gatherName, agentId: gatherAgent, transition: "all" },
+      { id: "explain", name: "Explain simply", agentId: "eli5-explainer", transition: "all" },
+      { id: "script", name: "Write podcast script", agentId: "podcast-scriptwriter", transition: "all" },
+      { id: "audio", name: "Make audio", agentId: "podcast-audio", transition: "all" },
+    ],
+    edges: aiNewsPodcastDraft().graph.edges,
+  };
+}
+
+test("§3.9 seed: both stored pre-split pipelines are updated in place (same ids), step \"Explain\" on the new explainers, the old template description replaced", async () => {
+  const board = new SqliteBoard();
+  const store = new SqlitePipelineStore(board.db);
+  const registry = await Registry.load();
+  const oldAi = await store.create({ name: AI_NEWS_PODCAST_NAME, description: OLD_AI_DESCRIPTION, graph: preSplitGraph("Gather news", "ai-news-gatherer") });
+  const oldWorld = await store.create({ name: WORLD_NEWS_PODCAST_NAME, description: OLD_WORLD_DESCRIPTION, graph: preSplitGraph("Gather headlines", "world-news-gatherer") });
+
+  const ai = await seedAiNewsPipeline(store, registry);
+  const world = await seedWorldNewsPipeline(store, registry);
+  expect([ai.outcome, world.outcome]).toEqual(["updated", "updated"]);
+  expect([ai.pipeline.id, world.pipeline.id]).toEqual([oldAi.id, oldWorld.id]);
+  expect(ai.pipeline.graph).toEqual(aiNewsPodcastDraft().graph);
+  expect(world.pipeline.graph).toEqual(worldNewsPodcastDraft().graph);
+  expect(ai.pipeline.graph.steps[1]).toEqual({ id: "explain", name: "Explain", agentId: "ai-news-explainer", transition: "all" });
+  expect(world.pipeline.graph.steps[1]).toEqual({ id: "explain", name: "Explain", agentId: "world-news-explainer", transition: "all" });
+  expect(ai.pipeline.description).toBe(aiNewsPodcastDraft().description);
+  expect(world.pipeline.description).toBe(worldNewsPodcastDraft().description);
+  expect(await store.list()).toHaveLength(2);
+
+  expect((await seedAiNewsPipeline(store, registry)).outcome).toBe("unchanged");
+  expect((await seedWorldNewsPipeline(store, registry)).outcome).toBe("unchanged");
+});
+
+test("§3.9 seed: a description the user wrote is kept while the graph is upgraded", async () => {
+  const board = new SqliteBoard();
+  const store = new SqlitePipelineStore(board.db);
+  const old = await store.create({ name: AI_NEWS_PODCAST_NAME, description: "my morning briefing", graph: preSplitGraph("Gather news", "ai-news-gatherer") });
+  const seeded = await seedAiNewsPipeline(store, await Registry.load());
+  expect(seeded).toMatchObject({ outcome: "updated", pipeline: { id: old.id, description: "my morning briefing" } });
+  expect(seeded.pipeline.graph).toEqual(aiNewsPodcastDraft().graph);
+});
+
+test("§3.9 seed: an up-to-date graph with only the old template description gets just the description", async () => {
+  const board = new SqliteBoard();
+  const store = new SqlitePipelineStore(board.db);
+  const old = await store.create({ name: AI_NEWS_PODCAST_NAME, description: OLD_AI_DESCRIPTION, graph: aiNewsPodcastDraft().graph });
+  const seeded = await seedAiNewsPipeline(store, await Registry.load());
+  expect(seeded).toMatchObject({ outcome: "updated", pipeline: { id: old.id, description: aiNewsPodcastDraft().description } });
 });
 
 test("world-news-gatherer: contract covers world, spain and netherlands with a region field, a 48 hour window and the same source rules", async () => {
@@ -529,7 +650,8 @@ test("world-news-gatherer: contract covers world, spain and netherlands with a r
   }
   // The shared steps pass region through and group by it.
   const reg = await Registry.load();
-  expect(reg.get("eli5-explainer")!.outputContract).toContain("`region` (when present)");
+  expect(reg.get("world-news-explainer")!.outputContract).toContain("`region` (when present)");
+  expect(reg.get("world-news-explainer")!.outputContract).toContain('"region": "world"');
   expect(reg.get("podcast-scriptwriter")!.outputContract).toContain("grouped in input order (world, then Spain, then the");
 });
 

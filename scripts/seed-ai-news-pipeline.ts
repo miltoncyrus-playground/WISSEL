@@ -11,7 +11,8 @@
  * and its graph differs from the template (the three-step version from
  * before the "Make audio" step, §3.7, or a hand-edited one), its graph is
  * replaced in place: same id, so its past runs stay linked; its name and
- * description are kept. When the graph already matches, nothing is
+ * description are kept (unless the description is an older template's
+ * own text, OLD_TEMPLATE_DESCRIPTIONS). When the graph already matches, nothing is
  * written, so running this twice changes nothing the second time.
  *
  *   bun run seed:ai-news
@@ -48,6 +49,15 @@ export async function seedWisselRetroPipeline(store: PipelineStore, registry: Re
   return seedPipeline(store, registry, wisselRetroPodcastDraft());
 }
 
+/** Descriptions earlier templates wrote. A stored pipeline still carrying
+ *  one of these gets the current template's description on reseed; any
+ *  other description is the user's own and is kept. §3.9 dropped
+ *  "explains it simply". */
+export const OLD_TEMPLATE_DESCRIPTIONS: ReadonlySet<string> = new Set([
+  "Gathers the week's AI news from the web, explains it simply, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.",
+  "Gathers today's top world headlines plus the main news from Spain and the Netherlands, explains them simply, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.",
+]);
+
 /** Creates or upgrades one podcast pipeline from its template, keyed by name. */
 export async function seedPipeline(store: PipelineStore, registry: Registry, draft: PipelineDraft): Promise<SeedResult> {
   const missing = draft.graph.steps.filter((s) => !registry.get(s.agentId)).map((s) => s.agentId);
@@ -56,8 +66,9 @@ export async function seedPipeline(store: PipelineStore, registry: Registry, dra
   }
   const existing = (await store.list()).find((p) => p.name === draft.name);
   if (!existing) return { pipeline: await store.create(draft), outcome: "created" };
-  if (Bun.deepEquals(existing.graph, draft.graph)) return { pipeline: existing, outcome: "unchanged" };
-  const pipeline = await store.update(existing.id, { name: existing.name, description: existing.description, graph: draft.graph });
+  const description = OLD_TEMPLATE_DESCRIPTIONS.has(existing.description) ? draft.description : existing.description;
+  if (Bun.deepEquals(existing.graph, draft.graph) && description === existing.description) return { pipeline: existing, outcome: "unchanged" };
+  const pipeline = await store.update(existing.id, { name: existing.name, description, graph: draft.graph });
   return { pipeline, outcome: "updated" };
 }
 

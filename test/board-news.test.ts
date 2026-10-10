@@ -6,7 +6,7 @@ import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { parsePipelineHandoff } from "../src/executors/parse-pipeline-handoff.ts";
 import { checkAiNewsRun, countWords } from "../eval/ai-news-checks.ts";
-import { aiNewsPodcastDraft } from "../pipeline-editor/src/templates.ts";
+import { aiNewsPodcastDraft, wisselRetroPodcastDraft } from "../pipeline-editor/src/templates.ts";
 import {
   NEWS_FLAG_MISSING,
   NEWS_FLAG_NOT_A_LINK,
@@ -17,6 +17,7 @@ import {
   createNewsReader,
   gatherUrlSet,
   hasSpeech,
+  joinExplained,
   newsAudioView,
   newsStepCards,
   newsView,
@@ -54,7 +55,7 @@ test("the podcast scriptwriter's own contract example (agents/manifest.yaml) sha
   const contract = (await Registry.load()).get("podcast-scriptwriter")!.outputContract!;
   const example = contract.match(/```pipeline-handoff\n[\s\S]*?```/)![0];
   const view = news(newsView(example, undefined, true));
-  expect(view.rows).toEqual([{ headline: "...", oneLine: "...", source: "https://...", href: "https://...", flag: NEWS_FLAG_UNCHECKED }]);
+  expect(view.rows).toEqual([{ headline: "...", oneLine: "...", source: "https://...", href: "https://...", flag: NEWS_FLAG_UNCHECKED, explained: null }]);
   expect(view.paragraphs).toEqual(["First paragraph.", "Second paragraph."]);
 });
 
@@ -69,9 +70,9 @@ test("the gatherer's own contract example yields its URL set", async () => {
 test("the recorded final handoff shapes into quick-read rows and script paragraphs, every source from the gather step", () => {
   const view = news(newsView(SCRIPT, GATHER, true));
   expect(view.rows).toEqual([
-    { headline: "Open coding model catches up", oneLine: "A free-to-download coding model now scores close to the best paid ones.", source: "https://lab.example.com/blog/open-coder-2", href: "https://lab.example.com/blog/open-coder-2", flag: null },
-    { headline: "Draft rules for AI in hiring", oneLine: "Job seekers may soon have to be told when an AI reads their application.", source: "https://regulator.example.gov/press/ai-hiring-draft", href: "https://regulator.example.gov/press/ai-hiring-draft", flag: null },
-    { headline: "A faster, cheaper AI chip", oneLine: "A new chip promises to answer AI questions using less power.", source: "https://chips.example.com/news/inference-x1", href: "https://chips.example.com/news/inference-x1", flag: null },
+    { headline: "Open coding model catches up", oneLine: "A free-to-download coding model now scores close to the best paid ones.", source: "https://lab.example.com/blog/open-coder-2", href: "https://lab.example.com/blog/open-coder-2", flag: null, explained: null },
+    { headline: "Draft rules for AI in hiring", oneLine: "Job seekers may soon have to be told when an AI reads their application.", source: "https://regulator.example.gov/press/ai-hiring-draft", href: "https://regulator.example.gov/press/ai-hiring-draft", flag: null, explained: null },
+    { headline: "A faster, cheaper AI chip", oneLine: "A new chip promises to answer AI questions using less power.", source: "https://chips.example.com/news/inference-x1", href: "https://chips.example.com/news/inference-x1", flag: null, explained: null },
   ]);
   expect(view.paragraphs).toHaveLength(5);
   expect(view.paragraphs[0]).toBe("Welcome to this week in AI. Three stories, plain words, about five minutes.");
@@ -84,7 +85,7 @@ test("the recorded final handoff shapes into quick-read rows and script paragrap
 });
 
 test("the recorded fixture pair also passes the eval's own sources-from-gather check", () => {
-  const checks = checkAiNewsRun({ gather: parsePipelineHandoff(GATHER)!.data, final: parsePipelineHandoff(SCRIPT)!.data, costUsd: 1, now: new Date("2026-10-07T12:00:00Z") });
+  const checks = checkAiNewsRun({ gather: parsePipelineHandoff(GATHER)!.data, explain: undefined, final: parsePipelineHandoff(SCRIPT)!.data, costUsd: 1, now: new Date("2026-10-07T12:00:00Z") });
   expect(checks.find((c) => c.name === "sources-from-gather")!.pass).toBe(true);
 });
 
@@ -112,7 +113,7 @@ test("the drawer's flag and the eval's sources-from-gather check agree on every 
     const data = scriptData();
     mutate(data);
     const flagged = news(newsView(handoff(data), GATHER, true)).flaggedCount > 0;
-    const evalPass = checkAiNewsRun({ gather, final: data, costUsd: 1, now: new Date("2026-10-07T12:00:00Z") }).find((c) => c.name === "sources-from-gather")!.pass;
+    const evalPass = checkAiNewsRun({ gather, explain: undefined, final: data, costUsd: 1, now: new Date("2026-10-07T12:00:00Z") }).find((c) => c.name === "sources-from-gather")!.pass;
     expect(flagged, JSON.stringify(data.quickRead.map((r) => r.source))).toBe(!evalPass);
   }
 });
@@ -217,12 +218,121 @@ test("newsStepCards: a three-step run from before Make audio, any other pipeline
   const old = newsStepCards([card("g", "gather"), card("e", "explain"), card("s", "script")], DEF_STEPS)!;
   expect([old.news.id, old.expected, old.gather!.id, old.audio]).toEqual(["s", true, "g", null]);
   // Not a news pipeline: the last card, not expected, as before card 3.
-  const other = newsStepCards([card("a", "one", "done", "triager"), card("b", "two", "done", "eli5-explainer")], [])!;
+  const other = newsStepCards([card("a", "one", "done", "triager"), card("b", "two", "done", "summarizer")], [])!;
   expect([other.news.id, other.expected, other.gather!.id, other.audio]).toEqual(["b", false, "a", null]);
   // A one-step run: the gather card is the news card itself, so no gather.
   expect(newsStepCards([card("s", "script")], DEF_STEPS)!.gather).toBeNull();
   expect(newsStepCards([], DEF_STEPS)).toBeNull();
   expect(newsStepCards(null, DEF_STEPS)).toBeNull();
+});
+
+// --- §3.9: Quick read rows joined to the explained stories --------------
+
+const EXPLAIN = await readFile(join(FIXTURES, "explain-summary.md"), "utf8");
+
+interface ExplainedFixture {
+  title: string;
+  sources: string[];
+  summary?: string;
+  detail?: string;
+  explanation?: string;
+  whyItMatters: string;
+  unknowns: string;
+}
+
+function explainData(): { stories: ExplainedFixture[] } {
+  return JSON.parse(JSON.stringify(parsePipelineHandoff(EXPLAIN)!.data));
+}
+
+test("the recorded explain handoff joins every Quick read row to its story by source: detail, why it matters, not known yet", () => {
+  const view = news(newsView(SCRIPT, GATHER, true, EXPLAIN));
+  const stories = explainData().stories;
+  expect(view.rows.map((r) => r.explained)).toEqual(
+    stories.map((s) => ({ detail: s.detail!, whyItMatters: s.whyItMatters, unknowns: s.unknowns })),
+  );
+  // Sources and flags are unchanged by the join.
+  expect(view.rows.map((r) => r.flag)).toEqual([null, null, null]);
+});
+
+test("the recorded explain handoff passes the eval's explain-shape, facts-retained and depth checks against the recorded gather", () => {
+  const checks = checkAiNewsRun({ gather: parsePipelineHandoff(GATHER)!.data, explain: explainData(), final: parsePipelineHandoff(SCRIPT)!.data, costUsd: 1, now: new Date("2026-10-07T12:00:00Z") });
+  for (const name of ["explain-shape", "facts-retained", "depth"]) {
+    const c = checks.find((x) => x.name === name)!;
+    expect(c.pass, `${name}: ${c.detail}`).toBe(true);
+  }
+});
+
+test("join by source wins over position: the scriptwriter may reorder the quick read", () => {
+  const data = scriptData();
+  data.quickRead.reverse();
+  const rows = news(newsView(handoff(data), GATHER, true, EXPLAIN)).rows;
+  expect(rows.map((r) => r.explained!.detail.slice(0, 30))).toEqual([
+    "A chipmaker announced a new ac",
+    "A national regulator published",
+    "A research lab released an ope",
+  ]);
+  // A story's second source matches too.
+  data.quickRead[2]!.source = "https://arxiv.example.org/abs/2610.01234";
+  expect(news(newsView(handoff(data), GATHER, true, EXPLAIN)).rows[2]!.explained!.detail).toStartWith("A research lab");
+});
+
+test("no source match: by position when the counts match, else no detail", () => {
+  const data = scriptData();
+  data.quickRead.forEach((r) => { r.source = ""; });
+  const byPosition = news(newsView(handoff(data), GATHER, true, EXPLAIN)).rows;
+  expect(byPosition.map((r) => r.explained!.detail.slice(0, 12))).toEqual(["A research l", "A national r", "A chipmaker "]);
+
+  // Two explained stories for three rows: unmatched rows get none, a matched row still joins.
+  const two = explainData();
+  two.stories.splice(1, 1);
+  const fewer = scriptData();
+  fewer.quickRead[0]!.source = "";
+  const rows = news(newsView(handoff(fewer), GATHER, true, handoff(two))).rows;
+  expect(rows.map((r) => (r.explained ? r.explained.detail.slice(0, 12) : null))).toEqual([null, null, "A chipmaker "]);
+});
+
+test("old runs: an explainer's `explanation` is shown as the detail; missing or broken explain output means no detail, never a throw", () => {
+  const old = explainData();
+  old.stories.forEach((s) => { s.explanation = `Old: ${String(s.title)}`; delete s.detail; delete s.summary; });
+  const rows = news(newsView(SCRIPT, GATHER, true, handoff(old))).rows;
+  expect(rows[0]!.explained).toEqual({ detail: "Old: Open model matches frontier scores on coding benchmark", whyItMatters: old.stories[0]!.whyItMatters, unknowns: old.stories[0]!.unknowns });
+  // `detail` wins over `explanation`; blank text counts as none.
+  expect(joinExplained([{ source: "" }], { stories: [{ detail: " D ", explanation: "E" }] })).toEqual([{ detail: "D", whyItMatters: "", unknowns: "" }]);
+  expect(joinExplained([{ source: "" }], { stories: [{ detail: "  ", explanation: "E", whyItMatters: 3 }] })).toEqual([{ detail: "E", whyItMatters: "", unknowns: "" }]);
+  expect(joinExplained([{ source: "" }], { stories: [{ whyItMatters: "W" }] })).toEqual([null]);
+  for (const bad of [undefined, "", "prose only", handoff({ stories: "no" }), handoff({ stories: [null, 4, "x"] }), "```pipeline-handoff\n{broken\n```"]) {
+    expect(news(newsView(SCRIPT, GATHER, true, bad)).rows.map((r) => r.explained), String(bad)).toEqual([null, null, null]);
+  }
+});
+
+test("retro runs: the analyst's stories with empty sources join by position and show their explanation", () => {
+  const analysis = handoff({
+    stories: [
+      { group: "done", title: "Shipped", date: "2026-10-10", sources: [], explanation: "You shipped it.", whyItMatters: "W1", unknowns: "U1" },
+      { group: "ideas", title: "Idea", date: "2026-10-10", sources: [], explanation: "Try this.", whyItMatters: "W2", unknowns: "U2" },
+    ],
+  });
+  const final = handoff({ quickRead: [{ headline: "Shipped", oneLine: "x", source: "" }, { headline: "Idea", oneLine: "y", source: "" }], script: "Hi.\n\nBye." });
+  expect(news(newsView(final, undefined, true, analysis)).rows.map((r) => r.explained)).toEqual([
+    { detail: "You shipped it.", whyItMatters: "W1", unknowns: "U1" },
+    { detail: "Try this.", whyItMatters: "W2", unknowns: "U2" },
+  ]);
+});
+
+test("newsStepCards: the explain card is the step with an edge into the scriptwriter's step", () => {
+  const edges = aiNewsPodcastDraft().graph.edges;
+  const steps = [card("g", "gather"), card("e1", "explain", "failed"), card("e2", "explain"), card("s", "script"), card("a", "audio")];
+  expect(newsStepCards(steps, DEF_STEPS, edges)!.explain!.id).toBe("e2");
+  // The retro pipeline's analyse step feeds the same scriptwriter.
+  const retro = wisselRetroPodcastDraft().graph;
+  const retroSteps = [card("c", "collect"), card("an", "analyse"), card("s", "script"), card("a", "audio")];
+  expect(newsStepCards(retroSteps, retro.steps, retro.edges)!.explain!.id).toBe("an");
+  // No edges (definition gone): the card that ran just before the scriptwriter.
+  const routed = [card("g", "x1", "done", "ai-news-gatherer"), card("e", "x2", "done", "ai-news-explainer"), card("s", "x3", "done", "podcast-scriptwriter")];
+  expect(newsStepCards(routed, [])!.explain!.id).toBe("e");
+  // Gather straight into script: no explain card. Not a news pipeline: none either.
+  expect(newsStepCards([card("g", "gather"), card("s", "script")], DEF_STEPS, [{ from: "gather", to: "script" }])!.explain).toBeNull();
+  expect(newsStepCards([card("a", "one", "done", "triager"), card("b", "two", "done", "summarizer")], [])!.explain).toBeNull();
 });
 
 test("newsAudioView maps the audio step's status and the run summary's audio to the Listen tab's state", () => {

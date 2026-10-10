@@ -35,7 +35,7 @@ export function draftFromPipeline(source: PipelineDef): PipelineDraft {
 export const AI_NEWS_PODCAST_NAME = "AI news podcast";
 
 /** The AI news podcast pipeline (docs/SDD-ai-news-podcast.md §3.3,
- *  §3.7): gather -> explain simply -> podcast script -> make audio, in a
+ *  §3.7, §3.9): gather -> explain -> podcast script -> make audio, in a
  *  line, "all" on every step so no `next` is needed. Every agent is
  *  readonly with no write/bash (the audio step is TtsExecutor, no LLM),
  *  so it runs with no repo. The one definition both the
@@ -45,11 +45,11 @@ export const AI_NEWS_PODCAST_NAME = "AI news podcast";
 export function aiNewsPodcastDraft(): PipelineDraft {
   return {
     name: AI_NEWS_PODCAST_NAME,
-    description: "Gathers the week's AI news from the web, explains it simply, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.",
+    description: "Gathers the week's AI news from the web, explains it for an engineer who follows AI, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.",
     graph: {
       steps: [
         { id: "gather", name: "Gather news", agentId: "ai-news-gatherer", transition: "all" },
-        { id: "explain", name: "Explain simply", agentId: "eli5-explainer", transition: "all" },
+        { id: "explain", name: "Explain", agentId: "ai-news-explainer", transition: "all" },
         { id: "script", name: "Write podcast script", agentId: "podcast-scriptwriter", transition: "all" },
         { id: "audio", name: "Make audio", agentId: "podcast-audio", transition: "all" },
       ],
@@ -65,17 +65,22 @@ export function aiNewsPodcastDraft(): PipelineDraft {
 export const WORLD_NEWS_PODCAST_NAME = "World news podcast";
 
 /** The same four steps as the AI news podcast with a different gather
- *  step: world-news-gatherer finds the last 48 hours' top world
- *  headlines plus Spain and the Netherlands, each story tagged with a
- *  `region`. Explain, script and audio are shared unchanged (the
- *  explainer copies `region` through; the scriptwriter groups by it). */
+ *  and explain agent: world-news-gatherer finds the last 48 hours' top
+ *  world headlines plus Spain and the Netherlands, each story tagged
+ *  with a `region`; world-news-explainer writes for an informed adult
+ *  and copies `region` through (§3.9). Script and audio are shared
+ *  unchanged (the scriptwriter groups by region). */
 export function worldNewsPodcastDraft(): PipelineDraft {
   const draft = aiNewsPodcastDraft();
+  const agentFor: Record<string, Partial<PipelineGraph["steps"][number]>> = {
+    gather: { name: "Gather headlines", agentId: "world-news-gatherer" },
+    explain: { agentId: "world-news-explainer" },
+  };
   return {
     name: WORLD_NEWS_PODCAST_NAME,
-    description: "Gathers today's top world headlines plus the main news from Spain and the Netherlands, explains them simply, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.",
+    description: "Gathers today's top world headlines plus the main news from Spain and the Netherlands, explains them for an informed adult, writes a 5 minute podcast script with a quick read, and makes it an MP3 with a local voice.",
     graph: {
-      steps: draft.graph.steps.map((s) => (s.id === "gather" ? { ...s, name: "Gather headlines", agentId: "world-news-gatherer" } : s)),
+      steps: draft.graph.steps.map((s) => ({ ...s, ...agentFor[s.id] })),
       edges: draft.graph.edges,
     },
   };

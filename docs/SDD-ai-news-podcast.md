@@ -373,6 +373,25 @@ new check with a passing and a failing fixture, including a
 reformatted number that must still match; e2e: the Quick read row
 expands to show the detail.
 
+As built (card 4): numbers are compared as normalised tokens, not
+substrings ("5" is not retained by "15"); a number glued to a letter
+("70B", "H100") is a name, not a number; "percent" is `%`, "bn" is
+"billion", trailing decimal zeros drop, and dot thousands with two or
+more groups ("1.200.000") are read as thousands. Names skip weekdays,
+months and "I"; a run's first word is dropped when it opens a sentence
+or a quote; a comma ends a run. A multi-word name counts as retained
+when it appears as written or when every word of it appears ("OpenAI
+CEO Sam Altman" kept by "Sam Altman, OpenAI's CEO"). A run with no
+numbers (or no names) in `facts` passes that half. `newsStepCards`
+takes the definition's edges and falls back to the card that ran just
+before the scriptwriter when there are none; the retro pipeline's
+analyse step is its explain card. The seed also replaces a stored
+description that is exactly an older template's text
+(`OLD_TEMPLATE_DESCRIPTIONS`), so the stored pipelines lose "simply";
+a description someone wrote is kept. Recorded fixture:
+`test/fixtures/ai-news/explain-summary.md`, which passes all three
+checks against the recorded gather.
+
 ## 4. Tests (gate lane, every card)
 
 - `web` grant: a readonly agent with `toolAccess: [web]` gets

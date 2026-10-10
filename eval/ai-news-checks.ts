@@ -23,6 +23,14 @@ export const AI_NEWS_LIMITS = {
    *  90 to 240 the audio is cut short or isn't the script. */
   minWordsPerMinute: 90,
   maxWordsPerMinute: 240,
+  /** §3.9 outcome 1: share of the gather step's numbers and names that
+   *  the explain step carries over, across the whole run. */
+  minNumbersRetained: 0.9,
+  minNamesRetained: 0.8,
+  /** §3.9 outcome 2: every explained story's `detail` has at least this
+   *  many words (world: 50) and its `summary` at most 30. */
+  minDetailWords: 60,
+  maxSummaryWords: 30,
 } as const;
 
 export interface AiNewsCheck {
@@ -40,7 +48,10 @@ export interface AiNewsCheck {
     | "audio"
     | "regions"
     | "groups"
-    | "evidence";
+    | "evidence"
+    | "explain-shape"
+    | "facts-retained"
+    | "depth";
   pass: boolean;
   detail: string;
 }
@@ -48,6 +59,8 @@ export interface AiNewsCheck {
 export interface AiNewsRunOutputs {
   /** The gather step's pipeline-handoff `data`. */
   gather: unknown;
+  /** The explain step's pipeline-handoff `data` (§3.9). */
+  explain: unknown;
   /** The script step's pipeline-handoff `data`. */
   final: unknown;
   /** Sum of telemetry `result` events' actualCost for the run's step
@@ -118,7 +131,7 @@ export type NewsLimits = { [K in keyof typeof AI_NEWS_LIMITS]: number };
  *  most 4 (Milton, 2026-10-10: a big national story such as an election
  *  call stays the main national news for days). `maxAgeDays` is the
  *  loosest window; checkWorldNewsRun applies the per-region ones. */
-export const WORLD_NEWS_LIMITS: NewsLimits = { ...AI_NEWS_LIMITS, maxAgeDays: 4 };
+export const WORLD_NEWS_LIMITS: NewsLimits = { ...AI_NEWS_LIMITS, maxAgeDays: 4, minDetailWords: 50 };
 export const WORLD_NEWS_REGION_MAX_AGE_DAYS: Record<string, number> = { world: 2, spain: 4, netherlands: 4 };
 
 /** Regions every world run must cover (Milton, 2026-10-09: generic world
@@ -246,6 +259,196 @@ export function checkAiNewsRun(run: AiNewsRunOutputs, limits: NewsLimits = AI_NE
     detail: run.costUsd === undefined ? "no cost reported in telemetry" : `$${run.costUsd.toFixed(4)} (limit $${L.maxCostUsd.toFixed(2)})`,
   });
 
+  checks.push(...checkExplain(stories, run.explain, L));
+  return checks;
+}
+
+// ---- §3.9 explain step: shape, facts retained, depth ----------------------
+
+// A number with its currency, scale and percent: "$1.5 billion", "20%",
+// "1,200". Not glued to a letter or digit on either side, so "70B" and
+// "H100" are names, not numbers. Alternatives in order: comma thousands
+// (1,200 / 1,200.5), dot thousands with two or more groups (1.200.000,
+// as Spanish and Dutch sources write it), plain or decimal (3.5).
+const NUMBER_RE =
+  /(?<![\p{L}\p{N}_.,])([$€£]\s?)?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d{1,3}(?:\.\d{3}){2,}|\d+(?:\.\d+)?)(?:\s?(million|billion|trillion|bn)\b)?(?:\s?(%|percent\b|per cent\b))?(?![\p{L}\p{N}])/giu;
+
+/** Every number in `text`, normalised so the same quantity written two
+ *  ways compares equal: thousands separators dropped ("1,200" and
+ *  "1200"), trailing decimal zeros dropped ("1.50" and "1.5"), "percent"
+ *  as "%", "bn" as "billion", currency symbol and scale word kept with
+ *  the number ("$2 billion" is not "2"). */
+export function extractNumbers(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(NUMBER_RE)) {
+    const [, currency, digits, scale, pct] = m;
+    const plain = /^\d{1,3}(?:\.\d{3}){2,}$/.test(digits!) ? digits!.replace(/\./g, "") : digits!.replace(/,/g, "");
+    const scaleWord = scale ? ` ${scale.toLowerCase() === "bn" ? "billion" : scale.toLowerCase()}` : "";
+    out.push(`${currency ? currency.trim() : ""}${String(Number(plain))}${scaleWord}${pct ? "%" : ""}`);
+  }
+  return out;
+}
+
+// Capitalised words that are dates, not names: a story's day of the
+// week rarely survives a rewrite and isn't what "names retained" means.
+const NOT_NAMES = new Set(
+  "I Monday Tuesday Wednesday Thursday Friday Saturday Sunday January February March April May June July August September October November December"
+    .toLowerCase()
+    .split(" "),
+);
+
+/** A token stripped of surrounding punctuation and a trailing "'s". */
+function bareToken(raw: string): string {
+  return raw.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "").replace(/['’]s$/u, "");
+}
+
+/** Names in `text`: runs of capitalised words not at a sentence start
+ *  ("Pedro Sánchez", "European Commission"; the run's first word is
+ *  dropped when it opens a sentence or a quote), plus any token with an
+ *  inner capital or a digit next to a letter ("OpenAI", "GPT-5", "H100",
+ *  "NATO"), wherever it is. A run ends at a token with punctuation after
+ *  it ("Spain, France" is two names). Deduplicated, first seen first. */
+export function extractNames(text: string): string[] {
+  const out: string[] = [];
+  const add = (name: string) => {
+    if (name && !NOT_NAMES.has(name.toLowerCase()) && !out.some((n) => n.toLowerCase() === name.toLowerCase())) out.push(name);
+  };
+  for (const sentence of text.split(/(?<=[.!?])\s+/)) {
+    let run: string[] = [];
+    const flush = () => {
+      if (run.length > 0) add(run.join(" "));
+      run = [];
+    };
+    sentence.split(/\s+/).forEach((raw, i) => {
+      const word = bareToken(raw);
+      if (!word) return flush();
+      // "2.5bn", "40m", "10k" are amounts, not names.
+      const special = /\p{L}/u.test(word) && (/^.+\p{Lu}/u.test(word) || /\d/.test(word)) && !/^\d[\d.,]*(?:bn|mn|m|k)$/i.test(word);
+      if (special) add(word);
+      const opensSentence = i === 0 || /^["“'‘(]/.test(raw);
+      if (/^\p{Lu}/u.test(word) && !NOT_NAMES.has(word.toLowerCase())) {
+        if (opensSentence) flush();
+        else run.push(word);
+      } else {
+        flush();
+      }
+      // "Spain, France": punctuation after a word ends its run.
+      if (/[^\p{L}\p{N}'’]$/u.test(raw.replace(/['’]s$/u, ""))) flush();
+    });
+    flush();
+  }
+  return out;
+}
+
+const EXPLAIN_TEXT_FIELDS = ["summary", "detail", "whyItMatters", "unknowns"] as const;
+
+/** An explained story's text the checks search: summary, detail, why it
+ *  matters and unknowns. */
+function explainedText(story: Record<string, unknown> | undefined): string {
+  if (!story) return "";
+  return EXPLAIN_TEXT_FIELDS.map((k) => (typeof story[k] === "string" ? story[k] : "")).join("\n");
+}
+
+/** `phrase` as whole words in `haystack`, case-insensitive. */
+function containsWords(haystack: string, phrase: string): boolean {
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s+");
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "iu").test(haystack);
+}
+
+/** A name is retained when it appears as written, or, for a run of
+ *  several words, when every word of it does: "OpenAI CEO Sam Altman"
+ *  rewritten as "Sam Altman, OpenAI's CEO" keeps the name. */
+export function nameRetained(text: string, name: string): boolean {
+  return containsWords(text, name) || (name.includes(" ") && name.split(" ").every((w) => containsWords(text, w)));
+}
+
+function pct(n: number, of: number): string {
+  return of === 0 ? "none to keep" : `${n}/${of} (${Math.round((n / of) * 100)}%)`;
+}
+
+/** §3.9 explain-shape, facts-retained and depth, pairing the explain
+ *  step's stories with the gather step's by position (explain-shape
+ *  proves the positions line up). */
+function checkExplain(gathered: GatherStory[] | null, explain: unknown, L: NewsLimits): AiNewsCheck[] {
+  const explained = isRecord(explain) && Array.isArray(explain.stories) ? explain.stories : null;
+  const gather = (gathered ?? []) as unknown as Record<string, unknown>[];
+  const checks: AiNewsCheck[] = [];
+
+  // explain-shape: same count, same titles in the same order, sources unchanged.
+  const shapeProblems: string[] = [];
+  if (explained !== null) {
+    if (explained.length !== gather.length) shapeProblems.push(`${explained.length} explained stories for ${gather.length} gathered`);
+    gather.forEach((g, i) => {
+      const e = explained[i];
+      if (!isRecord(e)) return void (i < explained.length && shapeProblems.push(`story ${i + 1} is not an object`));
+      if (e.title !== g.title) shapeProblems.push(`story ${i + 1} is ${JSON.stringify(e.title)}, gather has ${JSON.stringify(g.title)}`);
+      if (!Bun.deepEquals(e.sources, g.sources)) shapeProblems.push(`story ${i + 1} ${JSON.stringify(g.title)} sources changed`);
+    });
+  }
+  checks.push({
+    name: "explain-shape",
+    pass: explained !== null && gather.length > 0 && shapeProblems.length === 0,
+    detail: explained === null ? "explain data has no stories array" : shapeProblems.length === 0 ? `${explained.length} stories, same order and sources as gather` : shapeProblems.join("; "),
+  });
+
+  // facts-retained: each gather story's numbers and names, looked for in
+  // the explained story at the same position.
+  let numbers = 0;
+  let numbersKept = 0;
+  let names = 0;
+  let namesKept = 0;
+  const missing: string[] = [];
+  gather.forEach((g, i) => {
+    const facts = typeof g.facts === "string" ? g.facts : "";
+    const e = explained?.[i];
+    const text = explainedText(isRecord(e) ? e : undefined);
+    const have = new Set(extractNumbers(text));
+    const wantNumbers = [...new Set(extractNumbers(facts))];
+    const lostNumbers = wantNumbers.filter((n) => !have.has(n));
+    const wantNames = extractNames(facts);
+    const lostNames = wantNames.filter((n) => !nameRetained(text, n));
+    numbers += wantNumbers.length;
+    numbersKept += wantNumbers.length - lostNumbers.length;
+    names += wantNames.length;
+    namesKept += wantNames.length - lostNames.length;
+    if (lostNumbers.length + lostNames.length > 0) {
+      missing.push(`${JSON.stringify(g.title)} lost ${[...lostNumbers, ...lostNames].map((x) => JSON.stringify(x)).join(", ")}`);
+    }
+  });
+  const numbersOk = numbers === 0 || numbersKept / numbers >= L.minNumbersRetained;
+  const namesOk = names === 0 || namesKept / names >= L.minNamesRetained;
+  checks.push({
+    name: "facts-retained",
+    pass: explained !== null && gather.length > 0 && numbersOk && namesOk,
+    detail:
+      explained === null
+        ? "explain data has no stories array"
+        : `numbers ${pct(numbersKept, numbers)} (want ${Math.round(L.minNumbersRetained * 100)}%), names ${pct(namesKept, names)} (want ${Math.round(L.minNamesRetained * 100)}%)` +
+          (missing.length > 0 ? `; ${missing.join("; ")}` : ""),
+  });
+
+  // depth: a summary of at most maxSummaryWords, a detail of at least minDetailWords.
+  const shallow: string[] = [];
+  (explained ?? []).forEach((e, i) => {
+    const title = isRecord(e) ? JSON.stringify(e.title) : `story ${i + 1}`;
+    const summary = isRecord(e) && typeof e.summary === "string" ? e.summary : "";
+    const detail = isRecord(e) && typeof e.detail === "string" ? e.detail : "";
+    const sw = countWords(summary);
+    const dw = countWords(detail);
+    if (sw === 0) shallow.push(`${title} has no summary`);
+    else if (sw > L.maxSummaryWords) shallow.push(`${title} summary is ${sw} words`);
+    if (dw < L.minDetailWords) shallow.push(`${title} detail is ${dw} words`);
+  });
+  checks.push({
+    name: "depth",
+    pass: explained !== null && explained.length > 0 && shallow.length === 0,
+    detail:
+      explained === null
+        ? "explain data has no stories array"
+        : shallow.length === 0
+          ? `every summary 1 to ${L.maxSummaryWords} words, every detail at least ${L.minDetailWords}`
+          : `${shallow.join("; ")} (want summary 1 to ${L.maxSummaryWords} words, detail at least ${L.minDetailWords})`,
+  });
   return checks;
 }
 
