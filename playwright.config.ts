@@ -112,8 +112,12 @@ export default defineConfig({
     // even gets created. `mkdir -p` once here, same as the fixture
     // copies above, so the directory exists before any test (not just
     // this one) ever spawns into it.
+    // `bun run build:editor` first: pipeline-editor/dist/ is gitignored
+    // and the server serves it as is, so a template change (2026-10-10:
+    // the explain step's rename) otherwise runs the e2e suite against
+    // the previous bundle and fails for no reason in the code under test.
     command:
-      "mkdir -p /tmp/wissel-e2e-repo && rm -f /tmp/wissel-e2e-memory-lessons.md /tmp/wissel-e2e-telemetry.jsonl && cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
+      "bun run build:editor && mkdir -p /tmp/wissel-e2e-repo && rm -f /tmp/wissel-e2e-memory-lessons.md /tmp/wissel-e2e-telemetry.jsonl && cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
     url: `http://localhost:${PORT}/health`,
     reuseExistingServer: false,
     env: {
