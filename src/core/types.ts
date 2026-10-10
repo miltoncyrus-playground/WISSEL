@@ -651,6 +651,11 @@ export interface TaskResult {
    *  timestamp; undefined for every other kind of failure (or a
    *  success). */
   retryAfter?: string;
+  /** What `claude -p` refused this run, as comparable keys
+   *  ("Bash: bun install"; see src/core/permission-denials.ts).
+   *  Undefined when nothing was refused. The review loop escalates when
+   *  two consecutive attempts hit the same refusal. */
+  permissionDenials?: string[];
   /** Set when this result came from a pipeline step's own
    *  pipeline-handoff contract — see PipelineHandoff, parsePipelineHandoff.
    *  Nested (unlike verdict/reviewFeedback's flat fields) because every

@@ -486,6 +486,23 @@ export async function resumeAfterApproval(board: Board, registry: Registry, impl
 }
 
 /**
+ * The settings a card's re-attempt keeps: tool and directory grants, a
+ * model or harness choice, an MCP override. Used by a review pushback
+ * (spawnPushbackImplementer) and a human retry of an escalated card
+ * (`POST /tasks/:id/escalation/retry`). Before 2026-10-10 both dropped
+ * them, so a grant made for attempt 1 was gone from attempt 2 on.
+ */
+export function carriedCardSettings(task: TaskCard): Partial<Omit<TaskCard, "id" | "status">> {
+  return {
+    ...(task.extraAllowedTools?.length ? { extraAllowedTools: task.extraAllowedTools } : {}),
+    ...(task.extraAllowedDirs?.length ? { extraAllowedDirs: task.extraAllowedDirs } : {}),
+    ...(task.model ? { model: task.model } : {}),
+    ...(task.harnessOverride ? { harnessOverride: task.harnessOverride } : {}),
+    ...(task.mcpAccessOverride ? { mcpAccessOverride: task.mcpAccessOverride } : {}),
+  };
+}
+
+/**
  * A rejected review, under the pushback limit: creates the next
  * implementer attempt in the same lineage — same title/labels/repo,
  * `parentTaskId` pointing at the reviewer task (not the superseded
@@ -503,7 +520,15 @@ async function spawnPushbackImplementer(board: Board, implementerTask: TaskCard,
   const newPushbackCount = (implementerTask.pushbackCount ?? 0) + 1;
   const reviewLineageId = implementerTask.reviewLineageId ?? implementerTask.id;
   const feedback = result.reviewFeedback ?? "(reviewer requested changes but gave no feedback text)";
-  const body = `${implementerTask.body}\n\n---\nReviewer feedback (attempt ${newPushbackCount}):\n${feedback}`;
+  // What this attempt was refused (TaskResult.permissionDenials), so the
+  // next one doesn't spend its turn retrying it. 2026-10-10: "Wissel app
+  // 1/6" was refused `bun install` five rounds running without knowing.
+  const refused = (await board.getResult(implementerTask.id))?.permissionDenials ?? [];
+  const refusedNote =
+    refused.length > 0
+      ? `\n\nRefused on the last attempt: ${refused.join(", ")}. Don't retry these: they need a grant on the card (POST /tasks/:id/allowed-tools). Do everything else, and say plainly which checks you couldn't run.`
+      : "";
+  const body = `${implementerTask.body}\n\n---\nReviewer feedback (attempt ${newPushbackCount}):\n${feedback}${refusedNote}`;
 
   const nextAttempt = await board.create({
     title: implementerTask.title,
@@ -513,6 +538,7 @@ async function spawnPushbackImplementer(board: Board, implementerTask: TaskCard,
     parentTaskId: reviewerTask.id,
     reviewLineageId,
     pushbackCount: newPushbackCount,
+    ...carriedCardSettings(implementerTask),
   });
 
   await board.setSupersededBy(implementerTask.id, nextAttempt.id);

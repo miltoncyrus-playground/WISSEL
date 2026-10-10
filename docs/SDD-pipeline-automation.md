@@ -153,6 +153,27 @@ around it. This is the single highest-leverage fix in this doc: it collapses
 most pushback rounds into the same turn, and demotes my own independent
 worktree verification from a full re-run to a spot-check.
 
+**Per-card grants, revision 2026-10-10.** The fixed pair can't build or
+install anything, so a card that needs `bun install`, a build or
+Playwright (the "Wissel app" cards) was refused on every attempt and
+looped 5 review rounds ($9.28) before escalating. A card can now carry
+`extraAllowedTools`, set on `POST /tasks` or later with
+`POST /tasks/:id/allowed-tools` (not while running; `[]` clears).
+`src/core/allowed-tools.ts` accepts only command-scoped Bash grants
+(`Bash(bun install:*)`), refuses shell operators, dangerous programs
+(`rm`, `git`, `curl`, `docker`, `sudo`, shells and interpreters),
+publishing or arbitrary-code subcommands (`bun publish`, `bun x`,
+`npm exec`), limits `bunx`/`npx` to playwright, vite, vitest and tsc,
+and caps a card at 12 grants. Grants, extra directories, model, harness
+and MCP overrides now carry over to review re-attempts and to a retry
+of an escalated card (`carriedCardSettings`); before, all of them were
+dropped after attempt 1. Refused commands are recorded on the result
+(`TaskResult.permissionDenials`, e.g. `Bash: bun install`) and named in
+the next attempt's body so it doesn't retry them. An automatic
+"escalate on a repeated refusal" rule was measured on 62 real reviewed
+lineages and dropped: early enough to help, it would have stopped 3
+lineages the reviewer approved a round later.
+
 ### 3.5 Auto-integrator on subtask-set completion
 When a planner task's own status query shows every child (`parentTaskId` ==
 planner task, per the existing dependsOn graph) at `done`, auto-create an

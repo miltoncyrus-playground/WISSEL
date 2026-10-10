@@ -23,6 +23,12 @@ export interface Board {
    *  superseded (old) card of a review-pushback pair, never touching its
    *  `status`. See TaskCard.supersededBy. */
   setSupersededBy(id: string, supersededByTaskId: string): Promise<TaskCard>;
+  /** Replaces a card's per-card tool grants (TaskCard.extraAllowedTools),
+   *  already validated by validateExtraAllowedTools (src/core/allowed-tools.ts).
+   *  `[]` clears them. Used by `POST /tasks/:id/allowed-tools` to grant a
+   *  card that exists already (a queued chain, or an escalated card about
+   *  to be retried). */
+  setExtraAllowedTools(id: string, tools: string[]): Promise<TaskCard>;
   /** Moves a task to `escalated` and records why in one atomic step —
    *  there's no valid intermediate state where a task is `escalated`
    *  without an `escalationContext`, so this never exists as two calls
@@ -104,6 +110,7 @@ export type BoardEvent =
   | { type: "task.dependencies"; task: TaskCard }
   | { type: "task.harness"; task: TaskCard }
   | { type: "task.superseded"; task: TaskCard }
+  | { type: "task.allowed-tools"; task: TaskCard }
   | { type: "task.decided"; decision: RoutingDecision }
   | { type: "task.result"; result: TaskResult }
   | { type: "task.override"; taskId: string; routerPick: string; humanPick: string; actor?: string; reason?: string; at: string }
@@ -374,7 +381,8 @@ export class SqliteBoard implements Board {
         subagents TEXT,
         verdict TEXT,
         reviewFeedback TEXT,
-        mcpCalls TEXT
+        mcpCalls TEXT,
+        permissionDenials TEXT
       );
     `);
     // actualCost/harnessId shipped on TaskResult well before this table
@@ -396,6 +404,10 @@ export class SqliteBoard implements Board {
       // the recordResult -> getResult round trip, not just live in the
       // in-memory TaskResult finishResult already has.
       "ALTER TABLE task_results ADD COLUMN mcpCalls TEXT;",
+      // TaskResult.permissionDenials (src/core/permission-denials.ts):
+      // the review loop reads the previous attempt's back to tell a
+      // permission block from a code problem.
+      "ALTER TABLE task_results ADD COLUMN permissionDenials TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -518,6 +530,15 @@ export class SqliteBoard implements Board {
     this.db.run("UPDATE tasks SET supersededBy = ? WHERE id = ?", [supersededByTaskId, id]);
     const updated: TaskCard = { ...existing, supersededBy: supersededByTaskId };
     this.events.emit("event", { type: "task.superseded", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async setExtraAllowedTools(id: string, tools: string[]): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET extraAllowedTools = ? WHERE id = ?", [tools.length > 0 ? JSON.stringify(tools) : null, id]);
+    const updated: TaskCard = { ...existing, extraAllowedTools: tools.length > 0 ? tools : undefined };
+    this.events.emit("event", { type: "task.allowed-tools", task: updated } satisfies BoardEvent);
     return updated;
   }
 
@@ -654,7 +675,7 @@ export class SqliteBoard implements Board {
 
   async recordResult(result: TaskResult): Promise<void> {
     this.db.run(
-      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback, mcpCalls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback, mcpCalls, permissionDenials) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         result.taskId,
         result.agentId,
@@ -668,6 +689,7 @@ export class SqliteBoard implements Board {
         result.verdict ?? null,
         result.reviewFeedback ?? null,
         result.mcpCalls ? JSON.stringify(result.mcpCalls) : null,
+        result.permissionDenials?.length ? JSON.stringify(result.permissionDenials) : null,
       ],
     );
     this.events.emit("event", { type: "task.result", result } satisfies BoardEvent);
@@ -687,6 +709,7 @@ export class SqliteBoard implements Board {
       verdict: TaskResult["verdict"] | null;
       reviewFeedback: string | null;
       mcpCalls: string | null;
+      permissionDenials: string | null;
     } | null;
     if (!row) return undefined;
     return {
@@ -702,6 +725,7 @@ export class SqliteBoard implements Board {
       verdict: row.verdict ?? undefined,
       reviewFeedback: row.reviewFeedback ?? undefined,
       mcpCalls: row.mcpCalls ? (JSON.parse(row.mcpCalls) as TaskResult["mcpCalls"]) : undefined,
+      permissionDenials: row.permissionDenials ? (JSON.parse(row.permissionDenials) as string[]) : undefined,
     };
   }
 

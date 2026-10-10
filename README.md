@@ -112,6 +112,10 @@ Recovery handles it on the next start, but the restart is avoidable.
    implementer has this on. Without it, or on a merge conflict, the card
    stops at `review` for a human **Merge** or **Discard**
    (`POST /tasks/:id/merge`, `/discard`).
+   An implementer may run only `bun test` and `bun run typecheck`
+   unless the card grants more: `extraAllowedTools` on `POST /tasks`, or
+   `POST /tasks/:id/allowed-tools` (command-scoped Bash only, e.g.
+   `Bash(bun install:*)`; see `src/core/allowed-tools.ts`).
 
 A planner card ends in a `subtask-plan` block that the orchestrator turns
 into real child cards. When every child has landed, an integrator card is

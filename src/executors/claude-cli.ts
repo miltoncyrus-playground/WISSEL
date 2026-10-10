@@ -3,6 +3,7 @@ import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
+import { summarizeDenials } from "../core/permission-denials.ts";
 import { parseSubtaskPlan } from "./parse-subtask-plan.ts";
 import { parsePipelineHandoff } from "./parse-pipeline-handoff.ts";
 import { parseSessionLimitReset } from "./parse-session-limit-reset.ts";
@@ -478,6 +479,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   }
 
   const denials = parsed.permission_denials ?? [];
+  const deniedKeys = summarizeDenials(denials);
   let ok = !parsed.is_error;
   let summary = denials.length > 0 ? `${parsed.result ?? "(no result)"} [${denials.length} permission denial(s)]` : parsed.result ?? "(no result)";
 
@@ -581,6 +583,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     ...(handoff ? { pipelineHandoff: handoff } : {}),
     ...(mcpCalls ? { mcpCalls } : {}),
     ...(mcpApprovalRequest ? { mcpApprovalRequest } : {}),
+    ...(deniedKeys.length > 0 ? { permissionDenials: deniedKeys } : {}),
   };
 }
 

@@ -14,7 +14,7 @@ import { setMcpServerEnabled, setMcpServerToolTrust, addMcpServer } from "../cor
 import { Registry } from "../core/registry.ts";
 import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
-import { Orchestrator, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
+import { Orchestrator, carriedCardSettings, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts } from "../core/crash-recovery.ts";
 import { PipelineRepoRequiredError, startPipelineRun, stepsNeedingRepo } from "../core/pipeline-runner.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
@@ -35,6 +35,7 @@ import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
+import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import type { AnthropicMessagesClient } from "../executors/anthropic-api.ts";
 import { mergeTaskWorktree, removeTaskWorktree } from "../services/worktree.ts";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
@@ -942,6 +943,11 @@ export function createApp(
 
         if (parts.length === 1 && req.method === "POST") {
           const body = (await req.json()) as Omit<TaskCard, "id" | "status">;
+          // Per-card tool grants (src/core/allowed-tools.ts): command-scoped
+          // Bash only, never a blanket grant. Stored normalized.
+          const grants = validateExtraAllowedTools(body.extraAllowedTools);
+          if (!grants.ok) return json({ error: grants.error }, 400);
+          body.extraAllowedTools = grants.tools.length > 0 ? grants.tools : undefined;
           // `harnessOverride` is validated eagerly, at creation time,
           // because we already know exactly which harness it names.
           // `model` with no `harnessOverride` is deliberately NOT
@@ -1115,6 +1121,22 @@ export function createApp(
         // branch into whatever's checked out in task.repo, removes the
         // worktree, and moves the task to "done". The only place a
         // worktree's changes ever reach the live repo; never automatic.
+        // Grants (or clears, with []) per-card tools on a card that
+        // isn't running: a queued card, or an escalated/failed one about
+        // to be retried. A running card keeps the grants it started with.
+        if (parts.length === 3 && parts[2] === "allowed-tools" && req.method === "POST") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          if (task.status === "running" || task.status === "dispatched") {
+            return json({ error: `task is ${task.status}; change its tools once it stops` }, 409);
+          }
+          const { extraAllowedTools } = (await req.json().catch(() => ({}))) as { extraAllowedTools?: unknown };
+          if (extraAllowedTools === undefined) return json({ error: "body needs extraAllowedTools (a list; [] clears)" }, 400);
+          const grants = validateExtraAllowedTools(extraAllowedTools);
+          if (!grants.ok) return json({ error: grants.error }, 400);
+          return json(await board.setExtraAllowedTools(task.id, grants.tools));
+        }
+
         if (parts.length === 3 && parts[2] === "merge" && req.method === "POST") {
           const task = await board.get(parts[1]!);
           if (!task) return notFound();
@@ -1208,6 +1230,7 @@ export function createApp(
               repo: task.repo,
               pushbackCount: 0,
               reviewLineageId: randomUUID(),
+              ...carriedCardSettings(task),
             });
             await board.setSupersededBy(task.id, nextAttempt.id);
             return json(nextAttempt, 201);
