@@ -256,6 +256,123 @@ news, also check in headlines from Spain and the Netherlands."
   with a 2 day window plus `regions` (every story has a known region,
   each region has at least one story). `bun run eval:world-news`.
 
+### 3.9 Explain at the listener's level, revision 2026-10-10
+
+Milton: the ELI5 output is "overly simplified". He chose B + C + F from
+the options (level per pipeline, layered output, richer gather) and
+asked to rename the step.
+
+Two causes, both fixed here:
+`eli5-explainer` writes for "a curious 12-year-old"
+(agents/manifest.yaml, its outputContract), and both gatherers cap
+`facts` at "2 to 4 plain sentences", so the explainer has no depth to
+work with and may add none (no-new-facts rule, kept).
+
+**Outcomes (measured by the checks below on a real run of each
+pipeline):**
+
+1. `facts-retained`: at least 90% of the numbers and at least 80% of
+   the names in the gather step's `facts` appear in the explain step's
+   output, per run.
+2. `depth`: every explained story has a `detail` of at least 60 words
+   (AI) or 50 words (world), and a `summary` of at most 30 words.
+3. The Quick read row expands to the story's detail in the drawer.
+4. Cost stays under the existing limits ($1.50 AI, same for world).
+
+**F. Richer gather.** In `ai-news-gatherer` and `world-news-gatherer`,
+`facts` becomes 4 to 8 sentences, still only what the sources say:
+what happened; who (people, organisations, products by name); the key
+numbers exactly as the source gives them (scores, prices, sizes, dates,
+votes, casualties, amounts); how it works or what changed compared with
+before; who said what, attributed; and, for world, one sentence of the
+background the source itself gives. No speculation, no hype words.
+
+**B. Level per pipeline.** `eli5-explainer` is replaced by two agents
+with the same contract shape and different audiences (both readonly,
+no tools, `claude-sonnet-5-5`, `pipeline-handoff`, one unique tag each):
+
+- `ai-news-explainer` (tag `ai-news-explain-step`, kept): for a
+  software engineer who follows AI. Keep model, lab, benchmark and
+  method names, scores, parameter counts, context sizes, prices and
+  licences exactly. Define a term only when it is niche. No everyday
+  analogies unless one adds precision.
+- `world-news-explainer` (new tag `world-news-explain-step`): for an
+  informed adult reading a quality newspaper. Keep names, places,
+  parties, offices and numbers. Give one line of background a reader
+  outside the country needs, only from `facts`.
+
+Both keep the hard rules: no new facts, `title`, `date`, `sources`
+and `region` copied unchanged, every story kept in order. The agent
+name in the manifest is "AI news explainer" / "World news explainer".
+`eli5-explainer` is removed; the project ELI5 feature
+(src/services/project-eli5.ts, `GET /projects/:id/eli5`) is unrelated
+and unchanged.
+
+**C. Layered output.** Each explained story becomes:
+
+```json
+{"title": "...", "date": "YYYY-MM-DD", "sources": ["https://..."],
+ "region": "world",
+ "summary": "one sentence, at most 30 words",
+ "detail": "what happened and how, 60 to 150 words, every number and name from facts",
+ "whyItMatters": "1 to 2 sentences", "unknowns": "1 line"}
+```
+
+`explanation` is replaced by `summary` + `detail`. The
+`wissel-retro-analyst` output keeps its own shape (`explanation`); the
+scriptwriter and drawer accept either.
+
+- `podcast-scriptwriter`: builds each segment from `detail`,
+  `whyItMatters` and `unknowns` (or `explanation` when there is no
+  `detail`). Script length and the quick read shape are unchanged.
+- Drawer (`src/api/public/board-news.js`, `newsStepCards` /
+  `newsView`): also reads the explain step's card (the step with an
+  edge into the scriptwriter's step) and joins each Quick read row to
+  its explained story, deterministically: first by the row's `source`
+  being in the story's `sources`, else by position when the counts
+  match, else no detail. A row with detail gets a disclosure
+  (`<details>`, no JS) showing `detail`, then "Why it matters" and
+  "Not known yet". Rows without detail render as today. Old runs
+  (`explanation` only) show `explanation` as the detail.
+
+**Rename.** Step `explain` is named "Explain" (was "Explain simply")
+in `aiNewsPodcastDraft` and `worldNewsPodcastDraft`, pointing at the
+new agents; template descriptions drop "simply". `bun run
+seed:ai-news` updates the stored pipelines in place (same ids, so the
+06:00 timer is unaffected; it looks pipelines up by name anyway).
+Runs already stored keep their old step cards and still render.
+
+**Checks** (eval/ai-news-checks.ts, gate-tested in
+test/ai-news-checks.test.ts): `checkAiNewsRun` and
+`checkWorldNewsRun` take the explain step's data too and add:
+
+- `facts-retained`: deterministic extraction from each gather story's
+  `facts`: numbers (digits with their `%`, `$`, `€`, decimal and
+  thousands separators normalised, so "1,200" matches "1200"; written
+  scale words "million", "billion" kept with the number) and names
+  (runs of capitalised words not at a sentence start, plus tokens with
+  inner capitals or digits like "GPT-5" or "H100"). A number or name
+  counts as retained when it appears in that story's `summary`,
+  `detail`, `whyItMatters` or `unknowns`, case-insensitive. Pass at
+  90% of numbers and 80% of names across the run; the detail lists
+  the missing ones per story.
+- `depth`: the word limits in outcome 2, and `summary` present.
+- `explain-shape`: same story count and order as gather, `sources`
+  equal to gather's for each story.
+
+`bun run eval:ai-news` and `bun run eval:world-news` report them.
+
+**Tests (gate lane):** manifest (both explainers load with unique
+tags, audiences in their contracts, `eli5-explainer` gone, gatherers'
+contracts say 4 to 8 sentences and list numbers and attribution);
+templates and seed (step named "Explain", new agent ids, reseed
+updates a stored pipeline in place and keeps its id); scriptwriter
+contract mentions `detail`; board-news join (by source, by position,
+none; old `explanation` runs; retro stories with empty sources); every
+new check with a passing and a failing fixture, including a
+reformatted number that must still match; e2e: the Quick read row
+expands to show the detail.
+
 ## 4. Tests (gate lane, every card)
 
 - `web` grant: a readonly agent with `toolAccess: [web]` gets
@@ -304,3 +421,4 @@ run cost under $1.50 from telemetry. Pass threshold: all checks, 2 of
 2. **Presentation:** §3.5 and §3.6 in the run drawer, `board-news.js`,
    unit and e2e tests. Depends on card 1. Labels: `code`.
 3. **Audio (Kokoro):** §3.7. Labels: `code`. Done after 1 and 2.
+4. **Explain at the listener's level:** §3.9. Labels: `code`.
