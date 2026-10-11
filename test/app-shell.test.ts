@@ -19,6 +19,12 @@ test("app/src/types.ts lists exactly TaskCard.status's values", async () => {
   expect(ours.sort()).toEqual(values.sort());
 });
 
+test("app/src/types.ts FEED_KINDS matches src/services/feed.ts (card 2)", async () => {
+  const { FEED_KINDS: app } = await import("../app/src/types.ts");
+  const { FEED_KINDS: server } = await import("../src/services/feed.ts");
+  expect([...app]).toEqual([...server]);
+});
+
 test("board.html's header links to /app (the one board change card 1 makes)", async () => {
   const html = await read("src/api/public/board.html");
   const header = html.slice(html.indexOf('<header class="topbar">'), html.indexOf("</header>", html.indexOf('<header class="topbar">')));

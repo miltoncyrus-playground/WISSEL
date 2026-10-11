@@ -345,6 +345,7 @@ test("getResult returns the most recent result, and undefined for a task with no
 
   expect(await board.getResult(task.id)).toEqual({
     taskId: task.id, agentId: "a", ok: true, summary: "retry worked", artifacts: ["board.html"],
+    finishedAt: expect.any(String),
   });
 });
 
@@ -366,6 +367,7 @@ test("getResult round-trips worktree info, set by a write-tier run inside an iso
     ok: true,
     summary: "done",
     worktree: { path: "/home/x/.wissel/worktrees/" + task.id, branch: "wissel/" + task.id },
+    finishedAt: expect.any(String),
   });
 });
 
@@ -387,6 +389,7 @@ test("getResult round-trips actualCost and harnessId, not just the fields the ta
     summary: "done",
     actualCost: 0.0347,
     harnessId: "claude-personal",
+    finishedAt: expect.any(String),
   });
 });
 
@@ -408,6 +411,7 @@ test("getResult round-trips subagents (docs/SDD-subagent-visibility.md)", async 
     ok: true,
     summary: "done",
     subagents: { count: 2, failed: 1, byType: { "general-purpose": 1, Explore: 1 } },
+    finishedAt: expect.any(String),
   });
 });
 
@@ -430,6 +434,7 @@ test("getResult round-trips mcpCalls (docs/SDD-mcp-orchestration.md §3.4)", asy
     ok: true,
     summary: "done",
     mcpCalls,
+    finishedAt: expect.any(String),
   });
 });
 
@@ -560,6 +565,7 @@ test("getResult round-trips verdict and reviewFeedback", async () => {
     summary: "reviewed",
     verdict: "changes_requested",
     reviewFeedback: "board.html hardcodes the status enum, missing pending-review/escalated",
+    finishedAt: expect.any(String),
   });
 });
 

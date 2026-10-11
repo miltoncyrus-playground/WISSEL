@@ -44,6 +44,8 @@ import { setHarnessEnabled, setHarnessModel } from "../core/harness-manifest.ts"
 import { getVersionInfo } from "../core/version.ts";
 import { installShutdownHandlers } from "../executors/child-processes.ts";
 import { DEFAULT_APP_DIST, isAppPath, serveAppAsset } from "./serve-app.ts";
+import { createFeedSource } from "../services/feed-sources.ts";
+import { parseCursor } from "../services/feed.ts";
 import type { Executor, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -317,6 +319,13 @@ export function createApp(
   const appDist = opts.appDist ?? DEFAULT_APP_DIST;
   const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
   const commandRunner = opts.commandRunner ?? runViaBun;
+  const feed = createFeedSource({
+    board: board as Board,
+    pipelines,
+    telemetryPath: telemetry?.filePath,
+    audioDir,
+    disabledHarnesses: () => harnesses.all().filter((h) => !h.enabled).map((h) => h.id),
+  });
   const projectEli5ClientFactory = opts.projectEli5ClientFactory;
 
   // One Orchestrator instance regardless of whether the automatic loop is
@@ -738,6 +747,20 @@ export function createApp(
 
       if (url.pathname === "/events" && req.method === "GET") {
         return sseStream(board);
+      }
+
+      // The app's feed (docs/SDD-wissel-app.md §3.2): landed cards, cards
+      // that need you, podcasts, their checks and daily spend, newest
+      // first. `limit` 1 to 200 (default 50); `before` is an ISO time or
+      // a previous page's `next`. Read-only.
+      if (url.pathname === "/feed" && req.method === "GET") {
+        const rawLimit = url.searchParams.get("limit");
+        const limit = rawLimit === null ? 50 : Number(rawLimit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 200) return json({ error: "limit must be a whole number from 1 to 200" }, 400);
+        const rawBefore = url.searchParams.get("before");
+        const before = rawBefore ? parseCursor(rawBefore) : undefined;
+        if (before === null) return json({ error: "before must be an ISO time or a page's next value" }, 400);
+        return json(await feed.read({ now: Date.now(), limit, before }));
       }
 
       if (url.pathname === "/route/preview" && req.method === "POST") {

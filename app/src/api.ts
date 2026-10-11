@@ -1,7 +1,7 @@
 // The server endpoints the shell reads. Same origin: the server that
 // serves /app also serves the API.
 
-import type { PipelineDef, TaskCard } from "./types";
+import type { FeedPage, PipelineDef, TaskCard } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -12,6 +12,28 @@ async function getJson<T>(path: string): Promise<T> {
 export const fetchTasks = () => getJson<TaskCard[]>("/tasks");
 
 export const fetchPipelines = () => getJson<PipelineDef[]>("/pipelines");
+
+/** GET /feed: newest first. `before` is a previous page's `next`. */
+export function fetchFeed(limit: number, before?: string): Promise<FeedPage> {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (before) q.set("before", before);
+  return getJson<FeedPage>(`/feed?${q}`);
+}
+
+/** A feed item's POST action (approve, retry): the endpoint the board
+ *  calls for the same button. Throws the server's error message. */
+export async function postAction(href: string): Promise<void> {
+  const res = await fetch(href, { method: "POST" });
+  if (res.ok) return;
+  let message = `HTTP ${res.status}`;
+  try {
+    const body = (await res.json()) as { error?: string };
+    if (body.error) message = body.error;
+  } catch {
+    // Not JSON: keep the status.
+  }
+  throw new Error(message);
+}
 
 /** POST /pipelines/:id/run with no repo or input, which suits the
  *  repo-less pipelines (the podcasts). The server answers when the run

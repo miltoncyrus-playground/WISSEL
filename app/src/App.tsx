@@ -8,6 +8,7 @@ import { LivePanel } from "./components/LivePanel";
 import { Rail, TabBar, TopBar } from "./components/Nav";
 import { Palette } from "./components/Palette";
 import { BoardScreen, CardDetail } from "./screens/BoardScreen";
+import { FeedScreen } from "./screens/FeedScreen";
 import { Placeholder } from "./screens/Placeholder";
 
 /** Rail + Live panel from here up; tab bar below (SDD §3.1). The shell
@@ -72,6 +73,8 @@ export function App() {
   let screen;
   if (route.screen === "board") {
     screen = route.taskId ? <CardDetail taskId={route.taskId} tasks={data.tasks} loaded={data.loaded} /> : <BoardScreen lanes={lanes} loaded={data.loaded} error={data.error} />;
+  } else if (route.screen === "feed") {
+    screen = <FeedScreen now={now} />;
   } else {
     screen = <Placeholder screen={route.screen} />;
   }

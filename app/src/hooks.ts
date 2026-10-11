@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchPipelines, fetchTasks } from "./api";
+import { fetchFeed, fetchPipelines, fetchTasks } from "./api";
 import { events, type ConnectionState } from "./events";
 import { parseRoute, type Route } from "./routes";
-import type { PipelineDef, TaskCard } from "./types";
+import type { FeedItem, PipelineDef, TaskCard } from "./types";
 
 export function useHashRoute(): Route {
   const [route, setRoute] = useState(() => parseRoute(location.hash));
@@ -66,6 +66,81 @@ export function useBoardData(): BoardData {
   }, [load]);
 
   return { tasks, pipelines, loaded, error, connection };
+}
+
+export interface FeedData {
+  items: FeedItem[];
+  /** The `before` for the next page; null when there is no more. */
+  next: string | null;
+  loaded: boolean;
+  error: string | null;
+  loadingMore: boolean;
+  loadMore: () => void;
+}
+
+/** One page of the feed; also the most a live refresh refetches. */
+export const FEED_PAGE = 50;
+const FEED_MAX = 200;
+
+/** GET /feed, refetched on any `/events` message (a card moved, a
+ *  result landed) through the shared EventSource. A refresh refetches
+ *  as many items as are showing, so "Load more" pages stay put. */
+export function useFeed(): FeedData {
+  const [items, setItems] = useState<FeedItem[]>([]);
+  const [next, setNext] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const shown = useRef(FEED_PAGE);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const page = await fetchFeed(Math.min(FEED_MAX, Math.max(FEED_PAGE, shown.current)));
+      setItems(page.items);
+      setNext(page.next);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const off = events.subscribe(() => {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => void refresh(), REFETCH_DEBOUNCE_MS);
+    });
+    return () => {
+      off();
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [refresh]);
+
+  const loadMore = useCallback(() => {
+    if (!next || loadingMore) return;
+    setLoadingMore(true);
+    fetchFeed(FEED_PAGE, next).then(
+      (page) => {
+        setItems((prev) => {
+          const have = new Set(prev.map((i) => i.id));
+          const merged = [...prev, ...page.items.filter((i) => !have.has(i.id))];
+          shown.current = merged.length;
+          return merged;
+        });
+        setNext(page.next);
+        setLoadingMore(false);
+      },
+      (err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err));
+        setLoadingMore(false);
+      },
+    );
+  }, [next, loadingMore]);
+
+  return { items, next, loaded, error, loadingMore, loadMore };
 }
 
 /** True when the viewport is at least the desktop breakpoint (rail +
