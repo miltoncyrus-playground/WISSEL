@@ -48,6 +48,8 @@ import { createFeedSource } from "../services/feed-sources.ts";
 import { parseCursor } from "../services/feed.ts";
 import { AskError, createConcierge, type AskEvent } from "../services/concierge.ts";
 import { SqliteConversationStore } from "../services/conversations.ts";
+import { DEFAULT_STT_MODEL, DEFAULT_STT_URL, SttClient, SttError, transcribeVoiceRequest } from "../services/stt.ts";
+import { createReplyAudio, ReplyAudioError } from "../services/reply-audio.ts";
 import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
 import type { Executor, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -235,6 +237,22 @@ export interface CreateAppOptions {
   conciergeHarnesses?: HarnessPool;
   /** Home for Ask's shared scratch cwd; tests use a temp dir. */
   conciergeHomeDir?: string;
+  /** The local speaches speech-to-text service `POST /voice` calls
+   *  (src/services/stt.ts, docs/SDD-wissel-app.md §3.5). Read once from
+   *  `WISSEL_STT_URL` / `WISSEL_STT_MODEL` / `WISSEL_STT_LANGUAGE`;
+   *  undefined fields use SttClient's defaults (http://127.0.0.1:8000,
+   *  Systran/faster-whisper-small, language detected). */
+  stt?: { url?: string; model?: string; language?: string; timeoutMs?: number; healthTimeoutMs?: number };
+  /** Spoken replies (`POST /ask/:messageId/audio`) use the `tts` Kokoro
+   *  with shorter waits than a podcast: Milton is waiting on the button.
+   *  Tests shorten them further. */
+  replyAudio?: { healthWaitMs?: number; healthRetryMs?: number; timeoutMs?: number; queueWaitMs?: number };
+}
+
+/** The bit of Bun's Server that createApp's fetch uses: lifting the idle
+ *  timeout for a request that legitimately takes long. */
+interface ServerLike {
+  timeout(req: Request, seconds: number): void;
 }
 
 /**
@@ -344,6 +362,7 @@ export function createApp(
   // Ask wissel (docs/SDD-wissel-app.md §3.4). A pipeline Ask starts runs
   // on exactly the same path as POST /pipelines/:id/run, but Ask answers
   // as soon as the root card exists instead of waiting for the run.
+  const conversations = new SqliteConversationStore((board as SqliteBoard).db);
   const concierge = createConcierge({
     board: board as Board,
     registry,
@@ -351,7 +370,7 @@ export function createApp(
     pipelines,
     projects,
     harnesses: opts.conciergeHarnesses ?? harnesses,
-    conversations: new SqliteConversationStore((board as SqliteBoard).db),
+    conversations,
     executor: opts.conciergeExecutor ?? new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory }),
     telemetry,
     homeDir: opts.conciergeHomeDir,
@@ -373,6 +392,28 @@ export function createApp(
           console.error(`ask: pipeline "${pipeline.name}" run failed: ${e instanceof Error ? e.message : String(e)}`);
         });
       }),
+  });
+
+  // Voice (docs/SDD-wissel-app.md §3.5): notes become Ask text through
+  // the local speaches service; replies become speech through the same
+  // Kokoro, and Kokoro queue, as the podcasts.
+  const stt = new SttClient({ baseUrl: opts.stt?.url, model: opts.stt?.model, language: opts.stt?.language, timeoutMs: opts.stt?.timeoutMs, healthTimeoutMs: opts.stt?.healthTimeoutMs });
+  const replyTts = new TtsExecutor({
+    baseUrl: opts.tts?.url,
+    voice: opts.tts?.voice,
+    audioDir,
+    // One /health try: the queue already keeps our own podcasts from
+    // overlapping, so a Kokoro that doesn't answer is down, and Milton
+    // should hear that now, not in 30 s.
+    healthWaitMs: opts.replyAudio?.healthWaitMs ?? 0,
+    healthRetryMs: opts.replyAudio?.healthRetryMs,
+    timeoutMs: opts.replyAudio?.timeoutMs ?? 5 * 60_000,
+  });
+  const replyAudio = createReplyAudio({
+    audioDir,
+    message: (id) => conversations.message(id),
+    speak: (text, file, o) => replyTts.speak(text, file, o),
+    queueWaitMs: opts.replyAudio?.queueWaitMs,
   });
 
   // One Orchestrator instance regardless of whether the automatic loop is
@@ -478,7 +519,7 @@ export function createApp(
     });
   }
 
-  return async function fetch(req: Request): Promise<Response> {
+  return async function fetch(req: Request, server?: ServerLike): Promise<Response> {
     // Guarantees no request ever observes a crash-orphaned "running"
     // task before this boot's one-time reconciliation has actually run
     // — explicit sequencing, not a timing assumption. Near-instant in
@@ -801,6 +842,9 @@ export function createApp(
       // answers with both messages. Takes as long as the model does; a
       // named `ask` event on /events says "thinking" meanwhile.
       if (url.pathname === "/ask" && req.method === "POST") {
+        // Bun drops a request with no response after 10 s (its default
+        // idleTimeout); a model answer takes longer than that.
+        server?.timeout(req, 0);
         const body = (await req.json().catch(() => null)) as { conversationId?: unknown; text?: unknown } | null;
         if (!body || typeof body !== "object") return json({ error: "body must be JSON: {conversationId?, text}" }, 400);
         try {
@@ -809,6 +853,41 @@ export function createApp(
           if (e instanceof AskError) return json({ error: e.message }, e.status);
           throw e;
         }
+      }
+
+      // A voice note becomes text for the Ask box (docs/SDD-wissel-app.md
+      // §3.5): multipart with the audio in `file`, at most 10 MB and 5
+      // minutes, transcribed by the local speaches. Answers {text}; the
+      // app puts it in the box for Milton to check before sending.
+      if (url.pathname === "/voice" && req.method === "POST") {
+        server?.timeout(req, 0);
+        try {
+          const t = await transcribeVoiceRequest(req, stt);
+          console.log(`voice: ${t.durationSeconds !== undefined ? `${Math.round(t.durationSeconds)} s note` : "note"} -> ${t.text.length} chars in ${t.transcribeSeconds}s (${t.model})`);
+          return json({ text: t.text, ...(t.durationSeconds !== undefined ? { durationSeconds: t.durationSeconds } : {}), ...(t.language ? { language: t.language } : {}) });
+        } catch (e) {
+          if (e instanceof SttError) {
+            console.warn(`voice: ${e.status} ${e.message}`);
+            return json({ error: e.message }, e.status);
+          }
+          throw e;
+        }
+      }
+
+      // A concierge reply read out by Kokoro (docs/SDD-wissel-app.md
+      // §3.5). POST makes the MP3 (or finds it cached) and answers
+      // {audioUrl}; GET/HEAD serve it, with Range, to the mini-player.
+      if (parts[0] === "ask" && parts.length === 3 && parts[2] === "audio") {
+        if (req.method === "POST") {
+          server?.timeout(req, 0);
+          try {
+            return json(await replyAudio.ensure(parts[1]!));
+          } catch (e) {
+            if (e instanceof ReplyAudioError) return json({ error: e.message }, e.status);
+            throw e;
+          }
+        }
+        if (req.method === "GET" || req.method === "HEAD") return await replyAudio.response(parts[1]!, req);
       }
 
       // Ask's chats, most recently active first, and one chat's messages.
@@ -1704,6 +1783,10 @@ if (import.meta.main) {
   const tts = { url: process.env.WISSEL_TTS_URL || undefined, voice: process.env.WISSEL_TTS_VOICE || undefined };
   const audioDir = process.env.WISSEL_AUDIO_DIR || undefined;
 
+  // Ask's voice notes (docs/SDD-wissel-app.md §3.5): the local speaches
+  // service. Unset means SttClient's defaults.
+  const stt = { url: process.env.WISSEL_STT_URL || undefined, model: process.env.WISSEL_STT_MODEL || undefined, language: process.env.WISSEL_STT_LANGUAGE || undefined };
+
   // e2e only (playwright.config.ts): Ask's concierge answers from a
   // checked-in script instead of `claude -p`, on its own one-harness pool
   // since nothing real runs (docs/SDD-wissel-app.md §4.2). Unset in real
@@ -1741,6 +1824,7 @@ if (import.meta.main) {
       mergeHealthIntervalHours,
       tts,
       audioDir,
+      stt,
       ...scripted,
     }),
   });
@@ -1790,5 +1874,8 @@ if (import.meta.main) {
   );
   console.log(
     `pipeline audio: Kokoro TTS at ${tts.url ?? DEFAULT_TTS_URL} (voice ${tts.voice ?? DEFAULT_TTS_VOICE}), MP3s in ${audioDir ?? defaultAudioDir()} (WISSEL_TTS_URL, WISSEL_TTS_VOICE, WISSEL_AUDIO_DIR)`,
+  );
+  console.log(
+    `voice notes: speech to text at ${stt.url ?? DEFAULT_STT_URL} (model ${stt.model ?? DEFAULT_STT_MODEL}${stt.language ? `, language ${stt.language}` : ""}) (WISSEL_STT_URL, WISSEL_STT_MODEL, WISSEL_STT_LANGUAGE)`,
   );
 }

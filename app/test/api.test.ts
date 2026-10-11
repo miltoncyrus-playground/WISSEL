@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { fetchConversation, postAsk, runNotice, runPipeline } from "../src/api";
+import { fetchConversation, postAsk, postReplyAudio, postVoice, runNotice, runPipeline } from "../src/api";
 
 // POST /pipelines/:id/run answers 201 with the settled root card, which
 // can be "failed" (src/api/server.ts). The palette's notice must say so
@@ -54,6 +54,32 @@ describe("Ask's endpoints (SDD §3.4)", () => {
     expect(fetchMock.mock.calls[0]![0]).toBe("/conversations/c%2F1");
     stubFetch(500, {});
     await expect(fetchConversation("c1")).rejects.toThrow("HTTP 500");
+  });
+});
+
+describe("Voice endpoints (SDD §3.5)", () => {
+  test("postVoice sends the note as multipart in `file`, under its name", async () => {
+    const fetchMock = stubFetch(200, { text: "Run the AI news podcast" });
+    const res = await postVoice(new Blob(["abc"], { type: "audio/webm" }), "voice-note.webm");
+    expect(res.text).toBe("Run the AI news podcast");
+    expect(fetchMock.mock.calls[0]![0]).toBe("/voice");
+    const body = fetchMock.mock.calls[0]![1]!.body as FormData;
+    const file = body.get("file") as File;
+    expect(file.name).toBe("voice-note.webm");
+    expect(await file.text()).toBe("abc");
+  });
+
+  test("postVoice and postReplyAudio throw the server's error", async () => {
+    stubFetch(503, { error: "Speech to text isn't reachable" });
+    await expect(postVoice(new Blob(["a"]), "n.webm")).rejects.toThrow("Speech to text isn't reachable");
+    stubFetch(503, { error: "Kokoro is busy" });
+    await expect(postReplyAudio("m1")).rejects.toThrow("Kokoro is busy");
+  });
+
+  test("postReplyAudio posts to the message's audio route", async () => {
+    const fetchMock = stubFetch(200, { audioUrl: "/ask/m%2F1/audio" });
+    expect(await postReplyAudio("m/1")).toEqual({ audioUrl: "/ask/m%2F1/audio" });
+    expect(fetchMock).toHaveBeenCalledWith("/ask/m%2F1/audio", expect.objectContaining({ method: "POST" }));
   });
 });
 

@@ -19,6 +19,9 @@ const PATHS = {
   forward: "M20 12a8 8 0 1 1-2.4-5.7M20 4v4h-4",
   send: "M12 19V5M5 12l7-7 7 7",
   plus: "M12 5v14M5 12h14",
+  mic: "M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3zM5 11a7 7 0 0 0 14 0M12 18v3",
+  stop: "M7 7h10v10H7z",
+  speaker: "M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 0 1 0 7",
 } as const;
 
 export type IconName = keyof typeof PATHS;

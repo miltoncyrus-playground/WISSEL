@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 
 const PORT = 8790;
+/** The fake speaches (e2e/fixtures/fake-stt-server.ts) POST /voice talks to. */
+export const FAKE_STT_PORT = 8791;
 
 /** The hardcoded `/opt/pw-browsers/chromium` path this config used to
  *  point at has never actually existed on this machine (confirmed live —
@@ -118,8 +120,13 @@ export default defineConfig({
     // the previous bundle and fails for no reason in the code under test.
     // `bun run build:app` likewise for app/dist/, the /app bundle
     // (docs/SDD-wissel-app.md §3.1).
+    // `fake-stt-server.ts &` is Ask's voice notes' speech to text
+    // (docs/SDD-wissel-app.md §3.5, §4.2): a fake speaches on
+    // FAKE_STT_PORT, so POST /voice runs for real (src/services/stt.ts,
+    // the health check, multipart) with no model and no Docker. Playwright
+    // stops the whole process group, the fake with it.
     command:
-      "bun run build:editor && bun run build:app && mkdir -p /tmp/wissel-e2e-repo && rm -f /tmp/wissel-e2e-memory-lessons.md /tmp/wissel-e2e-telemetry.jsonl && cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
+      "bun run build:editor && bun run build:app && (bun run e2e/fixtures/fake-stt-server.ts &) && mkdir -p /tmp/wissel-e2e-repo && rm -f /tmp/wissel-e2e-memory-lessons.md /tmp/wissel-e2e-telemetry.jsonl && cp e2e/fixtures/harnesses.yaml /tmp/wissel-e2e-harnesses.yaml && cp e2e/fixtures/models-cache.json /tmp/wissel-e2e-models-cache.json && cp e2e/fixtures/mcp-servers.yaml /tmp/wissel-e2e-mcp-servers.yaml && bun run src/api/server.ts",
     url: `http://localhost:${PORT}/health`,
     reuseExistingServer: false,
     env: {
@@ -187,6 +194,11 @@ export default defineConfig({
       // this checked-in script instead of `claude -p`: no model call, no
       // spend, the same answer every run. Read once at boot.
       WISSEL_CONCIERGE_SCRIPT: "e2e/fixtures/concierge-script.json",
+      // POST /voice goes to the fake speaches above, never a real one.
+      WISSEL_STT_URL: `http://127.0.0.1:${FAKE_STT_PORT}`,
+      WISSEL_STT_MODEL: "Systran/faster-whisper-small",
+      WISSEL_STT_LANGUAGE: "",
+      FAKE_STT_PORT: String(FAKE_STT_PORT),
     },
   },
 });

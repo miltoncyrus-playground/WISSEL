@@ -1,6 +1,6 @@
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { AgentDef, Executor, TaskCard, TaskResult } from "../core/types.ts";
 
 /**
@@ -35,18 +35,44 @@ const DEFAULT_HEALTH_RETRY_MS = 15_000;
 
 /** One synthesis at a time per Kokoro URL, across every TtsExecutor in
  *  this process: two at once only slow both down on this CPU and starve
- *  /health. Each entry is the tail of that URL's queue. */
+ *  /health. Each entry is the tail of that URL's queue. Podcast audio
+ *  and Ask's spoken replies (docs/SDD-wissel-app.md §3.5) share it. */
 const kokoroQueues = new Map<string, Promise<unknown>>();
 
-function inKokoroQueue<T>(baseUrl: string, fn: () => Promise<T>): Promise<T> {
+/** Thrown by inKokoroQueue when a job with `maxWaitMs` hasn't started in
+ *  time. The job is then skipped when its turn comes. */
+export class KokoroBusyError extends Error {
+  constructor(readonly waitedMs: number) {
+    super(`Kokoro is busy with other audio (waited ${formatSeconds(waitedMs)})`);
+  }
+}
+
+/** Runs `fn` after everything already queued for `baseUrl`. With
+ *  `maxWaitMs`, gives up (KokoroBusyError) if `fn` hasn't started by
+ *  then, so a chat reply never waits behind a 5 minute podcast. */
+export function inKokoroQueue<T>(baseUrl: string, fn: () => Promise<T>, maxWaitMs?: number): Promise<T> {
+  let gaveUp = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const start = () => {
+    if (timer) clearTimeout(timer);
+    if (gaveUp) return Promise.reject(new KokoroBusyError(maxWaitMs ?? 0));
+    return fn();
+  };
   const prev = kokoroQueues.get(baseUrl) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
+  const next = prev.then(start, start);
   const tail = next.catch(() => undefined);
   kokoroQueues.set(baseUrl, tail);
   void tail.then(() => {
     if (kokoroQueues.get(baseUrl) === tail) kokoroQueues.delete(baseUrl);
   });
-  return next;
+  if (maxWaitMs === undefined) return next;
+  return new Promise<T>((resolve, reject) => {
+    timer = setTimeout(() => {
+      gaveUp = true;
+      reject(new KokoroBusyError(maxWaitMs));
+    }, maxWaitMs);
+    next.then(resolve, reject);
+  });
 }
 
 export function defaultAudioDir(home = homedir()): string {
@@ -81,6 +107,12 @@ export interface TtsExecutorOptions {
   healthWaitMs?: number;
   healthRetryMs?: number;
 }
+
+/** What speak() made, or why not. `kind` says whose fault: Kokoro down
+ *  or busy, too slow, an answer that isn't audio, or our own disk. */
+export type SpeakResult =
+  | { ok: true; file: string; bytes: number; synthesisSeconds: number }
+  | { ok: false; kind: "unavailable" | "busy" | "timeout" | "bad-response" | "save"; reason: string };
 
 export interface TtsAudio {
   file: string;
@@ -159,12 +191,47 @@ export class TtsExecutor implements Executor {
     if ("error" in extracted) return fail(extracted.error);
     if (!isSafeRunId(runId!)) return fail(`run id "${runId}" can't be used as a file name`);
 
-    return inKokoroQueue(this.baseUrl, () => this.synthesize(task, agent, runId!, extracted.script, fail));
+    const spoken = await this.speak(extracted.script, audioFilePath(this.audioDir, runId!));
+    if (!spoken.ok) return fail(spoken.reason);
+
+    const result: TtsAudio = { file: spoken.file, voice: this.voice, bytes: spoken.bytes, synthesisSeconds: spoken.synthesisSeconds };
+    console.log(`tts: run ${runId} audio ${result.bytes} bytes in ${result.synthesisSeconds}s (voice ${this.voice}) -> ${result.file}`);
+    const data = { audio: result };
+    return {
+      taskId: task.id,
+      agentId: agent.id,
+      ok: true,
+      summary: [
+        `Audio made with Kokoro (voice ${this.voice}): ${(result.bytes / 1_000_000).toFixed(1)} MB in ${result.synthesisSeconds} s, saved to ${result.file}.`,
+        "",
+        "```pipeline-handoff",
+        JSON.stringify({ data }),
+        "```",
+      ].join("\n"),
+      actualCost: 0,
+      pipelineHandoff: { data },
+    };
   }
 
-  private async synthesize(task: TaskCard, agent: AgentDef, runId: string, script: string, fail: (reason: string) => TaskResult): Promise<TaskResult> {
+  /**
+   * Has Kokoro speak `text` and saves the MP3 at `file`, in this Kokoro
+   * URL's queue. The podcast step and Ask's spoken replies both call it.
+   * With `maxQueueWaitMs`, a synthesis that hasn't started by then is
+   * given up as kind "busy".
+   */
+  async speak(text: string, file: string, opts: { maxQueueWaitMs?: number } = {}): Promise<SpeakResult> {
+    try {
+      return await inKokoroQueue(this.baseUrl, () => this.synthesize(text, file), opts.maxQueueWaitMs);
+    } catch (e) {
+      if (e instanceof KokoroBusyError) return { ok: false, kind: "busy", reason: `${e.message}. Try again in a few minutes.` };
+      throw e;
+    }
+  }
+
+  private async synthesize(text: string, file: string): Promise<SpeakResult> {
     const health = await this.waitForHealth();
-    if (health) return fail(health);
+    if (health) return { ok: false, kind: "unavailable", reason: health };
+    const fail = (reason: string): SpeakResult => ({ ok: false, kind: "bad-response", reason });
 
     const started = performance.now();
     const controller = new AbortController();
@@ -174,7 +241,7 @@ export class TtsExecutor implements Executor {
       const res = await fetch(`${this.baseUrl}/v1/audio/speech`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: "kokoro", voice: this.voice, input: script, response_format: "mp3" }),
+        body: JSON.stringify({ model: "kokoro", voice: this.voice, input: text, response_format: "mp3" }),
         signal: controller.signal,
         // Bun's fetch gives up after 300 s by default, below a normal
         // synthesis on this CPU (233 to 273 s so far); our own timeoutMs
@@ -188,7 +255,7 @@ export class TtsExecutor implements Executor {
       }
       audio = new Uint8Array(await res.arrayBuffer());
     } catch (e) {
-      if (controller.signal.aborted) return fail(`Kokoro TTS at ${this.baseUrl} timed out after ${formatSeconds(this.timeoutMs)}`);
+      if (controller.signal.aborted) return { ok: false, kind: "timeout", reason: `Kokoro TTS at ${this.baseUrl} timed out after ${formatSeconds(this.timeoutMs)}` };
       return fail(`Kokoro TTS at ${this.baseUrl} failed mid-request: ${(e as Error).message}`);
     } finally {
       clearTimeout(timer);
@@ -199,34 +266,16 @@ export class TtsExecutor implements Executor {
     // Written next to the target and renamed into place, so a crash or a
     // full disk mid-write never leaves a truncated MP3 the drawer would
     // offer as finished.
-    const file = audioFilePath(this.audioDir, runId);
     const part = `${file}.part`;
     try {
-      await mkdir(this.audioDir, { recursive: true });
+      await mkdir(dirname(file), { recursive: true });
       await writeFile(part, audio);
       await rename(part, file);
     } catch (e) {
       await rm(part, { force: true }).catch(() => {});
-      return fail(`couldn't save the audio to ${file}: ${(e as Error).message}`);
+      return { ok: false, kind: "save", reason: `couldn't save the audio to ${file}: ${(e as Error).message}` };
     }
-
-    const result: TtsAudio = { file, voice: this.voice, bytes: audio.byteLength, synthesisSeconds };
-    console.log(`tts: run ${runId} audio ${result.bytes} bytes in ${synthesisSeconds}s (voice ${this.voice}) -> ${file}`);
-    const data = { audio: result };
-    return {
-      taskId: task.id,
-      agentId: agent.id,
-      ok: true,
-      summary: [
-        `Audio made with Kokoro (voice ${this.voice}): ${(result.bytes / 1_000_000).toFixed(1)} MB in ${synthesisSeconds} s, saved to ${file}.`,
-        "",
-        "```pipeline-handoff",
-        JSON.stringify({ data }),
-        "```",
-      ].join("\n"),
-      actualCost: 0,
-      pipelineHandoff: { data },
-    };
+    return { ok: true, file, bytes: audio.byteLength, synthesisSeconds };
   }
 
   /** checkHealth, retried every healthRetryMs until healthWaitMs has

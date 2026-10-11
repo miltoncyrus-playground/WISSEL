@@ -7,3 +7,5 @@ dist/
 bun.lockb
 test-results/
 playwright-report/
+# eval:stt voice notes: made from Kokoro or recorded locally, never committed
+eval/fixtures/stt/*.opus

@@ -86,6 +86,24 @@ export async function postAsk(text: string, conversationId?: string): Promise<As
   return (await res.json()) as AskResult;
 }
 
+/** POST /voice (docs/SDD-wissel-app.md §3.5): a voice note in, its text
+ *  out. Takes as long as speaches does. Throws the server's message. */
+export async function postVoice(note: Blob, name: string): Promise<{ text: string }> {
+  const form = new FormData();
+  form.append("file", note, name);
+  const res = await fetch("/voice", { method: "POST", body: form, headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(await errorOf(res));
+  return (await res.json()) as { text: string };
+}
+
+/** POST /ask/:messageId/audio: has Kokoro read a reply (or finds it
+ *  cached) and answers with where the MP3 is. */
+export async function postReplyAudio(messageId: string): Promise<{ audioUrl: string }> {
+  const res = await fetch(`/ask/${encodeURIComponent(messageId)}/audio`, { method: "POST", headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(await errorOf(res));
+  return (await res.json()) as { audioUrl: string };
+}
+
 /** GET /conversations: most recently active first. */
 export const fetchConversations = () => getJson<Conversation[]>("/conversations");
 

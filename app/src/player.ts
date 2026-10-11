@@ -16,6 +16,9 @@ export interface Track {
   pipelineName: string;
   audioUrl: string;
   durationSeconds?: number;
+  /** Where the mini-player's title goes: the Listen tab when unset, the
+   *  chat for a spoken reply (`#/ask`). */
+  link?: string;
 }
 
 export interface PlayerState {
@@ -131,9 +134,10 @@ function isTrack(v: unknown): v is Track {
     typeof t.title === "string" &&
     typeof t.pipelineName === "string" &&
     typeof t.audioUrl === "string" &&
-    // Only our own audio route: a stored URL is never trusted further.
-    t.audioUrl.startsWith("/pipeline-runs/") &&
-    (t.durationSeconds === undefined || typeof t.durationSeconds === "number")
+    // Only our own audio routes: a stored URL is never trusted further.
+    (t.audioUrl.startsWith("/pipeline-runs/") || t.audioUrl.startsWith("/ask/")) &&
+    (t.durationSeconds === undefined || typeof t.durationSeconds === "number") &&
+    (t.link === undefined || (typeof t.link === "string" && t.link.startsWith("#/")))
   );
 }
 

@@ -209,13 +209,27 @@ top bar.
   running, show board) come from code. Each reply shows its cost, which
   also goes to telemetry. The open chat survives a reload; "Earlier
   chats" lists the rest. Palette "New card" now opens Ask.
+- **Voice.** The mic button in Ask turns a voice note into text
+  (`POST /voice`, multipart, at most 10 MB and 5 minutes;
+  `docs/SDD-wissel-app.md` §3.5) through the local speaches service
+  (`WISSEL_STT_URL`). The text lands in the box to check before sending.
+  On the board's plain-HTTP LAN address the mic opens the phone's own
+  recorder; on localhost (or HTTPS) it records in the page and stops by
+  itself at 5:00. "Play reply" on a wissel message has Kokoro read it
+  (`POST /ask/:messageId/audio`, the podcasts' queue, one MP3 per message
+  in `<WISSEL_AUDIO_DIR>/ask/`) and plays it in the mini-player. Set up
+  speaches once: `docker run -d --name speaches --restart unless-stopped
+  -p 127.0.0.1:8000:8000 ghcr.io/speaches-ai/speaches:latest-cpu`, then
+  `curl -X POST http://127.0.0.1:8000/v1/models/Systran/faster-whisper-small`.
 - You is a placeholder until its card lands (`docs/SDD-wissel-app.md`
   §6).
 
 Tests: `cd app && npm test` (vitest), `e2e/app.spec.ts`,
-`e2e/feed.spec.ts`, `e2e/listen.spec.ts` and `e2e/ask.spec.ts` (with a
-scripted concierge) at 390 and 1440 px. `bun run eval:concierge` is the
-paid eval of the real concierge.
+`e2e/feed.spec.ts`, `e2e/listen.spec.ts`, `e2e/ask.spec.ts` (with a
+scripted concierge) and `e2e/voice.spec.ts` (with a fake speaches) at 390
+and 1440 px. `bun run eval:concierge` is the paid eval of the real
+concierge; `bun run eval:stt` checks the real speaches on five fixture
+notes (word error rate at most 15%, `eval/fixtures/stt/`).
 
 ## Pipelines
 
@@ -305,7 +319,10 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_MCP_SERVERS_PATH` | `mcp-servers.yaml` | MCP server registry. |
 | `WISSEL_TTS_URL` | `http://127.0.0.1:8880` | Local Kokoro-FastAPI service the "Make audio" pipeline step calls. |
 | `WISSEL_TTS_VOICE` | `af_heart` | Kokoro voice for that step. |
-| `WISSEL_AUDIO_DIR` | `~/.wissel/audio` | Where each run's MP3 is written and served from. |
+| `WISSEL_AUDIO_DIR` | `~/.wissel/audio` | Where each run's MP3 is written and served from; Ask's spoken replies go in its `ask/` folder. |
+| `WISSEL_STT_URL` | `http://127.0.0.1:8000` | Local speaches service (OpenAI-compatible speech to text) Ask's voice notes go to. |
+| `WISSEL_STT_MODEL` | `Systran/faster-whisper-small` | Whisper model speaches uses (`Systran/faster-whisper-base` if small is too slow). |
+| `WISSEL_STT_LANGUAGE` | unset | ISO 639-1 code for voice notes; unset lets Whisper detect it. |
 | `WISSEL_CONCIERGE_SCRIPT` | unset | e2e only: Ask's concierge answers from this JSON script (`e2e/fixtures/concierge-script.json`) instead of `claude -p`. Leave unset in real use. |
 | `WISSEL_API_URL` | `http://localhost:8787` | Server the CLI (`src/cli.ts`) talks to. |
 | `WISSEL_COMMIT` | from git | Commit to report when there's no `.git` (`src/core/version.ts`). |

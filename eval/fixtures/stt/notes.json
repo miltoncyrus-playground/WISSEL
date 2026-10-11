@@ -1,0 +1,7 @@
+[
+  { "id": "readme-card", "file": "readme-card.opus", "text": "Create a card to check the readme and fix anything that is out of date." },
+  { "id": "run-ai-news", "file": "run-ai-news.opus", "text": "Run the AI news podcast now and tell me when the audio is ready." },
+  { "id": "what-is-running", "file": "what-is-running.opus", "text": "What is running right now, and is anything waiting for me to review?" },
+  { "id": "schedule-world-news", "file": "schedule-world-news.opus", "text": "Schedule the world news podcast for six in the morning on every weekday." },
+  { "id": "this-week", "file": "this-week.opus", "text": "Show me what landed this week and how much the agents spent." }
+]

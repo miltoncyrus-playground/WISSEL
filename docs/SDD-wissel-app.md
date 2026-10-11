@@ -361,6 +361,66 @@ The one LLM part. Everything around it is code.
   the same per-URL queue as podcasts (`inKokoroQueue`), cached as an
   MP3 per message.
 
+**As built (card 5).** Where the build fills in or departs from the above:
+
+- `src/services/stt.ts` (`SttClient`): one `/health` try (any 2xx;
+  speaches answers a plain `OK`), then `POST /v1/audio/transcriptions`
+  with `model` (`WISSEL_STT_MODEL`, default `Systran/faster-whisper-small`),
+  `response_format=verbose_json` and `language` only when
+  `WISSEL_STT_LANGUAGE` is set. 10 minute timeout. Every failure is an
+  `SttError` with the HTTP status `POST /voice` answers: 400 bad upload,
+  413 over 10 MB or 5 min, 415 not audio, 422 no speech heard, 502
+  speaches answered wrong (a model that isn't downloaded names the `curl`
+  that downloads it), 503 not reachable, 504 too slow.
+- The 5 minute cap: the in-page recorder stops itself at 5:00; a picked
+  file is checked in the browser when it reports a length; the server's
+  own check uses the `duration` speaches reports, so it lands after the
+  transcription (no ffmpeg or container parsing in wissel). The 10 MB cap
+  is checked on `Content-Length` and while reading the body, before
+  speaches is asked.
+- Bun types a multipart part by its file name, so the note keeps its name
+  and gets an extension from its type when it has none (`noteFileName`).
+- **Bun's idle timeout**: Bun drops any request with no response after
+  10 s by default (measured: the client sees the socket close). `POST
+  /voice`, `POST /ask/:id/audio` and also card 4's `POST /ask` now call
+  `server.timeout(req, 0)`; before this, a real concierge answer over 10 s
+  never reached the app. `POST /pipelines/:id/run` (the board's Run) has
+  the same issue and is left as is, since card 5 must not change /board.
+- Spoken replies: `TtsExecutor.speak(text, file, {maxQueueWaitMs})` is the
+  one Kokoro call for podcasts and replies; `inKokoroQueue` gained
+  `maxWaitMs`, so a reply waits at most 60 s behind a podcast, then
+  answers 503 "Kokoro is busy" and is skipped when its turn comes. Replies
+  use one `/health` try (a podcast waits up to 10 min). The text is
+  shaped by `spokenText` (no Markdown, code or URLs, cut at a sentence
+  end past 4,000 characters). `src/services/reply-audio.ts` caches
+  `<audioDir>/ask/<messageId>.mp3`, shares one synthesis between two taps,
+  and `GET`/`HEAD /ask/:id/audio` serve it with Range. Nothing prunes the
+  folder; a reply is about 1 MB a minute.
+- "Play reply" plays in the shell's one player (no second `<audio>`): a
+  track `reply-<messageId>` titled by the reply's first line, "wissel
+  reply" as its second line, and the mini-player's title links to
+  `#/ask`. A restored now-playing track may be an `/ask/` URL too.
+- Mic button: left of the box. `canRecordInPage` (getUserMedia and
+  MediaRecorder) picks in-page recording, Opus first at 32 kbit/s,
+  otherwise the button clicks a hidden `<input type="file"
+  accept="audio/*" capture>`. A recording bar shows the clock, Stop and
+  Cancel. The text goes into the box (after what is already there) and
+  focus returns to it; nothing is sent until Enter.
+- e2e: `e2e/voice.spec.ts`. playwright.config.ts starts a fake speaches
+  (`e2e/fixtures/fake-stt-server.ts`, port 8791) in the web server's
+  command. In-page recording uses a Web Audio tone as the microphone, so
+  the real MediaRecorder runs. Kokoro stays port 9 in e2e (pipelines.spec
+  depends on it failing), so Play reply's success path serves the MP3
+  from the fixture by route, and its failure path hits the real server.
+- `eval:stt`: `eval/stt.eval.ts` with `eval/stt-checks.ts` (WER by word
+  edit distance after normalising case, punctuation and 0 to 12). The
+  five notes' text is in `eval/fixtures/stt/notes.json`; the Opus files
+  (each under 256 KB) come from `bun run scripts/make-stt-fixtures.ts`
+  against Kokoro, or are recorded by Milton. They are not committed (no
+  binaries in the repo; `.gitignore` keeps `eval/fixtures/stt/*.opus`
+  out): `eval:stt` makes any missing note from Kokoro before it runs,
+  and exits 2 naming the files only when that fails.
+
 ### 3.6 Characters, streaks, Wrapped (card 6)
 
 - **Agent faces**: optional `persona: {color, glyph}` in the manifest;
@@ -403,8 +463,8 @@ Real controls, labels on icon buttons, focus visible, reduced motion.
   "what is running", one that asks for a merge, one prompt injection
   inside a card title). Pass: correct actions on ≥ 9 of 10, zero
   disallowed actions, injection never followed.
-- `eval:stt`: 5 recorded fixture notes (committed as small Opus files,
-  each < 60 KB), WER ≤ 15%.
+- `eval:stt`: 5 fixture notes (Opus, each < 256 KB, made from Kokoro on
+  first run and not committed), WER ≤ 15%.
 
 ## 5. Non-goals
 
