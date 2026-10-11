@@ -328,6 +328,91 @@ kbd {
 .story-title { font-size: 26px; line-height: 1.15; overflow-wrap: anywhere; }
 .story-detail { margin: 0; color: var(--muted); font-size: 16px; overflow-wrap: anywhere; }
 
+/* ---------- Player (SDD §3.3) ---------- */
+
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.shell-audio { display: none; }
+
+.mini-player {
+  display: grid; gap: 4px; min-width: 0;
+  padding: 8px 10px 10px; border-radius: 18px;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.mp-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.mp-play { background: var(--accent); color: var(--ground); }
+.mp-play:hover { background: var(--accent); box-shadow: 0 0 0 2px var(--text); }
+.mp-text { display: grid; flex: 1; min-width: 0; padding: 0 6px; }
+.mp-title {
+  font-weight: 600; font-size: 15px; text-decoration: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mp-title:hover { text-decoration: underline; }
+.mp-sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mp-clock { font-size: 12px; }
+.mp-seek { width: 100%; height: 24px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.mp-seek:disabled { cursor: default; opacity: 0.5; }
+.mp-error { margin: 0; color: var(--coral); font-size: 13px; }
+
+/* Phone: fixed just above the tab bar. */
+.mp-bar {
+  position: fixed; left: 8px; right: 8px; z-index: 11;
+  bottom: calc(66px + env(safe-area-inset-bottom));
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.35);
+}
+.shell.is-phone.has-player { padding-bottom: calc(68px + 96px + env(safe-area-inset-bottom)); }
+.shell.is-phone.has-player .notice { bottom: calc(84px + 96px + env(safe-area-inset-bottom)); }
+
+/* ---------- Listen ---------- */
+
+.show { display: grid; gap: 10px; min-width: 0; }
+.show-name { font-family: var(--font-display); font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
+.episode {
+  display: grid; gap: 12px; min-width: 0;
+  padding: 14px 16px; border-radius: 18px;
+  background: var(--surface); border: 1px solid var(--line);
+}
+.episode.is-latest { border-left: 3px solid var(--violet); }
+.episode.is-current { box-shadow: inset 0 0 0 1px var(--accent); }
+.episode-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.play-btn {
+  display: inline-grid; place-items: center; flex: none;
+  width: 48px; height: 48px; border-radius: 999px; border: 0;
+  background: var(--accent); color: var(--ground); cursor: pointer;
+}
+.play-btn:hover { box-shadow: 0 0 0 2px var(--text); }
+.episode-text { display: grid; min-width: 0; }
+.episode-title {
+  font-family: var(--font-body); font-size: 16px; font-weight: 600;
+  color: var(--text); text-transform: none; letter-spacing: 0; overflow-wrap: anywhere;
+}
+.episode-meta { margin: 0; color: var(--muted); font-size: 13px; }
+.episode-meta time { font-family: var(--font-mono); font-size: 12px; }
+.episode-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.episode-list .episode { padding: 10px 12px; }
+
+.episode-more > summary, .qr-detail > summary {
+  display: inline-flex; align-items: center; min-height: 44px;
+  color: var(--accent); font-size: 14px; font-weight: 500; cursor: pointer;
+}
+.episode-more[open] > summary { margin-bottom: 4px; }
+
+.quick-read { display: grid; gap: 8px; min-width: 0; }
+.qr-head { font-size: 12px; }
+.qr-list { margin: 0; padding: 0 0 0 20px; display: grid; gap: 12px; }
+.qr-list li::marker { color: var(--muted); font-family: var(--font-mono); font-size: 13px; }
+.qr-row { min-width: 0; }
+.qr-headline { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.qr-line { margin: 2px 0 0; color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+.qr-source { margin: 4px 0 0; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; }
+.qr-source a { color: var(--violet); overflow-wrap: anywhere; }
+.qr-flag { color: var(--coral); }
+.qr-detail { font-size: 14px; }
+.qr-detail p { margin: 0 0 8px; overflow-wrap: anywhere; }
+.qr-detail h5 { margin: 8px 0 2px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+
 /* ---------- Notice ---------- */
 
 .notice {

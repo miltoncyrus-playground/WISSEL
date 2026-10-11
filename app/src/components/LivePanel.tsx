@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { ConnectionState } from "../events";
 import type { Lanes, LaneId } from "../lanes";
 import { TaskRow } from "./TaskRow";
@@ -12,14 +13,16 @@ const SECTIONS: { lane: LaneId; title: string; empty: string }[] = [
 const PER_SECTION = 6;
 
 /** Desktop only: the right-hand "Live" panel (running, needs you,
- *  landed today), kept current by the shared /events stream. */
-export function LivePanel({ lanes, connection }: { lanes: Lanes; connection: ConnectionState }) {
+ *  landed today), kept current by the shared /events stream. The
+ *  mini-player (SDD §3.3) sits at its top. */
+export function LivePanel({ lanes, connection, player }: { lanes: Lanes; connection: ConnectionState; player?: ReactNode }) {
   return (
     <aside className="live" aria-labelledby="live-title">
       <div className="live-head">
         <h2 id="live-title">Live</h2>
         <ConnectionDot state={connection} />
       </div>
+      {player}
       {SECTIONS.map((s) => {
         const items = lanes[s.lane];
         return (

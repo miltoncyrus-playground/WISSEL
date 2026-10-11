@@ -88,15 +88,19 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
-      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell) and feed.spec.ts (the Feed screen) open /app.",
+      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), feed.spec.ts (the Feed screen) and listen.spec.ts (Listen and the mini-player) open /app.",
     match: (p) => p === "app" || p.startsWith("app/") || p === "src/api/serve-app.ts",
-    resolve: () => ["app.spec.ts", "feed.spec.ts"],
+    resolve: () => ["app.spec.ts", "feed.spec.ts", "listen.spec.ts"],
   },
   {
     description:
-      "feed.ts, feed-sources.ts and news-run-checks.ts are GET /feed's read side (docs/SDD-wissel-app.md §3.2). Verified (grep): only server.ts's /feed route and scripts/check-news-run.ts import them, and only feed.spec.ts reads /feed.",
-    match: (p) => p === "src/services/feed.ts" || p === "src/services/feed-sources.ts" || p === "src/services/news-run-checks.ts",
-    resolve: () => ["feed.spec.ts"],
+      "feed.ts, feed-sources.ts, news-run-checks.ts and podcasts.ts are GET /feed's and GET /podcasts's read side (docs/SDD-wissel-app.md §3.2, §3.3). Verified (grep): only server.ts's /feed and /podcasts routes and scripts/check-news-run.ts import them; feed.spec.ts reads /feed and listen.spec.ts reads /podcasts.",
+    match: (p) =>
+      p === "src/services/feed.ts" ||
+      p === "src/services/feed-sources.ts" ||
+      p === "src/services/news-run-checks.ts" ||
+      p === "src/services/podcasts.ts",
+    resolve: () => ["feed.spec.ts", "listen.spec.ts"],
   },
   {
     description:
@@ -148,9 +152,9 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
-      "board-news.js/.d.ts is only the run drawer's Quick read and Listen tabs for an AI news run. Verified (grep): newsView and createNewsReader are called only by board.html's run drawer (syncRunNews), and only pipelines.spec.ts opens the run drawer.",
+      "board-news.js/.d.ts is the run drawer's Quick read and Listen tabs for an AI news run, and since docs/SDD-wissel-app.md §3.3 the app's Listen tab Quick read (quickReadView via app/src/news.ts). Verified (grep): newsView and createNewsReader are called only by board.html's run drawer (syncRunNews), which only pipelines.spec.ts opens; quickReadView is drawn only by the app's Listen tab, which listen.spec.ts opens.",
     match: (p) => p === "src/api/public/board-news.js" || p === "src/api/public/board-news.d.ts",
-    resolve: () => ["pipelines.spec.ts"],
+    resolve: () => ["listen.spec.ts", "pipelines.spec.ts"],
   },
   {
     description:

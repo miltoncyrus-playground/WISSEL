@@ -176,18 +176,29 @@ top bar.
   (`src/services/feed.ts`, pure `buildFeed`): cards that landed, cards
   that need you (review, escalated, failed with Retry, no match, an MCP
   approval with Approve, a card held for a switched-off harness),
-  podcasts with a player, their `check-news-run` results, and each past
-  day's spend by harness. Updates live over `/events`; "Load more" pages
-  back.
+  podcasts with Play (in the mini-player), their `check-news-run`
+  results, and each past day's spend by harness. Updates live over
+  `/events`; "Load more" pages back.
 - **Stories.** Rings for the last 24 hours (AI news, World, Needs you,
   Landed, Your week). A ring opens a full-screen viewer: tap or swipe
   left/right, arrow keys, swipe down or Escape to close. Watched rings go
   grey (kept in `localStorage`).
-- Ask, Listen and You are placeholders until their cards land
+- **Mini-player.** One player for the whole app, above the tab bar on a
+  phone and in the Live panel on desktop: play/pause, back 15 s,
+  forward 30 s, a position slider. It keeps playing while you change
+  screens, remembers where you stopped in each episode (and what was
+  playing, across a reload) in `localStorage`, and shows the episode on
+  the lock screen and headset keys through Media Session.
+- **Listen.** Every podcast pipeline's episodes from `GET /podcasts`
+  (`?limit=` per pipeline, 1 to 50, default 10), latest first, with the
+  same Quick read as the board's run drawer: sources as links, invented
+  sources flagged, and "More" for the explain step's detail. The app
+  runs the board's own `board-news.js` for it through `app/src/news.ts`.
+- Ask and You are placeholders until their cards land
   (`docs/SDD-wissel-app.md` §6).
 
-Tests: `cd app && npm test` (vitest), `e2e/app.spec.ts` and
-`e2e/feed.spec.ts` at 390 and 1440 px.
+Tests: `cd app && npm test` (vitest), `e2e/app.spec.ts`,
+`e2e/feed.spec.ts` and `e2e/listen.spec.ts` at 390 and 1440 px.
 
 ## Pipelines
 

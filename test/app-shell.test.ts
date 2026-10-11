@@ -25,6 +25,34 @@ test("app/src/types.ts FEED_KINDS matches src/services/feed.ts (card 2)", async 
   expect([...app]).toEqual([...server]);
 });
 
+/** The field names of `export interface <name> {...}` in a TS source. */
+function fieldsOf(src: string, name: string): string[] {
+  const start = src.indexOf(`export interface ${name} {`);
+  expect(start, name).toBeGreaterThan(-1);
+  const body = src.slice(src.indexOf("{", start) + 1, src.indexOf("\n}", start));
+  return [...body.matchAll(/^\s*(\w+)\??:/gm)].map((m) => m[1]!).sort();
+}
+
+test("app/src/types.ts PodcastEpisode and PodcastQuickRead match src/services/podcasts.ts (card 3)", async () => {
+  const server = await read("src/services/podcasts.ts");
+  const app = await read("app/src/types.ts");
+  for (const name of ["PodcastEpisode", "PodcastQuickRead"]) {
+    expect(fieldsOf(app, name), name).toEqual(fieldsOf(server, name));
+  }
+});
+
+test("the app reuses board-news.js through the ESM wrapper, never a copy (card 3)", async () => {
+  const wrapper = await read("app/src/news.ts");
+  expect(wrapper).toContain('"../../src/api/public/board-news.js?browser-script"');
+  expect(await read("app/vite.config.ts")).toContain("browserScript()");
+  const files = (await readdir(join(root, "app/src"), { recursive: true })).filter((f) => /\.tsx?$/.test(f));
+  for (const f of files) {
+    const text = await read(`app/src/${f}`);
+    // The board's shaping functions are defined in one place only.
+    expect(text, f).not.toMatch(/function (quickReadView|joinExplained|newsHref|gatherUrlSet)\b/);
+  }
+});
+
 test("board.html's header links to /app (the one board change card 1 makes)", async () => {
   const html = await read("src/api/public/board.html");
   const header = html.slice(html.indexOf('<header class="topbar">'), html.indexOf("</header>", html.indexOf('<header class="topbar">')));

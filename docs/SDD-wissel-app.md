@@ -183,6 +183,62 @@ tests.
   detail (reuses `board-news.js` shaping via an ESM wrapper, not a
   copy).
 
+**As built (card 3).** Where the build fills in or departs from the above:
+
+- `GET /podcasts?limit=` returns a bare array, newest first (run id
+  breaks a tie), at most `limit` episodes **per pipeline** (1 to 50,
+  default 10, else 400) so a daily show can't push a weekly one out.
+  Each item also carries `pipelineId` and `show`. `title` is the first
+  Quick read headline, else the pipeline's name. A run with audio but
+  nothing to date it by is left out, as in the feed. Pure shaping in
+  `src/services/podcasts.ts` (`buildPodcasts`, `podcastQuickRead`); the
+  runs come from `createFeedSource`'s `podcasts()`, through the same
+  per-run cache as the feed's podcast items, so a settled run is read
+  once for both endpoints.
+- `quickRead` is not rows: it is the parsed handoff data rows are made
+  from, `{items, gatherSources, explain}` (`items` is the script step's
+  `quickRead` list, `gatherSources` the gather step's URLs via
+  `gatherUrlSet`, `explain` the explain step's stories cut to the fields
+  `joinExplained` reads), or null when there is no `quickRead` list. The
+  app shapes rows with the board's code, so the two can't drift.
+- `board-news.js` gains `quickReadView(quickRead, urls, explainData)`:
+  `newsView`'s row loop, pulled out unchanged (same rows, same reasons;
+  `newsView` now calls it). The board's behaviour is unchanged.
+- The ESM wrapper: `app/vite.config.ts`'s `browserScript` plugin loads a
+  board script imported with `?browser-script` as is, with a local
+  `module` before it and `export default module.exports` after (works
+  in `vite build` and vitest alike, no eval). `app/src/news.ts` types it
+  from `board-news.d.ts` and exports `quickReadView` and
+  `episodeQuickRead`.
+- The player is `app/src/player.ts` (`createPlayer`, no React, tested
+  with a fake `<audio>`); `app/src/usePlayer.tsx` is the React glue and
+  `PlayerContext`. The `<audio>` sits outside everything that changes
+  with the route or the 1024 px breakpoint, so neither stops playback.
+  `localStorage`: `wissel.app.positions` (run id to seconds, newest 50,
+  saved every 5 s while playing, on pause and on `pagehide`; a spot in
+  the last 10 s, or an episode that ended, starts over) and
+  `wissel.app.nowPlaying` (the last track, restored paused after a
+  reload; only an `/pipeline-runs/` URL is accepted back).
+- Media Session: metadata (title, pipeline name, "wissel"), playback
+  state, position state, and play, pause, seek back/forward (15 s / 30 s
+  default) and seek-to handlers. An action the browser refuses is
+  skipped.
+- The feed's podcast items lose their own `<audio>` and get a Play
+  button that plays in the mini-player (same in the story viewer), so
+  there is one player in the app. Feed podcast items gain
+  `pipelineName` for the player's second line.
+- Listen: the latest episode per pipeline shows its Quick read open;
+  earlier ones fold it in a `<details>`. Each row's "More" is a
+  `<details>` with the detail, "Why it matters" and "Not known yet". An
+  episode shows "Resume at 3:12" when it has a saved spot.
+- e2e: `e2e/listen.spec.ts`. The e2e board has no podcast runs (one
+  needs Kokoro), so the page serves `/podcasts` and the MP3s from the
+  checked-in fixtures (`silence.mp3` repeated to about 30 s, with Range
+  support), as `pipelines.spec.ts` does for its run drawer; the real
+  endpoint is checked on its own and over a real board in
+  `test/podcasts.test.ts`. `app/**`, the feed services, `podcasts.ts` and
+  `board-news.js` now map to `listen.spec.ts` too.
+
 ### 3.4 Ask wissel (card 4)
 
 The one LLM part. Everything around it is code.

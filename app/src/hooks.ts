@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchFeed, fetchPipelines, fetchTasks } from "./api";
+import { fetchFeed, fetchPipelines, fetchPodcasts, fetchTasks } from "./api";
 import { events, type ConnectionState } from "./events";
 import { parseRoute, type Route } from "./routes";
-import type { FeedItem, PipelineDef, TaskCard } from "./types";
+import type { FeedItem, PipelineDef, PodcastEpisode, TaskCard } from "./types";
 
 export function useHashRoute(): Route {
   const [route, setRoute] = useState(() => parseRoute(location.hash));
@@ -141,6 +141,49 @@ export function useFeed(): FeedData {
   }, [next, loadingMore]);
 
   return { items, next, loaded, error, loadingMore, loadMore };
+}
+
+export interface PodcastData {
+  episodes: PodcastEpisode[];
+  loaded: boolean;
+  error: string | null;
+}
+
+/** Episodes per pipeline the Listen tab shows. */
+export const LISTEN_PER_PIPELINE = 10;
+
+/** GET /podcasts, refetched on any `/events` message (a run finishing
+ *  makes a new episode) through the shared EventSource. */
+export function usePodcasts(): PodcastData {
+  const [episodes, setEpisodes] = useState<PodcastEpisode[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setEpisodes(await fetchPodcasts(LISTEN_PER_PIPELINE));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const off = events.subscribe(() => {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => void refresh(), REFETCH_DEBOUNCE_MS);
+    });
+    return () => {
+      off();
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [refresh]);
+
+  return { episodes, loaded, error };
 }
 
 /** True when the viewport is at least the desktop breakpoint (rail +

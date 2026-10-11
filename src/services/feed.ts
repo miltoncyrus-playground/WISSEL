@@ -52,6 +52,8 @@ export interface FeedItem {
   audioUrl?: string;
   /** podcast: length of the MP3, when it could be read. */
   durationSeconds?: number;
+  /** podcast: the pipeline's name (the mini-player's second line). */
+  pipelineName?: string;
   /** checks: true when every check passed. */
   pass?: boolean;
 }
@@ -261,6 +263,7 @@ function podcastItems(run: FeedRun, at: number): FeedItem[] {
       runId: run.runId,
       show: run.show,
       audioUrl: run.audioUrl,
+      pipelineName: run.pipelineName,
       ...(run.durationSeconds !== undefined ? { durationSeconds: run.durationSeconds } : {}),
     },
   ];

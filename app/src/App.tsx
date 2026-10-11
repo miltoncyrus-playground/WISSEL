@@ -5,11 +5,14 @@ import { useBoardData, useHashRoute, useMediaQuery } from "./hooks";
 import { partitionLanes } from "./lanes";
 import { SCREENS } from "./routes";
 import { LivePanel } from "./components/LivePanel";
+import { MiniPlayer } from "./components/MiniPlayer";
 import { Rail, TabBar, TopBar } from "./components/Nav";
 import { Palette } from "./components/Palette";
 import { BoardScreen, CardDetail } from "./screens/BoardScreen";
 import { FeedScreen } from "./screens/FeedScreen";
+import { ListenScreen } from "./screens/ListenScreen";
 import { Placeholder } from "./screens/Placeholder";
+import { PlayerContext, useShellPlayer } from "./usePlayer";
 
 /** Rail + Live panel from here up; tab bar below (SDD §3.1). The shell
  *  gets `is-desktop` or `is-phone` from this; index.css lays out on
@@ -27,6 +30,8 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(() => Date.now());
+  const player = useShellPlayer();
+  const hasPlayer = player.api.state.track !== null;
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
@@ -75,22 +80,30 @@ export function App() {
     screen = route.taskId ? <CardDetail taskId={route.taskId} tasks={data.tasks} loaded={data.loaded} /> : <BoardScreen lanes={lanes} loaded={data.loaded} error={data.error} />;
   } else if (route.screen === "feed") {
     screen = <FeedScreen now={now} />;
+  } else if (route.screen === "listen") {
+    screen = <ListenScreen now={now} />;
   } else {
     screen = <Placeholder screen={route.screen} />;
   }
 
+  // The one <audio> (SDD §3.3) sits outside everything that changes
+  // with the route or the breakpoint, so playback never stops.
   return (
-    <div className={`shell ${desktop ? "is-desktop" : "is-phone"}`}>
-      {desktop ? <Rail current={route.screen} onOpenPalette={openPalette} /> : <TopBar title={title} onOpenPalette={openPalette} />}
-      <main className="content" id="main" data-screen={route.screen}>
-        {screen}
-      </main>
-      {desktop && <LivePanel lanes={lanes} connection={data.connection} />}
-      {!desktop && <TabBar current={route.screen} />}
-      <p className="notice" role="status" aria-live="polite">
-        {notice}
-      </p>
-      <Palette open={paletteOpen} commands={commands} onClose={closePalette} onRun={run} />
-    </div>
+    <PlayerContext.Provider value={player.api}>
+      <div className={`shell ${desktop ? "is-desktop" : "is-phone"}${hasPlayer ? " has-player" : ""}`}>
+        {desktop ? <Rail current={route.screen} onOpenPalette={openPalette} /> : <TopBar title={title} onOpenPalette={openPalette} />}
+        <main className="content" id="main" data-screen={route.screen}>
+          {screen}
+        </main>
+        {desktop && <LivePanel lanes={lanes} connection={data.connection} player={<MiniPlayer variant="panel" />} />}
+        {!desktop && <MiniPlayer variant="bar" />}
+        {!desktop && <TabBar current={route.screen} />}
+        <p className="notice" role="status" aria-live="polite">
+          {notice}
+        </p>
+        <Palette open={paletteOpen} commands={commands} onClose={closePalette} onRun={run} />
+        <audio ref={player.audioRef} preload="metadata" className="shell-audio" />
+      </div>
+    </PlayerContext.Provider>
   );
 }

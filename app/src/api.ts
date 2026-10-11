@@ -1,7 +1,7 @@
 // The server endpoints the shell reads. Same origin: the server that
 // serves /app also serves the API.
 
-import type { FeedPage, PipelineDef, TaskCard } from "./types";
+import type { FeedPage, PipelineDef, PodcastEpisode, TaskCard } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -19,6 +19,10 @@ export function fetchFeed(limit: number, before?: string): Promise<FeedPage> {
   if (before) q.set("before", before);
   return getJson<FeedPage>(`/feed?${q}`);
 }
+
+/** GET /podcasts: every podcast pipeline's episodes, newest first, at
+ *  most `perPipeline` each. */
+export const fetchPodcasts = (perPipeline: number) => getJson<PodcastEpisode[]>(`/podcasts?limit=${perPipeline}`);
 
 /** A feed item's POST action (approve, retry): the endpoint the board
  *  calls for the same button. Throws the server's error message. */

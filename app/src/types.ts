@@ -69,12 +69,33 @@ export interface FeedItem {
   show?: FeedShow;
   audioUrl?: string;
   durationSeconds?: number;
+  pipelineName?: string;
   pass?: boolean;
 }
 
 export interface FeedPage {
   items: FeedItem[];
   next: string | null;
+}
+
+/** GET /podcasts. Mirrors src/services/podcasts.ts (PodcastEpisode,
+ *  PodcastQuickRead); test/app-shell.test.ts checks the field names. */
+export interface PodcastQuickRead {
+  items: unknown[];
+  gatherSources: string[] | null;
+  explain: { stories: unknown[] } | null;
+}
+
+export interface PodcastEpisode {
+  runId: string;
+  pipelineId: string;
+  pipelineName: string;
+  show: FeedShow;
+  at: string;
+  title: string;
+  durationSeconds?: number;
+  audioUrl: string;
+  quickRead: PodcastQuickRead | null;
 }
 
 /** What arrives on `/events`. The app only needs the type to decide to

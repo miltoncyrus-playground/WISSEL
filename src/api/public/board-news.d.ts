@@ -42,6 +42,15 @@ export type NewsView =
 
 export function newsView(finalSummary: unknown, gatherSummary: unknown, expected: boolean, explainSummary?: unknown): NewsView;
 
+export type QuickReadView =
+  | { kind: "rows"; rows: NewsRow[]; flaggedCount: number; gatherChecked: boolean }
+  | { kind: "raw"; reason: string };
+
+/** newsView's row shaping from parsed data: the script step's
+ *  `quickRead`, the gather step's source set (null: unchecked) and the
+ *  explain step's data. */
+export function quickReadView(quickRead: unknown, urls: ReadonlySet<string> | null, explainData: unknown): QuickReadView;
+
 export const NEWS_SCRIPT_AGENT: string;
 export const NEWS_AUDIO_AGENT: string;
 
