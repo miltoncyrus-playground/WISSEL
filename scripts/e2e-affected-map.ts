@@ -88,15 +88,28 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
-      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), feed.spec.ts (the Feed screen), listen.spec.ts (Listen and the mini-player) and ask.spec.ts (Ask) open /app.",
+      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), feed.spec.ts (the Feed screen), listen.spec.ts (Listen and the mini-player), ask.spec.ts (Ask) and voice.spec.ts (Ask's voice notes and Play reply) open /app.",
     match: (p) => p === "app" || p.startsWith("app/") || p === "src/api/serve-app.ts",
-    resolve: () => ["app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts"],
+    resolve: () => ["app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts"],
   },
   {
     description:
-      "concierge*.ts and conversations.ts are POST /ask and GET /conversations (docs/SDD-wissel-app.md §3.4). Verified (grep): only server.ts imports them; ask.spec.ts is the only spec that calls /ask (with the scripted concierge, concierge-script.ts).",
+      "concierge*.ts and conversations.ts are POST /ask and GET /conversations (docs/SDD-wissel-app.md §3.4). Verified (grep): only server.ts and reply-audio.ts import them; ask.spec.ts and voice.spec.ts call /ask (with the scripted concierge, concierge-script.ts).",
     match: (p) => /^src\/services\/concierge(-[a-z]+)?\.ts$/.test(p) || p === "src/services/conversations.ts",
-    resolve: () => ["ask.spec.ts"],
+    resolve: () => ["ask.spec.ts", "voice.spec.ts"],
+  },
+  {
+    description:
+      "stt.ts and reply-audio.ts are POST /voice and POST/GET /ask/:id/audio (docs/SDD-wissel-app.md §3.5); e2e/fixtures/fake-stt-server.ts and test/fixtures/fake-speaches.ts are the e2e speech to text. Verified (grep): only server.ts and eval/stt.eval.ts import the services; voice.spec.ts is the only spec that calls those routes.",
+    match: (p) =>
+      p === "src/services/stt.ts" || p === "src/services/reply-audio.ts" || p === "e2e/fixtures/fake-stt-server.ts" || p === "test/fixtures/fake-speaches.ts",
+    resolve: () => ["voice.spec.ts"],
+  },
+  {
+    description:
+      "tts.ts is the podcast \"Make audio\" step and, through TtsExecutor.speak, Play reply (docs/SDD-wissel-app.md §3.5). pipelines.spec.ts shows a failed audio step; voice.spec.ts plays a reply.",
+    match: (p) => p === "src/executors/tts.ts",
+    resolve: () => ["pipelines.spec.ts", "voice.spec.ts"],
   },
   {
     description:

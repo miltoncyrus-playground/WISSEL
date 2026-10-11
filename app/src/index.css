@@ -498,7 +498,7 @@ kbd {
 .quick-reply:disabled { opacity: 0.6; cursor: default; }
 .composer {
   display: flex; align-items: flex-end; gap: 8px; min-width: 0;
-  padding: 6px 6px 6px 16px; border-radius: 24px;
+  padding: 6px; border-radius: 24px;
   background: var(--surface); border: 1px solid var(--line);
 }
 .composer:focus-within { border-color: var(--accent); }
@@ -508,9 +508,34 @@ kbd {
   font: 16px/1.4 var(--font-body); field-sizing: content;
 }
 .composer textarea:focus-visible { outline: none; }
+.mic-btn { align-self: flex-end; }
+.mic-btn:disabled { color: var(--muted); cursor: default; background: transparent; }
 .send-btn { background: var(--accent); color: var(--ground); }
 .send-btn:hover { background: var(--accent); box-shadow: 0 0 0 2px var(--text); }
 .send-btn:disabled { background: var(--surface-2); color: var(--muted); box-shadow: none; cursor: default; }
+
+/* Voice notes and spoken replies (docs/SDD-wissel-app.md §3.5). */
+.recording {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0;
+  padding: 6px 6px 6px 14px; border-radius: 24px;
+  background: var(--surface); border: 1px solid var(--coral);
+}
+.rec-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--coral); animation: pulse 1.4s ease-in-out infinite; }
+.rec-clock { flex: 1; min-width: 0; font-size: 14px; }
+.rec-stop { background: var(--coral); color: var(--ground); border-color: var(--coral); }
+.rec-stop:hover { border-color: var(--text); }
+.voice-status { margin: 0; color: var(--muted); font-size: 14px; }
+.voice-error, .reply-error { font-size: 14px; overflow-wrap: anywhere; }
+.msg-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.msg-foot .reply-error { flex-basis: 100%; }
+.reply-play {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 44px; padding: 0 12px; margin-left: -6px; border-radius: 999px;
+  border: 1px solid transparent; background: transparent; color: var(--accent);
+  font: 500 14px var(--font-body); cursor: pointer;
+}
+.reply-play:hover { border-color: var(--line); background: var(--surface-2); }
+.reply-play:disabled { color: var(--muted); cursor: progress; }
 
 /* ---------- Notice ---------- */
 

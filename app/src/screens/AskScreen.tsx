@@ -7,6 +7,9 @@ import { timeAgo } from "../time";
 import type { ChatMessage, PipelineDef, PodcastEpisode, TaskCard } from "../types";
 import type { AskState } from "../useAsk";
 import { usePlayer } from "../usePlayer";
+import { postReplyAudio } from "../api";
+import { useVoiceNote } from "../useVoiceNote";
+import { clock, MAX_VOICE_SECONDS, replyTrack, withTranscript } from "../voice";
 
 /** The Ask tab (docs/SDD-wissel-app.md §3.4): the chat with the
  *  concierge. Cards it makes show as chips that follow the board live;
@@ -29,6 +32,11 @@ export function AskScreen({
   const end = useRef<HTMLDivElement>(null);
   const podcasts = usePodcasts();
   const replies = useMemo(() => quickReplies(pipelines), [pipelines]);
+  // A note's text lands in the box for Milton to check, never sent as is.
+  const voice = useVoiceNote((text) => {
+    setDraft((d) => withTranscript(d, text));
+    input.current?.focus();
+  });
 
   // The newest message (or "Thinking") in view.
   useEffect(() => {
@@ -141,7 +149,52 @@ export function AskScreen({
             </li>
           ))}
         </ul>
+        {voice.phase === "recording" && (
+          <div className="recording" role="group" aria-label="Recording">
+            <span className="rec-dot" aria-hidden="true" />
+            <span className="rec-clock mono" aria-live="off">
+              Recording {clock(voice.elapsed)} / {clock(MAX_VOICE_SECONDS)}
+            </span>
+            <button type="button" className="btn btn-small" onClick={voice.cancel}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-small rec-stop" onClick={voice.stop}>
+              <Icon name="stop" size={16} />
+              Stop
+            </button>
+          </div>
+        )}
+        {voice.phase === "transcribing" && (
+          <p className="voice-status" role="status">
+            Turning your note into text…
+          </p>
+        )}
+        {voice.error && (
+          <p className="error voice-error" role="alert">
+            Voice note: {voice.error}
+          </p>
+        )}
         <form className="composer" onSubmit={onSubmit}>
+          <input
+            ref={voice.fileInput}
+            id="voice-file"
+            type="file"
+            accept="audio/*"
+            capture
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+            onChange={voice.onFile}
+          />
+          <button
+            type="button"
+            className="icon-btn mic-btn"
+            aria-label={voice.mode === "record" ? "Record a voice note" : "Add a voice note"}
+            disabled={voice.phase !== "idle" || ask.thinking}
+            onClick={voice.press}
+          >
+            <Icon name="mic" size={20} />
+          </button>
           <label htmlFor="ask-input" className="sr-only">
             Message
           </label>
@@ -178,8 +231,58 @@ function Message({ message, tasks, tasksLoaded, episodes }: { message: ChatMessa
           ))}
         </ul>
       )}
-      {cost && <p className="msg-cost mono">{cost}</p>}
+      {(message.role === "assistant" || cost) && (
+        <div className="msg-foot">
+          {message.role === "assistant" && <ReplyPlay message={message} />}
+          {cost && <p className="msg-cost mono">{cost}</p>}
+        </div>
+      )}
     </li>
+  );
+}
+
+/** "Play reply" (docs/SDD-wissel-app.md §3.5): Kokoro reads the reply,
+ *  once per message (the server keeps the MP3), and it plays in the
+ *  shell's one player, so it keeps going on other screens. */
+function ReplyPlay({ message }: { message: ChatMessage }) {
+  const player = usePlayer();
+  const [making, setMaking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const runId = `reply-${message.id}`;
+  const current = player.state.track?.runId === runId;
+  const playing = current && player.state.playing;
+
+  const onClick = () => {
+    if (current) {
+      player.toggle();
+      return;
+    }
+    setMaking(true);
+    setError(null);
+    postReplyAudio(message.id).then(
+      ({ audioUrl }) => {
+        setMaking(false);
+        player.play(replyTrack(message, audioUrl));
+      },
+      (err: unknown) => {
+        setMaking(false);
+        setError(err instanceof Error ? err.message : String(err));
+      },
+    );
+  };
+
+  return (
+    <>
+      <button type="button" className="reply-play" onClick={onClick} disabled={making} aria-busy={making || undefined}>
+        <Icon name={playing ? "pause" : making ? "speaker" : "play"} size={16} />
+        {making ? "Making audio…" : playing ? "Pause reply" : "Play reply"}
+      </button>
+      {error && (
+        <p className="error reply-error" role="alert">
+          Could not play: {error}
+        </p>
+      )}
+    </>
   );
 }
 

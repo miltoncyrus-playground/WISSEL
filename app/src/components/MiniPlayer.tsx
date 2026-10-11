@@ -21,7 +21,7 @@ export function MiniPlayer({ variant }: { variant: "bar" | "panel" }) {
           <Icon name={playing ? "pause" : "play"} />
         </button>
         <div className="mp-text">
-          <a className="mp-title" href="#/listen">
+          <a className="mp-title" href={track.link ?? "#/listen"}>
             {track.title}
           </a>
           <span className="mp-sub">

@@ -120,6 +120,12 @@ export class SqliteConversationStore {
     return rows.map(rowToMessage);
   }
 
+  /** One message by id, in any conversation. */
+  message(id: string): ChatMessage | undefined {
+    const row = this.db.query("SELECT * FROM messages WHERE id = ?").get(id) as MessageRow | null;
+    return row ? rowToMessage(row) : undefined;
+  }
+
   /** Adds a message and bumps the conversation's updatedAt. Throws for
    *  an unknown conversation. */
   add(msg: Omit<ChatMessage, "id" | "at"> & { at?: string }): ChatMessage {
