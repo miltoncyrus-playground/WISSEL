@@ -226,7 +226,23 @@ async function runStepAndSuccessors(
     pipelineRunId: runId,
     pipelineStepId: step.id,
   });
+  await runStepCard(board, registry, pipelineDef, step, created, repo, ctx);
+}
 
+/** Runs one existing step card: picks the step's agent and executor,
+ *  acquires a harness, and hands the result to finishResult (which, on
+ *  success, activates the step's successors). Shared by a fresh step
+ *  (runStepAndSuccessors) and a rate-limited one coming back
+ *  (resumePipelineStep), so both take exactly the same path. */
+async function runStepCard(
+  board: Board,
+  registry: Registry,
+  pipelineDef: PipelineDef,
+  step: PipelineStepDef,
+  created: TaskCard,
+  repo: string | undefined,
+  ctx: PipelineRunnerContext,
+): Promise<void> {
   const pipelineCtx = { executors: ctx.executors, pipelines: ctx.pipelines, harnesses: ctx.harnesses };
   const agent = registry.get(step.agentId);
   if (!agent) {
@@ -376,6 +392,54 @@ export function buildNextStepBody(originalInput: string, handoff: { note?: strin
   ].join("\n");
 }
 
+/** Step statuses that keep a run's root on "running": a human gate
+ *  ("review"), a step a 429 sent back to wait ("inbox"/"ready", see
+ *  resumePipelineStep) or one still executing. */
+const UNSETTLED_STEP_STATUSES: ReadonlySet<TaskCard["status"]> = new Set(["review", "inbox", "ready", "running"]);
+
+/**
+ * Runs a pipeline step card that a session limit (429) sent back to
+ * inbox with a `retryAfter`, then carries the run on from it: the step's
+ * successors run as usual (finishResult -> handlePipelineStepResult) and
+ * the root settles once nothing in the run is waiting any more.
+ *
+ * Called by Orchestrator.sweep() once the step's `retryAfter` has
+ * passed (OrchestratorOptions.resumePipelineStep). Before this existed
+ * a rate-limited step was never picked up again: sweep() skips pipeline
+ * cards and the runner had already returned (docs/SDD-pipelines.md
+ * §3.8). Returns false, without touching anything, for a card that is
+ * not a waiting step of a run whose definition, root and step still
+ * exist, and while no harness is free for the step's agent. A step
+ * whose definition or step was deleted mid-wait is failed instead, so
+ * the run settles rather than waiting forever.
+ */
+export async function resumePipelineStep(board: Board, registry: Registry, task: TaskCard, ctx: PipelineRunnerContext): Promise<boolean> {
+  if (!task.pipelineId || !task.pipelineRunId || !task.pipelineStepId) return false;
+  if (task.status !== "inbox" && task.status !== "ready") return false;
+  const root = await board.get(task.pipelineRunId);
+  if (!root) return false;
+  const pipelineDef = await ctx.pipelines.get(task.pipelineId);
+  const step = pipelineDef?.graph.steps.find((s) => s.id === task.pipelineStepId);
+  if (!pipelineDef || !step) {
+    await board.move(task.id, "failed");
+    await settleRoot(board, root.id);
+    return true;
+  }
+  // Every harness busy or off: keep waiting, as a board card would,
+  // instead of runStepCard failing the step. The sweep after the next
+  // board event (a run finishing frees a harness) tries again.
+  const agent = registry.get(step.agentId);
+  const executor = agent ? ctx.executors.find((e) => e.canHandle(agent)) : undefined;
+  if (agent && executor?.harnessTool && ctx.harnesses && !ctx.harnesses.canAcquire(executor.harnessTool, agent.harnesses)) return false;
+  // Runs settled before this fix (and any root a human moved) read
+  // "done"/"failed" with this step still waiting: reopen it while the
+  // step runs, so the board and the feed don't call it finished.
+  if (root.status !== "running") await board.move(root.id, "running");
+  await runStepCard(board, registry, pipelineDef, step, task, task.repo, ctx);
+  await settleRoot(board, root.id);
+  return true;
+}
+
 /** Called once, by startPipelineRun's own top-level loop, after every
  *  entry step's full subtree has finished (recursively, via
  *  handlePipelineStepResult) — safe to treat as final precisely because
@@ -399,7 +463,11 @@ export function buildNextStepBody(originalInput: string, handoff: { note?: strin
  *  this subtask was ever scoped to build. */
 async function settleRoot(board: Board, runId: string): Promise<TaskCard> {
   const cards = (await board.list()).filter((t) => t.pipelineRunId === runId);
-  if (cards.some((t) => t.status === "review")) return (await board.get(runId))!;
+  // A step still waiting is not settled either: one rescheduled after a
+  // 429 sits in inbox until resumePipelineStep picks it up. Settling
+  // here marked runs "done" with their gather step never run (seen live
+  // 2026-10-11: both 06:00 podcast runs).
+  if (cards.some((t) => UNSETTLED_STEP_STATUSES.has(t.status))) return (await board.get(runId))!;
   const anyFailed = cards.some((t) => t.status === "failed");
   return await board.move(runId, anyFailed ? "failed" : "done");
 }

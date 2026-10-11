@@ -172,6 +172,42 @@ sync" pattern `reviewLineageId` already established), `pipelineStepId?`
 `undefined` for every non-pipeline task — zero effect on anything that
 isn't one.
 
+**3.8 — A rate-limited step resumes on its own (revision 2026-10-11).**
+A step whose run hits a session limit (429) is rescheduled by
+`finishResult` like any card: back to `inbox` with a `retryAfter`. Until
+this revision nothing came back for it. `sweep()` skips pipeline cards
+and the runner had already returned, so the step waited forever, and
+`settleRoot` marked the root `done` anyway (both 06:00 podcast runs on
+2026-10-11). Now:
+
+- `settleRoot` leaves the root `running` while any step of the run is
+  `inbox`, `ready`, `running` or `review`.
+- `Orchestrator.sweep()` picks up a step (a card with `pipelineRunId`)
+  whose `retryAfter` has passed and hands it to `resumePipelineStep`
+  (`src/core/pipeline-runner.ts`, injected as
+  `OrchestratorOptions.resumePipelineStep` by `server.ts` with the same
+  context as `POST /pipelines/:id/run`). The same card runs again, its
+  successors run as usual, and the root settles. The existing retry
+  timer wakes the sweep at `retryAfter`, so a quiet board is fine.
+- One step per run at a time: a step is not resumed while another step
+  of its run is in flight or `running`, which keeps §3.6's depth-first
+  guarantee.
+- A root already marked `done` with a waiting step (runs from before
+  this revision) is moved back to `running` while the step runs.
+- A step whose definition or step id was deleted while it waited is
+  failed, and the root settles `failed`.
+- It counts toward `maxConcurrentTasks` and stops at `spendCeilingUsd`,
+  like any card the sweep runs. With `WISSEL_ORCHESTRATOR` off nothing
+  sweeps, so nothing resumes, the same as for an ordinary card.
+
+`bun run check:news-run`'s `run-status` check fails a `done` run with
+a step still waiting, so a run settled the old way shows up.
+Tests: `test/pipeline-step-retry.test.ts`.
+
+Not covered: a step left `running` by a server restart is reset to
+`inbox` by crash recovery without a `retryAfter`, so it is not resumed
+and its root stays `running`. That needs a human re-run.
+
 ## 4. Implementation shape
 
 **Schema** (`src/services/board.ts`): `pipelines` table, heal-on-open

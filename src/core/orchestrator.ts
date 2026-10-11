@@ -140,12 +140,9 @@ export async function finishResult(
   // result also carries `ok: false`) so it reschedules instead of
   // stranding the task on `failed` for a human to notice and manually
   // re-run — see runClaude/parseSessionLimitReset and
-  // docs/SDD-pipeline-automation.md §3.2. Known, named gap: a pipeline
-  // step that hits this never gets picked up again automatically in
-  // this phase (see docs/SDD-pipelines.md's own retry-scope note) —
-  // sweep() never touches a pipeline step task (see
-  // pipeline-runner.ts's own doc comments on why), so nothing revisits
-  // it once rescheduled.
+  // docs/SDD-pipeline-automation.md §3.2. A pipeline step comes back
+  // the same way: sweep() hands it to resumePipelineStep once its
+  // retryAfter passes (docs/SDD-pipelines.md §3.8).
   if (result.retryAfter) {
     await board.scheduleRetry(result.taskId, result.retryAfter);
     return;
@@ -955,6 +952,14 @@ export interface OrchestratorOptions {
    *  own gather step, kept in sync via the same option at the
    *  createApp/server.ts level) never touch this repo's real file. */
   memoryPath?: string;
+  /** Runs a pipeline step card that a 429 sent back to inbox, once its
+   *  `retryAfter` has passed, and carries its run on to settlement
+   *  (resumePipelineStep, src/core/pipeline-runner.ts; server.ts wires
+   *  it with the same context as POST /pipelines/:id/run). Injected
+   *  rather than imported because pipeline-runner.ts already imports
+   *  this module. Undefined means a rate-limited step waits forever, as
+   *  before 2026-10-11. */
+  resumePipelineStep?: (task: TaskCard) => Promise<unknown>;
 }
 
 /** Midnight UTC on `now`'s calendar day — the window `spendCeilingUsd`
@@ -1078,7 +1083,15 @@ export class Orchestrator {
       // labels [] matched nothing and the card went to no-match (seen
       // live 2026-10-07 on the first "AI news podcast" run; the root,
       // which stays in inbox, hit it every time).
-      if (task.pipelineId !== undefined) continue;
+      // The one exception: a step a 429 sent back to wait. The runner
+      // returned long ago, so nothing but this sweep comes back for it.
+      if (task.pipelineId !== undefined) {
+        if (this.isDuePipelineRetry(task, tasks) && !overSpendCeiling && !this.atConcurrencyCap()) {
+          this.inFlight.add(task.id);
+          pending.push(this.resumePipelineStep(task).finally(() => this.inFlight.delete(task.id)));
+        }
+        continue;
+      }
       // Archived means put away by a human: never routed or run, even if
       // it was archived while still in inbox (seen 2026-10-09: an
       // archived stray integrator card was re-routed on every sweep).
@@ -1098,7 +1111,7 @@ export class Orchestrator {
       const blocked = deps.some((depId) => resolveLiveTip(byId.get(depId), byId)?.status !== "done");
       if (blocked) continue;
 
-      if (this.opts.maxConcurrentTasks !== undefined && this.inFlight.size >= this.opts.maxConcurrentTasks) continue;
+      if (this.atConcurrencyCap()) continue;
       if (overSpendCeiling) continue;
 
       this.inFlight.add(task.id);
@@ -1106,6 +1119,31 @@ export class Orchestrator {
     }
 
     await Promise.all(pending);
+  }
+
+  private atConcurrencyCap(): boolean {
+    return this.opts.maxConcurrentTasks !== undefined && this.inFlight.size >= this.opts.maxConcurrentTasks;
+  }
+
+  /** A pipeline step (not a root) waiting in inbox/ready on a
+   *  `retryAfter` that has passed, unarchived, with no other step of the
+   *  same run in flight here or running on the board. One step per run
+   *  at a time keeps the runner's depth-first, one-step-at-a-time
+   *  guarantee (startPipelineRun's doc comment): two entry steps of one
+   *  run, both rate-limited, resume one after the other. */
+  private isDuePipelineRetry(task: TaskCard, tasks: TaskCard[]): boolean {
+    if (!this.opts.resumePipelineStep || !task.pipelineRunId || !task.retryAfter || task.archivedAt) return false;
+    if (task.status !== "inbox" && task.status !== "ready") return false;
+    if (new Date(task.retryAfter).getTime() > Date.now()) return false;
+    return !tasks.some((t) => t.pipelineRunId === task.pipelineRunId && t.id !== task.id && (this.inFlight.has(t.id) || t.status === "running"));
+  }
+
+  private async resumePipelineStep(task: TaskCard): Promise<void> {
+    try {
+      await this.opts.resumePipelineStep!(task);
+    } catch (e) {
+      console.error(`orchestrator: resuming pipeline step ${task.id} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /**

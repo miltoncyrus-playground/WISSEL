@@ -195,7 +195,11 @@ export async function checkStoredRun(deps: CheckDeps, runId: string): Promise<Ne
   const checks: AiNewsCheck[] = [
     {
       name: "run-status",
-      pass: root.status === "done",
+      // Every step too, not just the root: before 2026-10-11 a run whose
+      // gather step was rate-limited was settled "done" with that step
+      // still waiting in inbox (docs/SDD-pipelines.md §3.8).
+      // A retried step's earlier card stays "failed", which is fine.
+      pass: root.status === "done" && !steps.some((t) => ["inbox", "ready", "running", "review"].includes(t.status)),
       detail: `run ${root.status}; steps: ${steps.map((t) => `${t.pipelineStepId}=${t.status}`).join(", ")}`,
     },
     ...(kind === "retro"

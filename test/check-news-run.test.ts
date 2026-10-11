@@ -111,6 +111,20 @@ test("an AI news run gets the AI checks, from the latest card of a retried step,
   for (const name of ["gather-shape", "final-shape", "sources-from-gather", "dates-recent", "facts-retained", "depth"]) expect(byName[name]).toBeDefined();
 });
 
+// Regression, 2026-10-11: both 06:00 runs were settled "done" while
+// their rate-limited gather step still sat in inbox. run-status passed.
+test("run-status fails a done run with a step still waiting", async () => {
+  const { deps, root, pipeline, board } = await aiRun();
+  const waiting = await board.create(card({ pipelineId: pipeline.id, pipelineRunId: root.id, pipelineStepId: "audio", parentTaskId: root.id }));
+  await board.scheduleRetry(waiting.id, "2026-10-11T06:30:00.000Z");
+  const report = await checkStoredRun(deps, root.id);
+  if (typeof report === "string") throw new Error(report);
+  const status = report.checks.find((c) => c.name === "run-status")!;
+  expect(status.pass).toBe(false);
+  expect(status.detail).toContain("audio=inbox");
+  expect(report.pass).toBe(false);
+});
+
 test("dates are judged at the run's first telemetry event, not today", async () => {
   const { deps, root } = await aiRun();
   const report = await checkStoredRun(deps, root.id);

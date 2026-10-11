@@ -16,7 +16,7 @@ import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, carriedCardSettings, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts } from "../core/crash-recovery.ts";
-import { PipelineRepoRequiredError, startPipelineRun, stepsNeedingRepo } from "../core/pipeline-runner.ts";
+import { PipelineRepoRequiredError, resumePipelineStep, startPipelineRun, stepsNeedingRepo } from "../core/pipeline-runner.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
 import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH } from "../core/model-refresh-scheduler.ts";
@@ -386,7 +386,17 @@ export function createApp(
     router,
     autoExecutors,
     telemetry,
-    { executeWriteTier, harnesses, maxConcurrentTasks: opts.maxConcurrentTasks, spendCeilingUsd: opts.spendCeilingUsd, memoryPath: opts.memoryPath },
+    {
+      executeWriteTier,
+      harnesses,
+      maxConcurrentTasks: opts.maxConcurrentTasks,
+      spendCeilingUsd: opts.spendCeilingUsd,
+      memoryPath: opts.memoryPath,
+      // A rate-limited pipeline step resumes on the same context POST
+      // /pipelines/:id/run starts it with (docs/SDD-pipelines.md §3.8).
+      resumePipelineStep: (task) =>
+        resumePipelineStep(board as Board, registry, task, { executors: manualExecutors, pipelines, harnesses, telemetry, memoryPath: opts.memoryPath }),
+    },
   );
   // Unconditional — cleanup of existing state, not automation of new
   // work, so it runs even when WISSEL_ORCHESTRATOR is off. Every task
