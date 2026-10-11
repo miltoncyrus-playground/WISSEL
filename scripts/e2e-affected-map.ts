@@ -88,9 +88,9 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
-      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), app-look.spec.ts (light and dark, header nav), feed.spec.ts (the Feed screen), listen.spec.ts (Listen and the mini-player), ask.spec.ts (Ask), voice.spec.ts (Ask's voice notes and Play reply) and you.spec.ts (You, Wrapped and agent faces) open /app.",
+      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), app-look.spec.ts (light and dark, header nav), feed.spec.ts (the Feed screen), listen.spec.ts (Listen and the mini-player), ask.spec.ts (Ask), ask-control.spec.ts (Ask's board controls, Confirm and Undo), voice.spec.ts (Ask's voice notes and Play reply) and you.spec.ts (You, Wrapped and agent faces) open /app.",
     match: (p) => p === "app" || p.startsWith("app/") || p === "src/api/serve-app.ts",
-    resolve: () => ["app-look.spec.ts", "app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"],
+    resolve: () => ["app-look.spec.ts", "app.spec.ts", "ask-control.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"],
   },
   {
     description:
@@ -100,9 +100,16 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
-      "concierge*.ts and conversations.ts are POST /ask and GET /conversations (docs/SDD-wissel-app.md §3.4). Verified (grep): only server.ts and reply-audio.ts import them; ask.spec.ts and voice.spec.ts call /ask (with the scripted concierge, concierge-script.ts).",
-    match: (p) => /^src\/services\/concierge(-[a-z]+)?\.ts$/.test(p) || p === "src/services/conversations.ts",
-    resolve: () => ["ask.spec.ts", "voice.spec.ts"],
+      "concierge*.ts, conversations.ts and pending-actions.ts are POST /ask, POST /ask/actions/:id/* and GET /conversations (docs/SDD-wissel-app.md §3.4, §3.7). Verified (grep): only server.ts, reply-audio.ts and each other import them; ask.spec.ts, ask-control.spec.ts and voice.spec.ts call /ask (with the scripted concierge, concierge-script.ts, whose script is e2e/fixtures/concierge-script.json).",
+    match: (p) =>
+      /^src\/services\/concierge(-[a-z]+)?\.ts$/.test(p) || p === "src/services/conversations.ts" || p === "src/services/pending-actions.ts" || p === "e2e/fixtures/concierge-script.json",
+    resolve: () => ["ask-control.spec.ts", "ask.spec.ts", "voice.spec.ts"],
+  },
+  {
+    description:
+      "board-actions.ts is the body of the board's own task, harness and MCP endpoints (merge, discard, escalation, MCP approval, allowed tools, harness enable/disable/model, MCP enable/disable/trust) as well as Ask's controls (docs/SDD-wissel-app.md §3.7): as shared as server.ts itself, so the full suite.",
+    match: (p) => p === "src/services/board-actions.ts",
+    resolve: () => "ALL",
   },
   {
     description:

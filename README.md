@@ -127,7 +127,9 @@ Recovery handles it on the next start, but the restart is avoidable.
    An implementer may run only `bun test` and `bun run typecheck`
    unless the card grants more: `extraAllowedTools` on `POST /tasks`, or
    `POST /tasks/:id/allowed-tools` (command-scoped Bash only, e.g.
-   `Bash(bun install:*)`; see `src/core/allowed-tools.ts`).
+   `Bash(bun install:*)`; see `src/core/allowed-tools.ts`). A card that
+   isn't running can be pinned to a harness after it was made with
+   `POST /tasks/:id/harness {harness}` (`null` clears it).
 
 A planner card ends in a `subtask-plan` block that the orchestrator turns
 into real child cards. When every child has landed, an integrator card is
@@ -213,17 +215,32 @@ top bar.
 - **Ask.** Chat with wissel (`POST /ask`, `GET /conversations`,
   `GET /conversations/:id`; `docs/SDD-wissel-app.md` §3.4). The
   `concierge` agent (claude-opus-5-5, no tools, private `claude` harness
-  only) reads the board as fenced data and may do three things, checked
-  in code before anything happens: create a card (labels from the
-  board's set, repo only a registered project), run a pipeline, or show
-  a card, at most three per message. Merge, delete, archive, retry,
-  approve and settings stay on the board; anything else it proposes is
-  dropped and named in the reply. Cards it makes show as chips that
-  follow the board live; a podcast run gets Play once its audio is
-  ready. Quick replies (run a podcast, what did I do this week, what is
-  running, show board) come from code. Each reply shows its cost, which
-  also goes to telemetry. The open chat survives a reload; "Earlier
-  chats" lists the rest. Palette "New card" now opens Ask.
+  only) reads the board as fenced data and proposes actions, checked in
+  code before anything happens, at most three per message: create a
+  card (labels from the board's set, repo only a registered project),
+  run a pipeline, show a card, or press one of the board's own buttons
+  (§3.7). Those run the same functions as the board's endpoints
+  (`src/services/board-actions.ts`), on cards found in code by id8 or
+  title words (zero or several matches is a question, never a guess),
+  and only when the board would allow it. At once: move, run now,
+  retry, stop, approve or deny an MCP request, grant and retry, abandon,
+  archive, unarchive, add a dependency, set a card's harness, enable or
+  disable a harness or MCP server, set a harness model. After a Confirm
+  tap in the app (`POST /ask/actions/:id/confirm`, 10 minutes, once,
+  never from a "yes" in chat): merge, discard, delete a card or a
+  pipeline, grant tools, trust an MCP tool, remove a project, and any
+  batch of more than three cards ("retry everything that failed"
+  expands in code, at most 10). Never from chat: secrets, accounts,
+  `agents/manifest.yaml`, pipeline contents, restarting the server.
+  Archive, move and harness changes get an Undo chip. Every control
+  action is stored on its message and logged as an `ask.action`
+  telemetry row. Cards it makes show as chips that follow the board
+  live; a podcast run gets Play once its audio is ready. Quick replies
+  (run a podcast, what needs me, retry failed, show harnesses, what did
+  I do this week, what is running, show board) come from code. Each
+  reply shows its cost, which also goes to telemetry. The open chat
+  survives a reload; "Earlier chats" lists the rest. Palette "New card"
+  now opens Ask.
 - **Voice.** The mic button in Ask turns a voice note into text
   (`POST /voice`, multipart, at most 10 MB and 5 minutes;
   `docs/SDD-wissel-app.md` §3.5) through the local speaches service
@@ -255,10 +272,13 @@ top bar.
   the phone's share sheet where the browser has one.
 
 Tests: `cd app && npm test` (vitest), `e2e/app.spec.ts`,
-`e2e/feed.spec.ts`, `e2e/listen.spec.ts`, `e2e/ask.spec.ts` (with a
-scripted concierge), `e2e/voice.spec.ts` (with a fake speaches) and
-`e2e/you.spec.ts` at 390 and 1440 px. `bun run eval:concierge` is the paid eval of the real
-concierge; `bun run eval:stt` checks the real speaches on five fixture
+`e2e/feed.spec.ts`, `e2e/listen.spec.ts`, `e2e/ask.spec.ts` and
+`e2e/ask-control.spec.ts` (with a scripted concierge),
+`e2e/voice.spec.ts` (with a fake speaches) and `e2e/you.spec.ts` at 390
+and 1440 px. `bun run eval:concierge` is the paid eval of the real
+concierge (`--suite basic` or `--suite control`, both by default; the
+control suite's 41 requests report a pass rate per category);
+`bun run eval:stt` checks the real speaches on five fixture
 notes (word error rate at most 15%, `eval/fixtures/stt/`).
 
 ## Pipelines

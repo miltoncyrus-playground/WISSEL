@@ -45,7 +45,16 @@ export interface ConciergeContextInput {
   nonce: string;
   /** ISO time, so "today" and "this week" mean something. */
   now: string;
+  /** Every harness, enabled or not (§3.7: set_harness_enabled, _model). */
+  harnesses?: { id: string; label: string; enabled: boolean; model?: string }[];
+  /** Every MCP server and its tools' trust (§3.7). */
+  mcpServers?: { id: string; label: string; enabled: boolean; tools: { name: string; trust: string }[] }[];
+  /** Cards whose latest result has a worktree: Merge and Discard. */
+  worktreeIds?: string[];
 }
+
+/** Archived cards the context lists, newest first (for unarchive). */
+export const ARCHIVED_CARDS = 10;
 
 /** A card is open while it isn't done, archived or replaced by a retry. */
 export function isOpenCard(t: TaskCard): boolean {
@@ -57,13 +66,21 @@ function isStepCard(t: TaskCard): boolean {
   return t.pipelineRunId !== undefined;
 }
 
-function cardLine(t: TaskCard) {
+/** One card as the concierge sees it. The flags say which board buttons
+ *  apply (§3.7): an MCP call waiting, suggested grants, a worktree to
+ *  merge, a harness asked for. */
+function cardLine(t: TaskCard, worktrees: ReadonlySet<string> = new Set()) {
   return {
     id8: t.id.slice(0, 8),
     title: t.title,
     status: t.status,
     ...(t.routedTo ? { agent: t.routedTo } : {}),
     ...(t.repo ? { repo: t.repo } : {}),
+    ...(t.pendingMcpApproval ? { mcpRequest: `${t.pendingMcpApproval.server}/${t.pendingMcpApproval.tool}` } : {}),
+    ...(t.suggestedGrants?.length ? { suggestedGrants: true } : {}),
+    ...(worktrees.has(t.id) ? { worktree: true } : {}),
+    ...(t.harnessOverride ? { harness: t.harnessOverride } : {}),
+    ...(t.dependsOn?.length ? { waitsFor: t.dependsOn.map((id) => id.slice(0, 8)) } : {}),
   };
 }
 
@@ -99,15 +116,26 @@ export function conciergeData(input: ConciergeContextInput) {
     .filter((t) => t.status === "done" && !isStepCard(t))
     .sort((a, b) => (b.doneAt ?? "").localeCompare(a.doneAt ?? ""))
     .slice(0, LANDED_CARDS);
+  const archived = input.tasks
+    .filter((t) => t.archivedAt && !isStepCard(t) && !t.supersededBy)
+    .sort((a, b) => (b.archivedAt ?? "").localeCompare(a.archivedAt ?? ""))
+    .slice(0, ARCHIVED_CARDS);
+  const worktrees = new Set(input.worktreeIds ?? []);
   return {
     now: input.now,
     // Newest first: the board lists cards in creation order.
-    openCards: open.slice(-MAX_OPEN_CARDS).reverse().map(cardLine),
+    openCards: open
+      .slice(-MAX_OPEN_CARDS)
+      .reverse()
+      .map((t) => cardLine(t, worktrees)),
     openCardsNotShown: Math.max(0, open.length - MAX_OPEN_CARDS),
     landed: landed.map((t) => ({ ...cardLine(t), ...(t.doneAt ? { doneAt: t.doneAt } : {}) })),
+    archived: archived.map((t) => cardLine(t)),
     pipelines: input.pipelines.map((p) => p.name),
     projects: input.projects.map((p) => ({ name: p.name, path: p.path })),
     accounts: accountsLine(input.accounts),
+    ...(input.harnesses ? { harnesses: input.harnesses.map((h) => ({ id: h.id, label: h.label, enabled: h.enabled, ...(h.model ? { model: h.model } : {}) })) } : {}),
+    ...(input.mcpServers ? { mcpServers: input.mcpServers.map((s) => ({ id: s.id, label: s.label, enabled: s.enabled, tools: s.tools.map((t) => `${t.name} (${t.trust})`) })) } : {}),
     labels: input.knownLabels,
     conversation: input.history.slice(-HISTORY_MESSAGES).map((m) => ({ role: m.role, text: clip(m.text, HISTORY_TEXT_LIMIT) })),
   };

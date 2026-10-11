@@ -44,11 +44,13 @@ test("app/src/types.ts PodcastEpisode and PodcastQuickRead match src/services/po
 test("app/src/types.ts's Ask types match the server's (card 4)", async () => {
   const app = await read("app/src/types.ts");
   const conversations = await read("src/services/conversations.ts");
-  for (const name of ["Conversation", "ChatMessage"]) {
+  // ControlTarget, ControlExecuted and PendingView since §3.7 (card 7).
+  for (const name of ["Conversation", "ChatMessage", "ControlTarget", "ControlExecuted", "PendingView"]) {
     expect(fieldsOf(app, name), name).toEqual(fieldsOf(conversations, name));
   }
   expect(fieldsOf(app, "DroppedAction")).toEqual(fieldsOf(await read("src/services/concierge-actions.ts"), "DroppedAction"));
   expect(fieldsOf(app, "AskResult")).toEqual(fieldsOf(await read("src/services/concierge.ts"), "AskResult"));
+  expect(fieldsOf(app, "PendingResult")).toEqual(fieldsOf(await read("src/services/concierge.ts"), "PendingResult"));
 
   // The union types, compared as text with whitespace collapsed.
   const union = (src: string, name: string) => {

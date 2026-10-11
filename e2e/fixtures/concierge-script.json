@@ -1,5 +1,20 @@
 [
   {
+    "match": "archive card (ctl-[a-z0-9-]+)",
+    "reply": "```wissel-actions\n{\"reply\": \"Archiving it.\", \"actions\": [{\"type\": \"archive_task\", \"card\": \"$1\"}]}\n```",
+    "costUsd": 0.0111
+  },
+  {
+    "match": "delete card (ctl-[a-z0-9-]+)",
+    "reply": "```wissel-actions\n{\"reply\": \"Tap Confirm to delete it.\", \"actions\": [{\"type\": \"delete_task\", \"card\": \"$1\"}]}\n```",
+    "costUsd": 0.0112
+  },
+  {
+    "match": "run card (ctl-[a-z0-9-]+)",
+    "reply": "```wissel-actions\n{\"reply\": \"Running it.\", \"actions\": [{\"type\": \"run_task\", \"card\": \"$1\"}]}\n```",
+    "costUsd": 0.0113
+  },
+  {
     "match": "check the readme",
     "reply": "On it.\n\n```wissel-actions\n{\"reply\": \"Made a card to check the README.\", \"actions\": [{\"type\": \"create_task\", \"title\": \"Check the README\", \"body\": \"Read README.md and fix anything out of date.\", \"labels\": [\"docs\"]}]}\n```",
     "costUsd": 0.0421

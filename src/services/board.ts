@@ -19,6 +19,11 @@ export interface Board {
    *  starts executing it locally, before the run finishes, so the board
    *  can show a harness as active live. See TaskCard.harness. */
   setHarness(id: string, harnessId: string): Promise<TaskCard>;
+  /** Sets (or, with undefined, clears) the harness a card asks to run
+   *  on (TaskCard.harnessOverride) after it was created. Validated by
+   *  setTaskHarnessOverride (src/services/board-actions.ts), which
+   *  `POST /tasks/:id/harness` and Ask's `set_task_harness` both call. */
+  setHarnessOverride(id: string, harnessId: string | undefined): Promise<TaskCard>;
   /** Marks `id` as replaced by `supersededByTaskId` — set on the
    *  superseded (old) card of a review-pushback pair, never touching its
    *  `status`. See TaskCard.supersededBy. */
@@ -125,6 +130,7 @@ export type BoardEvent =
   | { type: "task.moved"; task: TaskCard }
   | { type: "task.dependencies"; task: TaskCard }
   | { type: "task.harness"; task: TaskCard }
+  | { type: "task.harness-override"; task: TaskCard }
   | { type: "task.superseded"; task: TaskCard }
   | { type: "task.allowed-tools"; task: TaskCard }
   | { type: "task.decided"; decision: RoutingDecision }
@@ -554,6 +560,15 @@ export class SqliteBoard implements Board {
     this.db.run("UPDATE tasks SET harness = ? WHERE id = ?", [harnessId, id]);
     const updated: TaskCard = { ...existing, harness: harnessId };
     this.events.emit("event", { type: "task.harness", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async setHarnessOverride(id: string, harnessId: string | undefined): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET harnessOverride = ? WHERE id = ?", [harnessId ?? null, id]);
+    const updated: TaskCard = { ...existing, harnessOverride: harnessId };
+    this.events.emit("event", { type: "task.harness-override", task: updated } satisfies BoardEvent);
     return updated;
   }
 

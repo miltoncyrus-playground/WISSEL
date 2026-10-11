@@ -123,13 +123,13 @@ describe("validateActions", () => {
     expect(validateActions([{ type: "show_task", id: "bbbbbbbb" }], ctx()).dropped[0]!.reason).toMatch(/no single card/);
   });
 
-  test("merge, delete, archive, harness changes and junk are disallowed, by name", () => {
+  test("types outside the list (not the endpoint names) and junk are disallowed, by name", () => {
     const out = validateActions(
-      [{ type: "merge", id: TASK_A }, { type: "delete_task", id: TASK_A }, { type: "archive" }, { type: "disable_harness", id: "claude" }, "merge it", null, { id: TASK_A }],
+      [{ type: "merge", id: TASK_A }, { type: "delete", id: TASK_A }, { type: "archive" }, { type: "disable_harness", id: "claude" }, "merge it", null, { id: TASK_A }],
       ctx(),
     );
     expect(out.valid).toEqual([]);
-    expect(out.dropped.map((d) => d.type)).toEqual(["merge", "delete_task", "archive", "disable_harness", "unknown", "unknown", "unknown"]);
+    expect(out.dropped.map((d) => d.type)).toEqual(["merge", "delete", "archive", "disable_harness", "unknown", "unknown", "unknown"]);
     expect(out.dropped.every((d) => d.disallowed)).toBe(true);
   });
 

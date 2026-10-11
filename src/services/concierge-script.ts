@@ -10,7 +10,9 @@ import type { CommandRunner } from "../executors/claude-cli.ts";
 export interface ScriptRule {
   /** Case-insensitive regex tested against Milton's message. */
   match: string;
-  /** The model's whole final message, ```wissel-actions block and all. */
+  /** The model's whole final message, ```wissel-actions block and all.
+   *  `$1` to `$9` are the match's groups, escaped for a JSON string, so
+   *  an e2e test can name a card made just for it. */
   reply: string;
   costUsd?: number;
 }
@@ -43,16 +45,23 @@ export function parseScript(raw: string): ScriptRule[] {
 /** The fallback answer when no rule matches. */
 const NO_RULE_REPLY = '```wissel-actions\n{"reply": "Scripted concierge: no rule for that.", "actions": []}\n```';
 
+/** `reply` with `$1`..`$9` replaced by the match's groups, each escaped
+ *  to sit inside a JSON string. A group that didn't match is "". */
+export function withGroups(reply: string, groups: RegExpExecArray | null): string {
+  return reply.replace(/\$([1-9])/g, (_, n: string) => JSON.stringify(groups?.[Number(n)] ?? "").slice(1, -1));
+}
+
 export function scriptedConciergeRunner(rules: ScriptRule[]): CommandRunner {
   return async (cmd, opts) => {
     if (cmd[0] !== "claude") return { stdout: "", stderr: `scripted concierge only answers claude, got ${cmd[0]}`, exitCode: 1 };
     const message = messageFromPrompt(opts.stdin ?? "");
-    const rule = rules.find((r) => new RegExp(r.match, "i").test(message));
+    let groups: RegExpExecArray | null = null;
+    const rule = rules.find((r) => (groups = new RegExp(r.match, "i").exec(message)) !== null);
     const result = {
       type: "result",
       subtype: "success",
       is_error: false,
-      result: rule?.reply ?? NO_RULE_REPLY,
+      result: rule ? withGroups(rule.reply, groups) : NO_RULE_REPLY,
       total_cost_usd: rule?.costUsd ?? 0,
     };
     return { stdout: JSON.stringify(result), stderr: "", exitCode: 0 };

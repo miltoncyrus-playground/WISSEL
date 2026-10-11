@@ -10,6 +10,7 @@ import { resolveAffectedSpecs } from "../scripts/e2e-affected-map.ts";
 const ALL_SPECS = [
   "app-look.spec.ts",
   "app.spec.ts",
+  "ask-control.spec.ts",
   "ask.spec.ts",
   "board.spec.ts",
   "feed.spec.ts",
@@ -25,9 +26,10 @@ const ALL_SPECS = [
 ];
 
 // A non-theme board.html change runs every spec that opens /board.
-// feed.spec.ts, listen.spec.ts, ask.spec.ts, voice.spec.ts and
-// you.spec.ts only open /app and its API, so they are not among them.
-const BOARD_HTML_SPECS = ALL_SPECS.filter((s) => !["app-look.spec.ts", "feed.spec.ts", "listen.spec.ts", "ask.spec.ts", "voice.spec.ts", "you.spec.ts"].includes(s));
+// feed.spec.ts, listen.spec.ts, ask.spec.ts, ask-control.spec.ts,
+// voice.spec.ts and you.spec.ts only open /app and its API, so they are
+// not among them.
+const BOARD_HTML_SPECS = ALL_SPECS.filter((s) => !["app-look.spec.ts", "feed.spec.ts", "listen.spec.ts", "ask.spec.ts", "ask-control.spec.ts", "voice.spec.ts", "you.spec.ts"].includes(s));
 
 describe("ALL_SPECS fixture", () => {
   test("matches the real e2e/*.spec.ts files on disk", () => {
@@ -56,12 +58,25 @@ describe("resolveAffectedSpecs", () => {
     expect(result.fullSuite).toBe(false);
   });
 
-  test("Ask's services resolve to ask.spec.ts and voice.spec.ts only", () => {
-    for (const path of ["src/services/concierge.ts", "src/services/concierge-actions.ts", "src/services/concierge-context.ts", "src/services/concierge-script.ts", "src/services/conversations.ts"]) {
+  test("Ask's services and script resolve to ask.spec.ts, ask-control.spec.ts and voice.spec.ts only", () => {
+    for (const path of [
+      "src/services/concierge.ts",
+      "src/services/concierge-actions.ts",
+      "src/services/concierge-context.ts",
+      "src/services/concierge-control.ts",
+      "src/services/concierge-script.ts",
+      "src/services/conversations.ts",
+      "src/services/pending-actions.ts",
+      "e2e/fixtures/concierge-script.json",
+    ]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
-      expect(result.specs).toEqual(["ask.spec.ts", "voice.spec.ts"]);
+      expect(result.specs).toEqual(["ask-control.spec.ts", "ask.spec.ts", "voice.spec.ts"]);
       expect(result.fullSuite).toBe(false);
     }
+  });
+
+  test("board-actions.ts, the board endpoints' shared bodies, runs the full suite", () => {
+    expect(resolveAffectedSpecs([{ path: "src/services/board-actions.ts" }], ALL_SPECS).fullSuite).toBe(true);
   });
 
   test("voice's services and fakes resolve to voice.spec.ts only; tts.ts also to pipelines.spec.ts", () => {
@@ -76,7 +91,7 @@ describe("resolveAffectedSpecs", () => {
   test("app/** and its server file resolve to the six /app specs only", () => {
     for (const path of ["app/src/App.tsx", "app/package.json", "src/api/serve-app.ts"]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
-      expect(result.specs).toEqual(["app-look.spec.ts", "app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"]);
+      expect(result.specs).toEqual(["app-look.spec.ts", "app.spec.ts", "ask-control.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"]);
       expect(result.fullSuite).toBe(false);
     }
     // Not a prefix match on "app": a top-level "apps/" would be novel.

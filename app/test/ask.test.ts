@@ -1,8 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
   chipsOf,
+  confirmCardsOf,
+  controlChipsOf,
   costText,
   isPodcastPipeline,
+  PENDING_STATE_WORDS,
+  pendingStateNow,
   isSendKey,
   loadConversationId,
   MAX_MESSAGE_LENGTH,
@@ -13,7 +17,7 @@ import {
   settle,
   statusTextOf,
 } from "../src/ask";
-import type { AskResult, ChatMessage, ExecutedAction, PipelineDef, PodcastEpisode, TaskCard } from "../src/types";
+import type { AskResult, ChatMessage, ControlExecuted, ExecutedAction, PendingView, PipelineDef, PodcastEpisode, TaskCard } from "../src/types";
 
 const card = (id: string, over: Partial<TaskCard> = {}): TaskCard => ({ id, title: `Card ${id}`, body: "", labels: [], status: "inbox", ...over });
 const reply = (actions: ExecutedAction[]): Pick<ChatMessage, "actions"> => ({ actions });
@@ -108,11 +112,14 @@ describe("quickReplies", () => {
   const podcast = (id: string, name: string): PipelineDef => ({ id, name, description: "", graph: { steps: [{ agentId: "news-gather" }, { agentId: "podcast-audio" }] } });
   const plain: PipelineDef = { id: "x", name: "Review flow", description: "", graph: { steps: [{ agentId: "implementer" }] } };
 
-  test("podcasts by their real name (at most two), two questions, and Show board as a link", () => {
+  test("podcasts by their real name (at most two), the board-control three, two questions, and Show board as a link", () => {
     const replies = quickReplies([plain, podcast("a", "AI news"), podcast("w", "World news"), podcast("r", "Retro")]);
     expect(replies).toEqual([
       { label: "Run AI news", text: "Run the AI news pipeline" },
       { label: "Run World news", text: "Run the World news pipeline" },
+      { label: "What needs me?", text: "What needs me?" },
+      { label: "Retry failed", text: "Retry every failed card" },
+      { label: "Show harnesses", text: "Show me the harnesses" },
       { label: "What did I do this week?", text: "What did I do this week?" },
       { label: "What is running?", text: "What is running?" },
       { label: "Show board", href: "#/board" },
@@ -121,7 +128,69 @@ describe("quickReplies", () => {
 
   test("no podcasts, no Run reply; a pipeline without a graph is not a podcast", () => {
     expect(isPodcastPipeline({ id: "n", name: "n", description: "" })).toBe(false);
-    expect(quickReplies([plain]).map((r) => r.label)).toEqual(["What did I do this week?", "What is running?", "Show board"]);
+    expect(quickReplies([plain]).map((r) => r.label)).toEqual(["What needs me?", "Retry failed", "Show harnesses", "What did I do this week?", "What is running?", "Show board"]);
+  });
+});
+
+describe("board controls (§3.7)", () => {
+  const NOW = Date.parse("2026-10-11T10:00:00Z");
+  const control = (over: Partial<ControlExecuted> = {}): ControlExecuted => ({
+    type: "archive_task",
+    control: true,
+    ok: true,
+    tier: "A",
+    confirmedBy: "tier-a",
+    target: { kind: "card", id: "t1", label: "Old" },
+    text: "Archived 'Old' (card t1).",
+    ...over,
+  });
+  const pend = (over: Partial<PendingView> = {}): PendingView => ({ id: "p1", kind: "confirm", lines: ["Merge 'X' (card t2)"], state: "open", expiresAt: "2026-10-11T10:10:00Z", ...over });
+
+  test("controlChipsOf: done green, refused orange, Undo with its state, and refusals found before running", () => {
+    const msg: Pick<ChatMessage, "actions" | "dropped" | "pending"> = {
+      actions: [
+        { type: "create_task", ok: true, taskId: "c1", title: "New" },
+        control({ undoId: "u1" }),
+        control({ ok: false, error: "it is running", text: "Did not stop 'R' (card t3): it is running.", type: "stop_task", target: { kind: "card", id: "t3", label: "R" } }),
+        control({ type: "set_harness_enabled", target: { kind: "harness", id: "codex", label: "codex" }, text: "Disabled harness codex." }),
+      ],
+      dropped: [
+        { type: "retry_task", reason: "it is inbox, not failed", disallowed: false, text: "Did not retry 'L' (card t4): it is inbox, not failed." },
+        { type: "archive_task", reason: "no single card", disallowed: false, question: "Which card should I archive?" },
+        { type: "merge", reason: "not something Ask can do; use the board", disallowed: true },
+      ],
+      pending: [pend({ id: "u1", kind: "undo", lines: ["Unarchive 'Old' (card t1)"] })],
+    };
+    expect(controlChipsOf(msg, NOW)).toEqual([
+      { key: "control:1", text: "Archived 'Old' (card t1).", tone: "done", taskId: "t1", undo: { id: "u1", state: "open" } },
+      { key: "control:2", text: "Did not stop 'R' (card t3): it is running.", tone: "refused", taskId: "t3" },
+      { key: "control:3", text: "Disabled harness codex.", tone: "done" },
+      { key: "refused:0", text: "Did not retry 'L' (card t4): it is inbox, not failed.", tone: "refused" },
+    ]);
+    // An Undo past its time is not offered.
+    expect(controlChipsOf(msg, Date.parse("2026-10-11T10:10:00Z"))[0]!.undo).toEqual({ id: "u1", state: "expired" });
+  });
+
+  test("chipsOf leaves board controls to controlChipsOf", () => {
+    expect(chipsOf(reply([control()]), [card("t1")])).toEqual([]);
+  });
+
+  test("confirmCardsOf: only kind confirm, and open turns expired on the client's clock too", () => {
+    const msg = { pending: [pend(), pend({ id: "u1", kind: "undo" }), pend({ id: "p2", state: "cancelled" })] };
+    expect(confirmCardsOf(msg, NOW).map((p) => [p.id, p.state])).toEqual([
+      ["p1", "open"],
+      ["p2", "cancelled"],
+    ]);
+    expect(confirmCardsOf(msg, Date.parse("2026-10-11T10:10:00Z"))[0]!.state).toBe("expired");
+    expect(confirmCardsOf({})).toEqual([]);
+    expect(pendingStateNow(pend({ state: "confirmed", expiresAt: "2000-01-01T00:00:00Z" }), NOW)).toBe("confirmed");
+  });
+
+  test("every pending state has short plain words, no em dashes", () => {
+    for (const s of ["open", "confirmed", "cancelled", "expired"] as const) {
+      expect(PENDING_STATE_WORDS[s].length).toBeGreaterThan(0);
+      expect(PENDING_STATE_WORDS[s]).not.toContain("—");
+    }
   });
 });
 
