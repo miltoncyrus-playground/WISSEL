@@ -1,0 +1,160 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>
+<title>Wissel Board TechCrunch Mockup</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: two-level header (work nav, setup nav), full-width board with heavy-ruled columns, details open in a right drawer. */
+:root{--bg:#fff;--fg:#0f1411;--muted:#566058;--line:#d5ddd8;--soft:#f6f9f7;--soft2:#f0f5f2;--green:#1a7e4c;--blue:#2f6fd0;--amber:#b15425;--red:#c0302f;--onfill:#fff;
+--sans:"Figtree","Helvetica Neue",Arial,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d110e;--fg:#f0f4f1;--muted:#98a39b;--line:#25302a;--soft:#141b16;--soft2:#1a241e;--green:#2ed38c;--blue:#7fb0ff;--amber:#fb923c;--red:#ff7b72;--onfill:#06110b;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0d110e;--fg:#f0f4f1;--muted:#98a39b;--line:#25302a;--soft:#141b16;--soft2:#1a241e;--green:#2ed38c;--blue:#7fb0ff;--amber:#fb923c;--red:#ff7b72;--onfill:#06110b;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+header{position:sticky;top:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+.bar{display:flex;align-items:center;gap:24px;padding:10px 20px;border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:900;font-size:22px;letter-spacing:-.03em}
+.brand i{display:grid;place-items:center;width:30px;height:30px;background:var(--green);color:var(--onfill);font-style:normal;font-size:19px;border-radius:4px}
+.work{display:flex;gap:2px;flex:1}
+.work button,.setup button{all:unset;cursor:pointer;white-space:nowrap}
+.work button{padding:8px 14px;font-weight:800;font-size:14px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+.work button[aria-current="page"]{color:var(--fg);box-shadow:inset 0 -3px 0 var(--green)}
+.tools{display:flex;align-items:center;gap:12px;font-size:13px;color:var(--muted);font-weight:600}
+.live{display:inline-flex;align-items:center;gap:6px}.live:before{content:"";width:8px;height:8px;border-radius:50%;background:var(--green)}
+.btn{display:inline-flex;align-items:center;gap:6px;background:var(--green);color:var(--onfill);font-weight:800;font-size:14px;padding:9px 16px;border:0;border-radius:4px}
+.btn.o{background:transparent;color:var(--fg);box-shadow:inset 0 0 0 1.5px var(--fg)}.btn.sm{padding:6px 12px;font-size:13px}.btn.red{background:var(--red);color:#fff}
+.setup{display:flex;gap:4px;padding:0 20px;background:var(--soft);border-bottom:1px solid var(--line);overflow-x:auto;align-items:center}
+.setup span{font:800 11px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-right:10px}
+.setup button{padding:9px 12px;font-weight:600;font-size:13px;color:var(--muted)}.setup button:hover{color:var(--fg)}.setup button[aria-current="page"]{color:var(--fg);font-weight:800;box-shadow:inset 0 -3px 0 var(--green)}
+main{padding:20px;max-width:1500px;margin:0 auto}
+.controls{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;margin-bottom:14px}
+select,.seg{font:600 13px var(--sans);border:1px solid var(--line);background:var(--bg);color:var(--fg);padding:7px 10px;border-radius:4px}
+.seg{display:inline-flex;padding:2px;gap:2px}.seg button{all:unset;cursor:pointer;padding:5px 12px;font-weight:700;font-size:13px;border-radius:3px;color:var(--muted)}.seg button[aria-pressed="true"]{background:var(--fg);color:var(--bg)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}.chip{font:500 11.5px var(--mono);border:1px solid var(--line);padding:3px 9px;border-radius:999px;color:var(--muted)}.chip b{color:var(--fg);font-weight:600}
+h1{font-weight:900;font-size:clamp(28px,3.4vw,40px);line-height:1.1;letter-spacing:-.03em;margin:0}
+.head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;border-top:4px solid var(--fg);padding-top:10px;margin-bottom:6px;flex-wrap:wrap}
+.lede{color:var(--muted);margin:0 0 16px;max-width:70ch}
+.needs{border-top:4px solid var(--amber);background:var(--soft);padding:10px 16px 6px;margin-bottom:22px}
+.needs h2{margin:0 0 6px;font:900 13px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--amber);display:flex;gap:8px;align-items:center}
+.ngrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:0 24px}
+.ni{padding:10px 0;border-bottom:1px solid var(--line);cursor:pointer;display:block;width:100%;text-align:left;background:none;border-left:0;border-right:0;border-top:0;color:inherit}
+.cols{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0 28px}
+.col h3{margin:0;padding:8px 0;border-top:4px solid var(--fg);font:900 20px var(--sans);letter-spacing:-.02em;display:flex;justify-content:space-between;align-items:baseline}
+.col h3 span{font:600 13px var(--mono);color:var(--muted)}
+.card{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:14px 0;color:inherit}
+.card:hover .t{text-decoration:underline}
+.st{font:800 11px var(--sans);letter-spacing:.07em;text-transform:uppercase;color:var(--c,var(--muted))}
+.t{font-weight:800;font-size:17px;line-height:1.25;letter-spacing:-.01em;margin:3px 0 0;text-wrap:balance}
+.m{font-size:12.5px;color:var(--muted);margin-top:5px;display:flex;gap:8px;flex-wrap:wrap}.m .mono{font-family:var(--mono);font-size:11.5px}
+.bar2{height:4px;background:var(--line);border-radius:2px;margin-top:9px}.bar2 i{display:block;height:100%;background:var(--blue);border-radius:2px}
+.av{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--bg2,var(--green));color:#fff;font:800 9px var(--sans);vertical-align:middle;margin-right:4px}
+.s-inbox{--c:var(--muted)}.s-ready{--c:var(--blue)}.s-run{--c:var(--blue)}.s-disp{--c:var(--green)}.s-pend{--c:var(--blue)}.s-done{--c:var(--green)}.s-rev{--c:var(--amber)}.s-fail{--c:var(--red)}
+table{width:100%;border-collapse:collapse}th{font:800 11px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-align:left;padding:8px 12px 8px 0;border-bottom:2px solid var(--fg)}td{padding:14px 12px 14px 0;border-bottom:1px solid var(--line);vertical-align:top}td b{font-weight:800;font-size:16px}
+.tbl{overflow-x:auto}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:28px}
+.ag{padding:14px 0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:start}
+.ag .av{width:36px;height:36px;font-size:13px}
+.tag{display:inline-block;font:800 10.5px var(--sans);letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:3px;background:var(--soft2);color:var(--muted)}
+.drawer-ov{position:fixed;inset:0;background:color-mix(in srgb,var(--fg) 45%,transparent);z-index:20}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(560px,100%);background:var(--bg);z-index:21;overflow-y:auto;padding:20px 24px 40px;border-left:4px solid var(--fg)}
+.drawer h2{font-weight:900;font-size:26px;line-height:1.15;letter-spacing:-.025em;margin:6px 0 4px;text-wrap:balance}
+.drawer h4{font:900 12px var(--sans);letter-spacing:.08em;text-transform:uppercase;border-top:2px solid var(--fg);padding-top:8px;margin:22px 0 8px}
+.x{float:right;background:none;border:1.5px solid var(--fg);border-radius:4px;padding:4px 12px;font-weight:800}
+.diff{font:12px/1.6 var(--mono);background:var(--soft);border:1px solid var(--line);padding:10px 12px;overflow-x:auto;white-space:pre}.diff .a{color:var(--green)}.diff .d{color:var(--red)}
+.tl{border-left:3px solid var(--line);padding-left:14px;display:grid;gap:12px}.tl div{font-size:14px}.tl b{font-weight:800}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:1100px){.cols{grid-template-columns:repeat(2,minmax(0,1fr))}.two{grid-template-columns:1fr}}
+@media(max-width:640px){.cols{grid-template-columns:1fr}.bar{flex-wrap:wrap;gap:10px}.work{order:3;flex-basis:100%;overflow-x:auto}.chips{margin-left:0}main{padding:16px}}
+</style>
+<header>
+<div class="bar"><a class="brand" href="#"><i>w</i>wissel</a><nav class="work" id="work" aria-label="Work"></nav>
+<div class="tools"><span class="live">12 cards live</span><span>v0.9.14</span><a class="btn" href="#" id="newb">+ New</a></div></div>
+<nav class="setup" id="setup" aria-label="Setup"><span>Setup</span></nav>
+</header>
+<main>
+
+<section id="board">
+<div class="controls"><select id="proj" aria-label="Project"><option>All projects</option><option>wissel</option><option>kijiji-ads</option></select>
+<div class="seg" role="group" aria-label="Board view"><button aria-pressed="true">Lanes</button><button aria-pressed="false">Swimlanes</button></div>
+<label style="font-size:13px;color:var(--muted);font-weight:600"><input type="checkbox"> Show superseded</label>
+<div class="chips" aria-label="Accounts"><span class="chip"><b>claude</b> · adevinta · 62% left</span><span class="chip"><b>claude</b> · personal · 91%</span><span class="chip"><b>codex</b> · 38%</span></div></div>
+<div class="head"><h1>Board</h1><span style="color:var(--muted);font-size:13px;font-weight:600">Updated just now</span></div>
+<div class="needs"><h2>Needs you <span class="tag" style="background:var(--amber);color:#fff">4</span></h2><div class="ngrid">
+<button class="ni s-rev" data-open="d1"><span class="st">Review</span><div class="t" style="font-size:15px">Grant and retry: raise the implementer token budget</div><div class="m">Paused 22 min · wissel</div></button>
+<button class="ni s-rev" data-open="d1"><span class="st">Escalated</span><div class="t" style="font-size:15px">Merge conflict in src/api/server.ts</div><div class="m">Pushback 2 of 3 · wissel</div></button>
+<button class="ni s-fail" data-open="d1"><span class="st">Failed</span><div class="t" style="font-size:15px">Eval harness: --case flag, tests red on CI</div><div class="m">Retry available · wissel</div></button>
+<button class="ni s-rev" data-open="d1"><span class="st">No match</span><div class="t" style="font-size:15px">“Tidy the pipeline editor spacing”</div><div class="m">No agent claimed it · wissel</div></button></div></div>
+
+<div class="cols">
+<div class="col"><h3>Queued <span>3</span></h3>
+<button class="card s-ready" data-open="d1"><span class="st">Ready</span><div class="t">Pipeline editor: lane filter</div><div class="m"><span>wissel</span><span class="mono">#a41f</span><span>2 min ago</span></div></button>
+<button class="card s-ready" data-open="d1"><span class="st">Ready</span><div class="t">Concierge: summarize the week on request</div><div class="m"><span>wissel</span><span class="mono">#9c07</span></div></button>
+<button class="card s-inbox" data-open="d1"><span class="st">Inbox</span><div class="t">Add a CSV export to the retro report</div><div class="m"><span>kijiji-ads</span><span class="mono">#77de</span></div></button></div>
+<div class="col"><h3>Working <span>3</span></h3>
+<button class="card s-run" data-open="d1"><span class="st">Running</span><div class="t">Wissel app: header nav and news-site look</div><div class="m"><span><i class="av" style="--bg2:#4e65da">Im</i>implementer</span><span class="mono">turn 18 / ~30</span></div><div class="bar2"><i style="width:60%"></i></div></button>
+<button class="card s-disp" data-open="d1"><span class="st">Dispatched</span><div class="t">Resume a run after a 429</div><div class="m"><span><i class="av" style="--bg2:#1d798b">Fx</i>fixer</span><span class="mono">starting</span></div></button>
+<button class="card s-disp" data-open="d1"><span class="st">Reviewing</span><div class="t">Where implementer tokens go: proposal</div><div class="m"><span><i class="av" style="--bg2:#914ad9">Rv</i>reviewer</span><span class="mono">pass 1</span></div><div class="bar2"><i style="width:35%"></i></div></button></div>
+<div class="col"><h3>In review <span>2</span></h3>
+<button class="card s-pend" data-open="d1"><span class="st">Pending review</span><div class="t">Concierge seeds the running card after crash recovery</div><div class="m"><span>wissel</span><span class="mono">+212 −38</span></div></button>
+<button class="card s-pend" data-open="d1"><span class="st">Pending review</span><div class="t">Run efficiency 1 to 3: token use, resume, grant and retry</div><div class="m"><span>wissel</span><span class="mono">+640 −91</span></div></button></div>
+<div class="col"><h3>Done <span>5</span></h3>
+<button class="card s-done" data-open="d1"><span class="st">Done</span><div class="t">Eval harness gains a --case flag</div><div class="m"><span>wissel</span><span>9:41 a.m.</span></div></button>
+<button class="card s-done" data-open="d1"><span class="st">Done</span><div class="t">Wissel app 6 of 6: characters, streaks, Wrapped</div><div class="m"><span>wissel</span><span>8:12 a.m.</span></div></button>
+<button class="card s-done" data-open="d1"><span class="st">Done</span><div class="t">Podcast: the week in the pipeline</div><div class="m"><span>wissel</span><span>7:30 a.m.</span></div></button></div>
+</div></section>
+
+<section id="pipelines" hidden>
+<div class="head"><h1>Pipelines</h1><a class="btn" href="#">New pipeline</a></div>
+<p class="lede">Saved pipelines: a graph of agent steps that runs as one unit. Run one and a card appears on the Board.</p>
+<div class="tbl"><table><tr><th>Pipeline</th><th>Steps</th><th>Last run</th><th>Status</th><th></th></tr>
+<tr><td><b>AI news podcast</b><div class="m">Gather, explain, script, make audio</div></td><td>5</td><td>Today 7:30 a.m.</td><td><span class="st s-done">Succeeded</span></td><td><a class="btn sm" href="#">Run</a></td></tr>
+<tr><td><b>World news podcast</b><div class="m">Gather, explain, script, make audio</div></td><td>5</td><td>Yesterday 7:30 a.m.</td><td><span class="st s-done">Succeeded</span></td><td><a class="btn sm" href="#">Run</a></td></tr>
+<tr><td><b>Weekly retro</b><div class="m">Collect sessions, analyze, curate memory</div></td><td>3</td><td>Sunday</td><td><span class="st s-fail">Failed at step 2</span></td><td><a class="btn sm" href="#">Run</a></td></tr>
+<tr><td><b>Review and merge</b><div class="m">Reviewer, integrator, commit message</div></td><td>3</td><td>2 hours ago</td><td><span class="st s-run">Running</span></td><td><a class="btn sm o" href="#">Open canvas</a></td></tr></table></div></section>
+
+<section id="agents" hidden>
+<div class="head"><h1>Agents &amp; skills</h1></div>
+<p class="lede">The routing fleet: what each one does, the harness it runs under, and what it can touch.</p>
+<div class="two"><div><div class="col"><h3 style="margin-bottom:4px">Agents <span>24</span></h3></div>
+<div class="ag"><i class="av" style="--bg2:#4e65da">Im</i><div><b>implementer</b><div class="m">Writes the change, tests and evals in one diff</div></div><span class="tag">claude</span></div>
+<div class="ag"><i class="av" style="--bg2:#914ad9">Rv</i><div><b>reviewer</b><div class="m">Reads the diff, pushes back or approves</div></div><span class="tag">claude</span></div>
+<div class="ag"><i class="av" style="--bg2:#1d798b">Fx</i><div><b>fixer</b><div class="m">Takes a failed card and tries again</div></div><span class="tag">codex</span></div>
+<div class="ag"><i class="av" style="--bg2:#b15425">Cc</i><div><b>concierge</b><div class="m">Answers questions in the app</div></div><span class="tag">claude</span></div></div>
+<div><div class="col"><h3 style="margin-bottom:4px">Skills <span>9</span></h3></div>
+<div class="ag"><i class="av" style="--bg2:#1a7e4c">Sk</i><div><b>commit-message</b><div class="m">Drafts a message from the staged diff</div></div><span class="tag">read-only</span></div>
+<div class="ag"><i class="av" style="--bg2:#1a7e4c">Sk</i><div><b>changelog</b><div class="m">Turns merged cards into release notes</div></div><span class="tag">read-only</span></div>
+<div class="ag"><i class="av" style="--bg2:#1a7e4c">Sk</i><div><b>lint-fix</b><div class="m">Applies formatter and lint fixes</div></div><span class="tag">writes</span></div></div></div></section>
+</main>
+
+<div class="drawer-ov" id="ov" hidden></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dt" hidden>
+<button class="x" id="close" type="button">Close</button>
+<span class="st s-run" style="--c:var(--amber)">Review · needs you</span>
+<h2 id="dt">Grant and retry: raise the implementer token budget</h2>
+<div class="m"><span><i class="av" style="--bg2:#4e65da">Im</i>implementer</span><span>wissel</span><span class="mono">#c3d9</span><span>Paused 22 min</span></div>
+<div class="acts" style="margin-top:16px"><button class="btn" type="button">Approve and retry</button><button class="btn o" type="button">Send back</button><button class="btn o" type="button">Archive</button></div>
+<h4>Description</h4><p style="margin:0">The run stopped after a 429 and needs a larger budget before it resumes. Approve to continue from turn 18, or send it back with instructions.</p>
+<h4>Escalation history</h4><div class="tl"><div><b>9:02</b> Implementer hit the token budget at turn 18.</div><div><b>9:03</b> Reviewer asked for a grant.</div><div><b>9:25</b> Waiting on you.</div></div>
+<h4>Routing decision</h4><p style="margin:0">Matched <b>implementer</b> on “raise the token budget”. Harness: claude (adevinta).</p>
+<h4>Diff</h4><div class="diff"><span class="d">- maxTurnTokens: 120_000</span>
+<span class="a">+ maxTurnTokens: 200_000</span>
+<span class="a">+ resumeAfter429: true</span></div>
+</aside>
+<script>
+(function(){
+  var views=[["board","Board"],["pipelines","Pipelines"],["archive","Archive"]],setups=[["agents","Agents & skills"],["harnesses","Harnesses"],["mcp","MCP servers"],["projects","Projects"],["memory","Memory"],["settings","Settings"]];
+  var work=document.getElementById("work"),setup=document.getElementById("setup"),all=[];
+  function show(id){["board","pipelines","agents"].forEach(function(s){document.getElementById(s).hidden=(s!==id)});all.forEach(function(b){b.el.setAttribute("aria-current",b.id===id?"page":"false")});window.scrollTo(0,0)}
+  function mk(parent,id,label){var b=document.createElement("button");b.textContent=label;b.onclick=function(){show(id)};parent.appendChild(b);all.push({id:id,el:b})}
+  views.forEach(function(v){mk(work,v[0],v[1])});setups.forEach(function(v){mk(setup,v[0],v[1])});
+  var ov=document.getElementById("ov"),dr=document.getElementById("drawer");
+  function openD(){ov.hidden=false;dr.hidden=false;document.getElementById("close").focus()}
+  function closeD(){ov.hidden=true;dr.hidden=true}
+  document.querySelectorAll("[data-open]").forEach(function(c){c.onclick=openD});
+  ov.onclick=closeD;document.getElementById("close").onclick=closeD;
+  document.addEventListener("keydown",function(e){if(e.key==="Escape")closeD()});
+  document.getElementById("newb").onclick=function(e){e.preventDefault()};
+  var h=(location.hash||"").slice(1);show(["board","pipelines","agents"].indexOf(h)>=0?h:"board");
+})();
+</script>
+</body></html>
