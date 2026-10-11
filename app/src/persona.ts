@@ -7,20 +7,22 @@
 import { COLORS, contrastRatio } from "./tokens";
 import type { TaskCard } from "./types";
 
-/** Avatar fills for agents with no colour of their own. Each one is
- *  light enough for a `ground` glyph at 4.5:1 and stands out from the
- *  surfaces at 3:1. The first three are the accent tokens. */
+/** Avatar fills for agents with no colour of their own. Mid-tone on
+ *  purpose: dark enough for a white `ground` glyph at 4.5:1, light
+ *  enough to stand out at 3:1 from the light surfaces and the dark ones
+ *  too, so the same face works in both colour sets. The first three
+ *  are the accent tokens. */
 export const AVATAR_PALETTE = [
   COLORS.accent,
   COLORS.violet,
   COLORS.coral,
-  "#5AD8F2",
-  "#FFC857",
-  "#F28AC8",
-  "#7FE0A8",
-  "#B9C4FF",
-  "#FFB38A",
-  "#E2E86B",
+  "#1D798B",
+  "#914AD9",
+  "#CC2B7C",
+  "#8F691E",
+  "#D32F2F",
+  "#747419",
+  "#B32CCE",
 ] as const;
 
 export interface ManifestPersona {
@@ -33,7 +35,7 @@ export interface Persona {
   color: string;
   /** One or two characters. */
   glyph: string;
-  /** The glyph's colour on that fill: `ground` or `text`. */
+  /** The glyph's colour on that fill: `ground` (white) or `text`. */
   ink: string;
 }
 
@@ -63,8 +65,8 @@ export function derivedGlyph(id: string): string {
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
-/** `ground` on a light fill, `text` on a dark one: whichever reads
- *  better. */
+/** `text` on a light fill, `ground` (white) on a dark one: whichever
+ *  reads better. */
 export function inkFor(color: string): string {
   return contrastRatio(color, COLORS.ground) >= contrastRatio(color, COLORS.text) ? COLORS.ground : COLORS.text;
 }

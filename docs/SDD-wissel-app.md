@@ -41,15 +41,21 @@ New app at **`/app`**, phone first (390 px) and desktop (1440 px).
 - `bun run build:app` (`cd app && npm run build`); `bun run serve` and
   the Playwright web server build it next to `build:editor`
   (test/editor-build-wiring.test.ts extended).
-- **Design tokens** (`app/src/tokens.ts`, CSS custom properties): ground
-  `#0D0E12`, surface `#17191F`, surface-2 `#1F222A`, line `#2A2D36`,
-  text `#F3F1EA`, muted `#A3A6B0`, accent lime `#C8F25A`, violet
-  `#9C8CFF` (you, running), coral `#FF8A5C` (needs you). Dark first; a
-  light theme is a follow-up. Fonts self-hosted via `@fontsource`
-  packages (Bricolage Grotesque display, Geist body, Geist Mono): no
+- **Design tokens** (`app/src/tokens.ts`, CSS custom properties): a
+  news-site look (reference: `docs/mockups/techcrunch/`). Light set on
+  `:root`: ground `#FFFFFF`, surface `#F6F9F7`, surface-2 `#F0F5F2`,
+  line `#D5DDD8`, text `#0F1411`, muted `#566058`, accent green
+  `#1A7E4C`, violet `#4E65DA` (you, running), coral `#B15425` (needs
+  you). Dark set under `prefers-color-scheme: dark`: ground `#0D110E`,
+  surface `#141B16`, surface-2 `#1A241E`, line `#25302A`, text
+  `#F0F4F1`, muted `#98A39B`, accent `#2ED38C`, violet `#A5B4FC`,
+  coral `#FB923C`. Every text pair is contrast tested at 4.5:1 in both
+  sets, and the avatar palette is mid-tone so one face works in both.
+  There is no manual theme toggle in the app. Fonts self-hosted via
+  `@fontsource` packages (Figtree display and body, Geist Mono): no
   Google Fonts call, the app works on the LAN without internet.
 - **Shell**: phone: bottom tab bar (Feed, Ask, Board, Listen, You);
-  desktop ≥ 1024 px: left rail + right "Live" panel (running, needs
+  desktop ≥ 1024 px: a header nav across the top + right "Live" panel (running, needs
   you, landed today). Routes by URL hash (`#/feed`, `#/ask`...), no
   router dependency.
 - **Command palette** (⌘K / Ctrl-K, and a button on phones): jump to a

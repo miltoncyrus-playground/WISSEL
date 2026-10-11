@@ -182,9 +182,12 @@ top bar.
   a read-only card view at `#/board/<id>`, and a link to the full board.
 - **Live.** One shared `EventSource('/events')` keeps every screen
   current.
-- **Look.** Dark design tokens in `app/src/tokens.ts` (contrast checked
-  by a unit test), self-hosted fonts (Bricolage Grotesque, Geist, Geist
-  Mono via `@fontsource`): no internet needed on the LAN.
+- **Look.** A news-site layout (white ground, heavy sans headlines, one
+  green, hairline-ruled lists, header nav on desktop). Light tokens by
+  default and dark ones under `prefers-color-scheme`, both in
+  `app/src/tokens.ts` (contrast checked by a unit test), self-hosted
+  fonts (Figtree, Geist Mono via `@fontsource`): no internet needed on
+  the LAN. Reference mockups: `docs/mockups/techcrunch/`.
 - **Feed.** What happened, newest first, from `GET /feed?limit=&before=`
   (`src/services/feed.ts`, pure `buildFeed`): cards that landed, cards
   that need you (review, escalated, failed with Retry, no match, an MCP

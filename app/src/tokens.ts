@@ -3,31 +3,45 @@
 // properties (tokensToCss) and every stylesheet reads var(--name).
 // test/tokens.test.ts checks every text pair below meets WCAG AA.
 
+/** The light set: the default. News-site white with one green. */
 export const COLORS = {
-  ground: "#0D0E12",
-  surface: "#17191F",
-  "surface-2": "#1F222A",
-  line: "#2A2D36",
-  text: "#F3F1EA",
-  muted: "#A3A6B0",
+  ground: "#FFFFFF",
+  surface: "#F6F9F7",
+  "surface-2": "#F0F5F2",
+  line: "#D5DDD8",
+  text: "#0F1411",
+  muted: "#566058",
   /** Primary actions, the active tab, focus rings. */
-  accent: "#C8F25A",
+  accent: "#1A7E4C",
   /** You, and anything running. */
-  violet: "#9C8CFF",
+  violet: "#4E65DA",
   /** Needs you. */
-  coral: "#FF8A5C",
+  coral: "#B15425",
 } as const;
+
+/** The dark set, for `prefers-color-scheme: dark`. Same names. */
+export const DARK_COLORS: Record<keyof typeof COLORS, string> = {
+  ground: "#0D110E",
+  surface: "#141B16",
+  "surface-2": "#1A241E",
+  line: "#25302A",
+  text: "#F0F4F1",
+  muted: "#98A39B",
+  accent: "#2ED38C",
+  violet: "#A5B4FC",
+  coral: "#FB923C",
+};
 
 export type ColorToken = keyof typeof COLORS;
 
 export const FONTS = {
-  display: '"Bricolage Grotesque", system-ui, sans-serif',
-  body: 'Geist, system-ui, -apple-system, "Segoe UI", sans-serif',
+  display: 'Figtree, system-ui, -apple-system, "Segoe UI", sans-serif',
+  body: 'Figtree, system-ui, -apple-system, "Segoe UI", sans-serif',
   mono: '"Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
 } as const;
 
-/** Every foreground/background pair the app draws text with. Text on a
- *  lime, violet or coral fill uses `ground`. */
+/** Every foreground/background pair the app draws text with, checked in
+ *  both colour sets. Text on a green, indigo or orange fill uses `ground`. */
 export const TEXT_PAIRS: ReadonlyArray<readonly [fg: ColorToken, bg: ColorToken]> = [
   ["text", "ground"],
   ["text", "surface"],
@@ -68,12 +82,28 @@ export function contrastRatio(a: string, b: string): number {
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
 }
 
-/** The `:root` block of CSS custom properties: `--ground`, ...,
- *  `--font-display`, `--font-body`, `--font-mono`. */
+/** One colour set as custom-property lines. */
+function colorLines(set: Record<string, string>, indent: string): string[] {
+  return Object.entries(set).map(([name, value]) => `${indent}--${name}: ${value};`);
+}
+
+/** The CSS custom properties: the light set on `:root`, the dark set
+ *  under `prefers-color-scheme: dark`, and `--font-display`,
+ *  `--font-body`, `--font-mono`. */
 export function tokensToCss(): string {
-  const lines = [
-    ...Object.entries(COLORS).map(([name, value]) => `  --${name}: ${value};`),
-    ...Object.entries(FONTS).map(([name, value]) => `  --font-${name}: ${value};`),
-  ];
-  return `:root {\n  color-scheme: dark;\n${lines.join("\n")}\n}\n`;
+  const fonts = Object.entries(FONTS).map(([name, value]) => `  --font-${name}: ${value};`);
+  return [
+    ":root {",
+    "  color-scheme: light;",
+    ...colorLines(COLORS, "  "),
+    ...fonts,
+    "}",
+    "@media (prefers-color-scheme: dark) {",
+    "  :root {",
+    "    color-scheme: dark;",
+    ...colorLines(DARK_COLORS, "    "),
+    "  }",
+    "}",
+    "",
+  ].join("\n");
 }

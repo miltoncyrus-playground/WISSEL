@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { chipsOf } from "../src/ask";
 import { AVATAR_PALETTE, derivedGlyph, hashId, inkFor, personaOf, workingAgents } from "../src/persona";
-import { COLORS, contrastRatio } from "../src/tokens";
+import { COLORS, DARK_COLORS, contrastRatio } from "../src/tokens";
 import type { TaskCard } from "../src/types";
 
 // docs/SDD-wissel-app.md §3.6: agent faces.
@@ -14,9 +14,11 @@ const MANIFEST_IDS = [
 ];
 
 describe("the palette", () => {
-  test.each([...AVATAR_PALETTE])("%s takes a ground glyph at 4.5:1 and stands out from every surface at 3:1", (color) => {
+  test.each([...AVATAR_PALETTE])("%s takes a ground glyph at 4.5:1 and stands out from every surface, light and dark, at 3:1", (color) => {
     expect(contrastRatio(color, COLORS.ground)).toBeGreaterThanOrEqual(4.5);
-    for (const bg of [COLORS.ground, COLORS.surface, COLORS["surface-2"]]) expect(contrastRatio(color, bg)).toBeGreaterThanOrEqual(3);
+    for (const set of [COLORS, DARK_COLORS]) {
+      for (const bg of [set.ground, set.surface, set["surface-2"]]) expect(contrastRatio(color, bg)).toBeGreaterThanOrEqual(3);
+    }
     expect(inkFor(color)).toBe(COLORS.ground);
   });
 
@@ -61,9 +63,9 @@ describe("derived faces", () => {
 
 describe("manifest personas", () => {
   test("the manifest's colour and glyph win; what it leaves out is derived", () => {
-    expect(personaOf("implementer", { color: "#c8f25a", glyph: "Im" })).toEqual({ color: "#C8F25A", glyph: "Im", ink: COLORS.ground });
+    expect(personaOf("implementer", { color: "#c8f25a", glyph: "Im" })).toEqual({ color: "#C8F25A", glyph: "Im", ink: COLORS.text });
     expect(personaOf("triager", { glyph: "🦉" })).toEqual({ ...personaOf("triager"), glyph: "🦉" });
-    expect(personaOf("triager", { color: "#FFC857" })).toEqual({ color: "#FFC857", glyph: "Tr", ink: COLORS.ground });
+    expect(personaOf("triager", { color: "#FFC857" })).toEqual({ color: "#FFC857", glyph: "Tr", ink: COLORS.text });
   });
 
   test("a malformed colour or glyph falls back to the derived one", () => {
@@ -72,9 +74,9 @@ describe("manifest personas", () => {
     expect(personaOf("triager", { glyph: "  " })).toEqual(derived);
   });
 
-  test("a dark manifest colour gets a light glyph that reads", () => {
+  test("a dark manifest colour gets a white glyph that reads", () => {
     const p = personaOf("x", { color: "#203040" });
-    expect(p.ink).toBe(COLORS.text);
+    expect(p.ink).toBe(COLORS.ground);
     expect(contrastRatio(p.color, p.ink)).toBeGreaterThanOrEqual(4.5);
   });
 });

@@ -117,7 +117,7 @@ test("vite builds the app for the /app mount point", async () => {
 
 test("fonts are self-hosted @fontsource packages: no Google Fonts anywhere in app/", async () => {
   const pkg = JSON.parse(await read("app/package.json")) as { dependencies: Record<string, string> };
-  for (const name of ["@fontsource/bricolage-grotesque", "@fontsource/geist", "@fontsource/geist-mono"]) {
+  for (const name of ["@fontsource/figtree", "@fontsource/geist-mono"]) {
     expect(pkg.dependencies[name], name).toBeDefined();
   }
   const files = ["app/index.html", ...(await readdir(join(root, "app/src"), { recursive: true })).filter((f) => /\.(tsx?|css)$/.test(f)).map((f) => `app/src/${f}`)];

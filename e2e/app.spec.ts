@@ -85,8 +85,7 @@ for (const vp of VIEWPORTS) {
         });
         return out;
       });
-      expect(loaded).toContain("Geist");
-      expect(loaded).toContain("Bricolage Grotesque");
+      expect(loaded).toContain("Figtree");
       expect(errors).toEqual([]);
     });
 

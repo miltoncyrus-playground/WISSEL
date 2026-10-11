@@ -1,24 +1,48 @@
 import { describe, expect, test } from "vitest";
-import { COLORS, TEXT_PAIRS, contrastRatio, relativeLuminance, tokensToCss } from "../src/tokens";
+import { COLORS, DARK_COLORS, TEXT_PAIRS, contrastRatio, relativeLuminance, tokensToCss } from "../src/tokens";
 
 describe("design tokens (SDD §3.1)", () => {
-  test("are exactly the spec's colours", () => {
+  test("light set is exactly the spec's colours", () => {
     expect(COLORS).toEqual({
-      ground: "#0D0E12",
-      surface: "#17191F",
-      "surface-2": "#1F222A",
-      line: "#2A2D36",
-      text: "#F3F1EA",
-      muted: "#A3A6B0",
-      accent: "#C8F25A",
-      violet: "#9C8CFF",
-      coral: "#FF8A5C",
+      ground: "#FFFFFF",
+      surface: "#F6F9F7",
+      "surface-2": "#F0F5F2",
+      line: "#D5DDD8",
+      text: "#0F1411",
+      muted: "#566058",
+      accent: "#1A7E4C",
+      violet: "#4E65DA",
+      coral: "#B15425",
     });
   });
 
-  test.each(TEXT_PAIRS.map(([fg, bg]) => [fg, bg]))("%s text on %s meets 4.5:1", (fg, bg) => {
-    const ratio = contrastRatio(COLORS[fg as keyof typeof COLORS], COLORS[bg as keyof typeof COLORS]);
-    expect(ratio).toBeGreaterThanOrEqual(4.5);
+  test("dark set has the same names as the light set and is exactly the spec's colours", () => {
+    expect(Object.keys(DARK_COLORS).sort()).toEqual(Object.keys(COLORS).sort());
+    expect(DARK_COLORS).toEqual({
+      ground: "#0D110E",
+      surface: "#141B16",
+      "surface-2": "#1A241E",
+      line: "#25302A",
+      text: "#F0F4F1",
+      muted: "#98A39B",
+      accent: "#2ED38C",
+      violet: "#A5B4FC",
+      coral: "#FB923C",
+    });
+  });
+
+  describe.each([
+    ["light", COLORS],
+    ["dark", DARK_COLORS],
+  ] as const)("%s set", (_name, set) => {
+    test.each(TEXT_PAIRS.map(([fg, bg]) => [fg, bg]))("%s text on %s meets 4.5:1", (fg, bg) => {
+      const ratio = contrastRatio(set[fg as keyof typeof COLORS], set[bg as keyof typeof COLORS]);
+      expect(ratio).toBeGreaterThanOrEqual(4.5);
+    });
+
+    test("the hairline is visible against every surface (at least 1.1:1)", () => {
+      for (const bg of ["ground", "surface", "surface-2"] as const) expect(contrastRatio(set.line, set[bg])).toBeGreaterThanOrEqual(1.1);
+    });
   });
 
   test("covers every text colour on every background it is drawn on", () => {
@@ -28,12 +52,22 @@ describe("design tokens (SDD §3.1)", () => {
     }
   });
 
-  test("tokensToCss writes every token as a custom property", () => {
+  test("tokensToCss writes the light set on :root and the dark set under prefers-color-scheme", () => {
     const css = tokensToCss();
-    for (const [name, value] of Object.entries(COLORS)) expect(css).toContain(`--${name}: ${value};`);
+    const [light, dark] = css.split("@media (prefers-color-scheme: dark)");
+    expect(dark).toBeDefined();
+    for (const [name, value] of Object.entries(COLORS)) expect(light).toContain(`--${name}: ${value};`);
+    for (const [name, value] of Object.entries(DARK_COLORS)) expect(dark).toContain(`--${name}: ${value};`);
+    expect(light).toContain("color-scheme: light;");
+    expect(dark).toContain("color-scheme: dark;");
     expect(css).toContain("--font-display:");
     expect(css).toContain("--font-body:");
     expect(css).toContain("--font-mono:");
+  });
+
+  test("dark tokens never appear outside the media block (no colour defined only in one theme)", () => {
+    const [light] = tokensToCss().split("@media");
+    for (const value of Object.values(DARK_COLORS)) expect(light).not.toContain(value);
   });
 });
 

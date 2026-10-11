@@ -28,6 +28,9 @@ export function Rail({ current, onOpenPalette }: NavProps) {
   return (
     <nav className="rail" aria-label="Screens">
       <a className="brand" href={routeHash({ screen: "ask" })}>
+        <span className="brand-mark" aria-hidden="true">
+          w
+        </span>
         wissel
       </a>
       <button type="button" className="rail-search" onClick={onOpenPalette} aria-keyshortcuts="Meta+K Control+K">
@@ -58,6 +61,9 @@ export function TopBar({ title, onOpenPalette }: { title: string; onOpenPalette:
   return (
     <header className="topbar">
       <a className="brand" href={routeHash({ screen: "ask" })}>
+        <span className="brand-mark" aria-hidden="true">
+          w
+        </span>
         wissel
       </a>
       <span className="topbar-title">{title}</span>
