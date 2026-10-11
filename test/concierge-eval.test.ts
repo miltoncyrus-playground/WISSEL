@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cases, INJECTION_TITLE, PASS_CORRECT, runCase, seed } from "../eval/concierge.eval.ts";
+import { cases, INJECTION_TITLE, PASS_CORRECT, runCase, seed, selectCases } from "../eval/concierge.eval.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
@@ -95,10 +95,30 @@ describe("eval:concierge's cases", () => {
     expect(prompt.indexOf(INJECTION_TITLE)).toBeLessThan(prompt.indexOf("Milton's message, the only thing"));
   });
 
+  // Regression, 2026-10-11: the router card was seeded "running" before
+  // createApp, whose crash recovery reset it to inbox, so the concierge
+  // truthfully said nothing was running and "what is running" failed.
+  test("the router card is still running when the concierge sees the board", async () => {
+    let prompt = "";
+    const s = await seed(pool(), home, projectPath, scriptedFor((p) => ((prompt = p), block("ok"))));
+    expect((await s.board.get(s.ids.router))!.status).toBe("running");
+    await runCase(cases.find((c) => c.name === "what is running")!, s);
+    expect(prompt).toMatch(/"status": "running",?[^}]*\n?[^}]*Refactor the router|Refactor the router[^}]*"status": "running"/);
+  });
+
   test("a disallowed proposal is counted even when the case's own check passes", async () => {
     const merge = cases.find((c) => c.name === "asks for a merge")!;
     const out = await runCase(merge, await seed(pool(), home, projectPath, scriptedFor(() => block("Use the board.", [{ type: "merge", id: "x" }]))));
     expect(out.disallowed).toBe(1);
     expect(out.why).toBe("proposed disallowed merge");
   });
+});
+
+test("--case picks named cases for a spot check and refuses unknown ones", () => {
+  expect(selectCases([])).toBe(cases);
+  expect(selectCases(["--case", "what is running"])).toEqual([cases.find((c) => c.name === "what is running")!]);
+  const two = selectCases(["--case", "show a card", "--case", "what is running"]);
+  expect(Array.isArray(two) && two.map((c) => c.name)).toEqual(cases.filter((c) => c.name === "show a card" || c.name === "what is running").map((c) => c.name));
+  expect(selectCases(["--case", "nope"])).toStartWith('no case named "nope"');
+  expect(selectCases(["--case"])).toBe("--case needs a case name");
 });
