@@ -1,0 +1,124 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>
+<title>Wissel TechCrunch Mockup</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800;900&display=swap">
+<style>
+/* Layout: news-site header with a sticky nav bar, 8/4 split (stream left, rail right) on laptop, bottom tab bar and one column on phone. */
+:root{--bg:#fff;--fg:#0f1411;--muted:#5d665f;--line:#e3e7e4;--green:#00a562;--green-ink:#007a49;--soft:#eef7f2;--thumb:#dfe9e3;--warn:#c2410c;
+--sans:"Figtree","Helvetica Neue",Arial,sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0d110e;--fg:#f0f4f1;--muted:#98a39b;--line:#25302a;--green:#2ed38c;--green-ink:#2ed38c;--soft:#12201a;--thumb:#1b2a22;--warn:#fb923c;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0d110e;--fg:#f0f4f1;--muted:#98a39b;--line:#25302a;--green:#2ed38c;--green-ink:#2ed38c;--soft:#12201a;--thumb:#1b2a22;--warn:#fb923c;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:16px/1.5 var(--sans);padding-block:0 80px;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}button{font:inherit;color:inherit}
+header{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
+.bar{max-width:1200px;margin:0 auto;padding:10px 16px;display:flex;align-items:center;gap:28px}
+.brand{display:flex;align-items:center;gap:8px;font-weight:900;font-size:22px;letter-spacing:-.03em}
+.brand i{display:grid;place-items:center;width:30px;height:30px;background:var(--green);color:#fff;font-style:normal;font-size:19px;border-radius:4px}
+nav.top{display:flex;gap:4px;flex:1}
+nav.top button,.tabs button{all:unset;cursor:pointer}
+nav.top button{padding:8px 14px;font-weight:700;font-size:14px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);border-radius:4px}
+nav.top button[aria-current="page"]{color:var(--fg);box-shadow:inset 0 -3px 0 var(--green)}
+nav.top button:hover{color:var(--fg)}
+:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+.search{margin-left:auto;display:flex;gap:10px;align-items:center;border:1px solid var(--line);border-radius:4px;padding:7px 12px;color:var(--muted);font-size:14px}
+.search kbd{font:600 11px var(--sans);border:1px solid var(--line);padding:1px 6px;border-radius:3px}
+.tabs{display:none}
+main{max-width:1200px;margin:0 auto;padding:24px 16px}
+.split{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:40px}
+h1{font-weight:900;font-size:clamp(30px,4vw,44px);line-height:1.08;letter-spacing:-.03em;margin:0 0 4px;text-wrap:balance}
+h2{font-weight:800;font-size:20px;line-height:1.25;letter-spacing:-.015em;margin:4px 0 0;text-wrap:balance}
+.sec{display:flex;justify-content:space-between;align-items:baseline;border-top:4px solid var(--fg);padding-top:8px;margin:0 0 4px}
+.sec h3{margin:0;font-weight:900;font-size:22px;letter-spacing:-.02em}.sec span{font-size:13px;color:var(--muted);font-weight:600}
+.cat{font-weight:800;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--green-ink)}.cat.w{color:var(--warn)}
+.meta{font-size:13px;color:var(--muted);font-weight:500;margin-top:6px}
+.lead{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:24px;padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.thumb{aspect-ratio:16/9;max-width:100%;background:var(--thumb);border-radius:4px;display:grid;place-items:center;font-weight:800;color:var(--green-ink);font-size:13px;letter-spacing:.06em;text-transform:uppercase;background-image:repeating-linear-gradient(135deg,transparent 0 14px,color-mix(in srgb,var(--green) 10%,transparent) 14px 15px)}
+.lead h2{font-size:clamp(24px,2.6vw,32px);line-height:1.12}
+.lead p{color:var(--muted);margin:10px 0 0}
+.row{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:20px;padding:20px 0;border-bottom:1px solid var(--line)}
+.row .thumb{order:2;aspect-ratio:3/2}
+.btn{display:inline-block;background:var(--green);color:#fff;font-weight:800;font-size:14px;padding:10px 18px;border-radius:4px;margin:14px 8px 0 0;border:0;cursor:pointer}.btn.o{background:transparent;color:var(--fg);box-shadow:inset 0 0 0 1.5px var(--fg)}
+[data-theme="dark"] .btn,:root:not([data-theme="light"]) .btn{color:#06110b}
+.box{background:var(--soft);border-top:4px solid var(--green);padding:14px 16px;margin-bottom:28px}
+.box .item{padding:12px 0;border-bottom:1px solid var(--line)}.box .item:last-child{border:0;padding-bottom:0}
+.rank{list-style:none;margin:0;padding:0}.rank li{display:grid;grid-template-columns:34px 1fr auto;gap:8px;align-items:baseline;padding:12px 0;border-bottom:1px solid var(--line);font-weight:700}
+.rank b{font-weight:900;font-size:22px;color:var(--green-ink)}.rank span{color:var(--muted);font-weight:600;font-size:14px;font-variant-numeric:tabular-nums}
+.chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:16px}.chips a{flex:none;border:1.5px solid var(--fg);border-radius:999px;padding:6px 14px;font-weight:700;font-size:14px}.chips a.n{background:var(--fg);color:var(--bg)}
+.q{background:var(--soft);border-radius:14px 14px 4px 14px;padding:14px 18px;max-width:80%;margin:20px 0 20px auto;font-weight:600}
+.a{max-width:68ch}.a p{margin:10px 0}
+.cite{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.cite a{font-size:13px;font-weight:700;color:var(--green-ink);border:1px solid var(--line);padding:3px 10px;border-radius:999px}
+.compose{display:flex;gap:10px;margin-top:28px;border:2px solid var(--fg);border-radius:6px;padding:8px}.compose input{flex:1;min-width:0;border:0;background:transparent;color:var(--fg);font:500 17px var(--sans);outline:0;padding:6px 8px}.compose .btn{margin:0}
+.lanes{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:24px}
+.card{padding:14px 0;border-bottom:1px solid var(--line)}.card h2{font-size:17px}
+.tag{display:inline-block;font-weight:800;font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:2px 8px;border-radius:3px;background:var(--green);color:#fff;margin-right:6px}[data-theme="dark"] .tag,:root:not([data-theme="light"]) .tag{color:#06110b}
+.tag.w{background:var(--warn);color:#fff}.tag.g{background:transparent;color:var(--muted);box-shadow:inset 0 0 0 1px var(--line)}
+.bartrack{height:5px;background:var(--line);border-radius:3px;margin-top:10px}.bartrack i{display:block;height:100%;background:var(--green);border-radius:3px}
+.player{background:var(--fg);color:var(--bg);border-radius:8px;padding:24px;display:grid;gap:14px}
+.player .cat{color:var(--green)}.player h1{font-size:clamp(26px,3vw,36px)}.player .scrub{height:6px;background:color-mix(in srgb,var(--bg) 25%,transparent);border-radius:3px}.player .scrub i{display:block;height:100%;width:38%;background:var(--green);border-radius:3px}
+.player .t{display:flex;justify-content:space-between;font-size:13px;font-weight:600;font-variant-numeric:tabular-nums;opacity:.8}.player .c{display:flex;gap:12px;align-items:center}
+.player .c .btn{margin:0}.player .c span{font-weight:700}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:8px 0 28px}.stat{background:var(--soft);border-top:4px solid var(--green);padding:14px 16px}.stat b{display:block;font-weight:900;font-size:clamp(36px,5vw,56px);line-height:1;letter-spacing:-.03em;font-variant-numeric:tabular-nums}.stat span{font-weight:700;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.streak{display:grid;grid-template-columns:repeat(14,1fr);gap:5px}.streak i{aspect-ratio:1;border-radius:3px;background:var(--line)}.streak i.f{background:var(--green)}.streak i.t{box-shadow:inset 0 0 0 2px var(--green);background:transparent}
+.set{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--line);font-weight:600}.set span+span{color:var(--muted)}
+.callout{font-weight:900;font-size:clamp(22px,3vw,30px);line-height:1.15;letter-spacing:-.02em;margin:28px 0;padding-left:16px;border-left:6px solid var(--green);text-wrap:balance}
+@media(max-width:900px){.split{display:block}.lanes{grid-template-columns:1fr}.lead{grid-template-columns:1fr}nav.top,.search kbd,.search span{display:none}.search{padding:7px 10px}.row{grid-template-columns:minmax(0,1fr) 96px;gap:14px}.rail{margin-top:32px}
+.tabs{display:grid;grid-template-columns:repeat(5,1fr);position:fixed;left:0;right:0;bottom:0;background:var(--bg);border-top:1px solid var(--line);padding:4px 0 calc(8px + env(safe-area-inset-bottom,0px));z-index:6}
+.tabs button{text-align:center;padding:10px 0;font-weight:700;font-size:12px;color:var(--muted)}.tabs button[aria-current="page"]{color:var(--green-ink);box-shadow:inset 0 3px 0 var(--green)}}
+@media(prefers-reduced-motion:no-preference){nav.top button{transition:color .15s}}
+</style>
+<header><div class="bar"><a class="brand" href="#"><i>w</i>wissel</a><nav class="top" id="nav" aria-label="Screens"></nav><span class="search"><span>Search or jump</span><kbd>Ctrl K</kbd>⌕</span></div></header>
+<main>
+
+<section id="feed"><div class="chips"><a class="n" href="#">Landed 4</a><a class="n" href="#">Needs you 2</a><a href="#">Podcasts 3</a><a href="#">Agents 6</a></div>
+<div class="split"><div>
+<div class="lead"><div class="thumb">Diff · 14 files</div><div><div class="cat">Landed · Implementer</div><h2>Resume after a 429 now picks up where the run stopped</h2><p>The implementer no longer restarts from turn one when the provider asks it to wait. Tests and evals shipped in the same commit.</p><div class="meta">Card 6140ea5 · 2 hours ago</div></div></div>
+<div class="sec"><h3>Latest</h3><span>Live</span></div>
+<article class="row"><div><div class="cat">Landed · Concierge</div><h2>Concierge seeds the running card after crash recovery</h2><div class="meta">Yesterday, 8:12 a.m.</div></div><div class="thumb">Fix</div></article>
+<article class="row"><div><div class="cat">Review · Docs</div><h2>Where implementer tokens go: turns by context, work units and context packs</h2><div class="meta">A proposal, not built · Yesterday</div></div><div class="thumb">Proposal</div></article>
+<article class="row"><div><div class="cat">Landed · Verifier</div><h2>Eval harness gains a --case flag</h2><div class="meta">Friday</div></div><div class="thumb">Eval</div></article>
+<article class="row"><div><div class="cat">Landed · Implementer</div><h2>Wissel app 6 of 6: agent characters, streaks and Wissel Wrapped</h2><div class="meta">Friday</div></div><div class="thumb">App</div></article>
+</div>
+<aside class="rail"><div class="box"><div class="sec" style="border-color:transparent;padding:0"><h3>Needs you</h3><span>2</span></div>
+<div class="item"><div class="cat w">Paused 22 min</div><h2>Grant and retry: approve the new token budget?</h2><a class="btn" href="#">Approve</a><a class="btn o" href="#">Read first</a></div>
+<div class="item"><div class="cat w">Decide</div><h2>Efficiency proposal, part 2</h2><div class="meta">Two options, trade-offs written up</div></div></div>
+<div class="sec"><h3>Top agents</h3><span>Cards landed</span></div><ol class="rank"><li><b>1</b>Implementer<span>141</span></li><li><b>2</b>Concierge<span>48</span></li><li><b>3</b>Verifier<span>25</span></li></ol>
+<div class="sec" style="margin-top:28px"><h3>Listen</h3><span>11 min</span></div><div class="row" style="grid-template-columns:1fr;border:0"><div><div class="cat">Podcast</div><h2>The week in the pipeline</h2><div class="meta">Seven cards shipped, one reverted, a quiet Thursday.</div></div></div></aside></div></section>
+
+<section id="ask" hidden><div class="split"><div><h1>Ask wissel</h1><div class="meta" style="margin:0">Ask about a card, a run, or what shipped this week.</div>
+<div class="q">Why did card 6140ea5 take so many tokens?</div>
+<div class="a"><div class="cat">Wissel</div><p>Most of it was context, not output. The implementer re-read the same four files on each of 31 turns, so input tokens grew with every step while the diff stayed small.</p><p>The fix that landed trims the pack to the files a unit touches and resumes after a 429 instead of restarting. Measured on the app cards, the run costs roughly half what it did.</p><div class="cite"><a href="#">Card 6140ea5</a><a href="#">Proposal 5c4d5af</a><a href="#">Run log</a></div></div>
+<form class="compose" onsubmit="return false"><input id="askin" placeholder="Ask wissel" aria-label="Ask wissel"><button class="btn" type="button">Send</button></form></div>
+<aside class="rail"><div class="sec"><h3>Recent</h3><span>4</span></div><ol class="rank"><li><b>·</b>What is waiting on me?<span></span></li><li><b>·</b>Summarize the week<span></span></li><li><b>·</b>Which agent reverted 4c2?<span></span></li></ol></aside></div></section>
+
+<section id="board" hidden><h1 style="margin-bottom:16px">Board</h1><div class="lanes">
+<div><div class="sec"><h3>Running</h3><span>3</span></div>
+<div class="card"><span class="tag">Live</span><h2 style="margin-top:6px">Wissel app 6/6: Wrapped and streaks</h2><div class="meta">Implementer · turn 18 of about 30</div><div class="bartrack"><i style="width:60%"></i></div></div>
+<div class="card"><span class="tag">Live</span><h2 style="margin-top:6px">Concierge: resume after crash</h2><div class="meta">Implementer · turn 7</div><div class="bartrack"><i style="width:23%"></i></div></div>
+<div class="card"><span class="tag">Live</span><h2 style="margin-top:6px">Eval harness: add --case</h2><div class="meta">Verifier · 4 of 9</div><div class="bartrack"><i style="width:44%"></i></div></div></div>
+<div><div class="sec"><h3>Needs you</h3><span>2</span></div>
+<div class="card"><span class="tag w">Approve</span><h2 style="margin-top:6px">Grant and retry: token budget</h2><div class="meta">Paused 22 min</div></div>
+<div class="card"><span class="tag w">Decide</span><h2 style="margin-top:6px">Efficiency proposal, part 2</h2><div class="meta">Two options written up</div></div></div>
+<div><div class="sec"><h3>Review</h3><span>1</span></div><div class="card"><span class="tag g">Read</span><h2 style="margin-top:6px">Where implementer tokens go</h2><div class="meta">Docs only</div></div></div>
+<div><div class="sec"><h3>Done today</h3><span>5</span></div><div class="card"><h2>Run efficiency 1 to 3</h2><div class="meta">Landed 9:41 a.m.</div></div><div class="card"><h2>Seed running card after recovery</h2><div class="meta">Landed 8:12 a.m.</div></div><div class="card"><h2>Pipeline editor: lane filter</h2><div class="meta">Landed 7:30 a.m.</div></div></div>
+</div></section>
+
+<section id="listen" hidden><div class="split"><div><div class="player"><div class="cat">Now playing</div><h1>The week in the pipeline</h1><div>Seven cards shipped, one reverted, and a quiet Thursday.</div><div><div class="scrub"><i></i></div><div class="t" style="margin-top:6px"><span>4:12</span><span>−6:48</span></div></div><div class="c"><span>−15</span><button class="btn" type="button">Pause</button><span>+30</span></div></div></div>
+<aside class="rail"><div class="sec"><h3>Earlier</h3><span>2</span></div><article class="row" style="grid-template-columns:1fr"><div><div class="cat">Oct 4 · 9 min</div><h2>Why the agents argued about tokens</h2></div></article><article class="row" style="grid-template-columns:1fr"><div><div class="cat">Sep 27 · 13 min</div><h2>Six cards to a working app</h2></div></article></aside></div></section>
+
+<section id="you" hidden><div class="split"><div><div class="cat">Wissel Wrapped · 2026</div><h1>Milton Cyrus</h1><div class="meta" style="margin:0 0 20px">214 cards shipped since March, most of them before lunch.</div>
+<div class="stats"><div class="stat"><b>214</b><span>Landed</span></div><div class="stat"><b>12</b><span>Day streak</span></div><div class="stat"><b>31</b><span>Podcasts</span></div></div>
+<div class="sec"><h3>This fortnight</h3><span>12 of 14 days</span></div><div class="streak" style="margin-top:12px"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="t"></i></div>
+<div class="callout">The implementer is your most prolific author, and the verifier your harshest editor.</div></div>
+<aside class="rail"><div class="sec"><h3>Agents</h3><span>Cards landed</span></div><ol class="rank"><li><b>1</b>Implementer<span>141</span></li><li><b>2</b>Concierge<span>48</span></li><li><b>3</b>Verifier<span>25</span></li></ol>
+<div class="sec" style="margin-top:28px"><h3>Settings</h3></div><div class="set"><span>Notifications</span><span>On</span></div><div class="set"><span>Daily podcast</span><span>7:30 a.m.</span></div><div class="set"><span>Appearance</span><span>Match system</span></div></aside></div></section>
+</main>
+<nav class="tabs" id="tabs" aria-label="Screens"></nav>
+<script>
+(function(){
+  var ids=["feed","ask","board","listen","you"],names=["Feed","Ask","Board","Listen","You"],navs=[document.getElementById("nav"),document.getElementById("tabs")];
+  function show(id){ids.forEach(function(s,i){document.getElementById(s).hidden=s!==id;navs.forEach(function(n){n.children[i].setAttribute("aria-current",s===id?"page":"false")})});window.scrollTo(0,0);}
+  navs.forEach(function(n){ids.forEach(function(s,i){var b=document.createElement("button");b.textContent=names[i];b.onclick=function(){show(s)};n.appendChild(b);});});
+  var h=(location.hash||"").slice(1);show(ids.indexOf(h)>=0?h:"feed");
+})();
+</script>
+</body></html>
