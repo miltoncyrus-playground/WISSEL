@@ -83,6 +83,48 @@ cut cost by about a third and wall clock to well under half.
 - **Fewer, bigger cards.** Saves some exploration but raises the odds a
   card is cut by the limit, the most expensive failure here.
 
+## Addendum: what an implementer run actually spends on (measured)
+
+From the `claude -p` transcripts in `~/.wissel/task-output/` (cards 3, 4, 6):
+
+| Card | Turns | Cache-read tokens | Context written | Output | SDD reads | Files read |
+|---|---|---|---|---|---|---|
+| 3 audio | 136 | 13.5M | 227k | 98k | 2 | 16 |
+| 4 Ask | 192 | 20.0M | 268k | 100k | 3 | 33 |
+| 6 characters | 156 | 19.7M | 255k | 112k | 2 | 10 |
+
+- Cost is driven by **turns x context size**: every turn re-reads the
+  whole conversation from cache (20M / 192 turns = about 104k tokens a
+  turn on card 4). A session twice as long costs roughly four times as
+  much.
+- **The SDD is not the main cost.** Agents read it 2 to 3 times, about
+  6k tokens each: under 10% of the context. Pasting only the card's
+  section would save that 10%.
+- **The agents don't read the whole codebase.** 10 to 33 files a card.
+  What fills the context is tool output: on card 4, 70 test runs (about
+  60k tokens of output) and 61 grep/cat/sed calls (about 70k), plus
+  large files read whole (`src/api/server.ts`, 1903 lines, 15k tokens a
+  read).
+
+Levers, in expected impact order:
+
+1. **Smaller work units** (Milton's idea, for a different reason than
+   the SDD): halving a session's turns roughly halves its average
+   context, so two half-size cards cost much less than one. A planning
+   step splits each SDD section into units of about 50 to 80 turns, each
+   with a context pack: the SDD excerpt, the files and functions to
+   touch, and the test command for just that unit.
+2. **Quiet, targeted tests**: run only the affected test files, print
+   failures plus the summary line, not the full runner output.
+   `scripts/e2e-affected-map.ts` already does this for e2e.
+3. **Repo map instead of exploration**: a generated file listing each
+   module's exports and one-line purpose (deterministic, rebuilt on
+   commit), put in the context pack so agents grep less and read with
+   offset/limit.
+4. **Split `src/api/server.ts` into route modules**, as CLAUDE.md's
+   services-first rule already asks: every card reads it, at 15k tokens
+   a time.
+
 ## When picking this up
 
 Build these as wissel cards only when there is usage headroom: a card
