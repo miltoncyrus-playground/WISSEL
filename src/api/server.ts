@@ -45,6 +45,7 @@ import { getVersionInfo } from "../core/version.ts";
 import { installShutdownHandlers } from "../executors/child-processes.ts";
 import { DEFAULT_APP_DIST, isAppPath, serveAppAsset } from "./serve-app.ts";
 import { createFeedSource } from "../services/feed-sources.ts";
+import { buildWrapped, WRAPPED_DEFAULT_PERIOD, WRAPPED_PERIOD_MAX_CHARS } from "../services/wrapped.ts";
 import { parseCursor } from "../services/feed.ts";
 import { AskError, createConcierge, type AskEvent } from "../services/concierge.ts";
 import { SqliteConversationStore } from "../services/conversations.ts";
@@ -932,6 +933,17 @@ export function createApp(
         const limit = rawLimit === null ? 10 : Number(rawLimit);
         if (!Number.isInteger(limit) || limit < 1 || limit > 50) return json({ error: "limit must be a whole number from 1 to 50" }, 400);
         return json(await feed.podcasts(limit));
+      }
+
+      // The app's You tab (docs/SDD-wissel-app.md §3.6): Wissel Wrapped
+      // for `period` (`last N days` or `since YYYY-MM-DD`, else the last
+      // 7 days), built on the retrospective's digest (wrapped.ts). Reads
+      // git through the read-only CommandRunner only.
+      if (url.pathname === "/wrapped" && req.method === "GET") {
+        const period = url.searchParams.get("period") ?? WRAPPED_DEFAULT_PERIOD;
+        if (period.length > WRAPPED_PERIOD_MAX_CHARS) return json({ error: `period must be at most ${WRAPPED_PERIOD_MAX_CHARS} characters` }, 400);
+        const deps = { board: board as Board, pipelines, telemetryPath: telemetry?.filePath, runner: commandRunner, agentModel: (id: string) => registry.get(id)?.costProfile.model };
+        return json(await buildWrapped(deps, period, new Date()));
       }
 
       if (url.pathname === "/route/preview" && req.method === "POST") {

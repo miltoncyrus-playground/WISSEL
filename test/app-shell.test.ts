@@ -66,6 +66,15 @@ test("app/src/types.ts's Ask types match the server's (card 4)", async () => {
   expect(appAudio).toBe(serverAudio);
 });
 
+test("app/src/types.ts Wrapped and WrappedStreak match src/services/wrapped.ts and streaks.ts (card 6)", async () => {
+  const app = await read("app/src/types.ts");
+  expect(fieldsOf(app, "Wrapped")).toEqual(fieldsOf(await read("src/services/wrapped.ts"), "Wrapped"));
+  expect(fieldsOf(app, "WrappedStreak")).toEqual(fieldsOf(await read("src/services/streaks.ts"), "Streak"));
+  const { WRAPPED_PERIODS } = await import("../app/src/wrapped.ts");
+  const { WRAPPED_DEFAULT_PERIOD } = await import("../src/services/wrapped.ts");
+  expect(WRAPPED_PERIODS[0].input).toBe(WRAPPED_DEFAULT_PERIOD);
+});
+
 test("the app reuses board-news.js through the ESM wrapper, never a copy (card 3)", async () => {
   const wrapper = await read("app/src/news.ts");
   expect(wrapper).toContain('"../../src/api/public/board-news.js?browser-script"');
@@ -118,10 +127,11 @@ test("fonts are self-hosted @fontsource packages: no Google Fonts anywhere in ap
   }
 });
 
-test("app/ has no framework beyond the editor's stack (React, Vite, vitest)", async () => {
+test("app/ has no framework beyond the editor's stack (React, Vite, vitest); html-to-image is the one library (card 6)", async () => {
   const pkg = JSON.parse(await read("app/package.json")) as { dependencies: Record<string, string>; devDependencies: Record<string, string> };
   const deps = Object.keys(pkg.dependencies).filter((d) => !d.startsWith("@fontsource/"));
-  expect(deps.sort()).toEqual(["react", "react-dom"]);
+  // html-to-image (MIT) makes the Wrapped card PNG (SDD §3.6).
+  expect(deps.sort()).toEqual(["html-to-image", "react", "react-dom"]);
   expect(Object.keys(pkg.devDependencies)).toContain("vitest");
   expect(Object.keys(pkg.devDependencies)).toContain("vite");
 });

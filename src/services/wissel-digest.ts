@@ -115,6 +115,18 @@ export interface DigestStats {
   byModel: Record<string, number>;
   retries429: number;
   pipelineRuns: Record<string, { runs: number; failed: number; costUsd: number }>;
+  /** `Merge wissel/<id>: ...` commits in the window across the board's
+   *  repos: one per card landed (Wissel Wrapped's "cards merged"). */
+  merges: number;
+  /** Commits that aren't merges, in the window, across the same repos. */
+  commits: number;
+  /** Telemetry `result` events in the window, 429 retries left out. */
+  agentRuns: number;
+  /** The agent with the most paid runs (actualCost > 0) in the window,
+   *  then the most spend, then the lower id; null when none had one.
+   *  Paid only, so a free deterministic step (audio, digest) that runs
+   *  every day can't top a model agent. */
+  topAgent: { id: string; runs: number; spendUsd: number } | null;
 }
 
 export interface WisselDigest {
@@ -233,6 +245,98 @@ async function git(runner: CommandRunner, dir: string, args: string[]): Promise<
   }
 }
 
+/** A `Merge wissel/<key>: <title>` subject's card key and title, or
+ *  null for any other subject (a plain branch merge, a commit). */
+export function parseMergeSubject(subject: string): { key: string; title: string } | null {
+  const m = MERGE_SUBJECT.exec(subject);
+  return m ? { key: m[1]!, title: m[2]! } : null;
+}
+
+export interface LogEntry {
+  sha: string;
+  /** More than one parent. */
+  merge: boolean;
+  /** Committer date, ISO 8601 with offset. */
+  date: string;
+  subject: string;
+}
+
+/** `git -C <repo> log` over [from, to] (HEAD's history): every commit,
+ *  or only merges; null when `repo` isn't a git checkout. Read-only
+ *  (assertReadOnlyGit). The digest and the streak (streaks.ts) both read
+ *  git through this. */
+export async function readGitLog(
+  runner: CommandRunner,
+  repo: string,
+  from: Date,
+  to: Date,
+  opts: { mergesOnly?: boolean } = {},
+): Promise<LogEntry[] | null> {
+  const args = ["log", ...(opts.mergesOnly ? ["--merges"] : []), `--since=${from.toISOString()}`, `--until=${to.toISOString()}`, "--format=%H%x09%P%x09%cI%x09%s"];
+  const log = await git(runner, repo, args);
+  if (log === null) return null;
+  return log
+    .split("\n")
+    .map((l) => l.split("\t"))
+    .filter((p) => p.length >= 4 && p[0])
+    .map(([sha, parents, date, ...subject]) => ({
+      sha: sha!,
+      merge: parents!.trim().split(/\s+/).filter(Boolean).length > 1,
+      date: date!,
+      subject: subject.join("\t"),
+    }));
+}
+
+/** `rootOf(card)`: the card its lineage folds into. Reviewer and
+ *  pushback cards carry it as reviewLineageId; a conflict card names its
+ *  original in its title; an integrator card hangs off its planner. */
+export function lineageRoot(byId: ReadonlyMap<string, TaskCard>): (c: TaskCard) => string {
+  const rootCache = new Map<string, string>();
+  const rootOf = (c: TaskCard, depth = 0): string => {
+    const cached = rootCache.get(c.id);
+    if (cached) return cached;
+    let root = c.reviewLineageId ?? c.id;
+    if (depth < 10) {
+      const conflict = c.labels.includes(CONFLICT_LABEL) ? CONFLICT_TITLE.exec(c.title) : null;
+      const original = conflict ? byId.get(conflict[1]!) : undefined;
+      const parent = c.labels.includes(INTEGRATOR_LABEL) && c.parentTaskId ? byId.get(c.parentTaskId) : undefined;
+      if (original) root = rootOf(original, depth + 1);
+      else if (parent) root = rootOf(parent, depth + 1);
+    }
+    rootCache.set(c.id, root);
+    return root;
+  };
+  return (c) => rootOf(c);
+}
+
+/** `~/.wissel/worktrees`, where task worktrees live. */
+export function defaultWorktreesRoot(): string {
+  return join(homedir(), ".wissel", "worktrees");
+}
+
+/** The real repos `cards` work in, sorted. A worktree path maps to the
+ *  repo of the card it was made for (the worktree key is that card's
+ *  lineage id), else to its lineage root's repo; a path inside the
+ *  worktrees root is never returned, so git never runs in a worktree.
+ *  Other cards are looked up in `all` (default `cards`). */
+export function boardRepos(cards: readonly TaskCard[], opts: { all?: readonly TaskCard[]; worktreesRoot?: string } = {}): string[] {
+  const worktreesRoot = opts.worktreesRoot ?? defaultWorktreesRoot();
+  const byId = new Map((opts.all ?? cards).map((c) => [c.id, c]));
+  const rootOf = lineageRoot(byId);
+  const isWorktree = (repo: string) => repo === worktreesRoot || repo.startsWith(worktreesRoot + "/");
+  const repos = new Set<string>();
+  for (const c of cards) {
+    const candidates: (string | undefined)[] = [c.repo];
+    if (c.repo && isWorktree(c.repo)) {
+      const key = c.repo.slice(worktreesRoot.length + 1).split("/")[0] ?? "";
+      candidates.push(byId.get(key)?.repo, byId.get(rootOf(c))?.repo);
+    }
+    const real = candidates.find((r): r is string => !!r && !isWorktree(r));
+    if (real) repos.add(real);
+  }
+  return [...repos].sort();
+}
+
 export async function buildWisselDigest(inp: DigestInputs): Promise<WisselDigest> {
   const period = parsePeriod(inp.input, inp.now);
   const fromMs = period.from.getTime();
@@ -242,7 +346,7 @@ export async function buildWisselDigest(inp: DigestInputs): Promise<WisselDigest
     const t = Date.parse(iso);
     return !Number.isNaN(t) && t >= fromMs && t <= toMs;
   };
-  const worktreesRoot = inp.worktreesRoot ?? join(homedir(), ".wissel", "worktrees");
+  const worktreesRoot = inp.worktreesRoot ?? defaultWorktreesRoot();
 
   const allCards = await inp.board.list();
   const byId = new Map(allCards.map((c) => [c.id, c]));
@@ -265,9 +369,12 @@ export async function buildWisselDigest(inp: DigestInputs): Promise<WisselDigest
   const byAgent: Record<string, number> = {};
   const byHarness: Record<string, number> = {};
   const byModel: Record<string, number> = {};
+  let agentRuns = 0;
+  const paid = new Map<string, { runs: number; spend: number }>();
   for (const e of events) {
     if (e.type !== "result" || !inWindow(e.at)) continue;
     if (typeof e.retryAfter === "string") retries429++;
+    else agentRuns++;
     if (typeof e.actualCost !== "number") continue;
     const cost = e.actualCost;
     spendUsd += cost;
@@ -277,7 +384,13 @@ export async function buildWisselDigest(inp: DigestInputs): Promise<WisselDigest
     byHarness[harness] = (byHarness[harness] ?? 0) + cost;
     const model = (e.taskId && modelByTask.get(e.taskId)) || inp.agentModel?.(agent) || "unknown";
     byModel[model] = (byModel[model] ?? 0) + cost;
+    if (cost > 0) {
+      const p = paid.get(agent) ?? { runs: 0, spend: 0 };
+      paid.set(agent, { runs: p.runs + 1, spend: p.spend + cost });
+    }
   }
+  const [topId, top] = [...paid].sort(([a, x], [b, y]) => y.runs - x.runs || y.spend - x.spend || (a < b ? -1 : 1))[0] ?? [];
+  const topAgent = topId && top ? { id: topId, runs: top.runs, spendUsd: cents(top.spend) } : null;
 
   /** When a card was last active, from its own doneAt and telemetry;
    *  the board stores no creation time, so a card wissel never ran and
@@ -290,34 +403,7 @@ export async function buildWisselDigest(inp: DigestInputs): Promise<WisselDigest
   };
 
   // ---- lineages: reviewer, pushback and integrator cards fold into their root ----
-  const rootCache = new Map<string, string>();
-  const rootOf = (c: TaskCard, depth = 0): string => {
-    const cached = rootCache.get(c.id);
-    if (cached) return cached;
-    let root = c.reviewLineageId ?? c.id;
-    if (depth < 10) {
-      const conflict = c.labels.includes(CONFLICT_LABEL) ? CONFLICT_TITLE.exec(c.title) : null;
-      const original = conflict ? byId.get(conflict[1]!) : undefined;
-      const parent = c.labels.includes(INTEGRATOR_LABEL) && c.parentTaskId ? byId.get(c.parentTaskId) : undefined;
-      if (original) root = rootOf(original, depth + 1);
-      else if (parent) root = rootOf(parent, depth + 1);
-    }
-    rootCache.set(c.id, root);
-    return root;
-  };
-
-  const isWorktree = (repo: string) => repo === worktreesRoot || repo.startsWith(worktreesRoot + "/");
-  /** A card's real repo: a worktree path maps to the repo of the card it
-   *  was made for (the worktree key is that card's lineage id), else to
-   *  its lineage root's repo. */
-  const realRepo = (c: TaskCard): string | undefined => {
-    const candidates: (string | undefined)[] = [c.repo];
-    if (c.repo && isWorktree(c.repo)) {
-      const key = c.repo.slice(worktreesRoot.length + 1).split("/")[0] ?? "";
-      candidates.push(byId.get(key)?.repo, byId.get(rootOf(c))?.repo);
-    }
-    return candidates.find((r): r is string => !!r && !isWorktree(r));
-  };
+  const rootOf = lineageRoot(byId);
 
   const lineages = new Map<string, TaskCard[]>();
   const pipelineRoots: TaskCard[] = [];
@@ -349,28 +435,23 @@ export async function buildWisselDigest(inp: DigestInputs): Promise<WisselDigest
   }
   for (const v of Object.values(pipelineRuns)) v.costUsd = cents(v.costUsd);
 
-  // ---- git: merge commits in the window, per repo on the board ----
-  const repos = new Set<string>();
-  for (const c of cards) {
-    const r = realRepo(c);
-    if (r) repos.add(r);
-  }
+  // ---- git: commits and wissel merge commits in the window, per repo on the board ----
   const commits: Commit[] = [];
-  for (const repo of [...repos].sort()) {
+  let plainCommits = 0;
+  for (const repo of boardRepos(cards, { all: allCards, worktreesRoot })) {
     if (!existsSync(repo)) continue;
-    const log = await git(inp.runner, repo, ["log", "--merges", `--since=${period.from.toISOString()}`, `--until=${period.to.toISOString()}`, "--format=%H%x09%cI%x09%s"]);
+    const log = await readGitLog(inp.runner, repo, period.from, period.to);
     if (log === null) continue; // not a git checkout
-    const parsed = log
-      .split("\n")
-      .map((l) => l.split("\t"))
-      .filter((p) => p.length >= 3)
-      .map(([sha, date, ...subject]) => ({ sha: sha!, date: date!, subject: subject.join("\t") }));
-    const merges = parsed.map((p) => ({ ...p, m: MERGE_SUBJECT.exec(p.subject) })).filter((p) => p.m);
+    plainCommits += log.filter((e) => !e.merge).length;
+    const merges = log.flatMap((e) => {
+      const m = e.merge ? parseMergeSubject(e.subject) : null;
+      return m ? [{ ...e, ...m }] : [];
+    });
     if (merges.length === 0) continue;
     const origin = await git(inp.runner, repo, ["remote", "get-url", "origin"]);
     const base = origin ? githubRepoUrl(origin) : null;
     for (const p of merges) {
-      commits.push({ sha: p.sha, date: p.date, key: p.m![1]!, title: p.m![2]!, url: base ? `${base}/commit/${p.sha}` : null, repo });
+      commits.push({ sha: p.sha, date: p.date, key: p.key, title: p.title, url: base ? `${base}/commit/${p.sha}` : null, repo });
     }
   }
   const commitsByRoot = new Map<string, Commit[]>();
@@ -509,6 +590,10 @@ export async function buildWisselDigest(inp: DigestInputs): Promise<WisselDigest
       byModel: centsRecord(byModel),
       retries429,
       pipelineRuns,
+      merges: commits.length,
+      commits: plainCommits,
+      agentRuns,
+      topAgent,
     },
     stories,
     lessons,

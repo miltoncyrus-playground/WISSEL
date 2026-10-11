@@ -29,6 +29,8 @@ export interface Chip {
   tone: ChipTone;
   /** A podcast run with audio: playable in the mini-player. */
   track?: Track;
+  /** The agent the card went to: the chip shows its face (SDD §3.6). */
+  agentId?: string;
 }
 
 const STATUS_WORDS: Record<TaskStatus, string> = {
@@ -91,6 +93,7 @@ export function chipsOf(
       statusText: task ? statusTextOf(task) : boardLoaded ? "Gone" : "Loading",
       tone: task ? toneOf(task) : boardLoaded ? "gone" : "queued",
       ...(episode ? { track: trackOf(episode) } : {}),
+      ...(task?.routedTo ? { agentId: task.routedTo } : {}),
     });
   }
   return out;

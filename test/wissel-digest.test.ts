@@ -307,6 +307,40 @@ describe("buildWisselDigest", () => {
     expect(d.stories.some((s) => s.title === "Ancient work")).toBe(false);
   });
 
+  test("Wrapped's counts: wissel merges, plain commits, agent runs without 429s, and the top agent by paid runs", async () => {
+    const d = await buildWisselDigest(world.inputs());
+    // a, the deleted card's merge (wissel) and g (elsewhere); the plain
+    // `Merge branch 'feature'` is neither a card merge nor a commit.
+    expect(d.stats.merges).toBe(3);
+    // wissel: start, docs, three branch commits; elsewhere: start, one branch commit.
+    expect(d.stats.commits).toBe(7);
+    // 13 results in the window, one of them a 429 retry.
+    expect(d.stats.agentRuns).toBe(12);
+    // implementer: a, a2, s1, f, e. The free digest step is not paid.
+    expect(d.stats.topAgent).toEqual({ id: "implementer", runs: 5, spendUsd: 3.8 });
+  });
+
+  test("the top agent: most paid runs, then most spend, then the lower id; none without a paid run", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "wissel-digest-top-"));
+    try {
+      const board = new SqliteBoard();
+      const now = new Date(Date.now() + 60_000);
+      const at = new Date(now.getTime() - DAY).toISOString();
+      const telemetryPath = join(dir, "t.jsonl");
+      const write = (rows: [string, number][]) =>
+        writeFileSync(telemetryPath, rows.map(([agentId, actualCost], i) => JSON.stringify({ type: "result", taskId: `t${i}`, agentId, actualCost, at })).join("\n"));
+      const top = async () => (await buildWisselDigest({ board, telemetryPath, runner: runViaBun, now, input: "" })).stats.topAgent;
+      write([["b", 1], ["a", 1], ["b", 1], ["a", 2], ["free", 0], ["free", 0], ["free", 0]]);
+      expect(await top()).toEqual({ id: "a", runs: 2, spendUsd: 3 });
+      write([["b", 1], ["a", 1]]);
+      expect(await top()).toEqual({ id: "a", runs: 1, spendUsd: 1 });
+      write([["free", 0]]);
+      expect(await top()).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("a wider window takes in the older card, its spend and its retry", async () => {
     const d = await buildWisselDigest(world.inputs({ input: "last 60 days" }));
     expect(d.period.days).toBe(60);

@@ -59,6 +59,7 @@ export default defineConfig({
       "/ask": api,
       "/conversations": api,
       "/voice": api,
+      "/wrapped": api,
       "/board": api,
     },
   },

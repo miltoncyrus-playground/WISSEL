@@ -88,9 +88,15 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
-      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), feed.spec.ts (the Feed screen), listen.spec.ts (Listen and the mini-player), ask.spec.ts (Ask) and voice.spec.ts (Ask's voice notes and Play reply) open /app.",
+      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), feed.spec.ts (the Feed screen), listen.spec.ts (Listen and the mini-player), ask.spec.ts (Ask), voice.spec.ts (Ask's voice notes and Play reply) and you.spec.ts (You, Wrapped and agent faces) open /app.",
     match: (p) => p === "app" || p.startsWith("app/") || p === "src/api/serve-app.ts",
-    resolve: () => ["app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts"],
+    resolve: () => ["app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"],
+  },
+  {
+    description:
+      "wrapped.ts and streaks.ts are GET /wrapped (docs/SDD-wissel-app.md §3.6). Verified (grep): only server.ts's /wrapped route imports wrapped.ts, and only wrapped.ts imports streaks.ts; you.spec.ts is the only spec that reads /wrapped.",
+    match: (p) => p === "src/services/wrapped.ts" || p === "src/services/streaks.ts",
+    resolve: () => ["you.spec.ts"],
   },
   {
     description:
@@ -113,13 +119,15 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
-      "feed.ts, feed-sources.ts, news-run-checks.ts and podcasts.ts are GET /feed's and GET /podcasts's read side (docs/SDD-wissel-app.md §3.2, §3.3). Verified (grep): only server.ts's /feed and /podcasts routes and scripts/check-news-run.ts import them; feed.spec.ts reads /feed and listen.spec.ts reads /podcasts.",
-    match: (p) =>
-      p === "src/services/feed.ts" ||
-      p === "src/services/feed-sources.ts" ||
-      p === "src/services/news-run-checks.ts" ||
-      p === "src/services/podcasts.ts",
+      "feed.ts, feed-sources.ts and podcasts.ts are GET /feed's and GET /podcasts's read side (docs/SDD-wissel-app.md §3.2, §3.3). Verified (grep): only server.ts's /feed and /podcasts routes import them; feed.spec.ts reads /feed and listen.spec.ts reads /podcasts.",
+    match: (p) => p === "src/services/feed.ts" || p === "src/services/feed-sources.ts" || p === "src/services/podcasts.ts",
     resolve: () => ["feed.spec.ts", "listen.spec.ts"],
+  },
+  {
+    description:
+      "news-run-checks.ts is the feed's and Listen's podcast run reader (feed-sources.ts), scripts/check-news-run.ts's checks, and since docs/SDD-wissel-app.md §3.6 the lesson of the week's run loader (wrapped.ts). feed.spec.ts, listen.spec.ts and you.spec.ts read those endpoints.",
+    match: (p) => p === "src/services/news-run-checks.ts",
+    resolve: () => ["feed.spec.ts", "listen.spec.ts", "you.spec.ts"],
   },
   {
     description:

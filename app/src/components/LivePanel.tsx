@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { ConnectionState } from "../events";
 import type { Lanes, LaneId } from "../lanes";
+import { AtWork } from "./AtWork";
 import { TaskRow } from "./TaskRow";
 
 const SECTIONS: { lane: LaneId; title: string; empty: string }[] = [
@@ -12,9 +13,9 @@ const SECTIONS: { lane: LaneId; title: string; empty: string }[] = [
 /** Shows at most this many cards per section; the Board tab has all. */
 const PER_SECTION = 6;
 
-/** Desktop only: the right-hand "Live" panel (running, needs you,
- *  landed today), kept current by the shared /events stream. The
- *  mini-player (SDD §3.3) sits at its top. */
+/** Desktop only: the right-hand "Live" panel (agents at work, running,
+ *  needs you, landed today), kept current by the shared /events stream.
+ *  The mini-player (SDD §3.3) sits at its top. */
 export function LivePanel({ lanes, connection, player }: { lanes: Lanes; connection: ConnectionState; player?: ReactNode }) {
   return (
     <aside className="live" aria-labelledby="live-title">
@@ -23,6 +24,7 @@ export function LivePanel({ lanes, connection, player }: { lanes: Lanes; connect
         <ConnectionDot state={connection} />
       </div>
       {player}
+      <AtWork running={lanes.running} headingId="live-at-work" />
       {SECTIONS.map((s) => {
         const items = lanes[s.lane];
         return (
