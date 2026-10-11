@@ -20,12 +20,13 @@ const ALL_SPECS = [
   "projects.spec.ts",
   "theme.spec.ts",
   "voice.spec.ts",
+  "you.spec.ts",
 ];
 
 // A non-theme board.html change runs every spec that opens /board.
-// feed.spec.ts, listen.spec.ts, ask.spec.ts and voice.spec.ts only open
-// /app and its API, so they are not among them.
-const BOARD_HTML_SPECS = ALL_SPECS.filter((s) => !["feed.spec.ts", "listen.spec.ts", "ask.spec.ts", "voice.spec.ts"].includes(s));
+// feed.spec.ts, listen.spec.ts, ask.spec.ts, voice.spec.ts and
+// you.spec.ts only open /app and its API, so they are not among them.
+const BOARD_HTML_SPECS = ALL_SPECS.filter((s) => !["feed.spec.ts", "listen.spec.ts", "ask.spec.ts", "voice.spec.ts", "you.spec.ts"].includes(s));
 
 describe("ALL_SPECS fixture", () => {
   test("matches the real e2e/*.spec.ts files on disk", () => {
@@ -71,10 +72,10 @@ describe("resolveAffectedSpecs", () => {
     expect(resolveAffectedSpecs([{ path: "src/executors/tts.ts" }], ALL_SPECS).specs).toEqual(["pipelines.spec.ts", "voice.spec.ts"]);
   });
 
-  test("app/** and its server file resolve to the five /app specs only", () => {
+  test("app/** and its server file resolve to the six /app specs only", () => {
     for (const path of ["app/src/App.tsx", "app/package.json", "src/api/serve-app.ts"]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
-      expect(result.specs).toEqual(["app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts"]);
+      expect(result.specs).toEqual(["app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"]);
       expect(result.fullSuite).toBe(false);
     }
     // Not a prefix match on "app": a top-level "apps/" would be novel.
@@ -82,9 +83,23 @@ describe("resolveAffectedSpecs", () => {
   });
 
   test("GET /feed's and GET /podcasts's services resolve to feed.spec.ts and listen.spec.ts only", () => {
-    for (const path of ["src/services/feed.ts", "src/services/feed-sources.ts", "src/services/news-run-checks.ts", "src/services/podcasts.ts"]) {
+    for (const path of ["src/services/feed.ts", "src/services/feed-sources.ts", "src/services/podcasts.ts"]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
       expect(result.specs).toEqual(["feed.spec.ts", "listen.spec.ts"]);
+      expect(result.fullSuite).toBe(false);
+    }
+  });
+
+  test("news-run-checks.ts also feeds Wrapped's lesson, so you.spec.ts runs too", () => {
+    const result = resolveAffectedSpecs([{ path: "src/services/news-run-checks.ts" }], ALL_SPECS);
+    expect(result.specs).toEqual(["feed.spec.ts", "listen.spec.ts", "you.spec.ts"]);
+    expect(result.fullSuite).toBe(false);
+  });
+
+  test("GET /wrapped's services resolve to you.spec.ts only", () => {
+    for (const path of ["src/services/wrapped.ts", "src/services/streaks.ts"]) {
+      const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
+      expect(result.specs).toEqual(["you.spec.ts"]);
       expect(result.fullSuite).toBe(false);
     }
   });

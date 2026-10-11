@@ -440,6 +440,73 @@ The one LLM part. Everything around it is code.
   "Download" saves the current card as a PNG (`html-to-image`, MIT,
   widely used); `navigator.share` with the PNG when available.
 
+**As built (card 6).** Where the build fills in or departs from the above:
+
+- Persona: `AgentDef.persona?: {color?, glyph?}`, either key optional;
+  `validatePersona` in `src/core/registry.ts` refuses a bad one at load
+  (`#RRGGBB`; one or two code points, no whitespace; no other keys).
+  Implementer, reviewer, planner and concierge set one; the rest derive
+  theirs. Derivation is in the app (`app/src/persona.ts`, the only
+  reader): colour from a 10-colour palette by FNV-1a of the id (each
+  colour takes a `ground` glyph at 4.5:1 and stands out from every
+  surface at 3:1, unit tested), glyph from the first letters of the
+  first two words of the id, or the first two letters of a one-word id.
+  The glyph's ink is `ground` or `text`, whichever reads better on the
+  fill. The app reads `GET /agents` once (`useAgentsLoader`); rows now
+  show the agent's name, not its id.
+- "Working": a static violet ring plus a pulse on the avatar of a card
+  in the Running lane (and its Ask chip while running). Reduced motion
+  stops the pulse; the ring stays, so the state is never motion only.
+  An "At work" list (agent, face, the card it is on) heads the Live
+  panel and sits under Wrapped on You.
+- No second implementation: the digest gained what Wrapped needs, and
+  `GET /wrapped` reads it back (`wrappedFrom`). `DigestStats` has
+  `merges` (wissel merge commits in the window, one per card landed),
+  `commits` (non-merge commits, same repos), `agentRuns` (results, 429
+  retries left out) and `topAgent` (most paid runs, i.e. `actualCost >
+  0`, then spend, then id; paid only so a free audio or digest step that
+  runs daily can't top a model agent). The digest's git read became one
+  `git log --format=%H%x09%P%x09%cI%x09%s` per repo (parents tell merges
+  from commits) instead of `--merges`; `readGitLog`, `parseMergeSubject`,
+  `lineageRoot` and `boardRepos` are exported so streaks read the same
+  repos the same way. The analyst prompt names the new stats.
+  `test/wrapped.test.ts` checks every number equals the digest's for
+  four periods, and that the retrospective's own digest (with lessons
+  and docs) has the same stats.
+- Streaks (`src/services/streaks.ts`): local days with a `Merge
+  wissel/...` commit over the last 366 days (`git log --merges`, the
+  same read-only guard). `current` counts back from today, or from
+  yesterday while today has none yet; also `best`, `today`, `lastDay`
+  and `week` (the last 7 days, for the dots on the card).
+- `GET /wrapped?period=`: default `last 7 days`; the text goes through
+  the digest's `parsePeriod` (so `since YYYY-MM-DD` works and anything
+  else is 7 days); over 100 characters is a 400. Answers `{period:
+  {input, from, to, days}, cardsMerged, commits, agentRuns, spendUsd,
+  topAgent, pipelinesAdded, streak, lesson}`. Pipelines added are those
+  whose `createdAt` is in the window. The lesson is the latest retro run
+  (pipeline with a `wissel-digest` step) that got as far as its
+  analysis, and that analysis's first `learnings` item (null when it has
+  none); a newer run still collecting doesn't hide the last one. Not
+  cached: each request reads git once per repo, twice with the streak.
+- You tab: "7 days" and "30 days" switch, then the cards: intro, cards
+  merged, agent runs (top agent's face), spend, merge streak (week
+  dots), pipelines added, and the lesson when there is one. The row is
+  a CSS scroll-snap list, so a swipe is a native scroll; Previous/Next
+  and the arrow keys step it, and the counter follows the card it rests
+  on (in-between positions of a button's glide are ignored until the
+  row stops). Download renders the current card with `html-to-image`
+  `toBlob` at 2x (loaded on first use) and saves
+  `wissel-wrapped-<to>-<card>.png`. Share shows only when
+  `navigator.share` exists; it shares the PNG when `canShare({files})`
+  says yes, else saves it and says so. Wrapped is fetched when You opens
+  and when the period changes, not on every board event (it reads git).
+- e2e: `e2e/you.spec.ts` serves `/wrapped` from a fixture for the UI
+  (the shared e2e board's real numbers change run to run) and checks the
+  real endpoint on its own; a real card routed to the implementer and
+  moved to running shows the pulse, and moving it to done clears "At
+  work" live. `app/**` now maps to `you.spec.ts` too; `wrapped.ts` and
+  `streaks.ts` map to it alone; `news-run-checks.ts` adds it.
+
 ## 4. Tests and evals
 
 ### 4.1 Gate lane (every card, `bun run test` and `cd app && npm test`)

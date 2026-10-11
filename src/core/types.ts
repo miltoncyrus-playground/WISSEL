@@ -87,6 +87,13 @@ export interface AgentDef {
    *  (src/services/mcp-transcript.ts), directly into the review task's
    *  body. See docs/SDD-mcp-orchestration.md §3.4. */
   reviewTarget?: "diff" | "tool-calls";
+  /** The agent's face in the wissel app (docs/SDD-wissel-app.md §3.6):
+   *  an avatar `color` (`#RRGGBB`) and a `glyph` of one or two
+   *  characters. Either may be left out; the app derives the missing one
+   *  from the agent id (app/src/persona.ts), stable across reloads.
+   *  Display only: nothing in routing or running reads it. The registry
+   *  rejects a malformed one at load. */
+  persona?: { color?: string; glyph?: string };
   /** Narrow, explicit exception to wissel's one non-negotiable
    *  write-tier policy — a human reviews every write-tier success
    *  before it's "done" (see finishResult). Setting this true lets THIS

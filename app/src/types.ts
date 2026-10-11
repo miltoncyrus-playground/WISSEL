@@ -101,6 +101,36 @@ export interface PodcastEpisode {
   quickRead: PodcastQuickRead | null;
 }
 
+/** GET /agents, as far as the app reads it (src/core/types.ts AgentDef). */
+export interface AgentInfo {
+  id: string;
+  name: string;
+  persona?: { color?: string; glyph?: string };
+}
+
+/** GET /wrapped. Mirrors src/services/wrapped.ts (Wrapped) and
+ *  src/services/streaks.ts (Streak); test/app-shell.test.ts checks the
+ *  field names. */
+export interface WrappedStreak {
+  current: number;
+  best: number;
+  today: boolean;
+  lastDay: string | null;
+  week: boolean[];
+}
+
+export interface Wrapped {
+  period: { input: string; from: string; to: string; days: number };
+  cardsMerged: number;
+  commits: number;
+  agentRuns: number;
+  spendUsd: number;
+  topAgent: { id: string; runs: number; spendUsd: number } | null;
+  pipelinesAdded: { id: string; name: string }[];
+  streak: WrappedStreak;
+  lesson: { title: string; text: string; runId: string; date?: string } | null;
+}
+
 /** What arrives on `/events`. The app only needs the type to decide to
  *  refetch; the payloads are left loose. */
 export interface BoardEvent {

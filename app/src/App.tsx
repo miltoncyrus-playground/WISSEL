@@ -12,7 +12,8 @@ import { AskScreen } from "./screens/AskScreen";
 import { BoardScreen, CardDetail } from "./screens/BoardScreen";
 import { FeedScreen } from "./screens/FeedScreen";
 import { ListenScreen } from "./screens/ListenScreen";
-import { Placeholder } from "./screens/Placeholder";
+import { YouScreen } from "./screens/YouScreen";
+import { AgentsContext, useAgentsLoader } from "./useAgents";
 import { useAsk } from "./useAsk";
 import { PlayerContext, useShellPlayer } from "./usePlayer";
 
@@ -37,6 +38,8 @@ export function App() {
   // is there on return (SDD §3.4).
   const ask = useAsk(data.reload);
   const hasPlayer = player.api.state.track !== null;
+  // Names and faces for every agent on every screen (SDD §3.6).
+  const agents = useAgentsLoader();
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
@@ -90,27 +93,29 @@ export function App() {
   } else if (route.screen === "ask") {
     screen = <AskScreen ask={ask} tasks={data.tasks} tasksLoaded={data.loaded} pipelines={data.pipelines} now={now} />;
   } else {
-    screen = <Placeholder screen={route.screen} />;
+    screen = <YouScreen running={lanes.running} />;
   }
 
   // The one <audio> (SDD §3.3) sits outside everything that changes
   // with the route or the breakpoint, so playback never stops.
   return (
-    <PlayerContext.Provider value={player.api}>
-      <div className={`shell ${desktop ? "is-desktop" : "is-phone"}${hasPlayer ? " has-player" : ""}`}>
-        {desktop ? <Rail current={route.screen} onOpenPalette={openPalette} /> : <TopBar title={title} onOpenPalette={openPalette} />}
-        <main className="content" id="main" data-screen={route.screen}>
-          {screen}
-        </main>
-        {desktop && <LivePanel lanes={lanes} connection={data.connection} player={<MiniPlayer variant="panel" />} />}
-        {!desktop && <MiniPlayer variant="bar" />}
-        {!desktop && <TabBar current={route.screen} />}
-        <p className="notice" role="status" aria-live="polite">
-          {notice}
-        </p>
-        <Palette open={paletteOpen} commands={commands} onClose={closePalette} onRun={run} />
-        <audio ref={player.audioRef} preload="metadata" className="shell-audio" />
-      </div>
-    </PlayerContext.Provider>
+    <AgentsContext.Provider value={agents}>
+      <PlayerContext.Provider value={player.api}>
+        <div className={`shell ${desktop ? "is-desktop" : "is-phone"}${hasPlayer ? " has-player" : ""}`}>
+          {desktop ? <Rail current={route.screen} onOpenPalette={openPalette} /> : <TopBar title={title} onOpenPalette={openPalette} />}
+          <main className="content" id="main" data-screen={route.screen}>
+            {screen}
+          </main>
+          {desktop && <LivePanel lanes={lanes} connection={data.connection} player={<MiniPlayer variant="panel" />} />}
+          {!desktop && <MiniPlayer variant="bar" />}
+          {!desktop && <TabBar current={route.screen} />}
+          <p className="notice" role="status" aria-live="polite">
+            {notice}
+          </p>
+          <Palette open={paletteOpen} commands={commands} onClose={closePalette} onRun={run} />
+          <audio ref={player.audioRef} preload="metadata" className="shell-audio" />
+        </div>
+      </PlayerContext.Provider>
+    </AgentsContext.Provider>
   );
 }

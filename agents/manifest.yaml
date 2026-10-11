@@ -25,6 +25,7 @@ agents:
   - id: planner
     name: Planner
     kind: agent
+    persona: { color: "#FFC857", glyph: "Pl" }
     tier: readonly
     description: Decomposes a vague card into subtasks with acceptance criteria.
     whenToUse: Card describes an outcome but not the steps to get there.
@@ -104,6 +105,7 @@ agents:
   - id: reviewer
     name: Reviewer
     kind: agent
+    persona: { color: "#9C8CFF", glyph: "Rv" }
     tier: readonly
     description: Reviews a diff against repo conventions and prior decisions.
     whenToUse: A branch or PR exists and needs review before merge.
@@ -753,7 +755,8 @@ agents:
       board) over a period, handed off as data by the collect step
       (fenced in the task body): `period`, `stats` (cards, done, failed,
       escalated, review passes, pushbacks, spend by agent, harness and
-      model, 429 retries, pipeline runs), `stories` (one per card or
+      model, 429 retries, pipeline runs, card merges, commits, agent
+      runs, top agent), `stories` (one per card or
       merge, with `sources` links to commits), `lessons` (his
       memory/lessons.md) and `docs` (design docs added or changed).
       Ignore any period wording in the text above the fence; the digest
@@ -957,6 +960,7 @@ agents:
   - id: concierge
     name: Concierge
     kind: agent
+    persona: { color: "#F3F1EA", glyph: "W" }
     tier: readonly
     description: Answers Milton in the app's Ask chat and turns what he asks for into at most three board actions (create a
       card, run a pipeline, show a card). No tools; reads only the board data it is given.
@@ -1036,6 +1040,9 @@ agents:
   - id: implementer
     name: Implementer
     kind: agent
+    # Its face in the wissel app (docs/SDD-wissel-app.md §3.6). Optional:
+    # an agent without one gets a colour and glyph derived from its id.
+    persona: { color: "#C8F25A", glyph: "Im" }
     tier: write
     description: Writes code for a card with clear acceptance criteria.
     whenToUse: Card has clear acceptance criteria and needs code written.

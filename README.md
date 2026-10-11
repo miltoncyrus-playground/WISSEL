@@ -161,7 +161,7 @@ top bar.
 
 - **Shell.** Phone: a bottom tab bar (Feed, Ask, Board, Listen, You).
   Desktop (1024 px and up): a left rail and a right **Live** panel
-  (running, needs you, landed today). Screens are hash routes
+  (at work, running, needs you, landed today). Screens are hash routes
   (`#/feed`, `#/ask`, ...); `/app` opens Ask.
 - **Command palette.** Cmd-K or Ctrl-K (or the search button): jump to a
   screen, open a card by title, run a pipeline by name, New card (opens
@@ -221,13 +221,28 @@ top bar.
   speaches once: `docker run -d --name speaches --restart unless-stopped
   -p 127.0.0.1:8000:8000 ghcr.io/speaches-ai/speaches:latest-cpu`, then
   `curl -X POST http://127.0.0.1:8000/v1/models/Systran/faster-whisper-small`.
-- You is a placeholder until its card lands (`docs/SDD-wissel-app.md`
-  §6).
+- **Agent faces.** Every agent has an avatar: a colour and a one or two
+  letter glyph. Set one with `persona: { color: "#RRGGBB", glyph: "Im" }`
+  in `agents/manifest.yaml` (checked at load); without it the app derives
+  a stable one from the agent id (`app/src/persona.ts`). Faces show on
+  Board and Live rows and on Ask's chips; an agent with a card running
+  pulses as "working" (a still ring with reduced motion). The Live panel
+  and You list who is at work right now.
+- **You: Wissel Wrapped.** `GET /wrapped?period=last 7 days` (or `last
+  30 days`, `since YYYY-MM-DD`; `docs/SDD-wissel-app.md` §3.6): cards
+  merged, commits, agent runs, spend and the top agent straight from the
+  retrospective's digest (`src/services/wissel-digest.ts`), plus
+  pipelines added, the merge streak (days in a row with a `Merge
+  wissel/...` commit, read-only git) and the lesson of the week (the
+  latest retrospective run's first learning). The You tab shows them as
+  story cards you swipe (or Previous/Next, arrow keys), with 7 and 30 day
+  views. Download saves the current card as a PNG; Share sends it through
+  the phone's share sheet where the browser has one.
 
 Tests: `cd app && npm test` (vitest), `e2e/app.spec.ts`,
 `e2e/feed.spec.ts`, `e2e/listen.spec.ts`, `e2e/ask.spec.ts` (with a
-scripted concierge) and `e2e/voice.spec.ts` (with a fake speaches) at 390
-and 1440 px. `bun run eval:concierge` is the paid eval of the real
+scripted concierge), `e2e/voice.spec.ts` (with a fake speaches) and
+`e2e/you.spec.ts` at 390 and 1440 px. `bun run eval:concierge` is the paid eval of the real
 concierge; `bun run eval:stt` checks the real speaches on five fixture
 notes (word error rate at most 15%, `eval/fixtures/stt/`).
 

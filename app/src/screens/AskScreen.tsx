@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { chipsOf, costText, isSendKey, MAX_MESSAGE_LENGTH, quickReplies, sendable, type Chip } from "../ask";
+import { Avatar } from "../components/Avatar";
 import { Icon } from "../components/Icon";
 import { usePodcasts } from "../hooks";
 import { routeHash } from "../routes";
@@ -290,7 +291,7 @@ function ChipView({ chip }: { chip: Chip }) {
   return (
     <li className={`chip tone-chip-${chip.tone}`} data-task-id={chip.taskId}>
       <a className="chip-link" href={routeHash({ screen: "board", taskId: chip.taskId })}>
-        <span className="chip-dot" aria-hidden="true" />
+        {chip.agentId ? <Avatar agentId={chip.agentId} working={chip.tone === "running"} size={24} /> : <span className="chip-dot" aria-hidden="true" />}
         <span className="chip-text">
           <span className="chip-label">{chip.label}</span>
           <span className="chip-status">{chip.statusText}</span>

@@ -1,7 +1,7 @@
 // The server endpoints the shell reads. Same origin: the server that
 // serves /app also serves the API.
 
-import type { AskResult, Conversation, ConversationDetail, FeedPage, PipelineDef, PodcastEpisode, TaskCard } from "./types";
+import type { AgentInfo, AskResult, Conversation, ConversationDetail, FeedPage, PipelineDef, PodcastEpisode, TaskCard, Wrapped } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -12,6 +12,12 @@ async function getJson<T>(path: string): Promise<T> {
 export const fetchTasks = () => getJson<TaskCard[]>("/tasks");
 
 export const fetchPipelines = () => getJson<PipelineDef[]>("/pipelines");
+
+/** GET /agents: the manifest, for names and personas. */
+export const fetchAgents = () => getJson<AgentInfo[]>("/agents");
+
+/** GET /wrapped: Wissel Wrapped for a period (`last 7 days`...). */
+export const fetchWrapped = (period: string) => getJson<Wrapped>(`/wrapped?${new URLSearchParams({ period })}`);
 
 /** GET /feed: newest first. `before` is a previous page's `next`. */
 export function fetchFeed(limit: number, before?: string): Promise<FeedPage> {

@@ -2,6 +2,24 @@ import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import type { AgentDef } from "./types.ts";
 
+/** Why an agent's `persona` is malformed, or null when it is fine (or
+ *  absent). `color` is `#RRGGBB`; `glyph` is one or two characters
+ *  (code points, so an emoji counts as one), no whitespace. See
+ *  docs/SDD-wissel-app.md §3.6. */
+export function validatePersona(persona: unknown): string | null {
+  if (persona === undefined) return null;
+  if (typeof persona !== "object" || persona === null || Array.isArray(persona)) return `persona must be a map with color and/or glyph, got ${JSON.stringify(persona)}`;
+  const extra = Object.keys(persona).filter((k) => k !== "color" && k !== "glyph");
+  if (extra.length) return `persona has unknown keys: ${extra.join(", ")} (only color and glyph)`;
+  const { color, glyph } = persona as { color?: unknown; glyph?: unknown };
+  if (color !== undefined && !(typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color))) return `persona.color must be #RRGGBB, got ${JSON.stringify(color)}`;
+  if (glyph !== undefined) {
+    const chars = typeof glyph === "string" ? [...glyph] : [];
+    if (chars.length < 1 || chars.length > 2 || chars.some((c) => /\s/.test(c))) return `persona.glyph must be one or two characters, got ${JSON.stringify(glyph)}`;
+  }
+  return null;
+}
+
 /**
  * Loads the agent manifest. Single source of truth for both the fleet
  * view and the router prompt.
@@ -40,6 +58,8 @@ export class Registry {
           `agent "${agent.id}": toolAccess "web" is only for tier: readonly agents run by executor: readonly, got tier ${agent.tier}, executor ${agent.executor}`,
         );
       }
+      const personaError = validatePersona(agent.persona);
+      if (personaError) throw new Error(`agent "${agent.id}": ${personaError}`);
       registry.agents.set(agent.id, agent);
     }
     return registry;
