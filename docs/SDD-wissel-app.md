@@ -122,6 +122,53 @@ Needs you, Landed, Your week); tapping one plays its items full screen,
 swipe or tap to advance, like the mockup. Pure grouping function with
 tests.
 
+**As built (card 2).** Where the build fills in or departs from the above:
+
+- `buildFeed` takes `{tasks, results, runs, telemetry, disabledHarnesses,
+  now, limit, before}`: `results` is each task's latest result
+  (`Board.listResultMeta`, one query, no summaries) and `runs` are podcast
+  runs already read off disk. The I/O lives in
+  `src/services/feed-sources.ts` (`createFeedSource`), which caches parsed
+  telemetry on file size + mtime and a settled podcast run's facts on its
+  status + MP3 size, so a run is checked once, not per request.
+- Items carry extra optional fields the app draws: `show` (ai, world,
+  retro, other) on podcast/checks, `audioUrl` and `durationSeconds` on
+  podcast, `pass` on checks, `undated` on a needs-you card with no
+  recorded time (its `at` is the request's `now`; the app shows
+  "Waiting").
+- `landed` is dated by `doneAt`, then the result's `finishedAt`, then
+  the task's last telemetry event; with none of the three it is left
+  out. Pipeline step cards and reviewer cards are not landings, and a
+  podcast run's root shows as its `podcast` item instead.
+- `needs-you` actions: Approve (`POST /tasks/:id/mcp-approval/approve`)
+  for an open MCP approval, Retry (`POST /tasks/:id/run`) for failed,
+  Open (`/app#/board/<id>`) otherwise. POST actions confirm first.
+- `podcast` covers any pipeline with a `podcast-audio` step and an MP3
+  on disk; duration is the CBR estimate from the MP3's head and size
+  (same arithmetic as `checkAudio`). `checks` is its own item, right
+  after its podcast, only for kinds `checkStoredRun` knows.
+- `spend` is one item per past local day with spend, dated the midnight
+  that closed it, so "yesterday" appears at 00:00 and older days stay
+  in the feed's history.
+- Paging: `next` is `<iso>~<id>`; `before` takes that or a bare ISO
+  time. `limit` 1 to 200, else 400.
+- `checkStoredRun` moved with `loadStoredRun`, `runTelemetry`,
+  `readTelemetryLines`, `firstHeadline` and `mp3DurationSeconds` into
+  `src/services/news-run-checks.ts`; `scripts/check-news-run.ts` keeps
+  its CLI and re-exports the old names. It still imports the checks
+  from `eval/ai-news-checks.ts`, as the script did.
+- Stories: podcasts and checks go to AI news or World by show; the
+  retro, other podcasts and spend go to Your week. Items play oldest
+  first. A ring is "new" until its newest item has been shown; the
+  mark is in `localStorage` (`wissel.app.storiesSeen`). No auto-advance,
+  so nothing moves by itself and reduced motion needs nothing extra. The
+  viewer is a native modal `<dialog>` (Escape closes); arrow keys step.
+- Live: the Feed refetches `/feed` on any `/events` message (150 ms
+  debounce) through the shared EventSource, at the size already shown
+  so "Load more" pages stay put.
+- e2e: `e2e/feed.spec.ts`; `app/**` now maps to both `app.spec.ts` and
+  `feed.spec.ts`, and the three feed services map to `feed.spec.ts`.
+
 ### 3.3 Audio (card 3)
 
 - `GET /podcasts`: for every pipeline whose steps include

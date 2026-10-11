@@ -90,6 +90,10 @@ export interface Board {
   /** Most recent execution result for a task, if any — what the board
    *  UI's task detail panel shows once a run has finished. */
   getResult(taskId: string): Promise<TaskResult | undefined>;
+  /** Every task's latest result, small fields only (no summary), keyed
+   *  by task id: one query for the feed (src/services/feed.ts) instead
+   *  of a getResult per card. */
+  listResultMeta(): Promise<Map<string, ResultMeta>>;
   /** Manual override. Every one of these is a labelled router eval case —
    *  OR, when `actor`/`reason` are given, a human forcing an `escalated`
    *  task's outcome (see `POST /tasks/:id/escalation/approve`, the only
@@ -102,6 +106,17 @@ export interface Board {
   recordOverride(taskId: string, routerPick: string, humanPick: string, actor?: string, reason?: string): Promise<void>;
   /** Removes a task and its recorded decisions/results/overrides. */
   delete(id: string): Promise<void>;
+}
+
+/** The parts of a task's latest TaskResult the feed reads. */
+export interface ResultMeta {
+  agentId: string;
+  ok: boolean;
+  /** TaskResult.worktree.branch: the branch a Merge lands. */
+  worktreeBranch?: string;
+  actualCost?: number;
+  harnessId?: string;
+  finishedAt?: string;
 }
 
 export type BoardEvent =
@@ -382,7 +397,8 @@ export class SqliteBoard implements Board {
         verdict TEXT,
         reviewFeedback TEXT,
         mcpCalls TEXT,
-        permissionDenials TEXT
+        permissionDenials TEXT,
+        finishedAt TEXT
       );
     `);
     // actualCost/harnessId shipped on TaskResult well before this table
@@ -408,6 +424,9 @@ export class SqliteBoard implements Board {
       // the review loop reads the previous attempt's back to tell a
       // permission block from a code problem.
       "ALTER TABLE task_results ADD COLUMN permissionDenials TEXT;",
+      // When the result was recorded, so the feed (src/services/feed.ts,
+      // docs/SDD-wissel-app.md §3.2) can date it. Older rows stay NULL.
+      "ALTER TABLE task_results ADD COLUMN finishedAt TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -673,9 +692,10 @@ export class SqliteBoard implements Board {
     };
   }
 
-  async recordResult(result: TaskResult): Promise<void> {
+  async recordResult(input: TaskResult): Promise<void> {
+    const result: TaskResult = { ...input, finishedAt: input.finishedAt ?? new Date().toISOString() };
     this.db.run(
-      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback, mcpCalls, permissionDenials) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback, mcpCalls, permissionDenials, finishedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         result.taskId,
         result.agentId,
@@ -690,6 +710,7 @@ export class SqliteBoard implements Board {
         result.reviewFeedback ?? null,
         result.mcpCalls ? JSON.stringify(result.mcpCalls) : null,
         result.permissionDenials?.length ? JSON.stringify(result.permissionDenials) : null,
+        result.finishedAt!,
       ],
     );
     this.events.emit("event", { type: "task.result", result } satisfies BoardEvent);
@@ -710,6 +731,7 @@ export class SqliteBoard implements Board {
       reviewFeedback: string | null;
       mcpCalls: string | null;
       permissionDenials: string | null;
+      finishedAt: string | null;
     } | null;
     if (!row) return undefined;
     return {
@@ -726,7 +748,28 @@ export class SqliteBoard implements Board {
       reviewFeedback: row.reviewFeedback ?? undefined,
       mcpCalls: row.mcpCalls ? (JSON.parse(row.mcpCalls) as TaskResult["mcpCalls"]) : undefined,
       permissionDenials: row.permissionDenials ? (JSON.parse(row.permissionDenials) as string[]) : undefined,
+      finishedAt: row.finishedAt ?? undefined,
     };
+  }
+
+  async listResultMeta(): Promise<Map<string, ResultMeta>> {
+    // rowid order, so a later result for the same task overwrites an
+    // earlier one: the map holds each task's latest, like getResult.
+    const rows = this.db
+      .query("SELECT taskId, agentId, ok, worktree, actualCost, harnessId, finishedAt FROM task_results ORDER BY rowid")
+      .all() as { taskId: string; agentId: string; ok: number; worktree: string | null; actualCost: number | null; harnessId: string | null; finishedAt: string | null }[];
+    const out = new Map<string, ResultMeta>();
+    for (const r of rows) {
+      out.set(r.taskId, {
+        agentId: r.agentId,
+        ok: r.ok === 1,
+        worktreeBranch: r.worktree ? ((JSON.parse(r.worktree) as { branch?: string }).branch ?? undefined) : undefined,
+        actualCost: r.actualCost ?? undefined,
+        harnessId: r.harnessId ?? undefined,
+        finishedAt: r.finishedAt ?? undefined,
+      });
+    }
+    return out;
   }
 
   async recordOverride(taskId: string, routerPick: string, humanPick: string, actor?: string, reason?: string): Promise<void> {

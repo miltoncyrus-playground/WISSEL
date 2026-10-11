@@ -23,6 +23,8 @@ export default defineConfig({
       "/tasks": api,
       "/pipelines": api,
       "/events": api,
+      "/feed": api,
+      "/pipeline-runs": api,
       "/agents": api,
       "/board": api,
     },

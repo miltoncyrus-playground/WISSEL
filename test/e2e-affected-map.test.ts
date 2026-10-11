@@ -10,6 +10,7 @@ import { resolveAffectedSpecs } from "../scripts/e2e-affected-map.ts";
 const ALL_SPECS = [
   "app.spec.ts",
   "board.spec.ts",
+  "feed.spec.ts",
   "live-task-output.spec.ts",
   "new-task.spec.ts",
   "pipeline-editor.spec.ts",
@@ -17,6 +18,10 @@ const ALL_SPECS = [
   "projects.spec.ts",
   "theme.spec.ts",
 ];
+
+// A non-theme board.html change runs every spec that opens /board.
+// feed.spec.ts only opens /app#/feed and /feed, so it is not one.
+const BOARD_HTML_SPECS = ALL_SPECS.filter((s) => s !== "feed.spec.ts");
 
 describe("ALL_SPECS fixture", () => {
   test("matches the real e2e/*.spec.ts files on disk", () => {
@@ -45,14 +50,22 @@ describe("resolveAffectedSpecs", () => {
     expect(result.fullSuite).toBe(false);
   });
 
-  test("app/** and its server file resolve to app.spec.ts only", () => {
+  test("app/** and its server file resolve to app.spec.ts and feed.spec.ts only", () => {
     for (const path of ["app/src/App.tsx", "app/package.json", "src/api/serve-app.ts"]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
-      expect(result.specs).toEqual(["app.spec.ts"]);
+      expect(result.specs).toEqual(["app.spec.ts", "feed.spec.ts"]);
       expect(result.fullSuite).toBe(false);
     }
     // Not a prefix match on "app": a top-level "apps/" would be novel.
     expect(resolveAffectedSpecs([{ path: "apps/x.ts" }], ALL_SPECS).fullSuite).toBe(true);
+  });
+
+  test("GET /feed's services resolve to feed.spec.ts only", () => {
+    for (const path of ["src/services/feed.ts", "src/services/feed-sources.ts", "src/services/news-run-checks.ts"]) {
+      const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
+      expect(result.specs).toEqual(["feed.spec.ts"]);
+      expect(result.fullSuite).toBe(false);
+    }
   });
 
   test("render-task-output.js resolves to live-task-output.spec.ts only", () => {
@@ -159,13 +172,13 @@ describe("resolveAffectedSpecs", () => {
       ALL_SPECS,
     );
     expect(result.fullSuite).toBe(false);
-    expect(new Set(result.specs)).toEqual(new Set(ALL_SPECS));
+    expect(new Set(result.specs)).toEqual(new Set(BOARD_HTML_SPECS));
   });
 
   test("board.html change with no changed-line content available falls back to the broad default", () => {
     const result = resolveAffectedSpecs([{ path: "src/api/public/board.html" }], ALL_SPECS);
     expect(result.fullSuite).toBe(false);
-    expect(new Set(result.specs)).toEqual(new Set(ALL_SPECS));
+    expect(new Set(result.specs)).toEqual(new Set(BOARD_HTML_SPECS));
   });
 
   test("server.ts is a named broad/shared dependency and triggers the full suite", () => {

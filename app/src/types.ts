@@ -44,6 +44,39 @@ export interface PipelineDef {
   description: string;
 }
 
+/** GET /feed's items. Mirrors src/services/feed.ts (FeedItem, FeedPage);
+ *  test/app-shell.test.ts checks FEED_KINDS matches. */
+export const FEED_KINDS = ["landed", "needs-you", "podcast", "checks", "spend"] as const;
+export type FeedKind = (typeof FEED_KINDS)[number];
+export type FeedShow = "ai" | "world" | "retro" | "other";
+
+export interface FeedLink {
+  label: string;
+  href: string;
+  method?: "POST";
+}
+
+export interface FeedItem {
+  id: string;
+  kind: FeedKind;
+  at: string;
+  title: string;
+  detail: string;
+  links: FeedLink[];
+  taskId?: string;
+  runId?: string;
+  undated?: boolean;
+  show?: FeedShow;
+  audioUrl?: string;
+  durationSeconds?: number;
+  pass?: boolean;
+}
+
+export interface FeedPage {
+  items: FeedItem[];
+  next: string | null;
+}
+
 /** What arrives on `/events`. The app only needs the type to decide to
  *  refetch; the payloads are left loose. */
 export interface BoardEvent {

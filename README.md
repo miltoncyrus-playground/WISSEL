@@ -172,11 +172,22 @@ top bar.
 - **Look.** Dark design tokens in `app/src/tokens.ts` (contrast checked
   by a unit test), self-hosted fonts (Bricolage Grotesque, Geist, Geist
   Mono via `@fontsource`): no internet needed on the LAN.
-- Feed, Ask, Listen and You are placeholders until their cards land
+- **Feed.** What happened, newest first, from `GET /feed?limit=&before=`
+  (`src/services/feed.ts`, pure `buildFeed`): cards that landed, cards
+  that need you (review, escalated, failed with Retry, no match, an MCP
+  approval with Approve, a card held for a switched-off harness),
+  podcasts with a player, their `check-news-run` results, and each past
+  day's spend by harness. Updates live over `/events`; "Load more" pages
+  back.
+- **Stories.** Rings for the last 24 hours (AI news, World, Needs you,
+  Landed, Your week). A ring opens a full-screen viewer: tap or swipe
+  left/right, arrow keys, swipe down or Escape to close. Watched rings go
+  grey (kept in `localStorage`).
+- Ask, Listen and You are placeholders until their cards land
   (`docs/SDD-wissel-app.md` §6).
 
-Tests: `cd app && npm test` (vitest) and `e2e/app.spec.ts` at 390 and
-1440 px.
+Tests: `cd app && npm test` (vitest), `e2e/app.spec.ts` and
+`e2e/feed.spec.ts` at 390 and 1440 px.
 
 ## Pipelines
 

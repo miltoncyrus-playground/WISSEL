@@ -1,15 +1,16 @@
 import type { ScreenId } from "../routes";
 
-// Feed, Ask, Listen and You arrive in later cards (docs/SDD-wissel-app.md
+// Ask, Listen and You arrive in later cards (docs/SDD-wissel-app.md
 // §6). Until then each tab says what it will hold.
-const COPY: Record<Exclude<ScreenId, "board">, { title: string; text: string }> = {
+type Pending = Exclude<ScreenId, "board" | "feed">;
+
+const COPY: Record<Pending, { title: string; text: string }> = {
   ask: { title: "Ask wissel", text: "Chat with wissel to create cards, run pipelines and check what is running. Coming soon." },
-  feed: { title: "Feed", text: "What landed, what needs you, and new podcasts, newest first. Coming soon." },
   listen: { title: "Listen", text: "Every podcast episode, with a player that keeps going while you move around. Coming soon." },
   you: { title: "You", text: "Your week in wissel: cards merged, streaks and the lesson of the week. Coming soon." },
 };
 
-export function Placeholder({ screen }: { screen: Exclude<ScreenId, "board"> }) {
+export function Placeholder({ screen }: { screen: Pending }) {
   const c = COPY[screen];
   return (
     <div className={`screen placeholder screen-${screen}`}>

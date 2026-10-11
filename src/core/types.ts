@@ -680,6 +680,11 @@ export interface TaskResult {
    *  TaskResult.subagents already holds. See
    *  docs/SDD-mcp-orchestration.md §3.4. */
   mcpCalls?: { server: string; tool: string; args: unknown; result: unknown; ok: boolean }[];
+  /** When the board recorded this result (ISO), stamped by
+   *  Board.recordResult. Undefined for results recorded before the
+   *  column existed; the feed (src/services/feed.ts) falls back to the
+   *  task's telemetry for those. */
+  finishedAt?: string;
   /** Set when this run had at least one pending-approval MCP grant (see
    *  splitGrantsByTrust, src/executors/mcp-config.ts) and the agent's
    *  final message ended with a well-formed ```mcp-approval-request```
