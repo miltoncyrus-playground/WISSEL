@@ -90,7 +90,18 @@ export class ReadOnlyExecutor implements Executor {
     // executor: digest is DigestExecutor's (no LLM at all). All excluded
     // explicitly so none of them depend on array order in whatever pool
     // they're all registered in to stay mutually exclusive.
-    return agent.tier === "readonly" && agent.executor !== "api" && agent.executor !== "codex" && agent.executor !== "tts" && agent.executor !== "digest";
+    // executor: concierge is Ask's chat agent (src/services/concierge.ts):
+    // it does run through this class, but only when Ask calls `run`
+    // directly. No pool may pick it for a board card, so it can never be
+    // dispatched off the board even if a card carried its tag.
+    return (
+      agent.tier === "readonly" &&
+      agent.executor !== "api" &&
+      agent.executor !== "codex" &&
+      agent.executor !== "tts" &&
+      agent.executor !== "digest" &&
+      agent.executor !== "concierge"
+    );
   }
 
   async run(task: TaskCard, agent: AgentDef, harness?: Harness): Promise<TaskResult> {

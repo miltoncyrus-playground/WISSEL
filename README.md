@@ -164,7 +164,8 @@ top bar.
   (running, needs you, landed today). Screens are hash routes
   (`#/feed`, `#/ask`, ...); `/app` opens Ask.
 - **Command palette.** Cmd-K or Ctrl-K (or the search button): jump to a
-  screen, open a card by title, run a pipeline by name, New card.
+  screen, open a card by title, run a pipeline by name, New card (opens
+  Ask).
 - **Board tab.** Running, Needs you, Review and Done today from `/tasks`,
   a read-only card view at `#/board/<id>`, and a link to the full board.
 - **Live.** One shared `EventSource('/events')` keeps every screen
@@ -194,11 +195,27 @@ top bar.
   same Quick read as the board's run drawer: sources as links, invented
   sources flagged, and "More" for the explain step's detail. The app
   runs the board's own `board-news.js` for it through `app/src/news.ts`.
-- Ask and You are placeholders until their cards land
-  (`docs/SDD-wissel-app.md` §6).
+- **Ask.** Chat with wissel (`POST /ask`, `GET /conversations`,
+  `GET /conversations/:id`; `docs/SDD-wissel-app.md` §3.4). The
+  `concierge` agent (claude-opus-5-5, no tools, private `claude` harness
+  only) reads the board as fenced data and may do three things, checked
+  in code before anything happens: create a card (labels from the
+  board's set, repo only a registered project), run a pipeline, or show
+  a card, at most three per message. Merge, delete, archive, retry,
+  approve and settings stay on the board; anything else it proposes is
+  dropped and named in the reply. Cards it makes show as chips that
+  follow the board live; a podcast run gets Play once its audio is
+  ready. Quick replies (run a podcast, what did I do this week, what is
+  running, show board) come from code. Each reply shows its cost, which
+  also goes to telemetry. The open chat survives a reload; "Earlier
+  chats" lists the rest. Palette "New card" now opens Ask.
+- You is a placeholder until its card lands (`docs/SDD-wissel-app.md`
+  §6).
 
 Tests: `cd app && npm test` (vitest), `e2e/app.spec.ts`,
-`e2e/feed.spec.ts` and `e2e/listen.spec.ts` at 390 and 1440 px.
+`e2e/feed.spec.ts`, `e2e/listen.spec.ts` and `e2e/ask.spec.ts` (with a
+scripted concierge) at 390 and 1440 px. `bun run eval:concierge` is the
+paid eval of the real concierge.
 
 ## Pipelines
 
@@ -289,6 +306,7 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_TTS_URL` | `http://127.0.0.1:8880` | Local Kokoro-FastAPI service the "Make audio" pipeline step calls. |
 | `WISSEL_TTS_VOICE` | `af_heart` | Kokoro voice for that step. |
 | `WISSEL_AUDIO_DIR` | `~/.wissel/audio` | Where each run's MP3 is written and served from. |
+| `WISSEL_CONCIERGE_SCRIPT` | unset | e2e only: Ask's concierge answers from this JSON script (`e2e/fixtures/concierge-script.json`) instead of `claude -p`. Leave unset in real use. |
 | `WISSEL_API_URL` | `http://localhost:8787` | Server the CLI (`src/cli.ts`) talks to. |
 | `WISSEL_COMMIT` | from git | Commit to report when there's no `.git` (`src/core/version.ts`). |
 

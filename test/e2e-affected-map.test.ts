@@ -9,6 +9,7 @@ import { resolveAffectedSpecs } from "../scripts/e2e-affected-map.ts";
 // silently drifting from the real e2e/ directory.
 const ALL_SPECS = [
   "app.spec.ts",
+  "ask.spec.ts",
   "board.spec.ts",
   "feed.spec.ts",
   "listen.spec.ts",
@@ -21,9 +22,9 @@ const ALL_SPECS = [
 ];
 
 // A non-theme board.html change runs every spec that opens /board.
-// feed.spec.ts and listen.spec.ts only open /app and its API, so they
-// are not among them.
-const BOARD_HTML_SPECS = ALL_SPECS.filter((s) => s !== "feed.spec.ts" && s !== "listen.spec.ts");
+// feed.spec.ts, listen.spec.ts and ask.spec.ts only open /app and its
+// API, so they are not among them.
+const BOARD_HTML_SPECS = ALL_SPECS.filter((s) => s !== "feed.spec.ts" && s !== "listen.spec.ts" && s !== "ask.spec.ts");
 
 describe("ALL_SPECS fixture", () => {
   test("matches the real e2e/*.spec.ts files on disk", () => {
@@ -52,10 +53,18 @@ describe("resolveAffectedSpecs", () => {
     expect(result.fullSuite).toBe(false);
   });
 
-  test("app/** and its server file resolve to the three /app specs only", () => {
+  test("Ask's services resolve to ask.spec.ts only", () => {
+    for (const path of ["src/services/concierge.ts", "src/services/concierge-actions.ts", "src/services/concierge-context.ts", "src/services/concierge-script.ts", "src/services/conversations.ts"]) {
+      const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
+      expect(result.specs).toEqual(["ask.spec.ts"]);
+      expect(result.fullSuite).toBe(false);
+    }
+  });
+
+  test("app/** and its server file resolve to the four /app specs only", () => {
     for (const path of ["app/src/App.tsx", "app/package.json", "src/api/serve-app.ts"]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
-      expect(result.specs).toEqual(["app.spec.ts", "feed.spec.ts", "listen.spec.ts"]);
+      expect(result.specs).toEqual(["app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts"]);
       expect(result.fullSuite).toBe(false);
     }
     // Not a prefix match on "app": a top-level "apps/" would be novel.

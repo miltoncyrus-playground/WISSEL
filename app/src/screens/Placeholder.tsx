@@ -1,11 +1,10 @@
 import type { ScreenId } from "../routes";
 
-// Ask and You arrive in later cards (docs/SDD-wissel-app.md §6). Until
-// then each tab says what it will hold.
-type Pending = Exclude<ScreenId, "board" | "feed" | "listen">;
+// You arrives in a later card (docs/SDD-wissel-app.md §6). Until then
+// the tab says what it will hold.
+type Pending = Exclude<ScreenId, "board" | "feed" | "listen" | "ask">;
 
 const COPY: Record<Pending, { title: string; text: string }> = {
-  ask: { title: "Ask wissel", text: "Chat with wissel to create cards, run pipelines and check what is running. Coming soon." },
   you: { title: "You", text: "Your week in wissel: cards merged, streaks and the lesson of the week. Coming soon." },
 };
 

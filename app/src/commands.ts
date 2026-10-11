@@ -33,11 +33,12 @@ export function buildCommands(input: { tasks: readonly TaskCard[]; pipelines: re
     hint: "Go to",
     action: { kind: "go", hash: routeHash({ screen: s.id }) },
   }));
+  // Ask makes cards (SDD §3.4): "create a card to ..." in the chat.
   const newCard: Command = {
     id: "new-card",
     label: "New card",
-    hint: "Opens the board",
-    action: { kind: "open-url", url: "/board#/new" },
+    hint: "Ask wissel",
+    action: { kind: "go", hash: routeHash({ screen: "ask" }) },
   };
   const fullBoard: Command = {
     id: "full-board",

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Board, BoardEvent } from "../services/board.ts";
 import { SqliteBoard } from "../services/board.ts";
@@ -46,6 +46,9 @@ import { installShutdownHandlers } from "../executors/child-processes.ts";
 import { DEFAULT_APP_DIST, isAppPath, serveAppAsset } from "./serve-app.ts";
 import { createFeedSource } from "../services/feed-sources.ts";
 import { parseCursor } from "../services/feed.ts";
+import { AskError, createConcierge, type AskEvent } from "../services/concierge.ts";
+import { SqliteConversationStore } from "../services/conversations.ts";
+import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
 import type { Executor, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -222,6 +225,16 @@ export interface CreateAppOptions {
   /** Where a run's MP3 is written and served from (`WISSEL_AUDIO_DIR`).
    *  Defaults to `~/.wissel/audio`; tests point it at a temp dir. */
   audioDir?: string;
+  /** Runs Ask's concierge agent (docs/SDD-wissel-app.md §3.4). Defaults
+   *  to a real ReadOnlyExecutor (local `claude -p`); tests pass one built
+   *  on a scripted runner. */
+  conciergeExecutor?: Executor;
+  /** The harnesses Ask picks the concierge's account from. Defaults to
+   *  `harnesses`. Only the scripted e2e concierge
+   *  (WISSEL_CONCIERGE_SCRIPT) passes its own, since nothing real runs. */
+  conciergeHarnesses?: HarnessPool;
+  /** Home for Ask's shared scratch cwd; tests use a temp dir. */
+  conciergeHomeDir?: string;
 }
 
 /**
@@ -327,6 +340,40 @@ export function createApp(
     disabledHarnesses: () => harnesses.all().filter((h) => !h.enabled).map((h) => h.id),
   });
   const projectEli5ClientFactory = opts.projectEli5ClientFactory;
+
+  // Ask wissel (docs/SDD-wissel-app.md §3.4). A pipeline Ask starts runs
+  // on exactly the same path as POST /pipelines/:id/run, but Ask answers
+  // as soon as the root card exists instead of waiting for the run.
+  const concierge = createConcierge({
+    board: board as Board,
+    registry,
+    router,
+    pipelines,
+    projects,
+    harnesses: opts.conciergeHarnesses ?? harnesses,
+    conversations: new SqliteConversationStore((board as SqliteBoard).db),
+    executor: opts.conciergeExecutor ?? new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory }),
+    telemetry,
+    homeDir: opts.conciergeHomeDir,
+    startPipeline: (pipeline, input) =>
+      new Promise<TaskCard>((resolve, reject) => {
+        startPipelineRun(board as Board, registry, pipeline, undefined, input, {
+          executors: manualExecutors,
+          pipelines,
+          harnesses,
+          telemetry,
+          memoryPath: opts.memoryPath,
+          onRootCreated: resolve,
+          // Settled runs resolve too (a no-op after onRootCreated), so a
+          // path that never makes a root can't leave Ask waiting.
+        }).then(resolve, (e: unknown) => {
+          // Before the root exists this rejects Ask's action; after, the
+          // promise is settled and the run's own cards show the failure.
+          reject(e);
+          console.error(`ask: pipeline "${pipeline.name}" run failed: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      }),
+  });
 
   // One Orchestrator instance regardless of whether the automatic loop is
   // started, so its `inFlight` guard covers both paths — a human clicking
@@ -746,7 +793,31 @@ export function createApp(
       }
 
       if (url.pathname === "/events" && req.method === "GET") {
-        return sseStream(board);
+        return sseStream(board, concierge.events);
+      }
+
+      // Ask wissel (docs/SDD-wissel-app.md §3.4): stores Milton's message,
+      // runs the concierge, executes the actions that pass validation and
+      // answers with both messages. Takes as long as the model does; a
+      // named `ask` event on /events says "thinking" meanwhile.
+      if (url.pathname === "/ask" && req.method === "POST") {
+        const body = (await req.json().catch(() => null)) as { conversationId?: unknown; text?: unknown } | null;
+        if (!body || typeof body !== "object") return json({ error: "body must be JSON: {conversationId?, text}" }, 400);
+        try {
+          return json(await concierge.ask(body));
+        } catch (e) {
+          if (e instanceof AskError) return json({ error: e.message }, e.status);
+          throw e;
+        }
+      }
+
+      // Ask's chats, most recently active first, and one chat's messages.
+      if (url.pathname === "/conversations" && req.method === "GET") {
+        return json(concierge.list());
+      }
+      if (parts[0] === "conversations" && parts.length === 2 && req.method === "GET") {
+        const found = concierge.get(parts[1]!);
+        return found ? json(found) : notFound();
       }
 
       // The app's feed (docs/SDD-wissel-app.md §3.2): landed cards, cards
@@ -1496,9 +1567,14 @@ export async function servePipelineEditorAsset(pathname: string, distDir: URL): 
   return notFound();
 }
 
-function sseStream(board: { events?: import("node:events").EventEmitter }): Response {
+/** Board events go out as plain messages. Ask's events (`ask`, see
+ *  AskEvent in src/services/concierge.ts) go out as a named `ask` event,
+ *  which an EventSource only delivers to an `addEventListener("ask")`:
+ *  /board's `onmessage` never sees them, so its behaviour is unchanged. */
+function sseStream(board: { events?: import("node:events").EventEmitter }, askEvents?: import("node:events").EventEmitter): Response {
   const encoder = new TextEncoder();
   let listener: ((event: BoardEvent) => void) | undefined;
+  let askListener: ((event: AskEvent) => void) | undefined;
 
   const stream = new ReadableStream({
     start(controller) {
@@ -1507,9 +1583,14 @@ function sseStream(board: { events?: import("node:events").EventEmitter }): Resp
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
       };
       board.events?.on("event", listener);
+      askListener = (event: AskEvent) => {
+        controller.enqueue(encoder.encode(`event: ask\ndata: ${JSON.stringify(event)}\n\n`));
+      };
+      askEvents?.on("ask", askListener);
     },
     cancel() {
       if (listener) board.events?.off("event", listener);
+      if (askListener) askEvents?.off("ask", askListener);
     },
   });
 
@@ -1623,6 +1704,19 @@ if (import.meta.main) {
   const tts = { url: process.env.WISSEL_TTS_URL || undefined, voice: process.env.WISSEL_TTS_VOICE || undefined };
   const audioDir = process.env.WISSEL_AUDIO_DIR || undefined;
 
+  // e2e only (playwright.config.ts): Ask's concierge answers from a
+  // checked-in script instead of `claude -p`, on its own one-harness pool
+  // since nothing real runs (docs/SDD-wissel-app.md §4.2). Unset in real
+  // use: the real ReadOnlyExecutor and harness pool.
+  const conciergeScript = process.env.WISSEL_CONCIERGE_SCRIPT || undefined;
+  const scripted = conciergeScript
+    ? {
+        conciergeExecutor: new ReadOnlyExecutor({ runner: await loadScriptedConciergeRunner(conciergeScript) }),
+        conciergeHarnesses: HarnessPool.from([{ id: "claude", tool: "claude-cli", label: "Scripted concierge", enabled: true }]),
+        conciergeHomeDir: join(tmpdir(), "wissel-concierge-script"),
+      }
+    : {};
+
   Bun.serve({
     port,
     fetch: createApp(board, registry, telemetry, {
@@ -1647,8 +1741,10 @@ if (import.meta.main) {
       mergeHealthIntervalHours,
       tts,
       audioDir,
+      ...scripted,
     }),
   });
+  if (conciergeScript) console.log(`ask: scripted concierge from ${conciergeScript} (WISSEL_CONCIERGE_SCRIPT), no model calls`);
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
   const v = getVersionInfo();
   console.log(`version: ${v.commitShort}${v.dirty ? "+dirty" : ""} (${v.branch})`);

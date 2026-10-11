@@ -88,9 +88,15 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
-      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), feed.spec.ts (the Feed screen) and listen.spec.ts (Listen and the mini-player) open /app.",
+      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), feed.spec.ts (the Feed screen), listen.spec.ts (Listen and the mini-player) and ask.spec.ts (Ask) open /app.",
     match: (p) => p === "app" || p.startsWith("app/") || p === "src/api/serve-app.ts",
-    resolve: () => ["app.spec.ts", "feed.spec.ts", "listen.spec.ts"],
+    resolve: () => ["app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts"],
+  },
+  {
+    description:
+      "concierge*.ts and conversations.ts are POST /ask and GET /conversations (docs/SDD-wissel-app.md §3.4). Verified (grep): only server.ts imports them; ask.spec.ts is the only spec that calls /ask (with the scripted concierge, concierge-script.ts).",
+    match: (p) => /^src\/services\/concierge(-[a-z]+)?\.ts$/.test(p) || p === "src/services/conversations.ts",
+    resolve: () => ["ask.spec.ts"],
   },
   {
     description:

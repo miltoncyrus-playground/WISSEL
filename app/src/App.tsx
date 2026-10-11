@@ -8,10 +8,12 @@ import { LivePanel } from "./components/LivePanel";
 import { MiniPlayer } from "./components/MiniPlayer";
 import { Rail, TabBar, TopBar } from "./components/Nav";
 import { Palette } from "./components/Palette";
+import { AskScreen } from "./screens/AskScreen";
 import { BoardScreen, CardDetail } from "./screens/BoardScreen";
 import { FeedScreen } from "./screens/FeedScreen";
 import { ListenScreen } from "./screens/ListenScreen";
 import { Placeholder } from "./screens/Placeholder";
+import { useAsk } from "./useAsk";
 import { PlayerContext, useShellPlayer } from "./usePlayer";
 
 /** Rail + Live panel from here up; tab bar below (SDD §3.1). The shell
@@ -31,6 +33,9 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(() => Date.now());
   const player = useShellPlayer();
+  // Held by the shell so a reply that lands while another tab is open
+  // is there on return (SDD §3.4).
+  const ask = useAsk(data.reload);
   const hasPlayer = player.api.state.track !== null;
 
   useEffect(() => {
@@ -82,6 +87,8 @@ export function App() {
     screen = <FeedScreen now={now} />;
   } else if (route.screen === "listen") {
     screen = <ListenScreen now={now} />;
+  } else if (route.screen === "ask") {
+    screen = <AskScreen ask={ask} tasks={data.tasks} tasksLoaded={data.loaded} pipelines={data.pipelines} now={now} />;
   } else {
     screen = <Placeholder screen={route.screen} />;
   }

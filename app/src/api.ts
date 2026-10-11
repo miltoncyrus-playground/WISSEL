@@ -1,7 +1,7 @@
 // The server endpoints the shell reads. Same origin: the server that
 // serves /app also serves the API.
 
-import type { FeedPage, PipelineDef, PodcastEpisode, TaskCard } from "./types";
+import type { AskResult, Conversation, ConversationDetail, FeedPage, PipelineDef, PodcastEpisode, TaskCard } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -61,6 +61,40 @@ export async function runPipeline(id: string): Promise<TaskCard> {
     throw new Error(message);
   }
   return (await res.json()) as TaskCard;
+}
+
+/** The server's `{error}` message for a failed response, else the status. */
+async function errorOf(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: string };
+    if (body.error) return body.error;
+  } catch {
+    // Not JSON: keep the status.
+  }
+  return `HTTP ${res.status}`;
+}
+
+/** POST /ask (docs/SDD-wissel-app.md §3.4): answers when the concierge
+ *  has replied and its actions ran. No conversationId starts a chat. */
+export async function postAsk(text: string, conversationId?: string): Promise<AskResult> {
+  const res = await fetch("/ask", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify(conversationId ? { conversationId, text } : { text }),
+  });
+  if (!res.ok) throw new Error(await errorOf(res));
+  return (await res.json()) as AskResult;
+}
+
+/** GET /conversations: most recently active first. */
+export const fetchConversations = () => getJson<Conversation[]>("/conversations");
+
+/** GET /conversations/:id, or null when it is gone. */
+export async function fetchConversation(id: string): Promise<ConversationDetail | null> {
+  const res = await fetch(`/conversations/${encodeURIComponent(id)}`, { headers: { accept: "application/json" } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await errorOf(res));
+  return (await res.json()) as ConversationDetail;
 }
 
 /** The notice for a settled run, from the root card's status. */

@@ -42,6 +42,9 @@ export interface PipelineDef {
   id: string;
   name: string;
   description: string;
+  /** Only the step agents: Ask's quick replies find the podcasts by
+   *  their `podcast-audio` step. */
+  graph?: { steps: { agentId: string }[] };
 }
 
 /** GET /feed's items. Mirrors src/services/feed.ts (FeedItem, FeedPage);
@@ -104,3 +107,53 @@ export interface BoardEvent {
   type: string;
   [key: string]: unknown;
 }
+
+/** Ask's chats (docs/SDD-wissel-app.md §3.4). Mirrors
+ *  src/services/conversations.ts (Conversation, ChatMessage,
+ *  ExecutedAction), src/services/concierge-actions.ts (DroppedAction)
+ *  and src/services/concierge.ts (AskEvent, AskResult). */
+export type ExecutedAction =
+  | { type: "create_task"; ok: true; taskId: string; title: string }
+  | { type: "run_pipeline"; ok: true; runId: string; name: string; pipelineId: string }
+  | { type: "show_task"; ok: true; taskId: string }
+  | { type: "create_task" | "run_pipeline" | "show_task"; ok: false; error: string; title?: string; name?: string };
+
+export interface DroppedAction {
+  type: string;
+  reason: string;
+  disallowed: boolean;
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  role: "user" | "assistant";
+  text: string;
+  actions: ExecutedAction[];
+  dropped: DroppedAction[];
+  at: string;
+  costUsd?: number;
+}
+
+export interface AskResult {
+  conversation: Conversation;
+  user: ChatMessage;
+  assistant: ChatMessage;
+}
+
+export interface ConversationDetail {
+  conversation: Conversation;
+  messages: ChatMessage[];
+}
+
+/** The named `ask` event on `/events`. */
+export type AskEvent =
+  | { type: "ask.thinking"; conversationId: string; messageId: string }
+  | { type: "ask.replied"; conversationId: string; messageId: string };

@@ -31,8 +31,8 @@ describe("buildCommands", () => {
     expect(commands.find((c) => c.id === "task:t1")!.action).toEqual({ kind: "go", hash: "#/board/t1" });
   });
 
-  test("New card opens the board's New drawer; pipelines run by id", () => {
-    expect(commands.find((c) => c.id === "new-card")!.action).toEqual({ kind: "open-url", url: "/board#/new" });
+  test("New card opens Ask, which makes cards; pipelines run by id", () => {
+    expect(commands.find((c) => c.id === "new-card")!.action).toEqual({ kind: "go", hash: "#/ask" });
     expect(commands.find((c) => c.id === "pipeline:p1")!.action).toEqual({ kind: "run-pipeline", pipelineId: "p1", name: "AI news podcast" });
   });
 });
