@@ -143,6 +143,8 @@ describe("podcast and checks", () => {
       audioUrl: "/pipeline-runs/run1/audio",
       durationSeconds: 312,
       runId: "run1",
+      // The app's mini-player shows it under the title (§3.3).
+      pipelineName: "AI news podcast",
     });
     expect(items[1]).toMatchObject({
       kind: "checks",

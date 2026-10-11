@@ -23,6 +23,7 @@ import {
   newsView,
   parseHandoffData,
   pickVoice,
+  quickReadView,
   splitScript,
   type NewsView,
 } from "../src/api/public/board-news.js";
@@ -159,6 +160,31 @@ test("malformed final data returns a raw result carrying the step's output, neve
     if (view.kind === "raw") {
       expect(view.raw, name).toBe(summary);
       expect(view.reason.length, name).toBeGreaterThan(0);
+    }
+  }
+});
+
+// quickReadView is newsView's row shaping on parsed data, pulled out so
+// the app's Listen tab (docs/SDD-wissel-app.md §3.3) reuses it.
+test("quickReadView gives newsView's rows and the same reasons, from parsed data", () => {
+  const data = parseHandoffData(SCRIPT)!;
+  const view = news(newsView(SCRIPT, GATHER, true));
+  const quick = quickReadView(data.quickRead, gatherUrlSet(parseHandoffData(GATHER)), null);
+  expect(quick).toEqual({ kind: "rows", rows: view.rows, flaggedCount: view.flaggedCount, gatherChecked: true });
+  expect(quickReadView(data.quickRead, null, null)).toMatchObject({ kind: "rows", gatherChecked: false });
+
+  for (const [items, reason] of [
+    ["oops", "quickRead is missing or not a list."],
+    [undefined, "quickRead is missing or not a list."],
+    [[null], "quickRead entry 1 has no headline."],
+    [[{ headline: "h" }, { headline: " " }], "quickRead entry 2 has no headline."],
+    [[{ headline: "h", oneLine: 5 }], "quickRead entry 1 has a oneLine that isn't text."],
+  ] as [unknown, string][]) {
+    expect(quickReadView(items, null, null)).toEqual({ kind: "raw", reason });
+    // newsView still names the same reason for the same entry.
+    if (Array.isArray(items)) {
+      const raw = newsView(handoff({ quickRead: items, script: "Hi." }), GATHER, true);
+      expect(raw).toMatchObject({ kind: "raw", reason });
     }
   }
 });

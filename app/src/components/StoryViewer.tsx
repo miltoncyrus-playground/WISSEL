@@ -135,7 +135,6 @@ export function StoryViewer({ stories, start, now, onClose, onSeen, onNotice }: 
             </div>
             <h2 className="story-title">{item.title}</h2>
             {item.detail && <p className="story-detail">{item.detail}</p>}
-            {item.audioUrl && <audio className="feed-audio" controls preload="none" src={item.audioUrl} aria-label={`Play ${item.title}`} />}
             {item.links.length > 0 && <FeedActions item={item} onNotice={onNotice} />}
           </article>
         </div>

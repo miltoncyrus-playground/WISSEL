@@ -763,6 +763,17 @@ export function createApp(
         return json(await feed.read({ now: Date.now(), limit, before }));
       }
 
+      // The app's Listen tab and mini-player (docs/SDD-wissel-app.md
+      // §3.3): every podcast pipeline's runs with audio, newest first,
+      // at most `limit` per pipeline (1 to 50, default 10), each with the
+      // data its Quick read is shaped from. Read-only.
+      if (url.pathname === "/podcasts" && req.method === "GET") {
+        const rawLimit = url.searchParams.get("limit");
+        const limit = rawLimit === null ? 10 : Number(rawLimit);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 50) return json({ error: "limit must be a whole number from 1 to 50" }, 400);
+        return json(await feed.podcasts(limit));
+      }
+
       if (url.pathname === "/route/preview" && req.method === "POST") {
         const body = (await req.json()) as { labels?: string[]; parentTaskId?: string };
         const labels = Array.isArray(body.labels) ? body.labels : [];

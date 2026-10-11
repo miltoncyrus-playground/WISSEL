@@ -13,6 +13,10 @@ const PATHS = {
   external: "M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5",
   back: "M15 5l-7 7 7 7",
   next: "M9 5l7 7-7 7",
+  play: "M8 5.5v13l11-6.5z",
+  pause: "M8 5h3v14H8zM14 5h3v14h-3z",
+  rewind: "M4 12a8 8 0 1 0 2.4-5.7M4 4v4h4",
+  forward: "M20 12a8 8 0 1 1-2.4-5.7M20 4v4h-4",
 } as const;
 
 export type IconName = keyof typeof PATHS;

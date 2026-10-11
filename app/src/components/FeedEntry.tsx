@@ -1,7 +1,10 @@
 import { useState } from "react";
 import { postAction } from "../api";
+import { trackFromFeedItem } from "../podcasts";
 import { timeAgo } from "../time";
 import type { FeedItem, FeedKind, FeedLink } from "../types";
+import { usePlayer } from "../usePlayer";
+import { Icon } from "./Icon";
 
 export const KIND_LABEL: Record<FeedKind, string> = {
   landed: "Landed",
@@ -18,10 +21,13 @@ export function toneOf(item: Pick<FeedItem, "kind" | "pass">): string {
 }
 
 /** One feed item's links: a plain link, or a button that POSTs to the
- *  board's own endpoint after a confirm. `onDone` gets a short notice. */
+ *  board's own endpoint after a confirm. `onDone` gets a short notice.
+ *  A podcast also gets Play, which plays in the shell's mini-player
+ *  (SDD §3.3), so it keeps going after the feed is left. */
 export function FeedActions({ item, onNotice }: { item: FeedItem; onNotice: (text: string) => void }) {
   return (
     <div className="feed-actions">
+      <PlayItemButton item={item} />
       {item.links.map((l) =>
         l.method === "POST" ? (
           <ActionButton key={l.href} link={l} title={item.title} onNotice={onNotice} />
@@ -32,6 +38,24 @@ export function FeedActions({ item, onNotice }: { item: FeedItem; onNotice: (tex
         ),
       )}
     </div>
+  );
+}
+
+function PlayItemButton({ item }: { item: FeedItem }) {
+  const player = usePlayer();
+  const track = trackFromFeedItem(item);
+  if (!track) return null;
+  const playing = player.state.playing && player.state.track?.runId === track.runId;
+  return (
+    <button
+      type="button"
+      className="btn btn-small btn-primary"
+      aria-label={`${playing ? "Pause" : "Play"} ${item.title}`}
+      onClick={() => (playing ? player.pause() : player.play(track))}
+    >
+      <Icon name={playing ? "pause" : "play"} size={18} />
+      {playing ? "Pause" : "Play"}
+    </button>
   );
 }
 
@@ -81,7 +105,6 @@ export function FeedEntry({ item, now, onNotice }: { item: FeedItem; now: number
           {item.title}
         </h2>
         {item.detail && <p className="feed-detail">{item.detail}</p>}
-        {item.audioUrl && <audio className="feed-audio" controls preload="none" src={item.audioUrl} aria-label={`Play ${item.title}`} />}
         {item.links.length > 0 && <FeedActions item={item} onNotice={onNotice} />}
       </article>
     </li>

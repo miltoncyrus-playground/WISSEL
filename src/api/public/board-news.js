@@ -141,16 +141,37 @@ function newsView(finalSummary, gatherSummary, expected, explainSummary) {
   var paragraphs = splitScript(data.script);
   if (paragraphs.length === 0) return newsRaw("script is missing or empty.", finalSummary);
 
-  var urls = gatherUrlSet(parseHandoffData(gatherSummary));
-  var explained = joinExplained(data.quickRead, parseHandoffData(explainSummary));
+  var quick = quickReadView(data.quickRead, gatherUrlSet(parseHandoffData(gatherSummary)), parseHandoffData(explainSummary));
+  if (quick.kind === "raw") return newsRaw(quick.reason, finalSummary);
+  return {
+    kind: "news",
+    rows: quick.rows,
+    paragraphs: paragraphs,
+    wordCount: newsWordCount(paragraphs),
+    flaggedCount: quick.flaggedCount,
+    gatherChecked: quick.gatherChecked,
+  };
+}
+
+// The Quick read rows on their own, from already-parsed handoff data:
+// newsView's row shaping, also used by the app's Listen tab
+// (docs/SDD-wissel-app.md §3.3, through app/src/news.ts) on what
+// GET /podcasts hands it. `quickRead` is the script step's list, `urls`
+// the gather step's source set (gatherUrlSet; null when unchecked) and
+// `explainData` the explain step's data (or null):
+//   { kind: "rows", rows, flaggedCount, gatherChecked }
+//   { kind: "raw", reason }  an entry that can't be shaped.
+function quickReadView(quickRead, urls, explainData) {
+  if (!Array.isArray(quickRead)) return { kind: "raw", reason: "quickRead is missing or not a list." };
+  var explained = joinExplained(quickRead, explainData);
   var rows = [];
-  for (var i = 0; i < data.quickRead.length; i++) {
-    var item = data.quickRead[i];
+  for (var i = 0; i < quickRead.length; i++) {
+    var item = quickRead[i];
     if (!newsIsRecord(item) || typeof item.headline !== "string" || item.headline.trim() === "") {
-      return newsRaw("quickRead entry " + (i + 1) + " has no headline.", finalSummary);
+      return { kind: "raw", reason: "quickRead entry " + (i + 1) + " has no headline." };
     }
     if (item.oneLine !== undefined && typeof item.oneLine !== "string") {
-      return newsRaw("quickRead entry " + (i + 1) + " has a oneLine that isn't text.", finalSummary);
+      return { kind: "raw", reason: "quickRead entry " + (i + 1) + " has a oneLine that isn't text." };
     }
     var source = typeof item.source === "string" ? item.source.trim() : "";
     var href = source ? newsHref(source) : null;
@@ -162,10 +183,8 @@ function newsView(finalSummary, gatherSummary, expected, explainSummary) {
     rows.push({ headline: item.headline.trim(), oneLine: (item.oneLine || "").trim(), source: source, href: href, flag: flag, explained: explained[i] });
   }
   return {
-    kind: "news",
+    kind: "rows",
     rows: rows,
-    paragraphs: paragraphs,
-    wordCount: newsWordCount(paragraphs),
     flaggedCount: rows.filter(function (r) { return r.flag !== null; }).length,
     gatherChecked: !!urls,
   };
@@ -333,6 +352,7 @@ if (typeof module !== "undefined") {
     joinExplained: joinExplained,
     splitScript: splitScript,
     newsView: newsView,
+    quickReadView: quickReadView,
     NEWS_SCRIPT_AGENT: NEWS_SCRIPT_AGENT,
     NEWS_AUDIO_AGENT: NEWS_AUDIO_AGENT,
     newsStepCards: newsStepCards,
