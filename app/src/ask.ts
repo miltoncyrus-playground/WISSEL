@@ -6,7 +6,7 @@
 import { needsYouReason, type LaneId } from "./lanes";
 import { trackOf } from "./podcasts";
 import type { Track } from "./player";
-import type { AskResult, ChatMessage, PipelineDef, PodcastEpisode, TaskCard, TaskStatus } from "./types";
+import type { AskResult, ChatMessage, ControlExecuted, ExecutedAction, PendingView, PipelineDef, PodcastEpisode, TaskCard, TaskStatus } from "./types";
 
 /** A step agent that makes audio: a pipeline with one is a podcast.
  *  Same name as AUDIO_AGENT in src/services/news-run-checks.ts. */
@@ -78,7 +78,8 @@ export function chipsOf(
   const seen = new Set<string>();
   const out: Chip[] = [];
   for (const a of message.actions) {
-    if (!a.ok) continue;
+    // Board controls show as result chips instead (controlChipsOf).
+    if (!a.ok || isControl(a)) continue;
     const taskId = a.type === "run_pipeline" ? a.runId : a.taskId;
     if (seen.has(taskId)) continue;
     seen.add(taskId);
@@ -99,6 +100,65 @@ export function chipsOf(
   return out;
 }
 
+export function isControl(a: ExecutedAction): a is ControlExecuted {
+  return "control" in a;
+}
+
+/** A board control's outcome under a reply (docs/SDD-wissel-app.md
+ *  §3.7): green when it was done, orange when it was refused, with the
+ *  Undo chip's state when it has one. */
+export interface ResultChip {
+  key: string;
+  text: string;
+  tone: "done" | "refused";
+  /** The card it acted on, for a link to it. */
+  taskId?: string;
+  undo?: { id: string; state: PendingView["state"] };
+}
+
+/** The reply's control outcomes, in order: what ran (or was refused
+ *  when it ran), then what was refused before running on a card it did
+ *  find. Questions are not chips; they are in the reply text. */
+export function controlChipsOf(message: Pick<ChatMessage, "actions" | "dropped" | "pending">, now = Date.now()): ResultChip[] {
+  const pending = new Map((message.pending ?? []).map((p) => [p.id, p]));
+  const out: ResultChip[] = [];
+  message.actions.forEach((a, i) => {
+    if (!isControl(a)) return;
+    const undo = a.undoId ? pending.get(a.undoId) : undefined;
+    out.push({
+      key: `control:${i}`,
+      text: a.text,
+      tone: a.ok ? "done" : "refused",
+      ...(a.target.kind === "card" ? { taskId: a.target.id } : {}),
+      ...(undo ? { undo: { id: undo.id, state: pendingStateNow(undo, now) } } : {}),
+    });
+  });
+  message.dropped.forEach((d, i) => {
+    if (d.text && !d.question) out.push({ key: `refused:${i}`, text: d.text, tone: "refused" });
+  });
+  return out;
+}
+
+/** "open" turns "expired" on this clock too, so a card left on screen
+ *  stops offering Confirm at its expiry without a reload. The server
+ *  refuses it either way. */
+export function pendingStateNow(p: Pick<PendingView, "state" | "expiresAt">, now = Date.now()): PendingView["state"] {
+  return p.state === "open" && Date.parse(p.expiresAt) <= now ? "expired" : p.state;
+}
+
+/** The Confirm / Cancel cards under a reply: its Tier B actions. */
+export function confirmCardsOf(message: Pick<ChatMessage, "pending">, now = Date.now()): (PendingView & { state: PendingView["state"] })[] {
+  return (message.pending ?? []).filter((p) => p.kind === "confirm").map((p) => ({ ...p, state: pendingStateNow(p, now) }));
+}
+
+/** What a closed Confirm card says instead of its buttons. */
+export const PENDING_STATE_WORDS: Record<PendingView["state"], string> = {
+  open: "Waiting for you",
+  confirmed: "Done",
+  cancelled: "Cancelled",
+  expired: "Expired. Ask again to do it.",
+};
+
 export type QuickReply = { label: string; text: string } | { label: string; href: string };
 
 /** At most this many "Run <podcast>" replies. */
@@ -109,12 +169,16 @@ export function isPodcastPipeline(p: PipelineDef): boolean {
 }
 
 /** The chips under the composer, from code: run a podcast (by its real
- *  name), two questions Milton asks often, and the board. Show board is
- *  a link, not a message: no model call to open a page. */
+ *  name), what needs Milton, retry what failed and the harnesses (§3.7),
+ *  two questions Milton asks often, and the board. Show board is a link,
+ *  not a message: no model call to open a page. */
 export function quickReplies(pipelines: readonly PipelineDef[]): QuickReply[] {
   const podcasts = pipelines.filter(isPodcastPipeline).slice(0, PODCAST_REPLIES);
   return [
     ...podcasts.map((p) => ({ label: `Run ${p.name}`, text: `Run the ${p.name} pipeline` })),
+    { label: "What needs me?", text: "What needs me?" },
+    { label: "Retry failed", text: "Retry every failed card" },
+    { label: "Show harnesses", text: "Show me the harnesses" },
     { label: "What did I do this week?", text: "What did I do this week?" },
     { label: "What is running?", text: "What is running?" },
     { label: "Show board", href: "#/board" },

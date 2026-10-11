@@ -138,20 +138,53 @@ export interface BoardEvent {
   [key: string]: unknown;
 }
 
-/** Ask's chats (docs/SDD-wissel-app.md §3.4). Mirrors
+/** Ask's chats (docs/SDD-wissel-app.md §3.4, §3.7). Mirrors
  *  src/services/conversations.ts (Conversation, ChatMessage,
- *  ExecutedAction), src/services/concierge-actions.ts (DroppedAction)
- *  and src/services/concierge.ts (AskEvent, AskResult). */
+ *  ExecutedAction, ControlExecuted, ControlTarget, PendingView),
+ *  src/services/concierge-actions.ts (DroppedAction) and
+ *  src/services/concierge.ts (AskEvent, AskResult, PendingResult). */
+export interface ControlTarget {
+  kind: "card" | "harness" | "mcp-server" | "pipeline" | "project";
+  id: string;
+  label: string;
+}
+
+/** A board control Ask ran (or refused) on one target. */
+export interface ControlExecuted {
+  type: string;
+  control: true;
+  ok: boolean;
+  tier: "A" | "B";
+  confirmedBy: "tier-a" | "confirm" | "undo";
+  target: ControlTarget;
+  text: string;
+  error?: string;
+  undoId?: string;
+}
+
 export type ExecutedAction =
   | { type: "create_task"; ok: true; taskId: string; title: string }
   | { type: "run_pipeline"; ok: true; runId: string; name: string; pipelineId: string }
   | { type: "show_task"; ok: true; taskId: string }
-  | { type: "create_task" | "run_pipeline" | "show_task"; ok: false; error: string; title?: string; name?: string };
+  | { type: "create_task" | "run_pipeline" | "show_task"; ok: false; error: string; title?: string; name?: string }
+  | ControlExecuted;
+
+/** A Tier B action or an Undo, waiting for its tap. */
+export interface PendingView {
+  id: string;
+  kind: "confirm" | "undo";
+  lines: string[];
+  state: "open" | "confirmed" | "cancelled" | "expired";
+  expiresAt: string;
+}
 
 export interface DroppedAction {
   type: string;
   reason: string;
   disallowed: boolean;
+  never?: true;
+  question?: string;
+  text?: string;
 }
 
 export interface Conversation {
@@ -170,12 +203,19 @@ export interface ChatMessage {
   dropped: DroppedAction[];
   at: string;
   costUsd?: number;
+  pending?: PendingView[];
 }
 
 export interface AskResult {
   conversation: Conversation;
   user: ChatMessage;
   assistant: ChatMessage;
+}
+
+/** POST /ask/actions/:id/confirm|cancel. */
+export interface PendingResult {
+  pending: PendingView;
+  message: ChatMessage;
 }
 
 export interface ConversationDetail {
@@ -186,4 +226,10 @@ export interface ConversationDetail {
 /** The named `ask` event on `/events`. */
 export type AskEvent =
   | { type: "ask.thinking"; conversationId: string; messageId: string }
-  | { type: "ask.replied"; conversationId: string; messageId: string };
+  | { type: "ask.replied"; conversationId: string; messageId: string }
+  /** A reply ran control actions at once (Tier A, §3.7). */
+  | { type: "ask.action"; conversationId: string; messageId: string }
+  /** A reply left an action waiting for a Confirm tap. */
+  | { type: "ask.pending"; conversationId: string; messageId: string; pendingId: string }
+  /** A pending action was confirmed, cancelled, or (kind undo) undone. */
+  | { type: "ask.confirmed"; conversationId: string; messageId: string; pendingId: string; resolution: "confirmed" | "cancelled" };

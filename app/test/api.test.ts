@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { fetchConversation, postAsk, postReplyAudio, postVoice, runNotice, runPipeline } from "../src/api";
+import { fetchConversation, postAsk, postReplyAudio, postVoice, resolveAskAction, runNotice, runPipeline } from "../src/api";
 
 // POST /pipelines/:id/run answers 201 with the settled root card, which
 // can be "failed" (src/api/server.ts). The palette's notice must say so
@@ -39,6 +39,18 @@ describe("Ask's endpoints (SDD §3.4)", () => {
     await postAsk("and now?", "c1");
     expect(fetchMock.mock.calls[1]![0]).toBe("/ask");
     expect(JSON.parse(fetchMock.mock.calls[1]![1]!.body as string)).toEqual({ conversationId: "c1", text: "and now?" });
+  });
+
+  test("resolveAskAction posts the chat's id to confirm or cancel, and throws the server's reason", async () => {
+    const fetchMock = stubFetch(200, { pending: { id: "p/1", state: "confirmed" }, message: { id: "m1" } });
+    const out = await resolveAskAction("p/1", "c1", "confirm");
+    expect(out.pending.state).toBe("confirmed");
+    expect(fetchMock.mock.calls[0]![0]).toBe("/ask/actions/p%2F1/confirm");
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toEqual({ conversationId: "c1" });
+    await resolveAskAction("p1", "c1", "cancel");
+    expect(fetchMock.mock.calls[1]![0]).toBe("/ask/actions/p1/cancel");
+    stubFetch(409, { error: "that action expired; ask again" });
+    await expect(resolveAskAction("p1", "c1", "confirm")).rejects.toThrow("that action expired; ask again");
   });
 
   test("postAsk throws the server's error", async () => {

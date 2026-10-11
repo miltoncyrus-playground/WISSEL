@@ -1,7 +1,7 @@
 // The server endpoints the shell reads. Same origin: the server that
 // serves /app also serves the API.
 
-import type { AgentInfo, AskResult, Conversation, ConversationDetail, FeedPage, PipelineDef, PodcastEpisode, TaskCard, Wrapped } from "./types";
+import type { AgentInfo, AskResult, Conversation, ConversationDetail, FeedPage, PendingResult, PipelineDef, PodcastEpisode, TaskCard, Wrapped } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -90,6 +90,19 @@ export async function postAsk(text: string, conversationId?: string): Promise<As
   });
   if (!res.ok) throw new Error(await errorOf(res));
   return (await res.json()) as AskResult;
+}
+
+/** POST /ask/actions/:id/confirm or /cancel (docs/SDD-wissel-app.md
+ *  §3.7): a Confirm, Undo or Cancel tap. Throws the server's message
+ *  (expired, already used, another chat's). */
+export async function resolveAskAction(id: string, conversationId: string, verb: "confirm" | "cancel"): Promise<PendingResult> {
+  const res = await fetch(`/ask/actions/${encodeURIComponent(id)}/${verb}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ conversationId }),
+  });
+  if (!res.ok) throw new Error(await errorOf(res));
+  return (await res.json()) as PendingResult;
 }
 
 /** POST /voice (docs/SDD-wissel-app.md §3.5): a voice note in, its text

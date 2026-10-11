@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchConversation, fetchConversations, postAsk } from "./api";
+import { fetchConversation, fetchConversations, postAsk, resolveAskAction } from "./api";
 import { loadConversationId, pendingMessage, saveConversationId, settle } from "./ask";
 import { events } from "./events";
 import type { ChatMessage, Conversation } from "./types";
@@ -24,6 +24,9 @@ export interface AskState {
   newChat: () => void;
   openChat: (id: string) => void;
   listChats: () => void;
+  /** A Confirm, Undo or Cancel tap (§3.7). Resolves once the board and
+   *  the message show the result; rejects with the server's reason. */
+  resolvePending: (pendingId: string, verb: "confirm" | "cancel") => Promise<void>;
 }
 
 /** `refreshBoard` refetches /tasks. A reply is shown only after it, so
@@ -83,8 +86,10 @@ export function useAsk(refreshBoard: () => Promise<void>): AskState {
         // refetch now would only show the message twice for a moment.
         if (e.conversationId !== current.current || sendingRef.current) return;
         if (e.type === "ask.thinking") setRemoteThinking(true);
-        else {
-          setRemoteThinking(false);
+        // ask.action and ask.pending come just before their ask.replied,
+        // which reloads; ask.confirmed is a tap, here or elsewhere.
+        else if (e.type === "ask.replied" || e.type === "ask.confirmed") {
+          if (e.type === "ask.replied") setRemoteThinking(false);
           void boardFirst().then(() => load(e.conversationId));
         }
       }),
@@ -153,5 +158,17 @@ export function useAsk(refreshBoard: () => Promise<void>): AskState {
     fetchConversations().then(setChats, (err: unknown) => setError(err instanceof Error ? err.message : String(err)));
   }, []);
 
-  return { conversationId, messages, loaded, thinking: sending || remoteThinking, error, chats, send, newChat, openChat, listChats };
+  const resolvePending = useCallback(
+    async (pendingId: string, verb: "confirm" | "cancel") => {
+      const id = current.current;
+      if (!id) throw new Error("no chat is open");
+      const result = await resolveAskAction(pendingId, id, verb);
+      await boardFirst();
+      if (current.current !== id) return;
+      setMessages((prev) => prev.map((m) => (m.id === result.message.id ? result.message : m)));
+    },
+    [boardFirst],
+  );
+
+  return { conversationId, messages, loaded, thinking: sending || remoteThinking, error, chats, send, newChat, openChat, listChats, resolvePending };
 }

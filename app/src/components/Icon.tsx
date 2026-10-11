@@ -24,6 +24,7 @@ const PATHS = {
   speaker: "M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 0 1 0 7",
   download: "M12 4v11M7 10l5 5 5-5M5 20h14",
   share: "M12 15V4M8 8l4-4 4 4M6 12v7a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-7",
+  undo: "M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3",
 } as const;
 
 export type IconName = keyof typeof PATHS;

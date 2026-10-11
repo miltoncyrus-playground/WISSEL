@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { chipsOf, costText, isSendKey, MAX_MESSAGE_LENGTH, quickReplies, sendable, type Chip } from "../ask";
+import { chipsOf, confirmCardsOf, controlChipsOf, costText, isSendKey, MAX_MESSAGE_LENGTH, PENDING_STATE_WORDS, quickReplies, sendable, type Chip, type ResultChip } from "../ask";
 import { Avatar } from "../components/Avatar";
 import { Icon } from "../components/Icon";
 import { usePodcasts } from "../hooks";
 import { routeHash } from "../routes";
 import { timeAgo } from "../time";
-import type { ChatMessage, PipelineDef, PodcastEpisode, TaskCard } from "../types";
+import type { ChatMessage, PendingView, PipelineDef, PodcastEpisode, TaskCard } from "../types";
 import type { AskState } from "../useAsk";
 import { usePlayer } from "../usePlayer";
 import { postReplyAudio } from "../api";
@@ -106,12 +106,12 @@ export function AskScreen({
       {!ask.loaded ? (
         <p className="empty">Loading…</p>
       ) : empty ? (
-        <p className="lede">Ask for a card, a pipeline run, or what is going on. Merging and settings stay on the board.</p>
+        <p className="lede">Ask for a card, a pipeline run, a retry, or what is going on. Merges and deletes wait for your Confirm. Secrets and settings stay on the board.</p>
       ) : null}
 
       <ol className="chat" role="log" aria-label="Messages">
         {ask.messages.map((m) => (
-          <Message key={m.id} message={m} tasks={tasks} tasksLoaded={tasksLoaded} episodes={podcasts.episodes} />
+          <Message key={m.id} message={m} tasks={tasks} tasksLoaded={tasksLoaded} episodes={podcasts.episodes} now={now} resolve={ask.resolvePending} />
         ))}
         {ask.thinking && (
           <li className="msg msg-assistant is-thinking">
@@ -218,9 +218,28 @@ export function AskScreen({
   );
 }
 
-function Message({ message, tasks, tasksLoaded, episodes }: { message: ChatMessage; tasks: TaskCard[]; tasksLoaded: boolean; episodes: PodcastEpisode[] }) {
-  const chips = message.role === "assistant" ? chipsOf(message, tasks, episodes, tasksLoaded) : [];
-  const cost = message.role === "assistant" ? costText(message.costUsd) : "";
+type Resolve = AskState["resolvePending"];
+
+function Message({
+  message,
+  tasks,
+  tasksLoaded,
+  episodes,
+  now,
+  resolve,
+}: {
+  message: ChatMessage;
+  tasks: TaskCard[];
+  tasksLoaded: boolean;
+  episodes: PodcastEpisode[];
+  now: number;
+  resolve: Resolve;
+}) {
+  const assistant = message.role === "assistant";
+  const chips = assistant ? chipsOf(message, tasks, episodes, tasksLoaded) : [];
+  const results = assistant ? controlChipsOf(message, now) : [];
+  const confirms = assistant ? confirmCardsOf(message, now) : [];
+  const cost = assistant ? costText(message.costUsd) : "";
   return (
     <li className={`msg msg-${message.role}`} data-id={message.id}>
       <span className="sr-only">{message.role === "user" ? "You:" : "wissel:"}</span>
@@ -232,6 +251,16 @@ function Message({ message, tasks, tasksLoaded, episodes }: { message: ChatMessa
           ))}
         </ul>
       )}
+      {results.length > 0 && (
+        <ul className="results" aria-label="What was done">
+          {results.map((r) => (
+            <ResultView key={r.key} result={r} resolve={resolve} />
+          ))}
+        </ul>
+      )}
+      {confirms.map((p) => (
+        <ConfirmCard key={p.id} pending={p} resolve={resolve} />
+      ))}
       {(message.role === "assistant" || cost) && (
         <div className="msg-foot">
           {message.role === "assistant" && <ReplyPlay message={message} />}
@@ -284,6 +313,88 @@ function ReplyPlay({ message }: { message: ChatMessage }) {
         </p>
       )}
     </>
+  );
+}
+
+/** A tap on Confirm, Cancel or Undo: busy while it runs, the server's
+ *  reason if it refuses (expired, already used). */
+function useTap(resolve: Resolve) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const tap = (id: string, verb: "confirm" | "cancel") => {
+    setBusy(true);
+    setError(null);
+    resolve(id, verb).then(
+      () => setBusy(false),
+      (err: unknown) => {
+        setBusy(false);
+        setError(err instanceof Error ? err.message : String(err));
+      },
+    );
+  };
+  return { busy, error, tap };
+}
+
+/** One board control's outcome (§3.7): green done, orange refused, and
+ *  Undo while it can still be undone. */
+function ResultView({ result, resolve }: { result: ResultChip; resolve: Resolve }) {
+  const { busy, error, tap } = useTap(resolve);
+  return (
+    <li className={`result tone-result-${result.tone}`}>
+      <span className="result-mark" aria-hidden="true" />
+      <span className="sr-only">{result.tone === "done" ? "Done:" : "Not done:"}</span>
+      {result.taskId ? (
+        <a className="result-text" href={routeHash({ screen: "board", taskId: result.taskId })}>
+          {result.text}
+        </a>
+      ) : (
+        <span className="result-text">{result.text}</span>
+      )}
+      {result.undo?.state === "open" && (
+        <button type="button" className="btn btn-small result-undo" aria-label={`Undo: ${result.text}`} disabled={busy} aria-busy={busy || undefined} onClick={() => tap(result.undo!.id, "confirm")}>
+          <Icon name="undo" size={16} />
+          Undo
+        </button>
+      )}
+      {result.undo?.state === "confirmed" && <span className="result-state mono">Undone</span>}
+      {error && (
+        <p className="error result-error" role="alert">
+          Could not undo: {error}
+        </p>
+      )}
+    </li>
+  );
+}
+
+/** A Tier B action waiting for Milton's tap. Nothing happens until he
+ *  taps Confirm; a message saying "yes" does not count (§3.7). */
+function ConfirmCard({ pending, resolve }: { pending: PendingView; resolve: Resolve }) {
+  const { busy, error, tap } = useTap(resolve);
+  const open = pending.state === "open";
+  return (
+    <div className={`confirm-card is-${pending.state}`} role="group" aria-label="Waiting for your Confirm" data-pending-id={pending.id}>
+      <p className="confirm-head">{open ? "Confirm to do this:" : PENDING_STATE_WORDS[pending.state]}</p>
+      <ul className="confirm-lines">
+        {pending.lines.map((l) => (
+          <li key={l}>{l}</li>
+        ))}
+      </ul>
+      {open && (
+        <div className="confirm-actions">
+          <button type="button" className="btn btn-small btn-primary" disabled={busy} aria-busy={busy || undefined} onClick={() => tap(pending.id, "confirm")}>
+            Confirm
+          </button>
+          <button type="button" className="btn btn-small" disabled={busy} onClick={() => tap(pending.id, "cancel")}>
+            Cancel
+          </button>
+        </div>
+      )}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

@@ -10,7 +10,7 @@ import { SqliteProjectStore } from "../services/projects.ts";
 import { TelemetryLog } from "../services/telemetry.ts";
 import { HarnessPool, validateAgentHarnesses } from "../core/harness-pool.ts";
 import { McpServerPool, checkMcpServerReachable, parseMcpServerCreateInput, type CheckMcpServerReachableOptions } from "../core/mcp-server-pool.ts";
-import { setMcpServerEnabled, setMcpServerToolTrust, addMcpServer } from "../core/mcp-manifest.ts";
+import { addMcpServer } from "../core/mcp-manifest.ts";
 import { Registry } from "../core/registry.ts";
 import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
@@ -37,10 +37,26 @@ import { getProjectGitStatus } from "../services/project-status.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import type { AnthropicMessagesClient } from "../executors/anthropic-api.ts";
-import { mergeTaskWorktree, removeTaskWorktree } from "../services/worktree.ts";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
-import { checkHarnessAuth } from "../core/harness-discovery.ts";
-import { setHarnessEnabled, setHarnessModel } from "../core/harness-manifest.ts";
+import {
+  abandonEscalation,
+  approveMcpRequest,
+  denyMcpRequest,
+  disableHarness,
+  disableMcpServer,
+  discardTask,
+  enableHarness,
+  enableMcpServer,
+  mergeTask,
+  setAllowedTools,
+  setHarnessDefaultModel,
+  setMcpToolTrust,
+  setTaskHarnessOverride,
+  type HarnessControlDeps,
+  type McpControlDeps,
+  type Outcome,
+} from "../services/board-actions.ts";
+import { SqlitePendingActionStore } from "../services/pending-actions.ts";
 import { getVersionInfo } from "../core/version.ts";
 import { installShutdownHandlers } from "../executors/child-processes.ts";
 import { DEFAULT_APP_DIST, isAppPath, serveAppAsset } from "./serve-app.ts";
@@ -364,7 +380,33 @@ export function createApp(
   // on exactly the same path as POST /pipelines/:id/run, but Ask answers
   // as soon as the root card exists instead of waiting for the run.
   const conversations = new SqliteConversationStore((board as SqliteBoard).db);
+  // The routes below and Ask's control actions (docs/SDD-wissel-app.md
+  // §3.7) share these, and the functions in board-actions.ts.
+  const harnessControl: HarnessControlDeps = {
+    harnesses,
+    harnessesPath,
+    harnessRunner,
+    modelsCachePath,
+    // Tasks held because no harness for this tool was enabled (see
+    // Orchestrator.process) only get re-checked on a sweep, and a
+    // harness toggle isn't a board event, so trigger one here.
+    afterEnable: () => {
+      if (opts.orchestratorEnabled) void orchestrator.sweep();
+    },
+  };
+  const mcpControl: McpControlDeps = { mcpServers, mcpServersPath, reachability: mcpServerReachabilityOpts };
   const concierge = createConcierge({
+    controls: {
+      board: board as Board,
+      // The board's Run now: same orchestrator, same in-flight guard.
+      runNow: (taskId) => orchestrator.runNow(taskId, manualExecutors),
+      gitRunner: runViaBun,
+      harness: harnessControl,
+      mcp: mcpControl,
+      pipelines,
+      projects,
+    },
+    pending: new SqlitePendingActionStore((board as SqliteBoard).db),
     board: board as Board,
     registry,
     router,
@@ -719,24 +761,14 @@ export function createApp(
         // with a clear reason instead of a harness that would just fail
         // the moment a task actually tries to use it. See
         // docs/SDD-harness-enable-disable.md §6.
+        // The body is enableHarness (src/services/board-actions.ts), which
+        // Ask's set_harness_enabled calls too.
         if (parts[2] === "enable" && req.method === "POST") {
-          const { authenticated } = await checkHarnessAuth(harness, { runner: harnessRunner });
-          if (!authenticated) {
-            harnesses.setEnabled(harness.id, false, "not authenticated");
-            return json({ error: "still not authenticated" }, 409);
-          }
-          await setHarnessEnabled(harnessesPath, harness, true);
-          const enabled = harnesses.setEnabled(harness.id, true);
-          // Tasks held because no harness for this tool was enabled (see
-          // Orchestrator.process) only get re-checked on a sweep, and a
-          // harness toggle isn't a board event, so trigger one here.
-          if (opts.orchestratorEnabled) void orchestrator.sweep();
-          return json(enabled);
+          return outcome(await enableHarness(harnessControl, harness));
         }
 
         if (parts[2] === "disable" && req.method === "POST") {
-          await setHarnessEnabled(harnessesPath, harness, false);
-          return json(harnesses.setEnabled(harness.id, false));
+          return outcome(await disableHarness(harnessControl, harness));
         }
 
         // Sets/clears this harness's default model (Harness.model, see
@@ -751,16 +783,7 @@ export function createApp(
         // rejecting everything until a refresh has run once.
         if (parts[2] === "model" && req.method === "POST") {
           const { model } = (await req.json()) as { model?: string | null };
-          const resolved = model ?? undefined;
-          if (resolved !== undefined) {
-            const cache = await readModelsCache(modelsCachePath);
-            const availableModels = cache[harness.id]?.models ?? [];
-            if (availableModels.length > 0 && !availableModels.includes(resolved)) {
-              return json({ error: `model "${resolved}" is not in the known model list for harness "${harness.id}"` }, 400);
-            }
-          }
-          await setHarnessModel(harnessesPath, harness, resolved);
-          return json(harnesses.setModel(harness.id, resolved));
+          return outcome(await setHarnessDefaultModel(harnessControl, harness, model ?? undefined));
         }
       }
 
@@ -807,18 +830,11 @@ export function createApp(
         // with a clear reason instead of a server that would just fail
         // the moment a task actually tries to call it.
         if (parts[2] === "enable" && req.method === "POST") {
-          const { reachable, reason } = await checkMcpServerReachable(server, mcpServerReachabilityOpts);
-          if (!reachable) {
-            mcpServers.setEnabled(server.id, false, reason ?? "not reachable");
-            return json({ error: reason ?? "not reachable" }, 409);
-          }
-          await setMcpServerEnabled(mcpServersPath, server, true);
-          return json(mcpServers.setEnabled(server.id, true));
+          return outcome(await enableMcpServer(mcpControl, server));
         }
 
         if (parts[2] === "disable" && req.method === "POST") {
-          await setMcpServerEnabled(mcpServersPath, server, false);
-          return json(mcpServers.setEnabled(server.id, false));
+          return outcome(await disableMcpServer(mcpControl, server));
         }
       }
 
@@ -836,12 +852,7 @@ export function createApp(
         if (!server.tools.some((t) => t.name === toolName)) return notFound();
 
         const { trust } = (await req.json()) as { trust?: string };
-        if (trust !== "auto" && trust !== "approval-required") {
-          return json({ error: `trust must be "auto" or "approval-required", got ${JSON.stringify(trust)}` }, 400);
-        }
-
-        await setMcpServerToolTrust(mcpServersPath, server, toolName, trust);
-        return json(mcpServers.setToolTrust(server.id, toolName, trust));
+        return outcome(await setMcpToolTrust(mcpControl, server, toolName, trust));
       }
 
       if (url.pathname === "/events" && req.method === "GET") {
@@ -860,6 +871,22 @@ export function createApp(
         if (!body || typeof body !== "object") return json({ error: "body must be JSON: {conversationId?, text}" }, 400);
         try {
           return json(await concierge.ask(body));
+        } catch (e) {
+          if (e instanceof AskError) return json({ error: e.message }, e.status);
+          throw e;
+        }
+      }
+
+      // A Confirm, Undo or Cancel tap on a pending Ask action
+      // (docs/SDD-wissel-app.md §3.7). Body {conversationId}; 404 for an
+      // unknown id, 409 for expired, used or another chat's. Confirm can
+      // take as long as a merge does.
+      if (parts[0] === "ask" && parts[1] === "actions" && parts.length === 4 && req.method === "POST" && (parts[3] === "confirm" || parts[3] === "cancel")) {
+        server?.timeout(req, 0);
+        const body = (await req.json().catch(() => null)) as { conversationId?: unknown } | null;
+        if (!body || typeof body !== "object") return json({ error: "body must be JSON: {conversationId}" }, 400);
+        try {
+          return json(parts[3] === "confirm" ? await concierge.confirm(parts[2]!, body) : await concierge.cancel(parts[2]!, body));
         } catch (e) {
           if (e instanceof AskError) return json({ error: e.message }, e.status);
           throw e;
@@ -1347,28 +1374,24 @@ export function createApp(
         if (parts.length === 3 && parts[2] === "allowed-tools" && req.method === "POST") {
           const task = await board.get(parts[1]!);
           if (!task) return notFound();
-          if (task.status === "running" || task.status === "dispatched") {
-            return json({ error: `task is ${task.status}; change its tools once it stops` }, 409);
-          }
           const { extraAllowedTools } = (await req.json().catch(() => ({}))) as { extraAllowedTools?: unknown };
-          if (extraAllowedTools === undefined) return json({ error: "body needs extraAllowedTools (a list; [] clears)" }, 400);
-          const grants = validateExtraAllowedTools(extraAllowedTools);
-          if (!grants.ok) return json({ error: grants.error }, 400);
-          return json(await board.setExtraAllowedTools(task.id, grants.tools));
+          return outcome(await setAllowedTools(board as Board, task, extraAllowedTools));
         }
 
-        if (parts.length === 3 && parts[2] === "merge" && req.method === "POST") {
+        // Sets or clears (null) the harness a card asks to run on, after
+        // it was created (docs/SDD-wissel-app.md §3.7). Ask's
+        // set_task_harness calls the same setTaskHarnessOverride.
+        if (parts.length === 3 && parts[2] === "harness" && req.method === "POST") {
           const task = await board.get(parts[1]!);
           if (!task) return notFound();
-          const result = await board.getResult(parts[1]!);
-          if (!result?.worktree) return json({ error: "task has no worktree to merge" }, 409);
-          // A worktree only ever exists for a write-tier run, which
-          // requires `repo` at creation time (see POST /tasks) — never
-          // reachable for a repo-less readonly task.
-          const merge = await mergeTaskWorktree(task.repo!, result.worktree, task, runViaBun);
-          if (!merge.ok) return json({ error: merge.message }, 409);
-          const moved = await board.move(task.id, "done");
-          return json({ merged: true, message: merge.message, task: moved });
+          const { harness } = (await req.json().catch(() => ({}))) as { harness?: unknown };
+          return outcome(await setTaskHarnessOverride(board as Board, harnesses, task, harness));
+        }
+
+        // mergeTask and discardTask (src/services/board-actions.ts) are
+        // the bodies of these two; Ask's merge_task/discard_task call them.
+        if (parts.length === 3 && parts[2] === "merge" && req.method === "POST") {
+          return outcome(await mergeTask(board as Board, parts[1]!, runViaBun));
         }
 
         // The board UI's "Discard" action for a worktree-run task —
@@ -1376,15 +1399,7 @@ export function createApp(
         // and moves the task to "failed" (closest existing status for
         // "reviewed, rejected").
         if (parts.length === 3 && parts[2] === "discard" && req.method === "POST") {
-          const task = await board.get(parts[1]!);
-          if (!task) return notFound();
-          const result = await board.getResult(parts[1]!);
-          if (!result?.worktree) return json({ error: "task has no worktree to discard" }, 409);
-          // Same reasoning as the merge branch above — a worktree
-          // implies this was a write-tier run, which guarantees `repo`.
-          await removeTaskWorktree(task.repo!, result.worktree, runViaBun);
-          const moved = await board.move(task.id, "failed");
-          return json({ discarded: true, task: moved });
+          return outcome(await discardTask(board as Board, parts[1]!, runViaBun));
         }
 
         if (parts.length === 3 && parts[2] === "override" && req.method === "POST") {
@@ -1425,9 +1440,7 @@ export function createApp(
           // "a human looked at it and it's not worth pursuing," same
           // terminal state a discarded worktree lands on.
           if (parts[3] === "abandon" && req.method === "POST") {
-            if (task.status !== "escalated") return json({ error: "task is not escalated" }, 400);
-            const moved = await board.move(task.id, "failed");
-            return json(moved);
+            return outcome(await abandonEscalation(board as Board, task));
           }
 
           // Adds grants (default: the card's suggestedGrants, which the
@@ -1499,22 +1512,9 @@ export function createApp(
           // instead (mirrors `/escalation/retry`'s identical choice
           // immediately above) — it's UI-visible but never read by
           // routing.
+          // The body is approveMcpRequest (src/services/board-actions.ts).
           if (parts[3] === "approve" && req.method === "POST") {
-            if (task.status !== "review" || !task.pendingMcpApproval) return json({ error: "task has no pending MCP approval request" }, 400);
-            const request = task.pendingMcpApproval;
-            const followUp = await board.create({
-              title: `Approved MCP call: ${request.server}/${request.tool}`,
-              body:
-                `A human approved exactly one MCP tool call. Make exactly this one call, then end your turn — do not take any other action.\n\n` +
-                `Server: ${request.server}\nTool: ${request.tool}\nArguments: ${JSON.stringify(request.args)}\n\n` +
-                `Reason originally given for this call: ${request.reason}`,
-              labels: task.labels,
-              repo: task.repo,
-              mcpAccessOverride: [{ server: request.server, tools: [request.tool] }],
-            });
-            await board.setSupersededBy(task.id, followUp.id);
-            await board.move(task.id, "done");
-            return json(followUp, 201);
+            return outcome(await approveMcpRequest(board as Board, task), 201);
           }
 
           // Denied: no follow-up, ever. Lands on `failed` rather than
@@ -1522,9 +1522,7 @@ export function createApp(
           // above: the one thing this task was waiting to do got
           // rejected, so it didn't accomplish what it was asked to do.
           if (parts[3] === "deny" && req.method === "POST") {
-            if (task.status !== "review" || !task.pendingMcpApproval) return json({ error: "task has no pending MCP approval request" }, 400);
-            const moved = await board.move(task.id, "failed");
-            return json(moved);
+            return outcome(await denyMcpRequest(board as Board, task));
           }
         }
 
@@ -1568,6 +1566,13 @@ function json(value: unknown, status = 200): Response {
 
 function notFound(): Response {
   return new Response("not found", { status: 404 });
+}
+
+/** A board-actions.ts Outcome as the route's Response: the value as
+ *  JSON on success, a plain "not found" for 404, else `{error}`. */
+function outcome<T>(o: Outcome<T>, successStatus = 200): Response {
+  if (o.ok) return json(o.value, successStatus);
+  return o.status === 404 ? notFound() : json({ error: o.error }, o.status);
 }
 
 /**

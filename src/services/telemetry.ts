@@ -18,6 +18,19 @@ export type TelemetryEvent =
       usage?: RunUsage;
       /** Only on a run that resumed a session a 429 cut off. */
       resumed?: true;
+    }
+  /** One control action Ask ran on one target (docs/SDD-wissel-app.md
+   *  §3.7): what, on what, which tier, and who let it run. */
+  | {
+      type: "ask.action";
+      conversationId: string;
+      messageId: string;
+      actionType: string;
+      tier: "A" | "B";
+      target: { kind: string; id: string };
+      ok: boolean;
+      confirmedBy: "tier-a" | "confirm" | "undo";
+      error?: string;
     };
 
 /**

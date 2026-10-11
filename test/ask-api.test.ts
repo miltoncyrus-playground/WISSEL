@@ -156,11 +156,15 @@ describe("POST /ask", () => {
     expect(prompt.indexOf(evil.title)).toBeGreaterThan(fenceAt);
     expect(prompt.indexOf(evil.title)).toBeLessThan(prompt.indexOf("Milton's message, the only thing"));
 
+    // delete_task is a real (Tier B) action now, but "all" names no
+    // card: a question, no pending action, and nothing deleted.
     expect(body.assistant.actions).toEqual([]);
+    expect(body.assistant.pending).toBeUndefined();
     expect(body.assistant.dropped.map((d) => [d.type, d.disallowed])).toEqual([
-      ["delete_task", true],
+      ["delete_task", false],
       ["create_task", false],
     ]);
+    expect(body.assistant.dropped[0]!.question).toBe('Which card should I delete? No card matches "all".');
     expect(await board.list()).toEqual([evil]);
   });
 

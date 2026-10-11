@@ -485,6 +485,35 @@ kbd {
 .chip-play { margin-right: 4px; background: var(--accent); color: var(--ground); }
 .chip-play:hover { background: var(--accent); box-shadow: 0 0 0 2px var(--text); }
 
+/* Ask's board controls (docs/SDD-wissel-app.md §3.7): one ruled line
+   per outcome, green done or orange refused, and a Confirm card for
+   what waits on Milton's tap. */
+.results { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; border-top: 1px solid var(--line); }
+.result {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0;
+  padding: 8px 0; border-bottom: 1px solid var(--line);
+}
+.result-mark { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--result); }
+.tone-result-done { --result: var(--accent); }
+.tone-result-refused { --result: var(--coral); }
+.result-text { flex: 1 1 12rem; min-width: 0; font-size: 14px; overflow-wrap: anywhere; color: var(--text); }
+a.result-text { text-decoration: none; }
+a.result-text:hover { text-decoration: underline; }
+.tone-result-refused .result-text { color: var(--coral); }
+.result-undo { gap: 6px; }
+.result-state { color: var(--muted); font-size: 12px; }
+.result-error { flex-basis: 100%; font-size: 13px; }
+.confirm-card {
+  display: grid; gap: 8px; min-width: 0; padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--line); border-top: 4px solid var(--coral); border-radius: 0;
+}
+.confirm-card.is-confirmed { border-top-color: var(--accent); }
+.confirm-card.is-cancelled, .confirm-card.is-expired { border-top-color: var(--line); }
+.confirm-head { margin: 0; font-weight: 700; font-size: 14px; }
+.confirm-card:not(.is-open) .confirm-head { color: var(--muted); font-weight: 500; }
+.confirm-lines { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: 14px; overflow-wrap: anywhere; }
+.confirm-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
 /* The composer stays in reach at the bottom: above the tab bar (and
    the mini-player) on a phone, at the foot of the column on desktop. */
 .composer-wrap {

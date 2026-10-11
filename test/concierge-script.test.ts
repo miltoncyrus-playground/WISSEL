@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildConciergeContext } from "../src/services/concierge-context.ts";
 import { parseConciergeOutput } from "../src/services/concierge-actions.ts";
-import { messageFromPrompt, parseScript, scriptedConciergeRunner } from "../src/services/concierge-script.ts";
+import { messageFromPrompt, parseScript, scriptedConciergeRunner, withGroups } from "../src/services/concierge-script.ts";
 
 // The e2e concierge (WISSEL_CONCIERGE_SCRIPT, docs/SDD-wissel-app.md
 // §4.2): answers `claude -p` from a script. It must find Milton's
@@ -41,6 +41,15 @@ describe("scriptedConciergeRunner", () => {
     const none = scriptedConciergeRunner([]);
     const fallback = JSON.parse((await none(["claude", "-p"], { cwd: "/tmp", stdin: ctx("hi") })).stdout) as { result: string };
     expect(parseConciergeOutput(fallback.result)).toEqual({ reply: "Scripted concierge: no rule for that.", actions: [] });
+  });
+
+  test("$1..$9 in a reply are the match's groups, escaped for a JSON string (§3.7 e2e)", async () => {
+    const reply = '```wissel-actions\n{"reply": "ok", "actions": [{"type": "archive_task", "card": "$1"}]}\n```';
+    const run = scriptedConciergeRunner(parseScript(JSON.stringify([{ match: "archive card (ctl-[a-z0-9-]+)", reply }])));
+    const out = JSON.parse((await run(["claude", "-p"], { cwd: "/tmp", stdin: ctx("archive card ctl-arc-390-17") })).stdout) as { result: string };
+    expect(parseConciergeOutput(out.result)!.actions).toEqual([{ type: "archive_task", card: "ctl-arc-390-17" }]);
+    expect(withGroups('"$1" "$2"', /a(b")(c)?/.exec('ab"'))).toBe('"b\\"" ""');
+    expect(withGroups("$1", null)).toBe("");
   });
 
   test("anything but claude is refused", async () => {
