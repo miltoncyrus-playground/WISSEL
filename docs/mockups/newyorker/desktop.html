@@ -1,0 +1,127 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>
+<title>Wissel New Yorker Desktop</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Libre+Caslon+Text:ital,wght@0,400;0,700;1,400&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=Inter:wght@500;600;700&display=swap">
+<style>
+/* Layout: broadsheet masthead, section nav in place of the rail, 12-col content grid with vertical hairlines. */
+:root{--paper:#fff;--ink:#121212;--muted:#6b6b6b;--hair:#d9d9d9;--red:#d4202c;--tint:#f5f3ee;
+--head:"Libre Caslon Text","Iowan Old Style",Georgia,serif;--body:"Source Serif 4",Georgia,serif;--sans:"Inter",Helvetica,Arial,sans-serif}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--paper:#111;--ink:#f1efe9;--muted:#9a9a9a;--hair:#333;--tint:#1b1b1b;--red:#ff5a5f;color-scheme:dark}}
+:root[data-theme="dark"]{--paper:#111;--ink:#f1efe9;--muted:#9a9a9a;--hair:#333;--tint:#1b1b1b;--red:#ff5a5f;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font:17px/1.55 var(--body);padding-inline:24px;padding-block:0 48px;-webkit-font-smoothing:antialiased}
+.page{max-width:1180px;margin:0 auto}
+a{color:inherit;text-decoration:none}
+.util{display:flex;justify-content:space-between;align-items:center;gap:16px;padding-block:14px;font:600 11px var(--sans);letter-spacing:.12em;text-transform:uppercase}
+.search{border:1px solid var(--ink);padding:7px 14px;display:flex;gap:18px;color:var(--muted);font:500 12px var(--sans);letter-spacing:0;text-transform:none;background:transparent}
+.search kbd{font:600 11px var(--sans);color:var(--ink)}
+.logo{font:italic 400 clamp(48px,8vw,84px)/1 var(--head);text-align:center;letter-spacing:-.02em;padding-block:6px 14px}
+.rules{border-top:3px double var(--ink);border-bottom:1px solid var(--ink);height:7px}
+nav.sec{display:flex;justify-content:center;gap:clamp(16px,5vw,64px);padding-block:12px;border-bottom:1px solid var(--ink);flex-wrap:wrap}
+nav.sec button{all:unset;cursor:pointer;font:600 12px var(--sans);letter-spacing:.16em;text-transform:uppercase;color:var(--muted);padding-bottom:4px}
+nav.sec button[aria-current="page"]{color:var(--ink);box-shadow:inset 0 -2px 0 var(--red)}
+nav.sec button:focus-visible{outline:2px solid var(--red);outline-offset:3px}
+.kicker{font:700 11px var(--sans);letter-spacing:.14em;text-transform:uppercase;color:var(--red)}.kicker.k{color:var(--ink)}
+.dek{font:italic 400 18px/1.4 var(--body);color:var(--muted);margin:6px 0 0}
+.by{font:600 11px var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:10px 0 0}
+h1{font:700 clamp(34px,4.4vw,52px)/1.06 var(--head);letter-spacing:-.02em;margin:10px 0 0;text-wrap:balance}
+h2{font:700 24px/1.18 var(--head);margin:6px 0 0;text-wrap:balance}h2.xl{font-size:clamp(30px,3.4vw,40px);line-height:1.1}
+h3{font:700 12px var(--sans);letter-spacing:.14em;text-transform:uppercase;margin:0;padding:10px 0;border-top:2px solid var(--ink);display:flex;justify-content:space-between}
+h3 span{color:var(--muted);font-weight:600}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:0 32px;padding-top:28px}
+.col{min-width:0;padding-bottom:24px}
+.vr{border-left:1px solid var(--hair);padding-left:32px;margin-left:-16px}
+.s8{grid-column:span 8}.s4{grid-column:span 4}.s3{grid-column:span 3}.s6{grid-column:span 6}.s12{grid-column:span 12}.s9{grid-column:span 9}
+.fig{aspect-ratio:21/9;max-width:100%;background:var(--tint);border:1px solid var(--hair);display:grid;place-items:center;margin:16px 0 6px;font:italic 15px var(--head);color:var(--muted)}
+.cap{font:12px/1.4 var(--sans);color:var(--muted)}
+.item{padding-block:16px;border-bottom:1px solid var(--hair)}.item:first-of-type{padding-top:0}.item:last-child{border:0}
+.stories{display:flex;gap:28px;padding-block:18px;border-bottom:1px solid var(--hair);overflow-x:auto}
+.stories a{flex:none;text-align:center;font:600 10px var(--sans);letter-spacing:.1em;text-transform:uppercase}
+.stories b{display:grid;place-items:center;width:64px;height:64px;border:1.5px solid var(--ink);border-radius:50%;font:italic 400 24px var(--head);margin:0 auto 7px}
+.stories .new b{border:3px double var(--red);color:var(--red)}
+.btn{display:inline-block;border:1px solid var(--ink);padding:10px 18px;font:700 11px var(--sans);letter-spacing:.14em;text-transform:uppercase;background:var(--ink);color:var(--paper);margin:14px 10px 0 0}.btn.o{background:transparent;color:var(--ink)}
+.pill{align-self:start;font:700 10px var(--sans);letter-spacing:.12em;text-transform:uppercase;border:1px solid currentColor;padding:2px 6px;white-space:nowrap}
+.q{font:italic 400 22px/1.4 var(--head);border-left:3px solid var(--red);padding-left:18px;margin:28px 0 20px}
+.a p{margin:0 0 16px}.a>p:first-of-type::first-letter{font:700 64px/.8 var(--head);float:left;padding:7px 10px 0 0}
+.compose{display:flex;gap:14px;align-items:center;border-top:2px solid var(--ink);padding-top:14px;margin-top:28px}
+.compose input{flex:1;border:0;border-bottom:1px solid var(--ink);background:transparent;color:var(--ink);font:italic 20px var(--head);padding:8px 0;outline:0}.compose .btn{margin:0}
+.card{display:grid;grid-template-columns:1fr auto;gap:3px 10px;padding:13px 0;border-bottom:1px solid var(--hair)}
+.card .t{font:700 17px/1.25 var(--head)}.card .m{grid-column:1/-1;font:12px var(--sans);color:var(--muted)}
+.bar{height:3px;background:var(--hair);margin-top:8px;grid-column:1/-1}.bar i{display:block;height:100%;background:var(--ink)}
+.player{border-top:2px solid var(--ink);border-bottom:1px solid var(--ink);padding:22px 0;margin-top:22px}
+.scrub{height:3px;background:var(--hair);margin:6px 0;position:relative}.scrub i{position:absolute;left:0;top:-1px;height:5px;width:38%;background:var(--red)}
+.times{display:flex;justify-content:space-between;font:12px var(--sans);color:var(--muted)}
+.ctl{display:flex;gap:36px;font:700 12px var(--sans);letter-spacing:.14em;text-transform:uppercase;margin-top:16px}
+.stat{display:grid;grid-template-columns:repeat(3,1fr);border-top:2px solid var(--ink);border-bottom:1px solid var(--ink);margin-top:24px}
+.stat div{padding:20px 0;text-align:center;border-right:1px solid var(--hair)}.stat div:last-child{border:0}
+.stat b{display:block;font:700 clamp(44px,6vw,72px)/1 var(--head);font-variant-numeric:lining-nums}.stat span{font:600 11px var(--sans);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.streak{display:flex;gap:6px;margin-top:12px}.streak i{flex:1;height:34px;border:1px solid var(--ink)}.streak i.f{background:var(--ink)}.streak i.t{background:var(--red);border-color:var(--red)}
+.pull{font:italic 400 clamp(24px,3vw,34px)/1.25 var(--head);text-align:center;border-block:1px solid var(--ink);padding:26px 24px;margin-top:28px;text-wrap:balance}
+table{width:100%;border-collapse:collapse;font:15px var(--sans)}td,th{padding:12px 0;border-bottom:1px solid var(--hair);text-align:left}th{font:700 11px var(--sans);letter-spacing:.12em;text-transform:uppercase;border-bottom:1px solid var(--ink);color:var(--muted)}td:last-child,th:last-child{text-align:right}td:last-child{font-weight:700;font-variant-numeric:tabular-nums}
+.set{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--hair);font:15px var(--sans)}
+@media(max-width:900px){.grid{display:block}.vr{border:0;padding-left:0;margin-left:0}}
+</style>
+<div class="page">
+<div class="util"><span id="dateline">Sunday, October 11</span><span class="search">Search or jump <kbd>Ctrl K</kbd></span></div>
+<div class="logo">Wissel</div><div class="rules"></div>
+<nav class="sec" aria-label="Screens" id="nav"></nav>
+
+<section id="feed">
+<nav class="stories" aria-label="Stories"><a class="new" href="#"><b>4</b>Landed</a><a class="new" href="#"><b>2</b>Needs you</a><a href="#"><b>3</b>Podcasts</a><a href="#"><b>6</b>Agents</a><a href="#"><b>1</b>Streak</a></nav>
+<div class="grid">
+<div class="col s8"><div class="kicker">Landed · 9:41 a.m.</div><h1>Resume after a 429 now picks up where the run stopped</h1><p class="dek">The implementer no longer restarts from turn one when the provider asks it to wait. Fourteen files changed, with tests and evals in the same commit.</p><div class="fig">Diff, 14 files</div><div class="cap">Card 6140ea5, run efficiency 1 to 3.</div><p class="by">By the Implementer</p></div>
+<div class="col s4 vr"><h3>Needs you <span>2</span></h3>
+<div class="item"><h2>Grant and retry: approve the new token budget?</h2><p class="dek">Two cards are paused until someone says yes.</p><a class="btn" href="#">Approve</a><a class="btn o" href="#">Read first</a></div>
+<div class="item"><h2>Efficiency proposal, part 2</h2><p class="dek">Two options, trade-offs written up.</p></div>
+<h3 style="margin-top:12px">Listen <span>11 min</span></h3><div class="item"><div class="kicker">Podcast</div><h2>The week in the pipeline</h2><p class="dek">Seven cards shipped, one reverted, and a quiet Thursday.</p></div></div>
+</div>
+<div class="grid" style="border-top:1px solid var(--ink);padding-top:22px">
+<div class="col s4"><div class="kicker k">Landed · yesterday</div><h2>Concierge seeds the running card after crash recovery</h2><p class="by">By the Concierge</p></div>
+<div class="col s4 vr"><div class="kicker k">Review</div><h2>Where implementer tokens go: turns by context</h2><p class="dek">A proposal, not built.</p></div>
+<div class="col s4 vr"><div class="kicker k">Landed · Friday</div><h2>Eval harness gains a --case flag</h2><p class="by">By the Verifier</p></div></div>
+</section>
+
+<section id="ask" hidden><div class="grid">
+<aside class="col s3"><h3>Recent <span>4</span></h3><div class="item"><h2 style="font-size:17px">Why did 6140ea5 take so many tokens?</h2></div><div class="item"><h2 style="font-size:17px">What is waiting on me?</h2></div><div class="item"><h2 style="font-size:17px">Summarize the week</h2></div><div class="item"><h2 style="font-size:17px">Which agent reverted card 4c2?</h2></div></aside>
+<div class="col s6 vr"><div class="kicker">Ask Wissel</div><h1>What would you like to know?</h1>
+<div class="q">Why did card 6140ea5 take so many tokens?</div>
+<div class="a"><div class="kicker k">Wissel replies</div><p style="margin-top:10px">Most of it was context, not output. The implementer re-read the same four files on each of 31 turns, so input tokens grew with every step while the diff stayed small.</p><p>The fix that landed trims the pack to the files a unit touches and resumes after a 429 instead of restarting. Measured on the app cards, the run costs roughly half what it did.</p></div>
+<form class="compose" onsubmit="return false"><input id="askin" placeholder="Ask Wissel" aria-label="Ask Wissel"><a class="btn" href="#">Send</a></form></div>
+<aside class="col s3 vr"><h3>Sources <span>3</span></h3><div class="item"><div class="kicker k">Card</div><p style="margin:4px 0 0">6140ea5, run efficiency 1 to 3</p></div><div class="item"><div class="kicker k">Proposal</div><p style="margin:4px 0 0">5c4d5af, where implementer tokens go</p></div><div class="item"><div class="kicker k">Run log</div><p style="margin:4px 0 0">31 turns, 1 resume after a 429</p></div></aside>
+</div></section>
+
+<section id="board" hidden><div class="grid" style="grid-template-columns:repeat(4,1fr)">
+<div class="col"><h3>Running <span>3</span></h3>
+<div class="card"><span class="t">Wissel app 6/6: Wrapped and streaks</span><span class="pill" style="color:var(--red)">Live</span><span class="m">Implementer · turn 18 of about 30</span><div class="bar"><i style="width:60%"></i></div></div>
+<div class="card"><span class="t">Concierge: resume after crash</span><span class="pill">Live</span><span class="m">Implementer · turn 7</span><div class="bar"><i style="width:23%"></i></div></div>
+<div class="card"><span class="t">Eval harness: add --case</span><span class="pill">Live</span><span class="m">Verifier · 4 of 9</span><div class="bar"><i style="width:44%"></i></div></div></div>
+<div class="col vr"><h3>Needs you <span>2</span></h3>
+<div class="card"><span class="t">Grant and retry: token budget</span><span class="pill" style="color:var(--red)">Approve</span><span class="m">Paused 22 min</span></div>
+<div class="card"><span class="t">Efficiency proposal, part 2</span><span class="pill" style="color:var(--red)">Decide</span><span class="m">Two options written up</span></div></div>
+<div class="col vr"><h3>Review <span>1</span></h3><div class="card"><span class="t">Where implementer tokens go</span><span class="pill">Read</span><span class="m">Docs only</span></div></div>
+<div class="col vr"><h3>Done today <span>5</span></h3><div class="card"><span class="t">Run efficiency 1 to 3</span><span class="m">Landed 9:41 a.m.</span></div><div class="card"><span class="t">Seed running card after recovery</span><span class="m">Landed 8:12 a.m.</span></div><div class="card"><span class="t">Pipeline editor: lane filter</span><span class="m">Landed 7:30 a.m.</span></div></div>
+</div></section>
+
+<section id="listen" hidden><div class="grid">
+<div class="col s8"><div class="kicker">Now playing</div><h1>The week in the pipeline</h1><p class="dek">Seven cards shipped, one reverted, and a quiet Thursday.</p><p class="by">11 min · Oct 11</p>
+<div class="player"><div class="scrub"><i></i></div><div class="times"><span>4:12</span><span>−6:48</span></div><div class="ctl"><span>−15</span><span style="color:var(--red)">Pause</span><span>+30</span></div></div></div>
+<aside class="col s4 vr"><h3>Earlier <span>2</span></h3><div class="item"><div class="kicker k">Oct 4 · 9 min</div><h2>Why the agents argued about tokens</h2><p class="dek">The proposal that changed how runs are packed.</p></div><div class="item"><div class="kicker k">Sep 27 · 13 min</div><h2>Six cards to a working app</h2><p class="dek">The Wissel app, from the first tab to Wrapped.</p></div></aside>
+</div></section>
+
+<section id="you" hidden><div class="grid">
+<div class="col s8"><div class="kicker">Wissel Wrapped · 2026</div><h1>Milton Cyrus</h1><p class="dek">214 cards shipped since March, most of them before lunch.</p>
+<div class="stat"><div><b>214</b><span>Landed</span></div><div><b>12</b><span>Day streak</span></div><div><b>31</b><span>Podcasts</span></div></div>
+<h3 style="margin-top:26px;border-top:0">This fortnight <span>12 of 14</span></h3><div class="streak"><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="f"></i><i class="t"></i></div>
+<div class="pull">“The implementer is your most prolific author, and the verifier your harshest editor.”</div></div>
+<aside class="col s4 vr"><h3>Agents <span>Cards landed</span></h3><table><tr><th>Agent</th><th>Landed</th></tr><tr><td>Implementer</td><td>141</td></tr><tr><td>Concierge</td><td>48</td></tr><tr><td>Verifier</td><td>25</td></tr></table>
+<h3 style="margin-top:28px">Settings</h3><div class="set"><span>Notifications</span><span>On</span></div><div class="set"><span>Daily podcast</span><span>7:30 a.m.</span></div><div class="set"><span>Appearance</span><span>Match system</span></div></aside>
+</div></section>
+</div>
+<script>
+(function(){
+  var ids=["feed","ask","board","listen","you"],names=["Feed","Ask","Board","Listen","You"],nav=document.getElementById("nav");
+  function show(id){ids.forEach(function(s,i){document.getElementById(s).hidden=s!==id;nav.children[i].setAttribute("aria-current",s===id?"page":"false")});}
+  ids.forEach(function(s,i){var b=document.createElement("button");b.textContent=names[i];b.onclick=function(){show(s)};nav.appendChild(b);});
+  var h=(location.hash||"").slice(1);show(ids.indexOf(h)>=0?h:"feed");
+})();
+</script>
+</body></html>
