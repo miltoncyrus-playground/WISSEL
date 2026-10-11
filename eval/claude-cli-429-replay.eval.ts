@@ -27,6 +27,10 @@
  *     would exceed your account's rate limit") MUST NOT — runClaude never
  *     guesses a retry time (see parse-session-limit-reset.ts).
  *
+ * Since 2026-10-11 a must-retry row also has to hand back the session
+ * id its stdout carries (TaskResult.sessionId), which the retry resumes
+ * instead of starting over (docs/proposal-agent-run-efficiency.md item 2).
+ *
  * Pass bar: 100% of replayed rows match their class's contract.
  */
 import { Database } from "bun:sqlite";
@@ -81,10 +85,12 @@ for (const row of rows) {
   // followed by a clock time) so a reset-text shape the parser doesn't
   // handle yet still lands in the must-retry class and fails loudly.
   const statesReset = /"result":"[^"]*resets\s+\d{1,2}(:\d{2})?\s*(am|pm)/i.test(stdout);
-  const pass = statesReset === (result.retryAfter !== undefined);
+  const sessionInStdout = /"session_id":"([^"]+)"/.exec(stdout)?.[1];
+  const sessionKept = !statesReset || sessionInStdout === undefined || result.sessionId === sessionInStdout;
+  const pass = statesReset === (result.retryAfter !== undefined) && sessionKept;
   if (pass) matched++;
   const cls = statesReset ? "session-limit (must retry)" : "rate-limit, no reset (must fail)";
-  console.log(`${pass ? "PASS" : "FAIL"}  ${row.taskId}  ${cls}  ${result.retryAfter ? `retryAfter=${result.retryAfter}` : result.summary.slice(0, 80)}`);
+  console.log(`${pass ? "PASS" : "FAIL"}  ${row.taskId}  ${cls}  ${result.retryAfter ? `retryAfter=${result.retryAfter} session=${result.sessionId ?? "none"}` : result.summary.slice(0, 80)}${sessionKept ? "" : "  (session id lost)"}`);
 }
 
 const rate = matched / rows.length;

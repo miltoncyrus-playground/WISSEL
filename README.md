@@ -112,7 +112,12 @@ Recovery handles it on the next start, but the restart is avoidable.
    does) lands on `pending-review` and a reviewer run follows. On
    `changes_requested` a pushback attempt reruns the implementer in the
    same worktree. After 5 pushbacks the card goes to `escalated`
-   (`src/core/orchestrator.ts`, `docs/SDD-review-handoff.md`).
+   (`src/core/orchestrator.ts`, `docs/SDD-review-handoff.md`). When the
+   reviewer says the work needs a command the implementer was refused
+   (the `grants` field of its verdict), the card escalates on that round
+   as "needs a grant", and **Grant and retry** on the board
+   (`POST /tasks/:id/escalation/grant-and-retry`) adds the grant and
+   continues in the same worktree.
 7. **Merge.** On approve, an agent with `autoMerge: true` and
    `trustLevel: high` is merged with `git merge --no-ff` into whatever is
    checked out in the task's repo, and the card moves to `done`.
@@ -130,7 +135,14 @@ created to check they fit together.
 
 A claude-cli session limit (429) reschedules the task for the reset time
 in the error text instead of failing it (`docs/SDD-pipeline-automation.md`
-§3.2).
+§3.2). The retry resumes the cut-off session (`claude --resume`) instead
+of starting over, and falls back to a fresh run when that session can't
+be found.
+
+`bun run usage:report [--since 2026-10-10] [--agent implementer]` shows
+where agent spend goes: per agent the runs, cost, turns, context per turn
+and output, and what runs cut off by a session limit cost
+(`docs/proposal-agent-run-efficiency.md`).
 
 ## The board
 

@@ -14,7 +14,7 @@ import { setMcpServerEnabled, setMcpServerToolTrust, addMcpServer } from "../cor
 import { Registry } from "../core/registry.ts";
 import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
-import { Orchestrator, carriedCardSettings, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
+import { Orchestrator, carriedCardSettings, grantAndRetry, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts } from "../core/crash-recovery.ts";
 import { PipelineRepoRequiredError, resumePipelineStep, startPipelineRun, stepsNeedingRepo } from "../core/pipeline-runner.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
@@ -1428,6 +1428,21 @@ export function createApp(
             if (task.status !== "escalated") return json({ error: "task is not escalated" }, 400);
             const moved = await board.move(task.id, "failed");
             return json(moved);
+          }
+
+          // Adds grants (default: the card's suggestedGrants, which the
+          // reviewer named) and continues the SAME lineage and worktree
+          // from the latest review, like a pushback round. For a card
+          // escalated because the work needs a command the implementer
+          // was refused (docs/proposal-agent-run-efficiency.md item 3).
+          if (parts[3] === "grant-and-retry" && req.method === "POST") {
+            const raw = (await req.json().catch(() => ({}))) as { tools?: unknown };
+            if (raw.tools !== undefined && (!Array.isArray(raw.tools) || raw.tools.some((t) => typeof t !== "string"))) {
+              return json({ error: "tools must be a list of strings" }, 400);
+            }
+            const next = await grantAndRetry(board as Board, task, raw.tools as string[] | undefined);
+            if (typeof next === "string") return json({ error: next }, 400);
+            return json(next, 201);
           }
 
           // Human-edited instructions start a brand-new lineage —

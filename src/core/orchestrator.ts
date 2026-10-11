@@ -10,6 +10,7 @@ import { runViaBun } from "../executors/claude-cli.ts";
 import { determineWorktreeMergeState, mergeTaskWorktree, removeTaskWorktree, type TaskWorktree } from "../services/worktree.ts";
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
 import { handlePipelineStepResult } from "./pipeline-runner.ts";
+import { validateExtraAllowedTools } from "./allowed-tools.ts";
 import { formatMcpTranscript } from "../services/mcp-transcript.ts";
 import type { AgentDef, Executor, Harness, HarnessTool, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
 
@@ -131,6 +132,10 @@ export async function finishResult(
     // A session-limit (429) reschedule, so the retrospective digest can
     // count them (docs/SDD-wissel-retro-podcast.md §3.1).
     ...(result.retryAfter ? { retryAfter: result.retryAfter } : {}),
+    // Token use and whether it resumed a cut-off session, for `bun run
+    // usage:report` (docs/proposal-agent-run-efficiency.md items 1, 2).
+    ...(result.usage ? { usage: result.usage } : {}),
+    ...(result.resumed ? { resumed: true } : {}),
   });
 
   const agent = registry.get(result.agentId);
@@ -144,7 +149,9 @@ export async function finishResult(
   // the same way: sweep() hands it to resumePipelineStep once its
   // retryAfter passes (docs/SDD-pipelines.md §3.8).
   if (result.retryAfter) {
-    await board.scheduleRetry(result.taskId, result.retryAfter);
+    // The session the limit cut off, so the retry resumes it instead of
+    // starting over (TaskCard.resumeSessionId).
+    await board.scheduleRetry(result.taskId, result.retryAfter, result.sessionId);
     return;
   }
 
@@ -308,10 +315,17 @@ export async function finishResult(
  */
 async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result: TaskResult, implementerAgent: AgentDef): Promise<void> {
   const reviewLineageId = implementerTask.reviewLineageId ?? implementerTask.id;
-  const body =
+  const reviewed =
     implementerAgent.reviewTarget === "tool-calls" && result.mcpCalls
       ? `${implementerTask.body}\n\n---\nTool calls made:\n${formatMcpTranscript(result.mcpCalls)}`
       : implementerTask.body;
+  // What the implementer was refused, so the reviewer can name the grant
+  // a required change needs (the verdict's `grants`) instead of pushing
+  // back for work that can't be done without it (2026-10-11: "Wissel app
+  // 5/6" looped 5 rounds on a fixture script it was never allowed to run).
+  const body = result.permissionDenials?.length
+    ? `${reviewed}\n\n---\nThe implementer was refused these commands on this attempt: ${result.permissionDenials.join(", ")}.`
+    : reviewed;
   await board.create({
     title: `Review: ${implementerTask.title}`,
     body,
@@ -419,6 +433,22 @@ export async function resumeAfterReviewVerdict(
     return resumeAfterApproval(board, registry, implementerTask, runner);
   }
 
+  // The reviewer says the work needs commands the implementer was
+  // refused: another round can't do it, a human grant can. Escalate now
+  // with the grants offered as one-click "Grant and retry", instead of
+  // pushing back until the round limit (docs/proposal-agent-run-
+  // efficiency.md item 3).
+  const { grants, invalid } = grantsToSuggest(result.reviewGrants, implementerTask);
+  if (grants.length > 0) {
+    const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
+    const history = await buildEscalationContext(board, lineageId);
+    const note =
+      `Needs a grant: the reviewer says the next attempt needs ${grants.join(", ")}, which the implementer can't run. Grant and retry continues in the same worktree.` +
+      (invalid.length ? ` Not offered, as grants are refused: ${invalid.join("; ")}.` : "");
+    await board.escalate(implementerTask.id, history ? `${history}\n\n${note}` : note, grants);
+    return "escalated";
+  }
+
   const pushbackCount = implementerTask.pushbackCount ?? 0;
   if (pushbackCount >= 5) {
     const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
@@ -482,6 +512,65 @@ export async function resumeAfterApproval(board: Board, registry: Registry, impl
   return "review";
 }
 
+/** True when a refusal key ("Bash: bun install", see
+ *  summarizeDenials) is covered by one of `grants` ("Bash(bun
+ *  install:*)"): the same command, or one is a word-prefix of the other. */
+export function deniedKeyGranted(key: string, grants: string[]): boolean {
+  if (!key.startsWith("Bash: ")) return false;
+  const cmd = key.slice("Bash: ".length);
+  return grants.some((g) => {
+    const m = /^Bash\((.*?)(?::\*)?\)$/.exec(g);
+    if (!m) return false;
+    const prefix = m[1]!;
+    return cmd === prefix || cmd.startsWith(`${prefix} `) || prefix.startsWith(`${cmd} `);
+  });
+}
+
+/** The reviewer's grants worth offering: each one valid on its own
+ *  (validateExtraAllowedTools) and not already on the card. `invalid`
+ *  holds the refusal reason of every one that isn't valid. */
+export function grantsToSuggest(reviewGrants: string[] | undefined, task: TaskCard): { grants: string[]; invalid: string[] } {
+  const have = new Set(task.extraAllowedTools ?? []);
+  const grants: string[] = [];
+  const invalid: string[] = [];
+  for (const g of reviewGrants ?? []) {
+    const v = validateExtraAllowedTools([g]);
+    if (!v.ok) invalid.push(v.error);
+    else if (!have.has(g) && !grants.includes(g)) grants.push(g);
+  }
+  return { grants, invalid };
+}
+
+/**
+ * "Grant and retry" on a card escalated for a missing grant (or any
+ * escalated card, with grants named by hand): adds `tools` (default:
+ * the card's suggestedGrants) to the card's extraAllowedTools, then
+ * starts the next attempt exactly as a review pushback would, from the
+ * lineage's latest reviewer feedback. Same lineage, so the same
+ * worktree and the work already done; unlike `/escalation/retry`, which
+ * starts a fresh lineage off HEAD. Returns the new attempt, or a string
+ * saying why it can't.
+ */
+export async function grantAndRetry(board: Board, task: TaskCard, tools?: string[]): Promise<TaskCard | string> {
+  if (task.status !== "escalated") return "task is not escalated";
+  const adding = tools ?? task.suggestedGrants ?? [];
+  if (adding.length === 0) return "no grants to add: the card has no suggested grants, so name them in `tools`";
+  const merged = validateExtraAllowedTools([...(task.extraAllowedTools ?? []), ...adding]);
+  if (!merged.ok) return merged.error;
+
+  const lineage = await board.getLineage(task.reviewLineageId ?? task.id);
+  let reviewer: { card: TaskCard; result: TaskResult } | undefined;
+  for (const card of lineage) {
+    if (card.routedTo !== "reviewer" || card.parentTaskId !== task.id) continue;
+    const result = await board.getResult(card.id);
+    if (result?.reviewFeedback !== undefined) reviewer = { card, result };
+  }
+  if (!reviewer) return "no review of this attempt to continue from; use Retry instead";
+
+  const granted = await board.setExtraAllowedTools(task.id, merged.tools);
+  return await spawnPushbackImplementer(board, granted, reviewer.card, reviewer.result);
+}
+
 /**
  * The settings a card's re-attempt keeps: tool and directory grants, a
  * model or harness choice, an MCP override. Used by a review pushback
@@ -513,18 +602,22 @@ export function carriedCardSettings(task: TaskCard): Partial<Omit<TaskCard, "id"
  * conflating the two would skew failure-rate metrics for something
  * that's actually the system working as designed).
  */
-async function spawnPushbackImplementer(board: Board, implementerTask: TaskCard, reviewerTask: TaskCard, result: TaskResult): Promise<void> {
+async function spawnPushbackImplementer(board: Board, implementerTask: TaskCard, reviewerTask: TaskCard, result: TaskResult): Promise<TaskCard> {
   const newPushbackCount = (implementerTask.pushbackCount ?? 0) + 1;
   const reviewLineageId = implementerTask.reviewLineageId ?? implementerTask.id;
   const feedback = result.reviewFeedback ?? "(reviewer requested changes but gave no feedback text)";
   // What this attempt was refused (TaskResult.permissionDenials), so the
   // next one doesn't spend its turn retrying it. 2026-10-10: "Wissel app
   // 1/6" was refused `bun install` five rounds running without knowing.
-  const refused = (await board.getResult(implementerTask.id))?.permissionDenials ?? [];
+  // A refusal the card has since been granted (Grant and retry) is
+  // announced as allowed now, not as one to avoid.
+  const denied = (await board.getResult(implementerTask.id))?.permissionDenials ?? [];
+  const nowGranted = denied.filter((key) => deniedKeyGranted(key, implementerTask.extraAllowedTools ?? []));
+  const refused = denied.filter((key) => !nowGranted.includes(key));
   const refusedNote =
-    refused.length > 0
+    (refused.length > 0
       ? `\n\nRefused on the last attempt: ${refused.join(", ")}. Don't retry these: they need a grant on the card (POST /tasks/:id/allowed-tools). Do everything else, and say plainly which checks you couldn't run.`
-      : "";
+      : "") + (nowGranted.length > 0 ? `\n\nRefused on the last attempt and granted since, so run them now: ${nowGranted.join(", ")}.` : "");
   const body = `${implementerTask.body}\n\n---\nReviewer feedback (attempt ${newPushbackCount}):\n${feedback}${refusedNote}`;
 
   const nextAttempt = await board.create({
@@ -539,6 +632,7 @@ async function spawnPushbackImplementer(board: Board, implementerTask: TaskCard,
   });
 
   await board.setSupersededBy(implementerTask.id, nextAttempt.id);
+  return nextAttempt;
 }
 
 /**

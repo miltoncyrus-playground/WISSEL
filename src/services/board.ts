@@ -34,7 +34,7 @@ export interface Board {
    *  without an `escalationContext`, so this never exists as two calls
    *  the way `move` + a hypothetical `setEscalationContext` would. See
    *  TaskCard.escalationContext. */
-  escalate(id: string, escalationContext: string): Promise<TaskCard>;
+  escalate(id: string, escalationContext: string, suggestedGrants?: string[]): Promise<TaskCard>;
   /** Moves a task to `review` and records the one blocked MCP tool call
    *  its agent described wanting to make — the human queue's entry
    *  point for docs/SDD-mcp-orchestration.md §3.5's approval gate.
@@ -52,8 +52,9 @@ export interface Board {
    *  Orchestrator.sweep's eligibility check). Everything else
    *  (reviewLineageId, parentTaskId, labels, body) is untouched, so a
    *  write-tier retry reuses its existing worktree exactly the way a
-   *  pushback re-attempt does. */
-  scheduleRetry(id: string, retryAfter: string): Promise<TaskCard>;
+   *  pushback re-attempt does. `resumeSessionId` (TaskCard.resumeSessionId)
+   *  is the session the limit cut off, for the retry to resume. */
+  scheduleRetry(id: string, retryAfter: string, resumeSessionId?: string): Promise<TaskCard>;
   /** Resets a crash-orphaned `"running"` task back to `"inbox"` and
    *  clears `routedTo`, so the router reconsiders it fresh rather than
    *  reusing a possibly-stale decision — the one-time startup cleanup
@@ -153,6 +154,8 @@ interface TaskRow {
   supersededBy: string | null;
   escalationContext: string | null;
   retryAfter: string | null;
+  resumeSessionId: string | null;
+  suggestedGrants: string | null;
   doneAt: string | null;
   archivedAt: string | null;
   model: string | null;
@@ -189,6 +192,8 @@ function rowToCard(row: TaskRow): TaskCard {
     supersededBy: row.supersededBy ?? undefined,
     escalationContext: row.escalationContext ?? undefined,
     retryAfter: row.retryAfter ?? undefined,
+    resumeSessionId: row.resumeSessionId ?? undefined,
+    suggestedGrants: row.suggestedGrants ? (JSON.parse(row.suggestedGrants) as string[]) : undefined,
     doneAt: row.doneAt ?? undefined,
     archivedAt: row.archivedAt ?? undefined,
     model: row.model ?? undefined,
@@ -240,6 +245,8 @@ export class SqliteBoard implements Board {
         supersededBy TEXT,
         escalationContext TEXT,
         retryAfter TEXT,
+        resumeSessionId TEXT,
+        suggestedGrants TEXT,
         doneAt TEXT,
         archivedAt TEXT,
         model TEXT,
@@ -270,6 +277,9 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN supersededBy TEXT;",
       "ALTER TABLE tasks ADD COLUMN escalationContext TEXT;",
       "ALTER TABLE tasks ADD COLUMN retryAfter TEXT;",
+      // docs/proposal-agent-run-efficiency.md items 2 and 3.
+      "ALTER TABLE tasks ADD COLUMN resumeSessionId TEXT;",
+      "ALTER TABLE tasks ADD COLUMN suggestedGrants TEXT;",
       "ALTER TABLE tasks ADD COLUMN doneAt TEXT;",
       "ALTER TABLE tasks ADD COLUMN archivedAt TEXT;",
       "ALTER TABLE tasks ADD COLUMN model TEXT;",
@@ -398,6 +408,7 @@ export class SqliteBoard implements Board {
         reviewFeedback TEXT,
         mcpCalls TEXT,
         permissionDenials TEXT,
+        reviewGrants TEXT,
         finishedAt TEXT
       );
     `);
@@ -427,6 +438,9 @@ export class SqliteBoard implements Board {
       // When the result was recorded, so the feed (src/services/feed.ts,
       // docs/SDD-wissel-app.md §3.2) can date it. Older rows stay NULL.
       "ALTER TABLE task_results ADD COLUMN finishedAt TEXT;",
+      // TaskResult.reviewGrants: crash recovery re-drives a recorded
+      // verdict (resumeAfterReviewVerdict) and needs them too.
+      "ALTER TABLE task_results ADD COLUMN reviewGrants TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -561,11 +575,12 @@ export class SqliteBoard implements Board {
     return updated;
   }
 
-  async escalate(id: string, escalationContext: string): Promise<TaskCard> {
+  async escalate(id: string, escalationContext: string, suggestedGrants?: string[]): Promise<TaskCard> {
     const existing = await this.get(id);
     if (!existing) throw new Error(`task not found: ${id}`);
-    this.db.run("UPDATE tasks SET status = ?, escalationContext = ? WHERE id = ?", ["escalated", escalationContext, id]);
-    const updated: TaskCard = { ...existing, status: "escalated", escalationContext };
+    const grants = suggestedGrants?.length ? suggestedGrants : undefined;
+    this.db.run("UPDATE tasks SET status = ?, escalationContext = ?, suggestedGrants = ? WHERE id = ?", ["escalated", escalationContext, grants ? JSON.stringify(grants) : null, id]);
+    const updated: TaskCard = { ...existing, status: "escalated", escalationContext, suggestedGrants: grants };
     this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
     return updated;
   }
@@ -579,11 +594,11 @@ export class SqliteBoard implements Board {
     return updated;
   }
 
-  async scheduleRetry(id: string, retryAfter: string): Promise<TaskCard> {
+  async scheduleRetry(id: string, retryAfter: string, resumeSessionId?: string): Promise<TaskCard> {
     const existing = await this.get(id);
     if (!existing) throw new Error(`task not found: ${id}`);
-    this.db.run("UPDATE tasks SET status = ?, routedTo = NULL, retryAfter = ? WHERE id = ?", ["inbox", retryAfter, id]);
-    const updated: TaskCard = { ...existing, status: "inbox", routedTo: undefined, retryAfter };
+    this.db.run("UPDATE tasks SET status = ?, routedTo = NULL, retryAfter = ?, resumeSessionId = ? WHERE id = ?", ["inbox", retryAfter, resumeSessionId ?? null, id]);
+    const updated: TaskCard = { ...existing, status: "inbox", routedTo: undefined, retryAfter, resumeSessionId };
     this.events.emit("event", { type: "task.moved", task: updated } satisfies BoardEvent);
     return updated;
   }
@@ -695,7 +710,7 @@ export class SqliteBoard implements Board {
   async recordResult(input: TaskResult): Promise<void> {
     const result: TaskResult = { ...input, finishedAt: input.finishedAt ?? new Date().toISOString() };
     this.db.run(
-      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback, mcpCalls, permissionDenials, finishedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback, mcpCalls, permissionDenials, reviewGrants, finishedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         result.taskId,
         result.agentId,
@@ -710,9 +725,14 @@ export class SqliteBoard implements Board {
         result.reviewFeedback ?? null,
         result.mcpCalls ? JSON.stringify(result.mcpCalls) : null,
         result.permissionDenials?.length ? JSON.stringify(result.permissionDenials) : null,
+        result.reviewGrants?.length ? JSON.stringify(result.reviewGrants) : null,
         result.finishedAt!,
       ],
     );
+    // A finished run has used up whatever session it was resuming; a
+    // 429 sets a fresh one right after this (finishResult ->
+    // scheduleRetry), so this never loses one that is still needed.
+    this.db.run("UPDATE tasks SET resumeSessionId = NULL WHERE id = ? AND resumeSessionId IS NOT NULL", [result.taskId]);
     this.events.emit("event", { type: "task.result", result } satisfies BoardEvent);
   }
 
@@ -731,6 +751,7 @@ export class SqliteBoard implements Board {
       reviewFeedback: string | null;
       mcpCalls: string | null;
       permissionDenials: string | null;
+      reviewGrants: string | null;
       finishedAt: string | null;
     } | null;
     if (!row) return undefined;
@@ -748,6 +769,7 @@ export class SqliteBoard implements Board {
       reviewFeedback: row.reviewFeedback ?? undefined,
       mcpCalls: row.mcpCalls ? (JSON.parse(row.mcpCalls) as TaskResult["mcpCalls"]) : undefined,
       permissionDenials: row.permissionDenials ? (JSON.parse(row.permissionDenials) as string[]) : undefined,
+      ...(row.reviewGrants ? { reviewGrants: JSON.parse(row.reviewGrants) as string[] } : {}),
       finishedAt: row.finishedAt ?? undefined,
     };
   }

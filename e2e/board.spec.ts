@@ -506,6 +506,45 @@ test.describe("Board view", () => {
     await expect(supersededCol).toHaveCount(0);
   });
 
+  // docs/proposal-agent-run-efficiency.md item 3: a reviewer that names
+  // a grant escalates the card on round 1, and the drawer offers Grant
+  // and retry, which continues the same lineage with the grant added.
+  test("a card escalated for a missing grant offers Grant and retry, which starts the next attempt with the grant", async ({ page, request }) => {
+    const title = `Grant test ${Date.now()}`;
+    const grant = "Bash(bun run scripts/make-stt-fixtures.ts:*)";
+    const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo" } });
+    const implementerId = (await created.json()).id as string;
+    await request.post(`/tasks/${implementerId}/result`, { data: { agentId: "implementer", ok: true, summary: "attempt 1", permissionDenials: ["Bash: bun run scripts/make-stt-fixtures.ts"] } });
+    const reviewer = (await (await request.get("/tasks")).json()).find((t: { parentTaskId?: string }) => t.parentTaskId === implementerId);
+    await request.post(`/tasks/${reviewer.id}/decision`, {
+      data: {
+        matchedTags: ["review"],
+        candidates: [{ agentId: "reviewer", score: 1, reason: "tag overlap 1/1" }],
+        selected: "reviewer", confident: true, strategy: "rule", reason: "tag overlap 1/1",
+        decidedAt: new Date().toISOString(),
+      },
+    });
+    await request.post(`/tasks/${reviewer.id}/result`, {
+      data: { agentId: "reviewer", ok: true, summary: "no", verdict: "changes_requested", reviewFeedback: "commit the fixture notes", reviewGrants: [grant] },
+    });
+
+    await page.goto("/board");
+    const kcard = page.locator(`#needsYou .kcard[data-task-id="${implementerId}"]`);
+    await expect(kcard.locator(".kreason")).toHaveText("needs a grant");
+    await kcard.click();
+    const drawer = page.locator("#taskDrawer");
+    await expect(drawer.locator("#tdEscalation")).toContainText(`Needs a grant: the reviewer says the next attempt needs ${grant}`);
+
+    page.once("dialog", (d) => d.accept());
+    await drawer.getByRole("button", { name: "Grant and retry" }).click();
+    await expect
+      .poll(async () => {
+        const tasks = await (await request.get("/tasks")).json();
+        return tasks.find((t: { title: string; pushbackCount?: number }) => t.title === title && t.pushbackCount === 1)?.extraAllowedTools;
+      })
+      .toEqual([grant]);
+  });
+
   test("an escalated task renders its full round-by-round timeline and the three resolution actions", async ({ page, request }) => {
     const escalated = await driveToEscalated(request, `Escalation test ${Date.now()}`, "/tmp/wissel-e2e-repo");
     expect(escalated).toBeDefined();

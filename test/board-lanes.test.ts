@@ -136,6 +136,8 @@ test("each Needs you card says why it's there", () => {
   // 5 pushbacks then the 6th rejection escalates (resumeAfterReviewVerdict).
   expect(needsYouReason(card("escalated", { pushbackCount: 5 }))).toBe("escalated after 6 rejections");
   expect(needsYouReason(card("escalated", { pushbackCount: 0 }))).toBe("escalated after 1 rejection");
+  expect(needsYouReason(card("escalated", { pushbackCount: 0, suggestedGrants: ["Bash(bun run build:*)"] }))).toBe("needs a grant");
+  expect(needsYouReason(card("escalated", { pushbackCount: 2, suggestedGrants: [] }))).toBe("escalated after 3 rejections");
   expect(needsYouReason(card("escalated"))).toBe("escalated");
   expect(needsYouReason(card("failed"))).toBe("failed");
   expect(needsYouReason(card("no-match"))).toBe("no agent matched");

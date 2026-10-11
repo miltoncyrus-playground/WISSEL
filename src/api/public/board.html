@@ -1721,6 +1721,18 @@
           escalationAction(task.id, "approve", { actor: actor, reason: reason });
         },
       }));
+      // The reviewer said the work needs commands the implementer was
+      // refused (TaskCard.suggestedGrants): grant them and continue in
+      // the same worktree (POST .../escalation/grant-and-retry).
+      if (task.suggestedGrants && task.suggestedGrants.length) {
+        wrap.appendChild(drawerAction("Grant and retry", {
+          className: "primary",
+          onClick: function () {
+            if (!window.confirm("Allow this card to run:\n\n" + task.suggestedGrants.join("\n") + "\n\nand start the next attempt in the same worktree?")) return;
+            escalationAction(task.id, "grant-and-retry", {});
+          },
+        }));
+      }
       wrap.appendChild(drawerAction("Retry", {
         onClick: function () { openRetryForm(); },
       }));

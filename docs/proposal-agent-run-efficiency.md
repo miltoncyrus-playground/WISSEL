@@ -1,6 +1,7 @@
 # Proposal: agent run efficiency (not built yet)
 
-Status: proposed 2026-10-11, waiting for Milton to pick what to build.
+Status: items 1 to 3 built 2026-10-11 (see "Built" at the end); item 4
+and the addendum's levers are still proposals.
 Source: the six "Wissel app" cards (docs/SDD-wissel-app.md), measured
 from `~/.wissel/board.sqlite` (each card's review lineage) and the
 `dispatch`/`result` events in `~/.wissel/telemetry.jsonl`.
@@ -130,3 +131,33 @@ Levers, in expected impact order:
 Build these as wissel cards only when there is usage headroom: a card
 starts as soon as it is created. Item 1 first; check its numbers before
 deciding item 5.
+
+## Built (2026-10-11)
+
+1. **Token use per run.** `TaskResult.usage` (input, cache-read,
+   cache-write, output tokens, turns) parsed from the `claude -p` result
+   JSON (`runUsageFrom`, `src/executors/claude-cli.ts`) and written to the
+   telemetry result event. `bun run usage:report` (`scripts/usage-report.ts`)
+   prints per-agent runs, cost, turns/run, context/turn, output/run, runs
+   cut off by a 429 and resumed runs, plus the most expensive tasks. Runs
+   from before this only count toward cost.
+2. **Resume after a 429.** A 429 result carries `sessionId`;
+   `finishResult` stores it on the card (`TaskCard.resumeSessionId`, via
+   `Board.scheduleRetry`); the retry runs `claude --resume <id>` with a
+   short resume prompt (`RESUME_PROMPT`) in the same worktree or scratch
+   dir, and falls back to a fresh run when claude answers "No
+   conversation found with session ID". Recording any result clears the
+   id. Works for board cards and pipeline steps alike. Not covered: a
+   card killed by a server restart (crash recovery) still starts over.
+   Evals: `eval:resume` (live, 3/3, $0.18) and `eval:claude-cli-429-replay`
+   (5/5 real 429s keep their session id).
+3. **Grant and retry.** The reviewer card's body lists what the
+   implementer was refused; the reviewer's verdict may carry `grants`
+   (agents/manifest.yaml, reviewer outputContract). Valid grants the
+   card lacks (`grantsToSuggest`) escalate the card on that round with
+   `suggestedGrants` and a "Needs a grant" note, shown as "needs a grant"
+   on the board. **Grant and retry** (`POST
+   /tasks/:id/escalation/grant-and-retry`, `grantAndRetry`) adds the
+   grants and starts the next attempt in the same lineage and worktree
+   from the latest review; the attempt is told which refused commands
+   are now granted. Eval: `eval:review-grants` (3/3, $0.47).

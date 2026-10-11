@@ -34,7 +34,10 @@
     "eval:live-task-output": "bun run eval/live-task-output.eval.ts",
     "eval:conflict-integrator": "bun run eval/conflict-integrator.eval.ts",
     "eval:memory-curation-quality": "bun run eval/memory-curation-quality.eval.ts",
-    "eval:claude-cli-429-replay": "bun run eval/claude-cli-429-replay.eval.ts"
+    "eval:claude-cli-429-replay": "bun run eval/claude-cli-429-replay.eval.ts",
+    "usage:report": "bun run scripts/usage-report.ts",
+    "eval:resume": "bun run eval/resume.eval.ts",
+    "eval:review-grants": "bun run eval/review-grants.eval.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

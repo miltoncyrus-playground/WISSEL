@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { RunUsage } from "../core/types.ts";
 
 export type TelemetryEvent =
   | { type: "dispatch"; taskId: string; agentId: string; model?: string; estimatedCost?: number }
@@ -13,6 +14,10 @@ export type TelemetryEvent =
       audio?: { bytes: number; synthesisSeconds: number };
       /** Only on a result rescheduled after a session-limit (429) hit. */
       retryAfter?: string;
+      /** Token use of a `claude -p` run (TaskResult.usage). */
+      usage?: RunUsage;
+      /** Only on a run that resumed a session a 429 cut off. */
+      resumed?: true;
     };
 
 /**

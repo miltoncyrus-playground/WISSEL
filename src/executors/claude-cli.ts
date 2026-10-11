@@ -1,4 +1,4 @@
-import type { AgentDef, McpApprovalRequest, PipelineHandoff, ReviewVerdict, SubtaskPlanItem, TaskCard, TaskResult } from "../core/types.ts";
+import type { AgentDef, McpApprovalRequest, PipelineHandoff, ReviewVerdict, RunUsage, SubtaskPlanItem, TaskCard, TaskResult } from "../core/types.ts";
 import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
@@ -180,7 +180,35 @@ interface ClaudeResultJson {
    *  runClaude has always parsed — confirmed live, no format switch
    *  needed (see docs/SDD-subagent-visibility.md §2). */
   subagent_stats?: { spawned: number; failed: number; by_type: Record<string, number> };
+  /** Confirmed live (claude 2.1.290): on every result, success or 429. */
+  session_id?: string;
+  num_turns?: number;
+  usage?: { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; output_tokens?: number };
 }
+
+/** RunUsage from a parsed result JSON; undefined when it has no `usage`. */
+export function runUsageFrom(parsed: { usage?: ClaudeResultJson["usage"]; num_turns?: number } | undefined): RunUsage | undefined {
+  const u = parsed?.usage;
+  if (!u || typeof u !== "object") return undefined;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  return {
+    inputTokens: n(u.input_tokens),
+    cacheReadTokens: n(u.cache_read_input_tokens),
+    cacheWriteTokens: n(u.cache_creation_input_tokens),
+    outputTokens: n(u.output_tokens),
+    ...(typeof parsed?.num_turns === "number" ? { turns: parsed.num_turns } : {}),
+  };
+}
+
+/** What a resumed run is told. The original prompt, with its output
+ *  contract, is already in the conversation being resumed. */
+export const RESUME_PROMPT =
+  "You were stopped partway through this task by a usage limit, which has now reset. Carry on from where you stopped: your earlier work is still in the working directory. Don't redo finished steps. End with the same final output the task asked for.";
+
+/** claude's message when `--resume` names a session it can't find
+ *  (another harness's config dir, or cleaned up). Confirmed live,
+ *  claude 2.1.290: exit 1, "No conversation found with session ID: <id>". */
+const SESSION_NOT_FOUND = /No conversation found with session ID/i;
 
 export type PermissionMode = "plan" | "acceptEdits" | "bypassPermissions";
 
@@ -356,10 +384,16 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   const { auto, pendingApproval } = mcpAccessPreApproved ? { auto: grants, pendingApproval: [] } : splitGrantsByTrust(grants);
   const pendingMcpApprovalTools = pendingApproval.flatMap((g) => g.tools.map((tool) => ({ server: g.server.id, tool })));
 
-  const prompt = buildAgentPrompt(task, agent, memory, {
-    planMode: permissionMode === "plan",
-    pendingMcpApprovalTools: pendingMcpApprovalTools.length > 0 ? pendingMcpApprovalTools : undefined,
-  });
+  // A run a session limit cut off resumes its own conversation
+  // (TaskCard.resumeSessionId) rather than starting over: the first
+  // attempt's reads and reasoning were already paid for.
+  const resumeId = task.resumeSessionId;
+  const prompt = resumeId
+    ? RESUME_PROMPT
+    : buildAgentPrompt(task, agent, memory, {
+        planMode: permissionMode === "plan",
+        pendingMcpApprovalTools: pendingMcpApprovalTools.length > 0 ? pendingMcpApprovalTools : undefined,
+      });
 
   const mcpConfig = buildMcpConfigJson(auto);
 
@@ -381,6 +415,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // reads the prompt from stdin instead, producing the identical result.
   const cmd = ["claude", "-p", "--output-format", useStreaming ? "stream-json" : "json", "--permission-mode", permissionMode];
   if (useStreaming) cmd.push("--include-partial-messages", "--verbose");
+  if (resumeId) cmd.push("--resume", resumeId);
   if (model) cmd.push("--model", model);
   if (mcpConfig) cmd.push("--mcp-config", JSON.stringify(mcpConfig), "--strict-mcp-config");
   const combinedAllowedTools = [...(allowedTools ?? []), ...mcpAllowedToolNames(auto)];
@@ -418,6 +453,13 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   }
 
   const { stdout, stderr, exitCode } = cmdResult;
+
+  // The session isn't there to resume (it lives in another harness's
+  // config dir, or was cleaned up): run the task fresh, as before resume
+  // existed.
+  if (resumeId && exitCode !== 0 && SESSION_NOT_FOUND.test(`${stderr}\n${stdout}`)) {
+    return runClaude({ ...opts, task: { ...task, resumeSessionId: undefined } });
+  }
 
   // Computed once, off the full accumulated stdout, regardless of
   // exitCode/parse outcome below — a run that made real MCP tool calls
@@ -467,11 +509,12 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
           summary: `claude session limit hit — retrying after ${resetAt.toISOString()}`,
           actualCost: parsed.total_cost_usd,
           retryAfter: resetAt.toISOString(),
+          ...runFacts(parsed, resumeId),
           ...(mcpCalls ? { mcpCalls } : {}),
         };
       }
     }
-    return fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`, parsed?.total_cost_usd, mcpCalls);
+    return { ...fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`, parsed?.total_cost_usd, mcpCalls), ...runFacts(parsed, resumeId) };
   }
 
   if (!parsed) {
@@ -579,11 +622,24 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     // lookup — undefined for every non-review run, same as `verdict`
     // being null above.
     ...(verdict ? { verdict: verdict.verdict, reviewFeedback: verdict.feedback } : {}),
+    ...(verdict?.grants?.length ? { reviewGrants: verdict.grants } : {}),
+    ...runFacts(parsed, resumeId),
     ...(plan ? { subtaskPlan: plan } : {}),
     ...(handoff ? { pipelineHandoff: handoff } : {}),
     ...(mcpCalls ? { mcpCalls } : {}),
     ...(mcpApprovalRequest ? { mcpApprovalRequest } : {}),
     ...(deniedKeys.length > 0 ? { permissionDenials: deniedKeys } : {}),
+  };
+}
+
+/** Usage, session id and resumed flag for a run's TaskResult, each only
+ *  when known. */
+function runFacts(parsed: ClaudeResultJson | undefined, resumeId: string | undefined): Pick<TaskResult, "usage" | "sessionId" | "resumed"> {
+  const usage = runUsageFrom(parsed);
+  return {
+    ...(usage ? { usage } : {}),
+    ...(typeof parsed?.session_id === "string" && parsed.session_id ? { sessionId: parsed.session_id } : {}),
+    ...(resumeId ? { resumed: true } : {}),
   };
 }
 

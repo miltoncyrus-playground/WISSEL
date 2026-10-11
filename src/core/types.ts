@@ -170,6 +170,23 @@ export interface AgentDef {
 export interface ReviewVerdict {
   verdict: "approve" | "changes_requested";
   feedback: string;
+  /** Optional: grant patterns ("Bash(<command>:*)") the required changes
+   *  need and the implementer was refused. See TaskResult.reviewGrants. */
+  grants?: string[];
+}
+
+/** Token use of one `claude -p` run, from the `usage` and `num_turns`
+ *  fields of its result JSON. Every turn re-reads the conversation so
+ *  far from cache, so cost grows with turns times context
+ *  (docs/proposal-agent-run-efficiency.md): `cacheReadTokens / turns` is
+ *  the average context a turn carried. */
+export interface RunUsage {
+  inputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  /** Absent when the result JSON had no `num_turns`. */
+  turns?: number;
 }
 
 /** The planner agent's mandated final-message contract: a
@@ -423,6 +440,18 @@ export interface TaskCard {
    *  way a blocked `dependsOn` is. ISO timestamp; undefined means no
    *  pending retry. */
   retryAfter?: string;
+  /** The `claude -p` session a session limit (429) cut off, set with
+   *  `retryAfter` by Board.scheduleRetry. The retry runs `claude
+   *  --resume <id>` and carries on from where it stopped instead of
+   *  starting over (runClaude); a session that can't be found falls back
+   *  to a fresh run. Cleared once a run finishes without another 429.
+   *  docs/proposal-agent-run-efficiency.md item 2. */
+  resumeSessionId?: string;
+  /** Tool grants the reviewer said the work needs and the implementer
+   *  was refused, offered on an escalated card as one-click "Grant and
+   *  retry" (POST /tasks/:id/escalation/grant-and-retry). Each passed
+   *  validateExtraAllowedTools. Set only with status "escalated". */
+  suggestedGrants?: string[];
   /** Stamped by Board.move every time this task's status transitions to
    *  `"done"` — the one reliable "became done" marker, since every path
    *  that can produce `done` (finishResult's several branches,
@@ -660,9 +689,28 @@ export interface TaskResult {
   retryAfter?: string;
   /** What `claude -p` refused this run, as comparable keys
    *  ("Bash: bun install"; see src/core/permission-denials.ts).
-   *  Undefined when nothing was refused. The review loop escalates when
-   *  two consecutive attempts hit the same refusal. */
+   *  Undefined when nothing was refused. The next attempt and its
+   *  reviewer are told (spawnPushbackImplementer, spawnReviewerTask). */
   permissionDenials?: string[];
+  /** Token use of this `claude -p` run, from its result JSON (see
+   *  RunUsage). Recorded on the telemetry result event; `bun run
+   *  usage:report` reads it. Undefined for a run that produced no result
+   *  JSON (spawn failure, unparseable output) and for non-claude
+   *  executors. docs/proposal-agent-run-efficiency.md item 1. */
+  usage?: RunUsage;
+  /** The `claude -p` session this run used. On a session-limit (429)
+   *  result, finishResult stores it on the card so the retry resumes the
+   *  same conversation (TaskCard.resumeSessionId). */
+  sessionId?: string;
+  /** True when this run resumed an earlier session cut off by a session
+   *  limit (`claude --resume`), instead of starting over. */
+  resumed?: boolean;
+  /** Commands the reviewer says the next attempt needs and was refused
+   *  (the optional `grants` field of its review-verdict block), as tool
+   *  grant patterns like "Bash(bun run build:*)". Read by
+   *  resumeAfterReviewVerdict, which escalates with them as suggested
+   *  grants instead of pushing back again. */
+  reviewGrants?: string[];
   /** Set when this result came from a pipeline step's own
    *  pipeline-handoff contract — see PipelineHandoff, parsePipelineHandoff.
    *  Nested (unlike verdict/reviewFeedback's flat fields) because every

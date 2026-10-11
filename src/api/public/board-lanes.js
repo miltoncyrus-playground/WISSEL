@@ -94,6 +94,9 @@ function needsYouReason(t) {
   switch (t.status) {
     case "review": return "review";
     case "escalated": {
+      // The reviewer said the work needs a command the implementer was
+      // refused (TaskCard.suggestedGrants): the fix is a grant.
+      if (t.suggestedGrants && t.suggestedGrants.length) return "needs a grant";
       // The orchestrator escalates on the reviewer's rejection after
       // pushbackCount reached its limit, so rejections = pushbackCount + 1
       // (resumeAfterReviewVerdict, src/core/orchestrator.ts).

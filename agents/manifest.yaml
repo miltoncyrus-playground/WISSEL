@@ -169,6 +169,18 @@ agents:
         message. A missing, malformed, or extra block after it is
         treated as a failed review, not an approval — never omit it or
         leave it ambiguous "to be safe."
+      - Optional, with changes_requested only: `"grants"`, a list of
+        command grants like "Bash(bun run build:app:*)". Add it only
+        when a change you require needs a command the implementer was
+        refused (the task lists refused commands, or the implementer
+        says it couldn't run one). Name the narrowest command prefix
+        that does the job, never a bare program like "Bash(bun:*)".
+        Leave it out for anything the implementer can do itself.
+        Wissel then asks a human to grant those commands instead of
+        sending the work back for another round it can't finish:
+        ```review-verdict
+        {"verdict": "changes_requested", "feedback": "...", "grants": ["Bash(bun run scripts/make-fixtures.ts:*)"]}
+        ```
     verificationContract: |
       You run under `--permission-mode plan` — Bash, Edit, Write, and
       every other side-effecting tool are unavailable to you here by

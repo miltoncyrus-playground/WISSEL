@@ -30,10 +30,19 @@ export function parseReviewVerdict(rawOutput: string): ReviewVerdict | null {
   }
 
   if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return null;
-  const { verdict, feedback } = candidate as Record<string, unknown>;
+  const { verdict, feedback, grants } = candidate as Record<string, unknown>;
 
   if (typeof verdict !== "string" || !VALID_VERDICTS.has(verdict as ReviewVerdict["verdict"])) return null;
   if (typeof feedback !== "string") return null;
 
-  return { verdict: verdict as ReviewVerdict["verdict"], feedback };
+  // Optional, and only meaningful with changes_requested. Lenient where
+  // the verdict is strict: a malformed `grants` is dropped, never turns a
+  // readable verdict into a failed review. Each entry is validated later
+  // (validateExtraAllowedTools) before anything can use it.
+  const grantList =
+    verdict === "changes_requested" && Array.isArray(grants)
+      ? [...new Set(grants.filter((g): g is string => typeof g === "string" && g.trim() !== "").map((g) => g.trim()))]
+      : [];
+
+  return { verdict: verdict as ReviewVerdict["verdict"], feedback, ...(grantList.length ? { grants: grantList } : {}) };
 }
