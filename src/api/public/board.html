@@ -4,37 +4,36 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>wissel board</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800;900&family=IBM+Plex+Mono:wght@500;600;700&display=swap">
 <style>
   :root {
     color-scheme: light;
-    --surface: #fcfcfb;
-    --page: #f9f9f7;
-    --ink-1: #0b0b0b;
-    --ink-2: #52514e;
-    --ink-muted: #898781;
-    --line: #e1e0d9;
-    --border: rgba(11, 11, 11, 0.10);
-    --stage-3: #2a78d6;
+    /* News-site look (docs/SDD-ui-cleanup.md §3.1, reference:
+       docs/mockups/techcrunch-board/): white page, near-black ink, one
+       green. Same token names as before; only the values changed. */
+    --surface: #f6f9f7;
+    --page: #ffffff;
+    --ink-1: #0f1411;
+    --ink-2: #3d463f;
+    --ink-muted: #566058;
+    --line: #d5ddd8;
+    --border: #d5ddd8;
+    --on-accent: #ffffff;
+    --stage-3: #2f6fd0;
     --stage-4: #184f95;
-    --critical: #d03b3b;
-    --no-match: #b8862f;
-    --accent: #4a3aa7;
-    --accent-wash: rgba(74, 58, 167, 0.10);
-    /* Skill fleet accent — distinct hue from --accent (agents), same
-       weight, so kind reads as a deliberate second category, not a
-       lighter/weaker version of the first. */
-    --skill: #1c7a6e;
-    --skill-wash: rgba(28, 122, 110, 0.10);
-    /* Status signal colors, rail-lamp inspired: a real green for "done"
-       (distinct from the running/ready blues, which the old all-blue
-       stage scale made hard to tell apart at a glance) and a shared
-       amber for "review" and "no-match" — both mean "a human needs to
-       look," which is exactly what a caution aspect signals. */
-    --sig-inbox: #8b8d94;
-    --sig-ready: #86b6ef;
-    --sig-running: #2f7fe0;
-    --sig-done: #1f8a55;
+    --critical: #c0302f;
+    --no-match: #b15425;
+    --accent: #1a7e4c;
+    --accent-wash: rgba(26, 126, 76, 0.10);
+    /* Skill fleet accent: a second category beside --accent (agents). */
+    --skill: #4e65da;
+    --skill-wash: rgba(78, 101, 218, 0.10);
+    /* Status signals: green for done, blues for ready/running, amber
+       for "a human needs to look". */
+    --sig-inbox: #7b857d;
+    --sig-ready: #5b8fe0;
+    --sig-running: #2f6fd0;
+    --sig-done: #1a7e4c;
   }
   /* Guarded with :not([data-theme="light"]) so an explicit "Light"
      choice (see :root[data-theme="dark"] below) can override the OS
@@ -44,71 +43,86 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
-      --surface: #1a1a19;
-      --page: #0d0d0d;
-      --ink-1: #ffffff;
-      --ink-2: #c3c2b7;
-      --ink-muted: #898781;
-      --line: #2c2c2a;
+      --surface: #141b16;
+      --page: #0d110e;
+      --ink-1: #f0f4f1;
+      --ink-2: #c3cbc5;
+      --ink-muted: #98a39b;
+      --line: #25302a;
       --border: rgba(255, 255, 255, 0.10);
-      --no-match: #d4a24e;
-      --accent: #9085e9;
-      --accent-wash: rgba(144, 133, 233, 0.14);
-      --skill: #3fbfa8;
-      --skill-wash: rgba(63, 191, 168, 0.16);
-      --sig-inbox: #97989e;
+      --on-accent: #06110b;
+      --critical: #ff7b72;
+      --no-match: #fb923c;
+      --accent: #2ed38c;
+      --accent-wash: rgba(46, 211, 140, 0.14);
+      --skill: #8fa2ff;
+      --skill-wash: rgba(143, 162, 255, 0.16);
+      --sig-inbox: #97a39a;
       --sig-ready: #6fb3f2;
-      --sig-running: #5b9bf0;
-      --sig-done: #3fbf7f;
+      --sig-running: #7fb0ff;
+      --sig-done: #2ed38c;
     }
   }
   /* Explicit "Dark" choice — wins regardless of OS preference. Keep in
      sync with the @media (prefers-color-scheme: dark) block above. */
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --surface: #1a1a19;
-    --page: #0d0d0d;
-    --ink-1: #ffffff;
-    --ink-2: #c3c2b7;
-    --ink-muted: #898781;
-    --line: #2c2c2a;
+    --surface: #141b16;
+    --page: #0d110e;
+    --ink-1: #f0f4f1;
+    --ink-2: #c3cbc5;
+    --ink-muted: #98a39b;
+    --line: #25302a;
     --border: rgba(255, 255, 255, 0.10);
-    --no-match: #d4a24e;
-    --accent: #9085e9;
-    --accent-wash: rgba(144, 133, 233, 0.14);
-    --skill: #3fbfa8;
-    --skill-wash: rgba(63, 191, 168, 0.16);
-    --sig-inbox: #97989e;
+    --on-accent: #06110b;
+    --critical: #ff7b72;
+    --no-match: #fb923c;
+    --accent: #2ed38c;
+    --accent-wash: rgba(46, 211, 140, 0.14);
+    --skill: #8fa2ff;
+    --skill-wash: rgba(143, 162, 255, 0.16);
+    --sig-inbox: #97a39a;
     --sig-ready: #6fb3f2;
-    --sig-running: #5b9bf0;
-    --sig-done: #3fbf7f;
+    --sig-running: #7fb0ff;
+    --sig-done: #2ed38c;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--page); color: var(--ink-1);
-    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-family: Figtree, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
 
-  /* ---- shell: sidebar + top bar + one page at a time
-     (docs/SDD-ui-cleanup.md §3.1). minmax(0, 1fr) lets the main column
-     shrink below its content's width, so a wide kanban scrolls inside
-     its own panel instead of the whole page scrolling sideways. ---- */
-  .shell { display: grid; grid-template-columns: 200px minmax(0, 1fr); min-height: 100vh; }
+  /* ---- shell: header + controls row + one page at a time
+     (docs/SDD-ui-cleanup.md §3.1). The nav that was a left sidebar is
+     now one sticky header row: brand, Work pages, then Setup pages. The
+     element keeps its id and classes (#sidebar, .nav-item) so the
+     routing glue and tests find it unchanged. minmax(0, 1fr) lets the
+     main column shrink below its content's width, so a wide kanban
+     scrolls inside its own panel instead of the whole page scrolling
+     sideways. ---- */
+  .shell { display: block; min-height: 100vh; }
   .sidebar {
-    position: sticky; top: 0; height: 100vh; overflow-y: auto;
-    display: flex; flex-direction: column; gap: 2px; padding: 12px 10px;
-    background: var(--surface); border-right: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 30;
+    display: flex; flex-direction: row; align-items: center; gap: 2px; padding: 0 20px;
+    background: var(--page); border-bottom: 1px solid var(--border);
+    overflow-x: auto; scrollbar-width: none;
   }
-  .sb-brand { font-family: "IBM Plex Mono", ui-monospace, monospace; font-weight: 700; font-size: 14px; padding: 4px 10px 6px; display: flex; align-items: center; gap: 10px; }
-  .sb-brand .nav-icon { color: var(--accent); }
-  .sb-group { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); margin: 14px 10px 4px; }
+  .sidebar::-webkit-scrollbar { display: none; }
+  .sb-brand { display: flex; align-items: center; gap: 8px; margin-right: 18px; padding: 5px 0; flex: none; font-weight: 900; font-size: 22px; letter-spacing: -0.03em; }
+  .brand-mark { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 4px; background: var(--accent); color: var(--on-accent); font-size: 19px; letter-spacing: 0; }
+  .sb-group { flex: none; font-size: 10.5px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); margin: 0 4px 0 14px; padding-left: 16px; border-left: 1px solid var(--border); }
+  .sb-group:first-of-type { display: none; }
   .nav-item {
-    display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 7px;
-    color: var(--ink-2); text-decoration: none; font-size: 13px; font-weight: 600; white-space: nowrap;
+    display: flex; align-items: center; gap: 8px; padding: 12px 12px 9px; border-bottom: 3px solid transparent;
+    color: var(--ink-muted); text-decoration: none; font-size: 13px; font-weight: 600; white-space: nowrap; flex: none;
   }
-  .nav-item:hover { background: var(--accent-wash); color: var(--ink-1); }
+  .nav-item[data-route="board"], .nav-item[data-route="pipelines"], .nav-item[data-route="archive"] {
+    font-weight: 800; font-size: 13.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .nav-item:hover { color: var(--ink-1); }
   .nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .nav-item[aria-current="page"] { background: var(--ink-1); color: var(--surface); }
+  .nav-item[aria-current="page"] { color: var(--ink-1); border-bottom-color: var(--accent); font-weight: 800; }
   .nav-icon { width: 16px; height: 16px; flex: none; display: inline-flex; }
   .nav-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
   .main-col { min-width: 0; display: flex; flex-direction: column; }
@@ -117,8 +131,8 @@
      narrow window wraps the controls too instead of pushing the page
      sideways. */
   .topbar {
-    position: sticky; top: 0; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; row-gap: 4px;
-    min-height: 48px; padding: 6px 20px 5px; background: var(--page); border-bottom: 1px solid var(--border);
+    position: static; z-index: 20; display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; row-gap: 4px;
+    min-height: 44px; padding: 5px 20px 4px; background: var(--page); border-bottom: 1px solid var(--border);
   }
   .topbar select { font: inherit; font-size: 13px; max-width: 240px; }
   .topbar-spacer { flex: 1; }
@@ -163,24 +177,25 @@
     .topbar > :not(.accounts-line):not(.topbar-spacer) { flex: 0 1 auto; }
   }
   .new-btn {
-    appearance: none; border: none; background: var(--accent); color: #fff; font: inherit; font-size: 13px; font-weight: 700;
+    appearance: none; border: none; background: var(--accent); color: var(--on-accent); font: inherit; font-size: 13px; font-weight: 700;
     padding: 6px 14px; border-radius: 7px; cursor: pointer; flex: none;
   }
   .new-btn:hover { opacity: 0.92; }
   .new-btn[aria-expanded="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }
   .main { padding: 10px 20px 32px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-  /* Below 1100px the sidebar keeps only its icons. Labels are clipped
+  /* Below 1100px the header keeps only its icons. Labels are clipped
      rather than display:none so each link keeps its accessible name;
      the title attribute gives a hover hint. */
   @media (max-width: 1099px) {
-    .shell { grid-template-columns: 56px minmax(0, 1fr); }
-    .sidebar { padding: 12px 8px; }
-    .nav-item, .sb-brand { justify-content: center; padding-inline: 0; }
+    .sidebar { padding: 0 12px; }
+    .nav-item { padding-inline: 10px; }
+    .sb-brand { margin-right: 8px; }
+    .sb-brand .nav-label { display: none; }
     .nav-label {
       position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
       overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
     }
-    .sb-group { font-size: 0; height: 1px; margin: 10px 6px; background: var(--line); }
+    .sb-group { font-size: 0; margin: 0 4px 0 6px; padding-left: 8px; }
   }
 
   .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); margin: 0 0 6px; }
@@ -456,13 +471,13 @@
     font: inherit; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 7px; cursor: pointer; flex: none;
   }
   .pl-btn:hover { border-color: var(--accent); color: var(--accent); }
-  .pl-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .pl-btn.primary:hover { opacity: 0.92; color: #fff; }
+  .pl-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .pl-btn.primary:hover { opacity: 0.92; color: var(--on-accent); }
   .pl-empty { padding: 16px; font-size: 12.5px; color: var(--ink-muted); }
   /* The editor page fills the main column below the top bar: 48px top
      bar + .main's 14px/32px vertical padding. The editor's own styles
      (pipeline-editor/src/index.css) read the tokens above. */
-  #pipelineEditorRoot .pe-app { height: calc(100vh - 94px); min-height: 520px; }
+  #pipelineEditorRoot .pe-app { height: calc(100vh - 142px); min-height: 520px; }
   .pe-load-error { border: 1px solid var(--critical); border-radius: 12px; background: var(--surface); padding: 16px 20px; font-size: 13px; line-height: 1.5; color: var(--ink-1); }
   .pe-load-error code { background: var(--page); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; font-family: "IBM Plex Mono", ui-monospace, monospace; }
   /* A run on its pipeline graph (docs/SDD-ui-cleanup.md §4.3). Node
@@ -473,7 +488,7 @@
   .rc-head .run-progress { margin: 0; font-size: 12px; }
   .rc-head .rc-spacer { flex: 1; }
   .rc-message { font-size: 13px; color: var(--ink-muted); }
-  .rc-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--page); max-height: calc(100vh - 150px); }
+  .rc-scroll { overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--page); max-height: calc(100vh - 200px); }
   .rc-canvas { position: relative; }
   .rc-canvas svg { position: absolute; inset: 0; overflow: visible; }
   .rc-edge { fill: none; stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 4 4; }
@@ -666,8 +681,8 @@
   }
   .drawer-actions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   .drawer-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .drawer-actions button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .drawer-actions button.primary:hover:not(:disabled) { color: #fff; opacity: 0.92; }
+  .drawer-actions button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .drawer-actions button.primary:hover:not(:disabled) { color: var(--on-accent); opacity: 0.92; }
   .drawer-actions button.danger:hover:not(:disabled) { border-color: var(--critical); color: var(--critical); }
   /* Inline "restart instructions" form the Retry button reveals — a
      textarea fits the multi-line human-edited instructions the
@@ -718,12 +733,92 @@
   .field-error { color: var(--critical); font-size: 12.5px; }
   .form-status { font-size: 12.5px; color: var(--stage-4); }
   .form-actions button[type="submit"] {
-    appearance: none; border: none; background: var(--accent); color: #fff; font: inherit; font-weight: 700;
+    appearance: none; border: none; background: var(--accent); color: var(--on-accent); font: inherit; font-weight: 700;
     font-size: 13px; padding: 10px 20px; border-radius: 8px; cursor: pointer;
   }
   .form-actions button[type="submit"]:disabled { opacity: 0.5; cursor: not-allowed; }
 
   [hidden] { display: none !important; }
+
+  /* ======================================================================
+     News-site look: component layer (reference: docs/mockups/
+     techcrunch-board/). Square corners, heavy top rules over section
+     titles, hairline-ruled lists instead of boxed cards, Figtree 800/900
+     headlines. Colours come from the tokens above; nothing here hard-
+     codes one. Kept in one block so the look can be read and changed in
+     one place.
+     ====================================================================== */
+  .main { padding: 12px 20px 32px; max-width: 1500px; width: 100%; margin: 0 auto; }
+  /* Page titles ("Pipelines", "Archive", ...) were small eyebrows. */
+  [data-page] > .eyebrow {
+    font-size: clamp(28px, 3.4vw, 40px); font-weight: 900; letter-spacing: -0.03em; line-height: 1.1;
+    text-transform: none; color: var(--ink-1); border-top: 4px solid var(--ink-1); padding-top: 10px; margin: 0 0 16px;
+  }
+  .lede { font-size: 15px; color: var(--ink-muted); }
+  .panel, .panel-flush { border: 0; border-top: 4px solid var(--ink-1); border-radius: 0; background: transparent; }
+  .panel-head { padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .panel-head h2 { font-size: 20px; font-weight: 900; letter-spacing: -0.02em; }
+  .panel-head .count, .count { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .panel-flush > div[style*="padding"] { padding-left: 0 !important; padding-right: 0 !important; }
+  /* The lanes panel is bare: each lane carries its own heavy rule. */
+  #lanesPanel { border-top: 0; }
+  #lanesPanel > div { padding-top: 4px !important; padding-bottom: 0 !important; }
+  .fleet-row, .pl-row { padding-left: 0; padding-right: 0; }
+  .pl-empty { padding-left: 0; padding-right: 0; }
+  .fleet-id, .hm-row-label { font-weight: 800; }
+  .tag { border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 800; font-size: 9.5px; background: var(--surface); }
+  .tier-chip { border-radius: 3px; }
+
+  /* Board: lanes are columns under a heavy rule, cards are ruled rows. */
+  .kanban { gap: 0 28px; }
+  .kcol h3 {
+    font-size: 18px; font-weight: 900; text-transform: none; letter-spacing: -0.02em; color: var(--ink-1);
+    border-top: 4px solid var(--ink-1); padding: 6px 0 4px; margin: 0;
+  }
+  .kcol h3 .col-clear, .kcol h3 .col-toggle, .ny-head .col-clear { font-family: Figtree, system-ui, sans-serif; font-size: 11px; font-weight: 700; border-radius: 3px; }
+  .kcard, .slcard {
+    border: 0; border-bottom: 1px solid var(--border); border-left: 3px solid var(--card-accent, transparent);
+    border-radius: 0; background: transparent; padding: 12px 0 12px 10px; margin-bottom: 0; font-size: 13px;
+  }
+  .kcard:hover, .slcard:hover { border-color: var(--border); border-left-color: var(--card-accent, var(--accent)); }
+  .kcard:hover .kt, .slcard:hover .kt { text-decoration: underline; }
+  .kcard .kt { font-size: 16px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.25; margin-bottom: 6px; }
+  .kcard .ka { font-size: 11.5px; }
+  .kcard .kstatus, .kcard .sl-tag {
+    border-radius: 3px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 800; font-size: 9.5px;
+    background: transparent; border: 0; padding: 0; color: var(--ink-2);
+  }
+  .kcard.superseded, .slcard.superseded { opacity: 0.6; }
+  .needs-you { border: 0; border-top: 4px solid var(--no-match); border-radius: 0; background: var(--surface); padding: 6px 16px 4px; }
+  .ny-head h2 { font-size: 12px; font-weight: 900; letter-spacing: 0.08em; }
+  .swimlane { border: 0; border-top: 4px solid var(--ink-1); border-radius: 0; }
+  .swimlane-head { background: transparent; border-bottom: 1px solid var(--border); padding-left: 0; font-size: 14px; font-weight: 800; }
+  .swimlane-body { padding-left: 0; }
+
+  /* Controls. */
+  .new-btn { border-radius: 4px; font-weight: 800; }
+  .pl-btn, .harness-manage-btn, .hm-toggle, .live-output-btn, .slcard .card-action, .drawer-actions button, .drawer-close, .override-grid button {
+    border-radius: 4px; font-weight: 700;
+  }
+  .pl-btn:not(.primary), .drawer-actions button:not(.primary) { border: 1.5px solid var(--ink-1); background: transparent; color: var(--ink-1); }
+  .pl-btn:not(.primary):hover, .drawer-actions button:not(.primary):hover:not(:disabled) { background: var(--accent-wash); border-color: var(--ink-1); color: var(--ink-1); }
+  .segmented { border-radius: 4px; }
+  .segmented button { border-radius: 3px; font-weight: 700; }
+  .field input[type="text"], .field textarea, .field select, .topbar select { border-radius: 4px; }
+  .acct-chip, .harness-pill { border-radius: 999px; }
+  .status-pill { border-radius: 3px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 800; font-size: 10px; }
+  .app-link { font-weight: 800; }
+
+  /* Drawers: right-hand sheet with a heavy left rule. */
+  .drawer { background: var(--page); border-left: 4px solid var(--ink-1); box-shadow: -12px 0 32px rgba(0, 0, 0, 0.18); }
+  .drawer-head { border-bottom: 0; padding-bottom: 4px; }
+  .drawer-head h2 { font-size: 24px; font-weight: 900; letter-spacing: -0.025em; line-height: 1.15; }
+  .drawer-section > .eyebrow {
+    font-size: 12px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-1);
+    border-top: 2px solid var(--ink-1); padding-top: 8px;
+  }
+  .result-card, .rd-steps, .panel-inset, .suggestions, .rc-scroll { border-radius: 4px; }
+  .new-tabs button[aria-selected="true"] { border-bottom-width: 3px; font-weight: 800; }
 </style>
 <script>
   // Runs before first paint so a persisted "dark" or "light" choice never
@@ -748,7 +843,7 @@
        two stay in sync. -->
   <nav class="sidebar" id="sidebar" aria-label="Main">
     <div class="sb-brand" title="wissel">
-      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 4h5l2 8h5"/><path d="M2 12h5l2-8h5"/></svg></span>
+      <span class="brand-mark" aria-hidden="true">w</span>
       <span class="nav-label">wissel</span>
     </div>
     <p class="sb-group">Work</p>

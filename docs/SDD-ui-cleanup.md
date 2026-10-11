@@ -44,6 +44,8 @@ Still the single `board.html` and vanilla JS. No framework.
 
 ### 3.1 Shell and navigation (card A1)
 
+> **Look update.** The board takes the news-site look of the app (reference: `docs/mockups/techcrunch-board/`). The left sidebar is now one sticky header row (same `#sidebar` element, ids and classes): brand, Work pages, then Setup pages; below 1100px it keeps only icons. Light tokens are white and green, dark ones follow `prefers-color-scheme` or the Settings toggle. T1's budget is now 170px (was 120): the header row adds about 41px above the controls. Gate test: `test/board-look.test.ts` (token contrast in both themes, dark blocks in sync, header layout).
+
 - A left sidebar with two groups:
   - **Work:** Board, Pipelines, Archive.
   - **Setup:** Agents & skills, Harnesses, MCP servers, Projects, Memory,

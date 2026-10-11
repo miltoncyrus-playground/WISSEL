@@ -606,8 +606,8 @@ test.describe("at 1440x900", () => {
     const first = page.locator("#boardPanel .kcard").first();
     await expect(first).toBeVisible();
     const top = (await first.boundingBox())!.y;
-    console.log(`T1 with A3: first board card top = ${top}px (goal ≤ 120)`);
-    expect(top).toBeLessThanOrEqual(120);
+    console.log(`T1 with A3: first board card top = ${top}px (goal ≤ 170)`);
+    expect(top).toBeLessThanOrEqual(170);
 
     await openNewDrawer(page);
     // Slid fully in: flush with the viewport's right edge (clientWidth

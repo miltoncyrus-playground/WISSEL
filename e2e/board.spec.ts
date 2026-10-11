@@ -1556,8 +1556,10 @@ test.describe("Archive tab", () => {
   });
 });
 
-// docs/SDD-ui-cleanup.md §3.1 (card A1): sidebar + top bar + Setup pages.
-// Targets T1 (≤ 120px of controls above the first board card) and T6 (no
+// docs/SDD-ui-cleanup.md §3.1 (card A1): header nav + controls row + Setup
+// pages. The nav moved from a left sidebar to a header row (news-site
+// look), so T1's budget grew by that row: ≤ 170px of chrome above the
+// first board card (was 120). T6 (no
 // setup items on the Board view), both measured at 1440x900 as §2 asks.
 test.describe("Shell and navigation", () => {
   const SIDEBAR_PAGES: { name: string; hash: string; page: string }[] = [
@@ -1574,7 +1576,7 @@ test.describe("Shell and navigation", () => {
   test.describe("at 1440x900", () => {
     test.use({ viewport: { width: 1440, height: 900 } });
 
-    test("T1: the first board card starts within 120px of the top of the page", async ({ page, request }) => {
+    test("T1: the first board card starts within 170px of the top of the page", async ({ page, request }) => {
       await request.post("/tasks", { data: { title: `T1 measure ${Date.now()}`, body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
       await page.goto("/board");
       // The first card on the board: Needs you's, when the strip shows,
@@ -1584,8 +1586,8 @@ test.describe("Shell and navigation", () => {
       const box = await first.boundingBox();
       // Logged so the measured value shows up in the run output, not
       // just pass/fail.
-      console.log(`T1: first board card top = ${box!.y}px (goal ≤ 120)`);
-      expect(box!.y).toBeLessThanOrEqual(120);
+      console.log(`T1: first board card top = ${box!.y}px (goal ≤ 170)`);
+      expect(box!.y).toBeLessThanOrEqual(170);
       await page.screenshot({ path: "test-results/ui-a1/board-1440x900.png" });
     });
 
@@ -1667,11 +1669,24 @@ test.describe("Shell and navigation", () => {
     await expect(page.getByRole("link", { name: "New pipeline", exact: true })).toHaveAttribute("href", "#/pipelines/new");
   });
 
-  test("below 1100px the sidebar collapses to icons, and its links keep their names", async ({ page }) => {
+  test("the nav is one header row across the top, not a sidebar", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/board");
+    const nav = (await page.locator("#sidebar").boundingBox())!;
+    expect(nav.y).toBe(0);
+    expect(nav.width).toBeGreaterThan(1200);
+    expect(nav.height).toBeLessThanOrEqual(64);
+    // Every link sits on that one row.
+    const tops = await page.locator("#sidebar a.nav-item").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
+    expect(tops).toHaveLength(9);
+    expect(new Set(tops).size).toBe(1);
+  });
+
+  test("below 1100px the header keeps only icons, and its links keep their names", async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 800 });
     await page.goto("/board");
-    const sidebar = await page.locator("#sidebar").boundingBox();
-    expect(sidebar!.width).toBeLessThanOrEqual(64);
+    const header = await page.locator("#sidebar").boundingBox();
+    expect(header!.height).toBeLessThanOrEqual(64);
     const label = await page.locator('#sidebar a[data-route="setup/harnesses"] .nav-label').boundingBox();
     expect(label!.width).toBeLessThanOrEqual(1);
     // Still reachable by name (screen readers, getByRole), not just by icon.
@@ -1680,7 +1695,7 @@ test.describe("Shell and navigation", () => {
 
     await page.setViewportSize({ width: 1100, height: 800 });
     await expect(async () => {
-      expect((await page.locator("#sidebar").boundingBox())!.width).toBeGreaterThan(150);
+      expect((await page.locator('#sidebar a[data-route="setup/harnesses"] .nav-label').boundingBox())!.width).toBeGreaterThan(20);
     }).toPass();
   });
 

@@ -5,8 +5,8 @@ import { test, expect } from "@playwright/test";
 // exact same values, so this page's real light --page and dark --page can
 // stand in as ground truth for "did the CSS actually apply" without
 // hardcoding a second copy of the palette here.
-const LIGHT_PAGE_BG = "rgb(249, 249, 247)"; // --page: #f9f9f7
-const DARK_PAGE_BG = "rgb(13, 13, 13)"; // --page: #0d0d0d
+const LIGHT_PAGE_BG = "rgb(255, 255, 255)"; // --page: #ffffff
+const DARK_PAGE_BG = "rgb(13, 17, 14)"; // --page: #0d110e
 
 function pageBg(page: import("@playwright/test").Page) {
   return page.evaluate(() => getComputedStyle(document.body).backgroundColor);
