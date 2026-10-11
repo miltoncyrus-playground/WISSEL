@@ -31,6 +31,11 @@ export interface PipelineRunnerContext {
   harnesses?: HarnessPool;
   telemetry?: TelemetryLog;
   memoryPath?: string;
+  /** Called once with the root card, right after it is created and
+   *  before any step runs. startPipelineRun itself only resolves when the
+   *  run settles; Ask (src/services/concierge.ts) needs the run id
+   *  straight away to show it as a live chip. */
+  onRootCreated?: (root: TaskCard) => void;
 }
 
 /** The steps of `pipelineDef` whose agent needs a real repo: anything
@@ -95,6 +100,7 @@ export async function startPipelineRun(
     repo = undefined; // "" and undefined both mean no repo.
   }
   const root = await board.create({ title: `Pipeline: ${pipelineDef.name}`, body: input, labels: [], repo, pipelineId: pipelineDef.id });
+  ctx.onRootCreated?.(root);
   await board.move(root.id, "running");
 
   const entrySteps = pipelineDef.graph.steps.filter((step) => !pipelineDef.graph.edges.some((e) => e.to === step.id));

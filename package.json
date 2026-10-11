@@ -24,6 +24,7 @@
     "eval:world-news": "bun run eval/ai-news-podcast.eval.ts --world",
     "eval:wissel-retro": "bun run eval/wissel-retro-podcast.eval.ts",
     "eval:readonly": "bun run eval/readonly.eval.ts",
+    "eval:concierge": "bun run eval/concierge.eval.ts",
     "eval:implementer-reviewer": "bun run eval/implementer-reviewer.eval.ts",
     "eval:planner-subtask-plan": "bun run eval/planner-subtask-plan.eval.ts",
     "eval:pipeline-review-handoff": "bun run eval/pipeline-review-handoff.eval.ts",

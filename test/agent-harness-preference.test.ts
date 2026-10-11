@@ -493,15 +493,18 @@ test("pipeline: nothing on the agent's list available fails the step loud, namin
 
 test("every real manifest agent without `harnesses` builds the same acquire call as before: no preference passed", async () => {
   const real = await Registry.load();
-  const runnable = real.all().filter((a) => a.tier !== "service");
+  // This card shipped no manifest lists (SDD §6, Milton's open decision).
+  // The one list since is Ask's concierge (docs/SDD-wissel-app.md §3.4:
+  // private `claude` harness only), which no pool ever runs: Ask acquires
+  // its harness itself.
+  expect(real.all().filter((a) => a.harnesses).map((a) => a.id)).toEqual(["concierge"]);
+  const runnable = real.all().filter((a) => a.tier !== "service" && !a.harnesses);
   expect(runnable.length).toBeGreaterThan(0);
   const memoryDir = await mkdtemp(join(tmpdir(), "wissel-harness-pref-"));
   const calls: { agentId: string; args: unknown[] }[] = [];
 
   try {
     for (const def of runnable) {
-      // This card ships no manifest lists (SDD §6, Milton's open decision).
-      expect(def.harnesses).toBeUndefined();
 
       const harnesses = HarnessPool.from([harness({ id: "h", tool: "claude-cli" }), harness({ id: "api", tool: "anthropic-api" }), harness({ id: "cx", tool: "codex-cli" })]);
       const original = harnesses.acquire.bind(harnesses);

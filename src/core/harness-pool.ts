@@ -35,6 +35,9 @@ export function validateAgentHarnesses(agents: AgentDef[], pool: HarnessPool, ex
       const executor = executors.find((e) => e.canHandle(agent));
       if (executor) tools.add(executor.harnessTool);
     }
+    // No pool runs it (handed off, or run only by its own caller, like
+    // Ask's concierge): nothing here would ever acquire its harnesses.
+    if (tools.size === 0) continue;
     if (tools.has(undefined)) {
       throw new Error(`agent "${agent.id}" lists harnesses [${agent.harnesses.join(", ")}] but runs on an executor with no harness tool`);
     }

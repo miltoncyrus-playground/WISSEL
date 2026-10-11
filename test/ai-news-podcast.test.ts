@@ -406,7 +406,10 @@ test("repo-less run: a write step edited into the definition mid-run fails that 
 // ---- §3.4 API --------------------------------------------------------
 
 function recordingExecutor(seen: TaskCard[]): Executor {
-  return { id: "rec", canHandle: () => true, run: async (t, a) => (seen.push(t), { taskId: t.id, agentId: a.id, ok: true, summary: "ok", pipelineHandoff: { data: {} } }) };
+  // Every agent but Ask's concierge, which no pool may run (§3.4 of
+  // docs/SDD-wissel-app.md; startup refuses a pool that claims it with
+  // no harness tool).
+  return { id: "rec", canHandle: (a) => a.id !== "concierge", run: async (t, a) => (seen.push(t), { taskId: t.id, agentId: a.id, ok: true, summary: "ok", pipelineHandoff: { data: {} } }) };
 }
 
 async function postJson(app: (r: Request) => Promise<Response>, path: string, body: unknown): Promise<Response> {

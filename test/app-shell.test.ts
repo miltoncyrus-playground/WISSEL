@@ -41,6 +41,31 @@ test("app/src/types.ts PodcastEpisode and PodcastQuickRead match src/services/po
   }
 });
 
+test("app/src/types.ts's Ask types match the server's (card 4)", async () => {
+  const app = await read("app/src/types.ts");
+  const conversations = await read("src/services/conversations.ts");
+  for (const name of ["Conversation", "ChatMessage"]) {
+    expect(fieldsOf(app, name), name).toEqual(fieldsOf(conversations, name));
+  }
+  expect(fieldsOf(app, "DroppedAction")).toEqual(fieldsOf(await read("src/services/concierge-actions.ts"), "DroppedAction"));
+  expect(fieldsOf(app, "AskResult")).toEqual(fieldsOf(await read("src/services/concierge.ts"), "AskResult"));
+
+  // The union types, compared as text with whitespace collapsed.
+  const union = (src: string, name: string) => {
+    const at = src.indexOf(`export type ${name} =`);
+    expect(at, name).toBeGreaterThan(-1);
+    return src.slice(at, src.indexOf(";\n", at)).replace(/\s+/g, " ");
+  };
+  expect(union(app, "ExecutedAction")).toBe(union(conversations, "ExecutedAction"));
+  expect(union(app, "AskEvent")).toBe(union(await read("src/services/concierge.ts"), "AskEvent"));
+
+  const { MAX_MESSAGE_LENGTH: appMax, AUDIO_AGENT: appAudio } = await import("../app/src/ask.ts");
+  const { MAX_MESSAGE_LENGTH: serverMax } = await import("../src/services/concierge.ts");
+  const { AUDIO_AGENT: serverAudio } = await import("../src/services/news-run-checks.ts");
+  expect(appMax).toBe(serverMax);
+  expect(appAudio).toBe(serverAudio);
+});
+
 test("the app reuses board-news.js through the ESM wrapper, never a copy (card 3)", async () => {
   const wrapper = await read("app/src/news.ts");
   expect(wrapper).toContain('"../../src/api/public/board-news.js?browser-script"');

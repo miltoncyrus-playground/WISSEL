@@ -276,6 +276,70 @@ The one LLM part. Everything around it is code.
 - Cost per message is logged to telemetry like any agent; the reply
   shows it in small mono text.
 
+**As built (card 4).** Where the build fills in or departs from the above:
+
+- The agent has `executor: concierge` and the tag `ask-chat-concierge`.
+  `ReadOnlyExecutor.canHandle` refuses `executor: concierge`, so no pool
+  can pick it for a card; Ask (`src/services/concierge.ts`) calls the
+  executor's `run` itself. Startup's harness check skips an agent no pool
+  runs. Ask acquires the `claude` harness per message; off, missing or
+  busy, the reply says so and nothing runs or is spent.
+- Context (`concierge-context.ts`): at most 40 open cards, newest first,
+  with a count of the rest; pipeline step cards are left out (their run's
+  root stands for them); the 10 newest landed by `doneAt`; the last 20
+  messages, each cut to 2,000 characters; the labels a chat card may
+  carry (`chatLabels`: every agent's tags minus the concierge's and the
+  `-step` tags of pipeline-only agents). The nonce is fresh per message;
+  the data is one JSON block, so no title can put a fence line in it.
+- Validation (`concierge-actions.ts`): the last ` ```wissel-actions `
+  block wins; no block or broken JSON takes no action and shows the prose
+  with a note. `create_task` takes a project's path or its name (stored
+  as the path); without a repo it is dropped when its labels route
+  confidently to an agent with write or bash access, the same rule as
+  `POST /tasks`. Title at most 200 characters, body and input 8,000.
+  `run_pipeline` matches the exact name in any case, or the id; a
+  pipeline with a step that needs a repo is dropped (Ask has no repo to
+  give it). `show_task` takes a full id or a unique prefix of 8 or more.
+  The same action twice is dropped once. `DroppedAction.disallowed` marks
+  a type outside the three.
+- Store: messages also keep `dropped` (proposed, not taken). A chat's
+  title is its first message, 60 characters at most.
+- `POST /ask` answers once the actions ran; a pipeline run counts as run
+  when its root card exists (`onRootCreated` on the pipeline runner's
+  context), not when it settles. Text is 1 to 4,000 characters; a usage
+  limit names its reset time. Telemetry: a `dispatch` and a `result` for
+  task id `ask-<user message id>`, model and cost included. The cwd is
+  one shared empty scratch dir (`~/.wissel/scratch/ask-concierge`).
+- "Thinking" goes out on `/events` as a named SSE event `ask`
+  (`ask.thinking`, `ask.replied`). `/board` reads only plain messages,
+  so it never sees them; the app's hub has `subscribeAsk` for them on
+  the same one connection.
+- UI: the shell holds the chat (`app/src/useAsk.ts`), so a reply that
+  lands while another tab is open is there on return; the open chat's id
+  is in `localStorage` (`wissel.app.askConversation`). "New chat" and
+  "Earlier chats" (`GET /conversations`). Enter sends, Shift-Enter is a
+  new line. A reply is shown only after a `/tasks` refetch, so a card it
+  just made has the right chip even when its board event was missed;
+  until `/tasks` first answers an unknown card reads "Loading", after
+  that "Gone". Chips read Queued, Running, In review, Needs you (with
+  why) or Done. A podcast run's chip gets Play once `GET /podcasts` has
+  the run. Quick replies: "Run <name>" for up to two pipelines with a
+  `podcast-audio` step, "What did I do this week?", "What is running?",
+  and "Show board" as a plain link (no model call). Palette "New card"
+  now opens Ask instead of `/board#/new`.
+- e2e: `WISSEL_CONCIERGE_SCRIPT` (set by playwright.config.ts) makes the
+  server run the concierge on a scripted `claude -p`
+  (`src/services/concierge-script.ts`, script in
+  `e2e/fixtures/concierge-script.json`) on a one-harness pool of its own:
+  the real executor, parsing, validation and board, no model. Specs in
+  `e2e/ask.spec.ts`; `app/**` and the concierge services map to it.
+- `eval:concierge` runs each request on a fresh seeded board through the
+  real `POST /ask`, judged in code; pipeline steps are faked, so a run
+  starts but no other agent runs. "Zero disallowed actions" is counted
+  on what the model proposed, since validation already makes executing
+  one impossible. `test/concierge-eval.test.ts` checks every case's judge
+  passes a right scripted answer and fails a wrong one, for free.
+
 ### 3.5 Voice (card 5)
 
 - **STT service**: speaches (MIT; faster-whisper int8 on CPU,

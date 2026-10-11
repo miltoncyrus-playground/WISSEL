@@ -21,6 +21,9 @@ export interface BoardData {
   loaded: boolean;
   error: string | null;
   connection: ConnectionState;
+  /** Refetch now, without waiting for an event (Ask calls it before it
+   *  shows a reply, so a card it just made has its chip). */
+  reload: () => Promise<void>;
 }
 
 /** Board events arrive in bursts (a run moves, gets a result, moves
@@ -65,7 +68,7 @@ export function useBoardData(): BoardData {
     };
   }, [load]);
 
-  return { tasks, pipelines, loaded, error, connection };
+  return { tasks, pipelines, loaded, error, connection, reload: load };
 }
 
 export interface FeedData {

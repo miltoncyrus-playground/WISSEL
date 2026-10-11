@@ -1,0 +1,17 @@
+[
+  {
+    "match": "check the readme",
+    "reply": "On it.\n\n```wissel-actions\n{\"reply\": \"Made a card to check the README.\", \"actions\": [{\"type\": \"create_task\", \"title\": \"Check the README\", \"body\": \"Read README.md and fix anything out of date.\", \"labels\": [\"docs\"]}]}\n```",
+    "costUsd": 0.0421
+  },
+  {
+    "match": "merge",
+    "reply": "```wissel-actions\n{\"reply\": \"Merging is done on the board.\", \"actions\": [{\"type\": \"merge\", \"id\": \"anything\"}]}\n```",
+    "costUsd": 0.0102
+  },
+  {
+    "match": "what is running|what did i do",
+    "reply": "```wissel-actions\n{\"reply\": \"Nothing is running right now.\", \"actions\": []}\n```",
+    "costUsd": 0.0087
+  }
+]

@@ -183,6 +183,10 @@ export default defineConfig({
       WISSEL_AUDIO_DIR: "/tmp/wissel-e2e-audio",
       WISSEL_TTS_URL: "http://127.0.0.1:9",
       WISSEL_TTS_VOICE: "af_heart",
+      // Ask's concierge (docs/SDD-wissel-app.md §3.4, §4.2) answers from
+      // this checked-in script instead of `claude -p`: no model call, no
+      // spend, the same answer every run. Read once at boot.
+      WISSEL_CONCIERGE_SCRIPT: "e2e/fixtures/concierge-script.json",
     },
   },
 });
