@@ -8,6 +8,7 @@ import { resolveAffectedSpecs } from "../scripts/e2e-affected-map.ts";
 // requirement. The cross-check test below guards against this list
 // silently drifting from the real e2e/ directory.
 const ALL_SPECS = [
+  "app-look.spec.ts",
   "app.spec.ts",
   "ask.spec.ts",
   "board.spec.ts",
@@ -26,7 +27,7 @@ const ALL_SPECS = [
 // A non-theme board.html change runs every spec that opens /board.
 // feed.spec.ts, listen.spec.ts, ask.spec.ts, voice.spec.ts and
 // you.spec.ts only open /app and its API, so they are not among them.
-const BOARD_HTML_SPECS = ALL_SPECS.filter((s) => !["feed.spec.ts", "listen.spec.ts", "ask.spec.ts", "voice.spec.ts", "you.spec.ts"].includes(s));
+const BOARD_HTML_SPECS = ALL_SPECS.filter((s) => !["app-look.spec.ts", "feed.spec.ts", "listen.spec.ts", "ask.spec.ts", "voice.spec.ts", "you.spec.ts"].includes(s));
 
 describe("ALL_SPECS fixture", () => {
   test("matches the real e2e/*.spec.ts files on disk", () => {
@@ -75,7 +76,7 @@ describe("resolveAffectedSpecs", () => {
   test("app/** and its server file resolve to the six /app specs only", () => {
     for (const path of ["app/src/App.tsx", "app/package.json", "src/api/serve-app.ts"]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
-      expect(result.specs).toEqual(["app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"]);
+      expect(result.specs).toEqual(["app-look.spec.ts", "app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"]);
       expect(result.fullSuite).toBe(false);
     }
     // Not a prefix match on "app": a top-level "apps/" would be novel.

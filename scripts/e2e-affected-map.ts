@@ -88,9 +88,9 @@ export const FILE_RULES: FileRule[] = [
   },
   {
     description:
-      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), feed.spec.ts (the Feed screen), listen.spec.ts (Listen and the mini-player), ask.spec.ts (Ask), voice.spec.ts (Ask's voice notes and Play reply) and you.spec.ts (You, Wrapped and agent faces) open /app.",
+      "app/ is the wissel app (docs/SDD-wissel-app.md), its own Vite app served at /app by src/api/serve-app.ts; app.spec.ts (the shell), app-look.spec.ts (light and dark, header nav), feed.spec.ts (the Feed screen), listen.spec.ts (Listen and the mini-player), ask.spec.ts (Ask), voice.spec.ts (Ask's voice notes and Play reply) and you.spec.ts (You, Wrapped and agent faces) open /app.",
     match: (p) => p === "app" || p.startsWith("app/") || p === "src/api/serve-app.ts",
-    resolve: () => ["app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"],
+    resolve: () => ["app-look.spec.ts", "app.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"],
   },
   {
     description:
