@@ -175,3 +175,22 @@ test("handles an empty input array", () => {
 test("also accepts already-parsed objects, not just raw JSON strings — a defensive convenience, not a required input shape", () => {
   expect(renderTaskOutputRows([{ type: "turn.completed" }])).toEqual([{ kind: "result", ok: true, text: "✔ turn completed" }]);
 });
+
+test("renders wissel's Remote Control answer as a remote row with the session link", () => {
+  const ok = line({
+    type: "control_response",
+    response: { subtype: "success", request_id: "wissel-remote-control", response: { session_url: "https://claude.ai/code/session_01ABC" } },
+  });
+  expect(renderTaskOutputRows([ok])).toEqual([
+    { kind: "remote", text: "Remote Control: https://claude.ai/code/session_01ABC", url: "https://claude.ai/code/session_01ABC" },
+  ]);
+});
+
+test("a refused or non-claude.ai Remote Control answer renders without a link", () => {
+  const refused = line({ type: "control_response", response: { subtype: "error", request_id: "wissel-remote-control", error: "disabled by policy" } });
+  const odd = line({ type: "control_response", response: { subtype: "success", request_id: "wissel-remote-control", response: { session_url: "javascript:alert(1)" } } });
+  expect(renderTaskOutputRows([refused, odd])).toEqual([
+    { kind: "remote", ok: false, text: "✗ Remote Control unavailable: disabled by policy" },
+    { kind: "remote", ok: false, text: "✗ Remote Control unavailable: not accepted" },
+  ]);
+});

@@ -1059,3 +1059,14 @@ test("opens and heals a real pre-existing on-disk DB from before mcpAccessOverri
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("getResult round-trips remoteSessionUrl, and omits it when the run had none", async () => {
+  const board = new SqliteBoard();
+  const task = await board.create({ title: "t", body: "", labels: [], repo: "r" });
+  await board.recordResult({ taskId: task.id, agentId: "a", ok: true, summary: "done", remoteSessionUrl: "https://claude.ai/code/session_01ABC" });
+  expect((await board.getResult(task.id))?.remoteSessionUrl).toBe("https://claude.ai/code/session_01ABC");
+
+  const other = await board.create({ title: "u", body: "", labels: [], repo: "r" });
+  await board.recordResult({ taskId: other.id, agentId: "a", ok: true, summary: "done" });
+  expect("remoteSessionUrl" in (await board.getResult(other.id))!).toBe(false);
+});

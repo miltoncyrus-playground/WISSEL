@@ -375,6 +375,8 @@
   .lo-row.lo-tool-result.lo-fail { color: var(--critical); }
   .lo-row.lo-result { color: var(--ink-1); font-weight: 700; margin-top: 4px; }
   .lo-row.lo-result.lo-fail { color: var(--critical); }
+  .lo-row.lo-remote a { color: var(--accent); font-weight: 600; }
+  .lo-row.lo-remote.lo-fail { color: var(--ink-muted); }
   .lo-row.lo-raw { color: var(--ink-muted); }
   .lo-empty { color: var(--ink-muted); font-size: 12.5px; padding: 8px 0; }
 
@@ -3499,7 +3501,18 @@
     rows.forEach(function (row) {
       var div = document.createElement("div");
       div.className = "lo-row lo-" + row.kind + (row.ok === false ? " lo-fail" : "");
-      div.textContent = row.text;
+      if (row.url) {
+        // The run's Remote Control session (render-task-output.js only
+        // sets url to an https://claude.ai/ address).
+        var link = document.createElement("a");
+        link.href = row.url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "Follow this run in claude.ai ↗";
+        div.appendChild(link);
+      } else {
+        div.textContent = row.text;
+      }
       wrap.appendChild(div);
     });
     wrap.scrollTop = wrap.scrollHeight;

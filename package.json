@@ -38,7 +38,8 @@
     "eval:claude-cli-429-replay": "bun run eval/claude-cli-429-replay.eval.ts",
     "usage:report": "bun run scripts/usage-report.ts",
     "eval:resume": "bun run eval/resume.eval.ts",
-    "eval:review-grants": "bun run eval/review-grants.eval.ts"
+    "eval:review-grants": "bun run eval/review-grants.eval.ts",
+    "eval:remote-control": "bun run eval/remote-control.eval.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

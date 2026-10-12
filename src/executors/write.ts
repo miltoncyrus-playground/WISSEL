@@ -37,6 +37,10 @@ export interface WriteExecutorOptions {
    *  Undefined (the default) keeps runClaude's non-streaming
    *  `--output-format json` behavior entirely unchanged. */
   onChunk?: (taskId: string, line: unknown) => void;
+  /** Passed straight through to runClaude's option of the same name —
+   *  see its own doc comment. Off unless the caller (src/api/server.ts,
+   *  from WISSEL_REMOTE_CONTROL) turns it on. */
+  remoteControl?: boolean;
 }
 
 /**
@@ -68,6 +72,7 @@ export class WriteExecutor implements Executor {
   private runner: CommandRunner;
   private model?: string;
   private homeDir?: string;
+  private remoteControl?: boolean;
   private memoryPath?: string;
   private injectMemory?: boolean;
   private mcpServers?: McpServerPool;
@@ -77,6 +82,7 @@ export class WriteExecutor implements Executor {
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
     this.homeDir = opts.homeDir;
+    this.remoteControl = opts.remoteControl;
     this.memoryPath = opts.memoryPath;
     this.injectMemory = opts.injectMemory;
     this.mcpServers = opts.mcpServers;
@@ -132,6 +138,7 @@ export class WriteExecutor implements Executor {
       // .mcpAccessPreApproved's own doc comment for why this is safe.
       mcpAccessPreApproved: task.mcpAccessOverride !== undefined,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
+      remoteControl: this.remoteControl,
     });
 
     const withHarness = harness ? { ...result, harnessId: harness.id } : result;

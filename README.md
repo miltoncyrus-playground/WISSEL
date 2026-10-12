@@ -354,6 +354,7 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_MEMORY_CURATION` | off | Periodically distill session history into `memory/lessons.md`. |
 | `WISSEL_MEMORY_INTERVAL_HOURS` | 24 | How often curation checks if it's due. |
 | `WISSEL_MEMORY_INJECTION` | off | Add `memory/lessons.md` to every claude-cli/codex-cli prompt. Curation keeps running either way. |
+| `WISSEL_REMOTE_CONTROL` | on | Every claude-cli card run (board cards and pipeline steps, not Ask) gets a Remote Control session you can follow and steer from claude.ai/code or the Claude app. The live output shows the link. `0` turns it off. |
 | `WISSEL_MEMORY_PATH` | `memory/lessons.md` | Lessons file location. |
 | `WISSEL_AUTO_ARCHIVE` | off | Archive `done` cards 24h after `doneAt`. |
 | `WISSEL_ARCHIVE_CHECK_INTERVAL_HOURS` | 1 | Auto-archive check interval. |
@@ -440,6 +441,7 @@ The checked-in file registers none.
 - `docs/SDD-wissel-app.md`: the app at `/app`.
 - `docs/SDD-memory-curator.md`, `docs/SDD-memory-injection-toggle.md`: memory.
 - `docs/SDD-task-archiving.md`, `docs/SDD-version-info.md`, `docs/SDD-live-task-output.md`.
+- `docs/SDD-remote-control.md`: every card run as a claude.ai Remote Control session.
 
 ## License
 

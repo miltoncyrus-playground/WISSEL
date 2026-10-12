@@ -155,6 +155,13 @@ export interface CreateAppOptions {
    *  `runClaude`/`runCodex`; no executor or run function ever reads
    *  `process.env` itself. */
   injectMemory?: boolean;
+  /** Turns on Remote Control for every claude-cli card run (board cards
+   *  and pipeline steps, not Ask's chat), so each can be followed and
+   *  steered from claude.ai/code or the Claude app — see
+   *  RunClaudeOptions.remoteControl. Read once from
+   *  `WISSEL_REMOTE_CONTROL` at the bootstrap entrypoint: on unless set
+   *  to 0 or false. Undefined here (tests, other callers) means off. */
+  remoteControl?: boolean;
   /** Starts the in-process auto-archive scheduler (see
    *  src/core/archive-scheduler.ts) — off by default, same gate pattern
    *  as memoryCurationEnabled. Unlike memory curation, needs no
@@ -331,7 +338,7 @@ export function createApp(
       agentModel: (id) => registry.get(id)?.costProfile.model,
     });
   const autoExecutors: Executor[] = [
-    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
     new ApiExecutor(),
     new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     ttsExecutor(),
@@ -339,14 +346,14 @@ export function createApp(
   ];
   if (executeWriteTier)
     autoExecutors.push(
-      new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+      new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
       new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     );
   const manualExecutors: Executor[] = opts.manualExecutors ?? [
-    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+    new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
     new ApiExecutor(),
     new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
-    new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+    new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
     new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     ttsExecutor(),
     digestExecutor(),
@@ -1795,6 +1802,9 @@ if (import.meta.main) {
   // running either way — this only gates whether agents actually see
   // the result.
   const injectMemory = ["1", "true"].includes(process.env.WISSEL_MEMORY_INJECTION ?? "");
+  // On by default: every claude-cli card run gets a Remote Control
+  // session (see CreateAppOptions.remoteControl). 0/false turns it off.
+  const remoteControl = !["0", "false"].includes((process.env.WISSEL_REMOTE_CONTROL ?? "").toLowerCase());
 
   // Off by default: task cards auto-archiving 24h after they land on
   // `done` (see docs/SDD-task-archiving.md). WISSEL_ARCHIVE_CHECK_INTERVAL_HOURS
@@ -1857,6 +1867,7 @@ if (import.meta.main) {
       memoryIntervalHours,
       memoryPath,
       injectMemory,
+      remoteControl,
       autoArchiveEnabled,
       archiveCheckIntervalHours,
       modelRefreshEnabled,
@@ -1893,6 +1904,11 @@ if (import.meta.main) {
     memoryCurationEnabled
       ? `memory curation scheduled every ${memoryIntervalHours}h (WISSEL_MEMORY_CURATION=1)`
       : "memory curation not started — set WISSEL_MEMORY_CURATION=1 to let wissel learn from its own session history",
+  );
+  console.log(
+    remoteControl
+      ? "remote control on: every claude card run is a claude.ai/code session you can follow (WISSEL_REMOTE_CONTROL=0 turns it off)"
+      : "remote control off: card runs are not visible in claude.ai/code (WISSEL_REMOTE_CONTROL=0)",
   );
   console.log(
     injectMemory

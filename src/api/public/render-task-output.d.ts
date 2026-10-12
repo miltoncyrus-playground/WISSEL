@@ -3,9 +3,11 @@
 // directly by bun test. Kept in sync by hand; the .js file is the
 // source of truth for behavior.
 export interface TaskOutputRow {
-  kind: "text" | "thinking" | "tool-use" | "tool-result" | "result" | "raw";
+  kind: "text" | "thinking" | "tool-use" | "tool-result" | "result" | "remote" | "raw";
   text: string;
   ok?: boolean;
+  /** Only on a successful "remote" row: the claude.ai/code session URL. */
+  url?: string;
 }
 
 export function renderTaskOutputRows(rawLines: unknown[]): TaskOutputRow[];

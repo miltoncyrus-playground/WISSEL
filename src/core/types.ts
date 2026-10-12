@@ -705,6 +705,10 @@ export interface TaskResult {
   /** True when this run resumed an earlier session cut off by a session
    *  limit (`claude --resume`), instead of starting over. */
   resumed?: boolean;
+  /** The claude.ai/code URL of this run's Remote Control session, when
+   *  the run had Remote Control on and claude accepted it
+   *  (RunClaudeOptions.remoteControl). Stored in task_results. */
+  remoteSessionUrl?: string;
   /** Commands the reviewer says the next attempt needs and was refused
    *  (the optional `grants` field of its review-verdict block), as tool
    *  grant patterns like "Bash(bun run build:*)". Read by

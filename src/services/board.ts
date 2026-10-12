@@ -415,6 +415,7 @@ export class SqliteBoard implements Board {
         mcpCalls TEXT,
         permissionDenials TEXT,
         reviewGrants TEXT,
+        remoteSessionUrl TEXT,
         finishedAt TEXT
       );
     `);
@@ -447,6 +448,9 @@ export class SqliteBoard implements Board {
       // TaskResult.reviewGrants: crash recovery re-drives a recorded
       // verdict (resumeAfterReviewVerdict) and needs them too.
       "ALTER TABLE task_results ADD COLUMN reviewGrants TEXT;",
+      // TaskResult.remoteSessionUrl: the run's claude.ai Remote Control
+      // session, so a finished card still links to its conversation.
+      "ALTER TABLE task_results ADD COLUMN remoteSessionUrl TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -725,7 +729,7 @@ export class SqliteBoard implements Board {
   async recordResult(input: TaskResult): Promise<void> {
     const result: TaskResult = { ...input, finishedAt: input.finishedAt ?? new Date().toISOString() };
     this.db.run(
-      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback, mcpCalls, permissionDenials, reviewGrants, finishedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO task_results (taskId, agentId, ok, summary, artifacts, worktree, actualCost, harnessId, subagents, verdict, reviewFeedback, mcpCalls, permissionDenials, reviewGrants, remoteSessionUrl, finishedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         result.taskId,
         result.agentId,
@@ -741,6 +745,7 @@ export class SqliteBoard implements Board {
         result.mcpCalls ? JSON.stringify(result.mcpCalls) : null,
         result.permissionDenials?.length ? JSON.stringify(result.permissionDenials) : null,
         result.reviewGrants?.length ? JSON.stringify(result.reviewGrants) : null,
+        result.remoteSessionUrl ?? null,
         result.finishedAt!,
       ],
     );
@@ -767,6 +772,7 @@ export class SqliteBoard implements Board {
       mcpCalls: string | null;
       permissionDenials: string | null;
       reviewGrants: string | null;
+      remoteSessionUrl: string | null;
       finishedAt: string | null;
     } | null;
     if (!row) return undefined;
@@ -785,6 +791,7 @@ export class SqliteBoard implements Board {
       mcpCalls: row.mcpCalls ? (JSON.parse(row.mcpCalls) as TaskResult["mcpCalls"]) : undefined,
       permissionDenials: row.permissionDenials ? (JSON.parse(row.permissionDenials) as string[]) : undefined,
       ...(row.reviewGrants ? { reviewGrants: JSON.parse(row.reviewGrants) as string[] } : {}),
+      ...(row.remoteSessionUrl ? { remoteSessionUrl: row.remoteSessionUrl } : {}),
       finishedAt: row.finishedAt ?? undefined,
     };
   }

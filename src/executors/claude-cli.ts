@@ -205,6 +205,54 @@ export function runUsageFrom(parsed: { usage?: ClaudeResultJson["usage"]; num_tu
 export const RESUME_PROMPT =
   "You were stopped partway through this task by a usage limit, which has now reset. Carry on from where you stopped: your earlier work is still in the working directory. Don't redo finished steps. End with the same final output the task asked for.";
 
+/** request_id of the one control request runClaude sends when
+ *  `remoteControl` is on; parseRemoteControlResponse matches on it. */
+export const REMOTE_CONTROL_REQUEST_ID = "wissel-remote-control";
+
+/** The name a card's session shows under in claude.ai/code. */
+export function remoteControlSessionName(task: Pick<TaskCard, "title">): string {
+  const name = `wissel: ${task.title}`;
+  return name.length > 80 ? `${name.slice(0, 79)}…` : name;
+}
+
+/**
+ * stdin for a run with Remote Control on: `--input-format stream-json`
+ * lines, the `remote_control` control request first and the prompt as
+ * one user message after it. Confirmed live (claude 2.1.296,
+ * 2026-10-12): `claude -p` ignores `--remote-control` and the
+ * `remoteControlAtStartup` setting, but answers this request with a
+ * session_url and keeps the bridge connected for the whole run, also
+ * when stdin closes right after these two lines, with `--resume`, and
+ * on both harness accounts.
+ */
+export function remoteControlStdin(prompt: string, name: string): string {
+  const control = { type: "control_request", request_id: REMOTE_CONTROL_REQUEST_ID, request: { subtype: "remote_control", enabled: true, name } };
+  const user = { type: "user", message: { role: "user", content: prompt } };
+  return `${JSON.stringify(control)}\n${JSON.stringify(user)}\n`;
+}
+
+/**
+ * The answer to runClaude's remote_control request, from a run's
+ * stream-json stdout: the claude.ai session URL, the refusal message,
+ * or undefined when no answer arrived (the run died first).
+ */
+export function parseRemoteControlResponse(stdout: string): { sessionUrl: string } | { error: string } | undefined {
+  for (const line of stdout.split("\n")) {
+    if (!line.includes(REMOTE_CONTROL_REQUEST_ID)) continue;
+    let parsed: { type?: unknown; response?: { subtype?: unknown; request_id?: unknown; error?: unknown; response?: { session_url?: unknown } } };
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const r = parsed.response;
+    if (parsed.type !== "control_response" || r?.request_id !== REMOTE_CONTROL_REQUEST_ID) continue;
+    if (r.subtype === "success" && typeof r.response?.session_url === "string") return { sessionUrl: r.response.session_url };
+    return { error: typeof r.error === "string" && r.error ? r.error : "remote_control request was not accepted" };
+  }
+  return undefined;
+}
+
 /** claude's message when `--resume` names a session it can't find
  *  (another harness's config dir, or cleaned up). Confirmed live,
  *  claude 2.1.290: exit 1, "No conversation found with session ID: <id>". */
@@ -328,6 +376,17 @@ export interface RunClaudeOptions {
    *  to before this option existed. See TaskCard.extraAllowedDirs for
    *  the one caller that sets this. */
   addDir?: string[];
+  /** Turns on Remote Control for this run, so it can be watched and
+   *  steered from claude.ai/code or the Claude app (named per
+   *  remoteControlSessionName). Switches the run to `--input-format
+   *  stream-json` (see remoteControlStdin) and therefore to stream-json
+   *  output. The session URL lands on TaskResult.remoteSessionUrl and,
+   *  as the control_response line, in the live output. A refused
+   *  request never fails the run: it is logged and the run goes on.
+   *  Undefined/false keeps the plain-stdin command line. Threaded from
+   *  WISSEL_REMOTE_CONTROL by src/api/server.ts, never read from
+   *  process.env here. */
+  remoteControl?: boolean;
 }
 
 /**
@@ -353,6 +412,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     homeDir,
     mcpAccessPreApproved,
     addDir,
+    remoteControl,
   } = opts;
   const memory = injectMemory ? await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH) : undefined;
 
@@ -408,13 +468,16 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   // for it. An agent with no auto grants is completely unaffected:
   // streaming still only turns on when the caller passes onChunk,
   // exactly as before.
-  const useStreaming = Boolean(onChunk) || auto.length > 0;
+  // Remote Control needs stream-json input, which claude only accepts
+  // with stream-json output.
+  const useStreaming = Boolean(onChunk) || auto.length > 0 || Boolean(remoteControl);
   // `prompt` is deliberately never an argv element — see CommandRunner's
   // own `stdin` doc comment for the confirmed-live E2BIG this avoids.
   // Confirmed empirically: `claude -p` with no positional prompt argument
   // reads the prompt from stdin instead, producing the identical result.
   const cmd = ["claude", "-p", "--output-format", useStreaming ? "stream-json" : "json", "--permission-mode", permissionMode];
   if (useStreaming) cmd.push("--include-partial-messages", "--verbose");
+  if (remoteControl) cmd.push("--input-format", "stream-json");
   if (resumeId) cmd.push("--resume", resumeId);
   if (model) cmd.push("--model", model);
   if (mcpConfig) cmd.push("--mcp-config", JSON.stringify(mcpConfig), "--strict-mcp-config");
@@ -447,12 +510,19 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
 
   let cmdResult: CommandResult;
   try {
-    cmdResult = await runner(cmd, { cwd, env: scopedEnv, onChunk, stdin: prompt });
+    const stdin = remoteControl ? remoteControlStdin(prompt, remoteControlSessionName(task)) : prompt;
+    cmdResult = await runner(cmd, { cwd, env: scopedEnv, onChunk, stdin });
   } catch (e) {
     return fail(task, agent, `failed to spawn claude: ${(e as Error).message}`);
   }
 
   const { stdout, stderr, exitCode } = cmdResult;
+
+  const remote = remoteControl ? parseRemoteControlResponse(stdout) : undefined;
+  if (remoteControl && !(remote && "sessionUrl" in remote)) {
+    console.warn(`remote control: task ${task.id} ran without it: ${remote && "error" in remote ? remote.error : "no answer to the request"}`);
+  }
+  const remoteSessionUrl = remote && "sessionUrl" in remote ? remote.sessionUrl : undefined;
 
   // The session isn't there to resume (it lives in another harness's
   // config dir, or was cleaned up): run the task fresh, as before resume
@@ -509,12 +579,12 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
           summary: `claude session limit hit — retrying after ${resetAt.toISOString()}`,
           actualCost: parsed.total_cost_usd,
           retryAfter: resetAt.toISOString(),
-          ...runFacts(parsed, resumeId),
+          ...runFacts(parsed, resumeId, remoteSessionUrl),
           ...(mcpCalls ? { mcpCalls } : {}),
         };
       }
     }
-    return { ...fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`, parsed?.total_cost_usd, mcpCalls), ...runFacts(parsed, resumeId) };
+    return { ...fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`, parsed?.total_cost_usd, mcpCalls), ...runFacts(parsed, resumeId, remoteSessionUrl) };
   }
 
   if (!parsed) {
@@ -623,7 +693,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     // being null above.
     ...(verdict ? { verdict: verdict.verdict, reviewFeedback: verdict.feedback } : {}),
     ...(verdict?.grants?.length ? { reviewGrants: verdict.grants } : {}),
-    ...runFacts(parsed, resumeId),
+    ...runFacts(parsed, resumeId, remoteSessionUrl),
     ...(plan ? { subtaskPlan: plan } : {}),
     ...(handoff ? { pipelineHandoff: handoff } : {}),
     ...(mcpCalls ? { mcpCalls } : {}),
@@ -632,14 +702,19 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   };
 }
 
-/** Usage, session id and resumed flag for a run's TaskResult, each only
- *  when known. */
-function runFacts(parsed: ClaudeResultJson | undefined, resumeId: string | undefined): Pick<TaskResult, "usage" | "sessionId" | "resumed"> {
+/** Usage, session id, resumed flag and Remote Control URL for a run's
+ *  TaskResult, each only when known. */
+function runFacts(
+  parsed: ClaudeResultJson | undefined,
+  resumeId: string | undefined,
+  remoteSessionUrl: string | undefined,
+): Pick<TaskResult, "usage" | "sessionId" | "resumed" | "remoteSessionUrl"> {
   const usage = runUsageFrom(parsed);
   return {
     ...(usage ? { usage } : {}),
     ...(typeof parsed?.session_id === "string" && parsed.session_id ? { sessionId: parsed.session_id } : {}),
     ...(resumeId ? { resumed: true } : {}),
+    ...(remoteSessionUrl ? { remoteSessionUrl } : {}),
   };
 }
 

@@ -143,3 +143,40 @@ test("a finished task's drawer offers 'View output' (not 'Live output') and fetc
 
   expect(errors).toEqual([]);
 });
+
+// RunClaudeOptions.remoteControl: a card run's output starts with the
+// answer to wissel's remote_control request. The snapshot is served
+// from a route here because this fixture server never runs claude.
+test("a run with Remote Control shows a link to its claude.ai session in the output", async ({ page, request }) => {
+  const errors = collectPageErrors(page);
+  const title = `Remote run ${Date.now()}`;
+  const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo: "." } });
+  const task = await created.json();
+  await request.post(`/tasks/${task.id}/move`, { data: { status: "done" } });
+
+  const sessionUrl = "https://claude.ai/code/session_01E2ETEST";
+  await page.route(`**/tasks/${task.id}/output`, (route) =>
+    route.fulfill({
+      json: {
+        taskId: task.id,
+        lines: [
+          JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: "wissel-remote-control", response: { session_url: sessionUrl } } }),
+          JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "all done" }),
+        ],
+      },
+    }),
+  );
+
+  await page.goto("/board");
+  await page.locator("#kanbanBody").getByText(title).click();
+  await page.locator("#taskDrawer").getByRole("button", { name: "View output" }).click();
+
+  const link = page.locator("#loRows .lo-remote a");
+  await expect(link).toHaveText("Follow this run in claude.ai ↗");
+  await expect(link).toHaveAttribute("href", sessionUrl);
+  await expect(link).toHaveAttribute("target", "_blank");
+  await expect(link).toHaveAttribute("rel", "noopener");
+  await expect(page.locator("#loRows")).toContainText("all done");
+
+  expect(errors).toEqual([]);
+});

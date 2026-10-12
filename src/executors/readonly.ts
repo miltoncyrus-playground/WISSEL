@@ -49,6 +49,11 @@ export interface ReadOnlyExecutorOptions {
    *  through to runClaude — injectable so tests never touch the real
    *  $HOME. Omitted uses the real one (`~/.wissel/scratch/<taskId>`). */
   homeDir?: string;
+  /** Passed straight through to runClaude's option of the same name —
+   *  see its own doc comment. Off unless the caller (src/api/server.ts,
+   *  from WISSEL_REMOTE_CONTROL) turns it on; Ask's own executor never
+   *  does. */
+  remoteControl?: boolean;
 }
 
 /**
@@ -73,6 +78,7 @@ export class ReadOnlyExecutor implements Executor {
   private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
   private homeDir?: string;
+  private remoteControl?: boolean;
 
   constructor(opts: ReadOnlyExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
@@ -82,6 +88,7 @@ export class ReadOnlyExecutor implements Executor {
     this.mcpServers = opts.mcpServers;
     this.onChunk = opts.onChunk;
     this.homeDir = opts.homeDir;
+    this.remoteControl = opts.remoteControl;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -127,6 +134,7 @@ export class ReadOnlyExecutor implements Executor {
       mcpAccessPreApproved: task.mcpAccessOverride !== undefined,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
       homeDir: this.homeDir,
+      remoteControl: this.remoteControl,
     });
     return harness ? { ...result, harnessId: harness.id } : result;
   }

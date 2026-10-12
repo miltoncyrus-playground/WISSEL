@@ -31,6 +31,10 @@
 //     text/tool-use row.
 //   - "result": the terminal `type: "result"` line — the signal the run
 //     is over.
+//   - "remote": the answer to wissel's remote_control request
+//     (src/executors/claude-cli.ts, remoteControlStdin). On success the
+//     row carries `url`, the run's claude.ai/code session, only ever an
+//     https://claude.ai/ address; on refusal it is `ok: false`.
 //   - "raw": a compact fallback ("· <type>") for anything unrecognized,
 //     so nothing an agent emits is ever silently dropped.
 
@@ -74,6 +78,17 @@ function handleLine(line, blocks, rows) {
         rows.push({ kind: "tool-result", ok: !block.is_error, text: (block.is_error ? "✗ " : "✓ ") + truncate(toolResultPreview(block.content)) });
       }
     });
+    return;
+  }
+
+  if (line.type === "control_response" && line.response && line.response.request_id === "wissel-remote-control") {
+    var answer = line.response.response;
+    var url = answer && typeof answer.session_url === "string" ? answer.session_url : "";
+    if (line.response.subtype === "success" && url.indexOf("https://claude.ai/") === 0) {
+      rows.push({ kind: "remote", text: "Remote Control: " + url, url: url });
+    } else {
+      rows.push({ kind: "remote", ok: false, text: "✗ Remote Control unavailable: " + (line.response.error || "not accepted") });
+    }
     return;
   }
 
