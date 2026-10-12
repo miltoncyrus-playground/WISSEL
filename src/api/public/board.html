@@ -476,6 +476,36 @@
   .pl-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
   .pl-btn.primary:hover { opacity: 0.92; color: var(--on-accent); }
   .pl-empty { padding: 16px; font-size: 12.5px; color: var(--ink-muted); }
+  .pl-next { color: var(--accent); }
+  /* Schedules panel (docs/SDD-schedules.md §3.7), under Saved pipelines. */
+  #schedulesPanel { margin-top: 20px; }
+  .sc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .sc-row:last-child { border-bottom: none; }
+  .sc-main { flex: 1 1 220px; min-width: 0; }
+  .sc-when { flex: 0 1 300px; min-width: 0; display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--ink-muted); }
+  .sc-when .status-pill { margin-left: 4px; }
+  .sc-run-open { appearance: none; border: none; background: transparent; padding: 0; font: inherit; color: var(--accent); cursor: pointer; text-decoration: underline; }
+  .sc-actions { flex: none; display: flex; align-items: center; gap: 8px; }
+  .sc-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--ink-2); cursor: pointer; }
+  .sc-msg { flex-basis: 100%; margin: 0; font-size: 12px; }
+  .sc-msg.ok { color: var(--ink-2); }
+  /* The schedule picker (createSchedulePicker): the editor's and Repeat's. */
+  .sp-row { display: flex; flex-wrap: wrap; gap: 12px; }
+  .sp-days { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sp-days label { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; margin: 0; cursor: pointer; }
+  .sp-preview { margin: 0 0 16px; }
+  .sp-preview ol { margin: 6px 0 0; padding-left: 20px; font-size: 12.5px; color: var(--ink-1); }
+  .sp-cadence { margin: 0; font-size: 12.5px; font-weight: 600; color: var(--ink-1); }
+  .field input[type="time"], .field input[type="number"], .field input[type="datetime-local"] {
+    font: inherit; font-size: 13.5px; color: var(--ink-1); background: var(--page);
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+  }
+  .field input[type="number"] { width: 90px; }
+  .field .check-label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  /* A card's start time (TaskCard.notBefore, docs/SDD-schedules.md §4). */
+  .start-chip { font-size: 11px; font-weight: 700; color: var(--accent); background: var(--accent-wash); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+  .td-start-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .td-start-row input { font: inherit; font-size: 13px; color: var(--ink-1); background: var(--page); border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; }
   /* The editor page fills the main column below the top bar: 48px top
      bar + .main's 14px/32px vertical padding. The editor's own styles
      (pipeline-editor/src/index.css) read the tokens above. */
@@ -947,6 +977,15 @@
       </div>
       <div id="pipelinesList"><p class="pl-empty">Loading pipelines…</p></div>
     </section>
+    <!-- Schedules (docs/SDD-schedules.md §3.7): every pipeline and task
+         schedule. Add one from a pipeline's "Add schedule", or "+ New" →
+         Task with Repeat on. -->
+    <section class="panel-flush" id="schedulesPanel">
+      <div class="panel-head">
+        <h2>Schedules <span class="count" id="schedulesCount"></span></h2>
+      </div>
+      <div id="schedulesList"><p class="pl-empty">Loading schedules…</p></div>
+    </section>
   </section>
 
   <!-- The pipeline editor (docs/SDD-ui-cleanup.md §4.2): pipeline-editor/'s
@@ -1203,6 +1242,19 @@
       <p class="drawer-desc" id="tdDescription"></p>
     </section>
 
+    <!-- TaskCard.notBefore (docs/SDD-schedules.md §4): only while the
+         card waits in inbox/ready, unrouted (canHaveStartTime). -->
+    <section class="drawer-section" id="tdStartSection" hidden>
+      <p class="eyebrow">Start at</p>
+      <div class="td-start-row drawer-actions">
+        <input type="datetime-local" id="tdStartAt" aria-label="Start at">
+        <button type="button" id="tdStartSet">Set start</button>
+        <button type="button" id="tdStartClear">Clear</button>
+      </div>
+      <p class="field-hint" id="tdStartHint"></p>
+      <p class="field-error" id="tdStartError" hidden></p>
+    </section>
+
     <section class="drawer-section" id="tdEscalationSection" hidden>
       <p class="eyebrow">Escalation history</p>
       <div class="escalation-timeline" id="tdEscalation"></div>
@@ -1393,6 +1445,20 @@
           <p class="field-hint">This task waits until every card picked here is done.</p>
         </div>
 
+        <div class="field" id="ntStartAtField">
+          <label for="ntStartAt">Start at</label>
+          <input id="ntStartAt" type="datetime-local">
+          <p class="field-hint">Optional. Your time (<span id="ntStartAtZone"></span>). The card waits on the board and isn't routed or run before then.</p>
+        </div>
+
+        <!-- Repeat (docs/SDD-schedules.md §3.7): on, submit saves a task
+             schedule (POST /schedules, kind "task") instead of a card. -->
+        <div class="field">
+          <label class="check-label"><input type="checkbox" id="ntRepeat"> Repeat</label>
+          <p class="field-hint">On: creates this task on a schedule instead of once now. Follow-up of, Depends on and the router override don't carry over.</p>
+        </div>
+        <div id="ntRepeatFields" hidden></div>
+
         <details id="ntAdvanced">
           <summary>Advanced: override the router</summary>
           <p class="field-hint" style="margin: 0 0 8px;">Skip routing and assign an agent or skill directly. Recorded as a manual decision, and as an override against the preview above if they differ.</p>
@@ -1457,6 +1523,58 @@
   </div>
 </aside>
 
+<!-- Schedule editor (docs/SDD-schedules.md §3.7): a new schedule for a
+     pipeline (its row's "Add schedule"), or an existing one (Schedules
+     panel's Edit). The picker inside #sePicker is createSchedulePicker's. -->
+<div class="drawer-overlay" id="schedOverlay" hidden></div>
+<aside class="drawer new-drawer" id="schedDrawer" role="dialog" aria-modal="true" aria-labelledby="schedTitle" hidden>
+  <div class="drawer-head">
+    <h2 id="schedTitle">Schedule</h2>
+    <button type="button" class="drawer-close" id="schedClose" aria-label="Close">×</button>
+  </div>
+  <div class="drawer-body">
+    <form id="schedForm">
+      <p class="field-hint" id="seTarget" style="margin: 0 0 12px;"></p>
+      <div class="field">
+        <label for="seName">Name</label>
+        <input id="seName" type="text" autocomplete="off">
+      </div>
+      <div id="sePicker"></div>
+      <div class="field" id="seInputField">
+        <label for="seInput">Input</label>
+        <textarea id="seInput" rows="3"></textarea>
+        <p class="field-hint">Optional. Given to every entry step on each run.</p>
+      </div>
+      <div id="seTaskFields" hidden>
+        <div class="field">
+          <label for="seTaskTitle">Task title</label>
+          <input id="seTaskTitle" type="text" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="seTaskBody">Task description</label>
+          <textarea id="seTaskBody" rows="3"></textarea>
+        </div>
+      </div>
+      <div class="field">
+        <label for="seRepo">Repo</label>
+        <input id="seRepo" type="text" list="ntRepoList" autocomplete="off">
+        <p class="field-hint" id="seRepoHint">Needed when a step can write files or run commands; leave empty for an all read-only pipeline.</p>
+      </div>
+      <div class="field">
+        <label for="seCatchUp">Catch up (hours)</label>
+        <input id="seCatchUp" type="number" min="0" step="0.5">
+        <p class="field-hint">If the server was down at run time, how late it may still run once. 0 = never catch up.</p>
+      </div>
+      <div class="form-actions">
+        <span id="seStatus" class="form-status" hidden></span>
+        <span id="seError" class="field-error" hidden></span>
+        <button type="submit" id="seSave" disabled>Save schedule</button>
+      </div>
+    </form>
+  </div>
+</aside>
+<datalist id="schedTzList"></datalist>
+
 <script src="/render-task-output.js"></script>
 <script src="/render-merge-health.js"></script>
 <script src="/render-harness-preference.js"></script>
@@ -1467,9 +1585,16 @@
 <script src="/board-runs.js"></script>
 <script src="/board-run-canvas.js"></script>
 <script src="/board-news.js"></script>
+<script src="/board-schedules.js"></script>
 <script>
 (function () {
   "use strict";
+
+  // The browser's IANA zone: what Start at's datetime-local means, what
+  // every schedule time shows in, and the editor's preselected zone
+  // (docs/SDD-schedules.md §3.3). board-schedules.js takes it as an
+  // argument, never reads it itself.
+  var BROWSER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
   // Status labels, colours and lanes all come from one table,
   // STATUS_DISPLAY in board-lanes.js (statusLabel, statusColor,
@@ -1613,7 +1738,58 @@
 
     renderEscalationTimeline(task);
     renderMcpApprovalSection(task);
+    renderStartSection(task);
   }
+
+  // Start at (TaskCard.notBefore, docs/SDD-schedules.md §4): set, change
+  // or clear through POST /tasks/:id/not-before. The field is refilled
+  // only when the card or its start time changes, so an SSE refresh
+  // never wipes what you're typing.
+  var tdStartFilledFor = null;
+
+  function renderStartSection(task) {
+    var section = document.getElementById("tdStartSection");
+    if (!canHaveStartTime(task)) { section.hidden = true; tdStartFilledFor = null; return; }
+    section.hidden = false;
+    var key = task.id + "|" + (task.notBefore || "");
+    if (tdStartFilledFor !== key) {
+      tdStartFilledFor = key;
+      document.getElementById("tdStartAt").value = task.notBefore ? isoToLocalDateTime(task.notBefore, BROWSER_TZ) : "";
+      document.getElementById("tdStartError").hidden = true;
+    }
+    document.getElementById("tdStartClear").disabled = !task.notBefore;
+    document.getElementById("tdStartHint").textContent = task.notBefore
+      ? "Waits until " + formatWhen(task.notBefore, new Date(), BROWSER_TZ) + " (" + BROWSER_TZ + "). Run now starts it anyway."
+      : "Not set: it starts as soon as it's routed. Times are in " + BROWSER_TZ + ".";
+  }
+
+  function postNotBefore(notBefore) {
+    var errorEl = document.getElementById("tdStartError");
+    errorEl.hidden = true;
+    if (!drawerTaskId) return;
+    fetch("/tasks/" + encodeURIComponent(drawerTaskId) + "/not-before", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ notBefore: notBefore }),
+    }).then(function (r) {
+      if (!r.ok) return r.json().catch(function () { return {}; }).then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return refetchTasks();
+    }).catch(function (err) {
+      errorEl.textContent = err.message;
+      errorEl.hidden = false;
+    });
+  }
+
+  document.getElementById("tdStartSet").addEventListener("click", function () {
+    var iso = localDateTimeToIso(document.getElementById("tdStartAt").value, BROWSER_TZ);
+    if (!iso) {
+      var errorEl = document.getElementById("tdStartError");
+      errorEl.textContent = "Pick a date and time first.";
+      errorEl.hidden = false;
+      return;
+    }
+    postNotBefore(iso);
+  });
+  document.getElementById("tdStartClear").addEventListener("click", function () { postNotBefore(null); });
 
   // TaskCard.escalationContext (see orchestrator.ts's buildEscalationContext)
   // is one plain string, every round joined by a blank line: "Attempt 1:
@@ -3665,6 +3841,14 @@
     tag.appendChild(tagDot);
     tag.appendChild(document.createTextNode(label));
     ka.appendChild(tag);
+    // A person-set start time (TaskCard.notBefore): "Starts 23:00", with
+    // the date when it isn't today. Gone once the card is picked up.
+    var starts = startsChipText(t, new Date(), BROWSER_TZ);
+    if (starts) {
+      var startChip = document.createElement("span"); startChip.className = "start-chip"; startChip.textContent = starts;
+      startChip.title = "Waits until " + new Date(t.notBefore).toLocaleString();
+      ka.appendChild(startChip);
+    }
     var kindDot = document.createElement("span"); kindDot.className = "kind-dot";
     kindDot.style.background = agent ? (agent.kind === "skill" ? "var(--skill)" : "var(--accent)") : "var(--ink-muted)";
     ka.appendChild(kindDot);
@@ -5026,6 +5210,8 @@
     renderOverrideGrid();
     document.getElementById("ntHarness").value = "";
     renderNtModelOptions();
+    document.getElementById("ntStartAt").value = "";
+    setNtRepeat(false);
     scheduleNtPreview();
     updateSubmitEnabled();
   }
@@ -5039,7 +5225,8 @@
     var title = document.getElementById("ntTitle").value.trim();
     var body = document.getElementById("ntBody").value.trim();
     var repo = document.getElementById("ntRepo").value.trim();
-    document.getElementById("ntSubmit").disabled = !(title && body && (repo || !ntRepoRequired()));
+    var cadenceOk = !ntRepeatOn() || (ntRepeatPicker && ntRepeatPicker.valid());
+    document.getElementById("ntSubmit").disabled = !(title && body && (repo || !ntRepoRequired()) && cadenceOk);
   }
 
   fetch("/version").then(function (r) { return r.json(); }).then(function (v) {
@@ -5081,7 +5268,12 @@
     if (!pipelineDefsLoading) loadPipelineDefs();
 
     var source = new EventSource("/events");
-    source.onmessage = function () { refetchTasks(); };
+    source.onmessage = function () {
+      refetchTasks();
+      // A fire changes a schedule's last run and next run; the panel
+      // only shows on the Pipelines page.
+      if (currentRoute === "pipelines") scheduleSchedulesReload();
+    };
   }).catch(function (err) {
     document.getElementById("taskCount").textContent = "failed to load: " + err.message;
   });
@@ -5134,18 +5326,34 @@
       return;
     }
 
+    var parentTaskId = document.getElementById("ntParentTask").value;
+    var harnessOverride = document.getElementById("ntHarness").value;
+    var model = document.getElementById("ntModel").value;
+
+    if (ntRepeatOn()) {
+      submitRepeatSchedule({ title: title, body: taskBody, repo: repo, labels: ntLabels.slice(), harnessOverride: harnessOverride, model: model });
+      return;
+    }
+
+    // Start at: the browser zone's wall clock, sent as UTC.
+    var startAtValue = document.getElementById("ntStartAt").value;
+    var notBefore = startAtValue ? localDateTimeToIso(startAtValue, BROWSER_TZ) : null;
+    if (startAtValue && !notBefore) {
+      errorEl.textContent = "Start at isn't a valid date and time.";
+      errorEl.hidden = false;
+      return;
+    }
+
     submitBtn.disabled = true;
     statusEl.hidden = false;
     statusEl.textContent = "creating…";
 
-    var parentTaskId = document.getElementById("ntParentTask").value;
-    var harnessOverride = document.getElementById("ntHarness").value;
-    var model = document.getElementById("ntModel").value;
     var payload = {
       title: title, body: taskBody, labels: ntLabels.slice(), repo: repo || undefined, dependsOn: dependsSearch.value(),
       parentTaskId: parentTaskId || undefined,
       harnessOverride: harnessOverride || undefined,
       model: model || undefined,
+      notBefore: notBefore || undefined,
     };
 
     fetch("/tasks", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) })
@@ -5430,6 +5638,7 @@
 
   function loadPipelinesPage() {
     var seq = ++pagePipelinesSeq;
+    loadSchedules();
     return fetch("/pipelines").then(function (r) {
       if (!r.ok) throw new Error("GET /pipelines failed: HTTP " + r.status);
       return r.json();
@@ -5454,6 +5663,7 @@
   }
 
   function renderPipelinesPage() {
+    renderSchedulesPanel();
     var wrap = document.getElementById("pipelinesList");
     var count = document.getElementById("pipelinesCount");
     if (pagePipelinesError) {
@@ -5463,6 +5673,8 @@
     }
     if (pagePipelines === null) return;
     var rows = pipelineRows(pagePipelines, tasks);
+    var nextByPipeline = nextRunsByPipeline(schedulesList);
+    var now = new Date();
     count.textContent = String(rows.length);
     if (!rows.length) {
       wrap.replaceChildren(plEmpty("No saved pipelines yet. New pipeline opens the editor to build one."));
@@ -5490,6 +5702,14 @@
       steps.className = "fleet-desc pl-steps";
       steps.textContent = formatStepCount(row.stepCount);
       main.appendChild(steps);
+      // Its soonest enabled schedule (nextRunsByPipeline, board-schedules.js).
+      var nextSchedule = nextByPipeline[p.id];
+      if (nextSchedule) {
+        var next = document.createElement("div");
+        next.className = "fleet-desc pl-next";
+        next.textContent = "Next run " + formatWhen(nextSchedule.nextRunAt, now, BROWSER_TZ) + " · " + nextSchedule.name;
+        main.appendChild(next);
+      }
       el.appendChild(main);
 
       // Last run: its outcome and input, opening the root card's
@@ -5535,9 +5755,548 @@
       edit.textContent = "Edit";
       edit.setAttribute("aria-label", "Edit " + p.name);
       actions.appendChild(edit);
+      var addSchedule = document.createElement("button");
+      addSchedule.type = "button";
+      addSchedule.className = "pl-btn";
+      addSchedule.textContent = "Add schedule";
+      addSchedule.setAttribute("aria-label", "Add schedule for " + p.name);
+      addSchedule.addEventListener("click", function () {
+        openScheduleEditor({ pipeline: p, repo: row.lastRun && row.lastRun.repo });
+      });
+      actions.appendChild(addSchedule);
       el.appendChild(actions);
       return el;
     }));
+  }
+
+  // --- Schedules (docs/SDD-schedules.md §3.7) --------------------------
+  //
+  // The Schedules panel (under Saved pipelines), the schedule editor
+  // drawer, and the New task form's Repeat. What each one shows and
+  // sends comes from board-schedules.js; this is fetch and DOM only.
+  // `null`: not loaded yet. Reloaded on every Pipelines visit, after
+  // every schedule action, and on SSE while the page shows.
+  var schedulesList = null;
+  var schedulesError = null;
+  var schedulesSeq = 0;
+  var schedulesReloadTimer = null;
+  // scheduleId -> { text, error }: the last action's outcome on that row
+  // (Run now's 409 included), kept across the reload the action triggers.
+  var scheduleMessages = Object.create(null);
+
+  function loadSchedules() {
+    var seq = ++schedulesSeq;
+    return fetch("/schedules").then(function (r) {
+      if (!r.ok) throw new Error("GET /schedules failed: HTTP " + r.status);
+      return r.json();
+    }).then(function (list) {
+      if (seq !== schedulesSeq) return;
+      schedulesList = list || [];
+      schedulesError = null;
+      renderPipelinesPage();
+    }).catch(function (err) {
+      if (seq !== schedulesSeq) return;
+      schedulesError = err.message;
+      renderSchedulesPanel();
+    });
+  }
+
+  // SSE events come in bursts while a run moves: one GET per burst.
+  function scheduleSchedulesReload() {
+    if (schedulesReloadTimer) return;
+    schedulesReloadTimer = setTimeout(function () { schedulesReloadTimer = null; loadSchedules(); }, 300);
+  }
+
+  // The API's refusals carry a plain `error`; show it as is.
+  function scheduleRequest(method, path, body) {
+    var init = { method: method };
+    if (body !== undefined) { init.headers = { "content-type": "application/json" }; init.body = JSON.stringify(body); }
+    return fetch(path, init).then(function (r) {
+      if (!r.ok) return r.json().catch(function () { return {}; }).then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      return r.status === 204 ? null : r.json();
+    });
+  }
+
+  function textEl(tag, className, text) {
+    var e = document.createElement(tag);
+    if (className) e.className = className;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function renderSchedulesPanel() {
+    var wrap = document.getElementById("schedulesList");
+    var count = document.getElementById("schedulesCount");
+    if (schedulesError) {
+      wrap.replaceChildren(plEmpty("Failed to load: " + schedulesError));
+      count.textContent = "";
+      return;
+    }
+    if (schedulesList === null) return;
+    var rows = scheduleRows(schedulesList, pagePipelines, new Date(), BROWSER_TZ);
+    count.textContent = String(rows.length);
+    if (!rows.length) {
+      wrap.replaceChildren(plEmpty("No schedules yet. Add one with a pipeline's Add schedule, or + New → Task with Repeat on."));
+      return;
+    }
+    wrap.replaceChildren.apply(wrap, rows.map(buildScheduleRow));
+  }
+
+  function buildScheduleRow(row) {
+    var s = row.schedule;
+    var el = textEl("div", "sc-row");
+    el.setAttribute("data-schedule-id", s.id);
+
+    var main = textEl("div", "sc-main");
+    main.appendChild(textEl("div", "fleet-id sc-name", s.name));
+    main.appendChild(textEl("div", "fleet-desc sc-target", row.target));
+    main.appendChild(textEl("div", "fleet-desc sc-cadence", row.cadence + " · " + row.timezone));
+    el.appendChild(main);
+
+    var when = textEl("div", "sc-when");
+    var next = textEl("div", "", "Next: ");
+    next.appendChild(textEl("span", "sc-next", row.next));
+    when.appendChild(next);
+    var last = textEl("div", "sc-last", "Last: " + (row.last ? row.last.when + " · " + row.last.outcome : "never run"));
+    if (row.last && row.last.runId) {
+      last.appendChild(document.createTextNode(" · "));
+      if (findTask(row.last.runId)) {
+        var open = textEl("button", "sc-run-open", "Open run");
+        open.type = "button";
+        open.setAttribute("aria-label", "Open the last run of " + s.name);
+        open.addEventListener("click", function () { openTaskDrawer(row.last.runId); });
+        last.appendChild(open);
+      } else {
+        last.appendChild(textEl("span", "mono", row.last.runId));
+      }
+      if (row.last.runStatus) last.appendChild(statusPill(row.last.runStatus));
+    }
+    when.appendChild(last);
+    el.appendChild(when);
+
+    var actions = textEl("div", "sc-actions");
+    var toggle = textEl("label", "sc-toggle");
+    var box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "sc-enabled";
+    box.checked = row.enabled;
+    box.setAttribute("aria-label", "Enabled: " + s.name);
+    box.addEventListener("change", function () { setScheduleEnabled(s, box.checked, box); });
+    toggle.appendChild(box);
+    toggle.appendChild(document.createTextNode("Enabled"));
+    actions.appendChild(toggle);
+    [
+      ["Run now", "pl-btn primary", "Run now: " + s.name, function () { runScheduleNowFromRow(s); }],
+      ["Edit", "pl-btn", "Edit schedule " + s.name, function () { openScheduleEditor({ schedule: s }); }],
+      ["Delete", "pl-btn", "Delete schedule " + s.name, function () { deleteScheduleRow(s); }],
+    ].forEach(function (a) {
+      var btn = textEl("button", a[1], a[0]);
+      btn.type = "button";
+      btn.setAttribute("aria-label", a[2]);
+      btn.addEventListener("click", a[3]);
+      actions.appendChild(btn);
+    });
+    el.appendChild(actions);
+
+    var msg = scheduleMessages[s.id];
+    if (msg) {
+      var m = textEl("p", "sc-msg " + (msg.error ? "field-error" : "ok"), msg.text);
+      m.setAttribute("role", msg.error ? "alert" : "status");
+      el.appendChild(m);
+    }
+    return el;
+  }
+
+  function setScheduleEnabled(s, enabled, box) {
+    box.disabled = true;
+    delete scheduleMessages[s.id];
+    scheduleRequest("PATCH", "/schedules/" + encodeURIComponent(s.id), { enabled: enabled }).catch(function (err) {
+      scheduleMessages[s.id] = { text: err.message, error: true };
+    }).then(loadSchedules);
+  }
+
+  // 409 while the last run is still going: the server's message says so.
+  function runScheduleNowFromRow(s) {
+    delete scheduleMessages[s.id];
+    scheduleRequest("POST", "/schedules/" + encodeURIComponent(s.id) + "/run-now").then(function (res) {
+      scheduleMessages[s.id] = { text: "Started: run " + res.runId + ". It's on the board.", error: false };
+      refetchTasks();
+    }).catch(function (err) {
+      scheduleMessages[s.id] = { text: err.message, error: true };
+    }).then(loadSchedules);
+  }
+
+  function deleteScheduleRow(s) {
+    if (!window.confirm("Delete the schedule “" + s.name + "”? Its past run cards stay on the board.")) return;
+    scheduleRequest("DELETE", "/schedules/" + encodeURIComponent(s.id)).then(function () {
+      delete scheduleMessages[s.id];
+    }).catch(function (err) {
+      scheduleMessages[s.id] = { text: err.message, error: true };
+    }).then(loadSchedules);
+  }
+
+  // Every IANA zone the browser knows, for the picker's Timezone field.
+  var schedTzListFilled = false;
+  function fillTimezoneList() {
+    if (schedTzListFilled) return;
+    schedTzListFilled = true;
+    var zones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [BROWSER_TZ];
+    var list = document.getElementById("schedTzList");
+    zones.forEach(function (z) {
+      var opt = document.createElement("option");
+      opt.value = z;
+      list.appendChild(opt);
+    });
+  }
+
+  // The schedule picker, built into `host` with ids `<prefix>Mode`,
+  // `<prefix>Time`, `<prefix>Hours`, `<prefix>Tz`, `<prefix>Cron`,
+  // `<prefix>Preview` and `<prefix>PreviewError`: the editor's ("se")
+  // and Repeat's ("nr"). The picker writes the cron (buildCron); typing
+  // a cron moves the picker (parseCron) or switches it to Advanced. Each
+  // change asks GET /schedules/preview, debounced, and only the newest
+  // answer counts. `onChange` runs whenever valid() may have changed.
+  function createSchedulePicker(prefix, host, onChange) {
+    fillTimezoneList();
+    function h(tag, attrs, kids) {
+      var e = document.createElement(tag);
+      Object.keys(attrs || {}).forEach(function (k) {
+        if (k === "text") e.textContent = attrs[k];
+        else if (k === "hidden") e.hidden = !!attrs[k];
+        else e.setAttribute(k, attrs[k]);
+      });
+      (kids || []).forEach(function (c) { e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+      return e;
+    }
+    var mode = h("select", { id: prefix + "Mode" }, SCHEDULE_MODES.map(function (m) { return h("option", { value: m.mode, text: m.label }); }));
+    var time = h("input", { id: prefix + "Time", type: "time" });
+    var timeLabel = h("label", { for: prefix + "Time", text: "Time" });
+    var timeField = h("div", {}, [timeLabel, time]);
+    var hours = h("input", { id: prefix + "Hours", type: "number", min: "1", max: "23", step: "1" });
+    var hoursField = h("div", { hidden: true }, [h("label", { for: prefix + "Hours", text: "Every N hours" }), hours]);
+    var dayBoxes = SCHEDULE_DAYS.map(function (d) { return h("input", { type: "checkbox", "data-day": String(d.day), "aria-label": d.label }); });
+    var daysField = h("div", { class: "field", id: prefix + "DaysField", hidden: true }, [
+      h("label", { text: "Days" }),
+      h("div", { class: "sp-days", role: "group", "aria-label": "Days" }, SCHEDULE_DAYS.map(function (d, i) { return h("label", {}, [dayBoxes[i], d.label]); })),
+    ]);
+    var tz = h("input", { id: prefix + "Tz", type: "text", list: "schedTzList", autocomplete: "off", spellcheck: "false" });
+    var cron = h("input", { id: prefix + "Cron", type: "text", class: "mono", autocomplete: "off", spellcheck: "false" });
+    var advanced = h("details", { id: prefix + "Advanced" }, [
+      h("summary", { text: "Advanced: cron" }),
+      h("div", { class: "field" }, [
+        h("label", { for: prefix + "Cron", text: "Cron (minute hour day-of-month month day-of-week)" }),
+        cron,
+        h("p", { class: "field-hint", text: "5 fields, read in the timezone above. Runs at least 5 minutes apart." }),
+      ]),
+    ]);
+    var cadence = h("p", { class: "sp-cadence", id: prefix + "Cadence" });
+    var list = h("ol", { id: prefix + "Preview" });
+    var err = h("p", { class: "field-error", id: prefix + "PreviewError", hidden: true });
+    host.replaceChildren(
+      h("div", { class: "field" }, [h("label", { for: prefix + "Mode", text: "Repeats" }), mode]),
+      h("div", { class: "field sp-row" }, [timeField, hoursField]),
+      daysField,
+      h("div", { class: "field" }, [
+        h("label", { for: prefix + "Tz", text: "Timezone" }),
+        tz,
+        h("p", { class: "field-hint", text: "Your browser's zone is " + BROWSER_TZ + "." }),
+      ]),
+      advanced,
+      h("div", { class: "panel-inset sp-preview", "aria-live": "polite" }, [
+        h("p", { class: "eyebrow", text: "Next runs, your time (" + BROWSER_TZ + ")" }), cadence, list, err,
+      ]),
+    );
+
+    var state = { valid: false, pending: false, cron: "", timezone: "", cadence: "" };
+    var seq = 0;
+    var timer = null;
+
+    function showFields() {
+      var m = mode.value;
+      timeField.hidden = m === "custom";
+      timeLabel.textContent = m === "hours" ? "Minutes past the hour (the hour is ignored)" : "Time";
+      hoursField.hidden = m !== "hours";
+      daysField.hidden = m !== "weekly";
+      if (m === "custom") advanced.open = true;
+    }
+
+    function applyPicker(p) {
+      mode.value = p.mode;
+      time.value = p.time;
+      hours.value = String(p.everyHours);
+      dayBoxes.forEach(function (b) { b.checked = p.days.indexOf(Number(b.getAttribute("data-day"))) !== -1; });
+    }
+
+    function invalid(message) {
+      seq++;
+      clearTimeout(timer);
+      state = { valid: false, pending: false, cron: cron.value.trim(), timezone: tz.value.trim(), cadence: "" };
+      cadence.textContent = "";
+      list.replaceChildren();
+      err.textContent = message;
+      err.hidden = false;
+      onChange();
+    }
+
+    function requestPreview() {
+      var c = cron.value.trim();
+      var z = tz.value.trim();
+      if (!c) { invalid("Pick a cadence, or type a cron under Advanced."); return; }
+      if (!z) { invalid("Pick a timezone."); return; }
+      var mySeq = ++seq;
+      state = { valid: false, pending: true, cron: c, timezone: z, cadence: "" };
+      onChange();
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        fetch("/schedules/preview?cron=" + encodeURIComponent(c) + "&timezone=" + encodeURIComponent(z)).then(function (r) {
+          if (!r.ok) throw new Error("GET /schedules/preview failed: HTTP " + r.status);
+          return r.json();
+        }).then(function (p) {
+          if (mySeq !== seq) return;
+          var view = previewView(p, new Date(), BROWSER_TZ, 3);
+          state = { valid: view.valid, pending: false, cron: c, timezone: z, cadence: view.cadence };
+          cadence.textContent = view.valid ? view.cadence + (z === BROWSER_TZ ? "" : " in " + z) : "";
+          list.replaceChildren.apply(list, view.lines.map(function (line) { return h("li", { text: line }); }));
+          err.textContent = view.error || "";
+          err.hidden = view.valid;
+          onChange();
+        }).catch(function (e) {
+          if (mySeq === seq) invalid(e.message);
+        });
+      }, 250);
+    }
+
+    function fromPicker() {
+      showFields();
+      if (mode.value === "custom") { requestPreview(); return; }
+      var built = buildCron({
+        mode: mode.value, time: time.value, everyHours: Number(hours.value),
+        days: dayBoxes.filter(function (b) { return b.checked; }).map(function (b) { return Number(b.getAttribute("data-day")); }),
+      });
+      if (!built.ok) { invalid(built.error); return; }
+      cron.value = built.cron;
+      requestPreview();
+    }
+
+    function fromCron() {
+      var p = parseCron(cron.value);
+      if (p) applyPicker(p);
+      else mode.value = "custom";
+      showFields();
+      requestPreview();
+    }
+
+    mode.addEventListener("change", fromPicker);
+    [time, hours].forEach(function (input) { input.addEventListener("input", fromPicker); });
+    dayBoxes.forEach(function (b) { b.addEventListener("change", fromPicker); });
+    tz.addEventListener("input", requestPreview);
+    cron.addEventListener("input", fromCron);
+
+    return {
+      // An existing schedule's cadence; a cron the picker can't show
+      // opens on Advanced.
+      set: function (c, z) {
+        cron.value = c || "";
+        tz.value = z || BROWSER_TZ;
+        var p = parseCron(cron.value);
+        if (p) applyPicker(p);
+        else mode.value = "custom";
+        advanced.open = !p;
+        showFields();
+        requestPreview();
+      },
+      // A fresh cadence: every day at 09:00 in the browser's zone.
+      reset: function () {
+        applyPicker({ mode: "daily", time: "09:00", days: [], everyHours: 2 });
+        tz.value = BROWSER_TZ;
+        advanced.open = false;
+        fromPicker();
+      },
+      valid: function () { return state.valid && !state.pending && state.cron === cron.value.trim() && state.timezone === tz.value.trim(); },
+      cron: function () { return state.cron; },
+      timezone: function () { return state.timezone; },
+      cadence: function () { return state.cadence; },
+    };
+  }
+
+  // The editor drawer. `opts.schedule` edits that schedule; otherwise
+  // `opts.pipeline` (and the repo of its last run, `opts.repo`) starts a
+  // new one for it. A new schedule's name follows the cadence until you
+  // type one.
+  var schedEditor = { open: false, schedule: null, pipeline: null, nameTouched: false };
+  var seInFlight = false;
+  var sePicker = createSchedulePicker("se", document.getElementById("sePicker"), function () {
+    if (schedEditor.open && !schedEditor.schedule && !schedEditor.nameTouched && sePicker && sePicker.valid()) {
+      document.getElementById("seName").value = defaultScheduleName(schedEditor.pipeline.name, sePicker.cadence());
+    }
+    updateScheduleSaveEnabled();
+  });
+
+  function updateScheduleSaveEnabled() {
+    var ready = sePicker && sePicker.valid() && document.getElementById("seName").value.trim();
+    document.getElementById("seSave").disabled = seInFlight || !ready;
+  }
+
+  function openScheduleEditor(opts) {
+    var s = opts.schedule || null;
+    var pipeline = opts.pipeline || null;
+    if (s && s.kind === "pipeline") {
+      pipeline = (pagePipelines || []).filter(function (p) { return p.id === s.pipelineId; })[0] || { id: s.pipelineId, name: s.pipelineId };
+    }
+    var kind = s ? s.kind : "pipeline";
+    var template = (s && s.taskTemplate) || {};
+    schedEditor = { open: true, schedule: s, pipeline: pipeline, kind: kind, template: template, nameTouched: false };
+
+    document.getElementById("schedTitle").textContent = s ? "Edit schedule" : "Add schedule";
+    document.getElementById("seTarget").textContent = kind === "task"
+      ? "Creates the task “" + (template.title || "") + "” each time it runs."
+      : "Runs the pipeline “" + pipeline.name + "”.";
+    document.getElementById("seName").value = s ? s.name : pipeline.name;
+    document.getElementById("seInputField").hidden = kind === "task";
+    document.getElementById("seTaskFields").hidden = kind !== "task";
+    document.getElementById("seInput").value = (s && s.input) || "";
+    document.getElementById("seTaskTitle").value = template.title || "";
+    document.getElementById("seTaskBody").value = template.body || "";
+    document.getElementById("seRepo").value = s ? (kind === "task" ? template.repo || s.repo || "" : s.repo || "") : opts.repo || "";
+    document.getElementById("seRepoHint").textContent = kind === "task"
+      ? "The created task's repo, under the same rules as a new task."
+      : "Needed when a step can write files or run commands; leave empty for an all read-only pipeline.";
+    document.getElementById("seCatchUp").value = s ? String(s.catchUpHours) : "";
+    document.getElementById("seCatchUp").placeholder = s ? "" : "default";
+    document.getElementById("seError").hidden = true;
+    document.getElementById("seStatus").hidden = true;
+    if (s) sePicker.set(s.cron, s.timezone);
+    else sePicker.reset();
+    updateScheduleSaveEnabled();
+
+    document.getElementById("schedOverlay").hidden = false;
+    document.getElementById("schedDrawer").hidden = false;
+    requestAnimationFrame(function () {
+      document.getElementById("schedOverlay").classList.add("open");
+      document.getElementById("schedDrawer").classList.add("open");
+    });
+    document.getElementById("seName").focus();
+  }
+
+  function closeScheduleEditor() {
+    if (!schedEditor.open) return;
+    schedEditor.open = false;
+    document.getElementById("schedOverlay").classList.remove("open");
+    document.getElementById("schedDrawer").classList.remove("open");
+    setTimeout(function () {
+      if (schedEditor.open) return;
+      document.getElementById("schedOverlay").hidden = true;
+      document.getElementById("schedDrawer").hidden = true;
+    }, 180);
+  }
+
+  document.getElementById("schedClose").addEventListener("click", closeScheduleEditor);
+  document.getElementById("schedOverlay").addEventListener("click", closeScheduleEditor);
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && schedEditor.open) closeScheduleEditor();
+  });
+  document.getElementById("seName").addEventListener("input", function () {
+    schedEditor.nameTouched = true;
+    updateScheduleSaveEnabled();
+  });
+
+  document.getElementById("schedForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var s = schedEditor.schedule;
+    var errorEl = document.getElementById("seError");
+    var statusEl = document.getElementById("seStatus");
+    errorEl.hidden = true;
+    if (!sePicker.valid()) return;
+    var built = scheduleBody({
+      kind: schedEditor.kind,
+      name: document.getElementById("seName").value,
+      pipelineId: schedEditor.pipeline && schedEditor.pipeline.id,
+      input: document.getElementById("seInput").value,
+      repo: document.getElementById("seRepo").value,
+      title: document.getElementById("seTaskTitle").value,
+      body: document.getElementById("seTaskBody").value,
+      template: schedEditor.template,
+      cron: sePicker.cron(),
+      timezone: sePicker.timezone(),
+      catchUpHours: document.getElementById("seCatchUp").value,
+    }, s ? "edit" : "create");
+    if (!built.ok) { errorEl.textContent = built.error; errorEl.hidden = false; return; }
+
+    seInFlight = true;
+    updateScheduleSaveEnabled();
+    statusEl.textContent = "saving…";
+    statusEl.hidden = false;
+    scheduleRequest(s ? "PATCH" : "POST", s ? "/schedules/" + encodeURIComponent(s.id) : "/schedules", built.body).then(function (saved) {
+      scheduleMessages[saved.id] = {
+        text: "Saved: " + saved.cadence + (saved.nextRunAt ? ", next run " + formatWhen(saved.nextRunAt, new Date(), BROWSER_TZ) : "") + ".",
+        error: false,
+      };
+      closeScheduleEditor();
+      return loadSchedules();
+    }).catch(function (err) {
+      errorEl.textContent = err.message;
+      errorEl.hidden = false;
+    }).finally(function () {
+      seInFlight = false;
+      statusEl.hidden = true;
+      updateScheduleSaveEnabled();
+    });
+  });
+
+  // New task's Repeat: on, the form saves a task schedule whose template
+  // is the form's title, description, labels, repo, harness and model.
+  var ntRepeatPicker = createSchedulePicker("nr", document.getElementById("ntRepeatFields"), updateSubmitEnabled);
+  document.getElementById("ntStartAtZone").textContent = BROWSER_TZ;
+
+  function ntRepeatOn() {
+    return document.getElementById("ntRepeat").checked;
+  }
+
+  function setNtRepeat(on) {
+    var turningOn = on && document.getElementById("ntRepeatFields").hidden;
+    document.getElementById("ntRepeat").checked = on;
+    document.getElementById("ntRepeatFields").hidden = !on;
+    document.getElementById("ntStartAtField").hidden = on;
+    document.getElementById("ntSubmit").textContent = on ? "Create schedule" : "Create task";
+    if (turningOn && ntRepeatPicker) ntRepeatPicker.reset();
+    updateSubmitEnabled();
+  }
+
+  document.getElementById("ntRepeat").addEventListener("change", function (ev) { setNtRepeat(ev.target.checked); });
+
+  function submitRepeatSchedule(f) {
+    var errorEl = document.getElementById("ntError");
+    var statusEl = document.getElementById("ntStatus");
+    var submitBtn = document.getElementById("ntSubmit");
+    if (!ntRepeatPicker.valid()) {
+      errorEl.textContent = "Fix the schedule first.";
+      errorEl.hidden = false;
+      return;
+    }
+    var built = scheduleBody({
+      kind: "task",
+      name: defaultScheduleName(f.title, ntRepeatPicker.cadence()),
+      title: f.title, body: f.body, repo: f.repo,
+      template: { labels: f.labels, harnessOverride: f.harnessOverride, model: f.model },
+      cron: ntRepeatPicker.cron(),
+      timezone: ntRepeatPicker.timezone(),
+    }, "create");
+    if (!built.ok) { errorEl.textContent = built.error; errorEl.hidden = false; return; }
+
+    submitBtn.disabled = true;
+    statusEl.hidden = false;
+    statusEl.textContent = "saving schedule…";
+    scheduleRequest("POST", "/schedules", built.body).then(function (saved) {
+      statusEl.textContent = "Scheduled “" + saved.name + "”" + (saved.nextRunAt ? ", next run " + formatWhen(saved.nextRunAt, new Date(), BROWSER_TZ) : "") + ". It's under Pipelines → Schedules.";
+      resetNewTaskForm(true);
+      loadSchedules();
+    }).catch(function (err) {
+      errorEl.textContent = err.message;
+      errorEl.hidden = false;
+      statusEl.hidden = true;
+    }).finally(function () {
+      updateSubmitEnabled();
+    });
   }
 
   // --- Pipeline editor (docs/SDD-ui-cleanup.md §4.2) ------------------
