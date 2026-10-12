@@ -255,6 +255,60 @@ export interface PipelineDef {
   updatedAt: string;
 }
 
+/** What a task schedule creates on every fire: the same fields `POST
+ *  /tasks` takes, validated by the same rules (validateNewTask,
+ *  src/services/task-input.ts). Stored as JSON in `schedules.taskTemplate`. */
+export interface ScheduleTaskTemplate {
+  title: string;
+  body: string;
+  labels: string[];
+  repo?: string;
+  harnessOverride?: string;
+  model?: string;
+}
+
+export type ScheduleKind = "pipeline" | "task";
+
+/** started: the run began (a pipeline root card or a task card exists).
+ *  skipped-overlap: the previous run (`lastRunId`) wasn't finished.
+ *  skipped-stale: the fire time was more than `catchUpHours` ago.
+ *  error: the run couldn't start; see `lastError`. */
+export type ScheduleOutcome = "started" | "skipped-overlap" | "skipped-stale" | "error";
+
+/** A stored schedule: runs a pipeline, or creates a card from
+ *  `taskTemplate`, on a 5-field cron in an IANA timezone. CRUD in
+ *  src/services/schedules.ts, cron/timezone rules in
+ *  src/core/schedule-time.ts. See docs/SDD-schedules.md §3.2. */
+export interface ScheduleDef {
+  id: string;
+  name: string;
+  kind: ScheduleKind;
+  /** kind "pipeline" only. */
+  pipelineId?: string;
+  /** Pipeline input, kind "pipeline" only. */
+  input?: string;
+  /** The pipeline's repo, or the task's repo when `taskTemplate.repo`
+   *  is unset. */
+  repo?: string;
+  /** kind "task" only. */
+  taskTemplate?: ScheduleTaskTemplate;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+  /** How late a fire may still happen, in hours; 0 = never catch up. */
+  catchUpHours: number;
+  /** ISO UTC. Undefined when disabled. */
+  nextRunAt?: string;
+  /** When it last fired or skipped. */
+  lastRunAt?: string;
+  lastOutcome?: ScheduleOutcome;
+  lastError?: string;
+  /** Pipeline root card id, or the created card id. */
+  lastRunId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** The shape of one described-but-blocked MCP tool call — both the
  *  agent's own request (TaskResult.mcpApprovalRequest, parsed by
  *  parse-mcp-approval-request.ts out of a trailing ```mcp-approval-
@@ -450,6 +504,12 @@ export interface TaskCard {
    *  Only a manual Run (Orchestrator.runNow) clears it, as the person
    *  overriding their own earlier choice. */
   notBefore?: string;
+  /** The ScheduleDef that made this card: a card created by a task
+   *  schedule, or a scheduled pipeline run's root card. Its schedule's
+   *  `lastRunId` points back here, so the two link both ways
+   *  (docs/SDD-schedules.md §3.2). Undefined for every card a person or
+   *  agent made. */
+  scheduleId?: string;
   /** The `claude -p` session a session limit (429) cut off, set with
    *  `retryAfter` by Board.scheduleRetry. The retry runs `claude
    *  --resume <id>` and carries on from where it stopped instead of

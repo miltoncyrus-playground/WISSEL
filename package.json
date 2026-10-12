@@ -48,6 +48,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
+    "croner": "10.0.1",
     "yaml": "^2.5.0"
   }
 }

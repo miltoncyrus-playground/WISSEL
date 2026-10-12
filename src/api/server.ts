@@ -35,8 +35,7 @@ import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
-import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
-import { validateNotBefore } from "../core/not-before.ts";
+import { validateNewTask, type NewTask } from "../services/task-input.ts";
 import type { AnthropicMessagesClient } from "../executors/anthropic-api.ts";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
 import {
@@ -1198,73 +1197,13 @@ export function createApp(
         }
 
         if (parts.length === 1 && req.method === "POST") {
-          const body = (await req.json()) as Omit<TaskCard, "id" | "status">;
-          // Per-card tool grants (src/core/allowed-tools.ts): command-scoped
-          // Bash only, never a blanket grant. Stored normalized.
-          const grants = validateExtraAllowedTools(body.extraAllowedTools);
-          if (!grants.ok) return json({ error: grants.error }, 400);
-          body.extraAllowedTools = grants.tools.length > 0 ? grants.tools : undefined;
-          // "Start at" (docs/SDD-schedules.md §4): future, at most 30
-          // days out, stored normalized to UTC.
-          if (body.notBefore !== undefined && body.notBefore !== null) {
-            const start = validateNotBefore(body.notBefore, new Date());
-            if (!start.ok) return json({ error: start.error }, 400);
-            body.notBefore = start.notBefore;
-          } else {
-            body.notBefore = undefined;
-          }
-          // `harnessOverride` is validated eagerly, at creation time,
-          // because we already know exactly which harness it names.
-          // `model` with no `harnessOverride` is deliberately NOT
-          // validated here — which harness/tool will actually run this
-          // task isn't known until routing happens, so there's nothing
-          // yet to check it against (see docs/SDD-model-selection.md §9,
-          // and the fail-loud precedence resolution in
-          // src/core/model-resolution.ts, which validates it for real at
-          // dispatch time).
-          if (body.harnessOverride) {
-            const harness = harnesses.get(body.harnessOverride);
-            if (!harness) return json({ error: `unknown harnessOverride "${body.harnessOverride}"` }, 400);
-            if (body.model) {
-              const cache = await readModelsCache(modelsCachePath);
-              const availableModels = cache[harness.id]?.models ?? [];
-              if (availableModels.length > 0 && !availableModels.includes(body.model)) {
-                return json({ error: `model "${body.model}" is not in the known model list for harness "${harness.id}"` }, 400);
-              }
-            }
-          }
-          // `repo` is required only for a task that will route to a
-          // write- or bash-capable agent — a readonly, no-file-access
-          // agent (e.g. "check Jira, post to Slack") never touches a
-          // filesystem, so forcing a repo on it would just be a directory
-          // name nothing ever reads (see TaskCard.repo's own doc
-          // comment). Resolved synchronously here, the same way
-          // `/route/preview` already resolves a routing decision with no
-          // side effects — routing itself normally happens later, inside
-          // `sweep()`, but a confident resolution here lets a bad
-          // no-repo submission 400 immediately instead of silently
-          // stalling once sweep() actually routes it. A task that
-          // doesn't resolve confidently yet (ambiguous/no-match labels)
-          // is allowed through without a repo — see Orchestrator.process's
-          // own write/bash-access check for the dispatch-time safety net
-          // that covers this case if it's later routed to a write-tier
-          // agent by a label edit.
-          if (!body.repo) {
-            const allowIds = await resolveHandoffAllowlist(board as Board, registry, body.parentTaskId);
-            const previewTask: TaskCard = {
-              id: "repo-check",
-              title: body.title ?? "",
-              body: body.body ?? "",
-              labels: body.labels ?? [],
-              status: "inbox",
-            };
-            const decision = await router.route(previewTask, allowIds);
-            const agent = decision.confident && decision.selected ? registry.get(decision.selected) : undefined;
-            if (agent && (agent.toolAccess.includes("write") || agent.toolAccess.includes("bash"))) {
-              return json({ error: `repo is required — this task would route to "${agent.id}", which has file/bash access` }, 400);
-            }
-          }
-          const task = await board.create(body);
+          const body = (await req.json()) as NewTask;
+          // The checks live in src/services/task-input.ts so a task
+          // schedule's template (docs/SDD-schedules.md §3.2) is refused
+          // by exactly these rules too.
+          const check = await validateNewTask(body, { board: board as Board, registry, router, harnesses, modelsCachePath, now: new Date() });
+          if (!check.ok) return json({ error: check.error }, 400);
+          const task = await board.create(check.task);
           return json(task, 201);
         }
 
