@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { runViaBun } from "../src/executors/claude-cli.ts";
-import { createShutdownHandler, isTracked, trackChild, trackedChildren } from "../src/executors/child-processes.ts";
+import { createShutdownHandler, isTracked, onShutdown, trackChild, trackedChildren } from "../src/executors/child-processes.ts";
 
 function pidAlive(pid: number): boolean {
   try {
@@ -96,4 +96,28 @@ test("shutdown hook: SIGINT exits 130, and a second signal while shutting down d
   await Promise.all([handler("SIGINT"), handler("SIGTERM")]);
   expect(exits).toEqual([130]);
   expect(lines.filter((l) => l.includes("received")).length).toBe(1);
+});
+
+test("onShutdown hooks run before children are stopped; a throwing hook is logged and the rest still run; unregister works", async () => {
+  const order: string[] = [];
+  const offA = onShutdown(() => order.push("a"));
+  const offBad = onShutdown(() => {
+    throw new Error("nope");
+  });
+  const offGone = onShutdown(() => order.push("gone"));
+  offGone();
+  const lines: string[] = [];
+  const log = (l: string) => {
+    lines.push(l);
+    if (l.includes("received")) order.push("kill");
+  };
+  const handler = createShutdownHandler({ exit: () => order.push("exit"), graceMs: 50, log });
+  try {
+    await handler("SIGTERM");
+  } finally {
+    offA();
+    offBad();
+  }
+  expect(order).toEqual(["a", "kill", "exit"]);
+  expect(lines).toContain("shutdown: a stop hook failed: nope");
 });

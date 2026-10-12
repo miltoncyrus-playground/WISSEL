@@ -124,7 +124,10 @@ runs on a fake clock.
 - **Catch-up / staleness:** if `now - nextRunAt > catchUpHours`, don't
   fire: advance, `lastOutcome = skipped-stale`. Covers the server being
   down at fire time: on the next start a fresh miss fires once (like
-  systemd `Persistent=true`), a day-old podcast doesn't.
+  systemd `Persistent=true`), a day-old podcast doesn't. A fire found
+  within `ON_TIME_GRACE_MS` (1 minute) of its time is on time, not a
+  catch-up, so `catchUpHours: 0` still fires when the 30 s tick reaches
+  it a few seconds late.
 - **Overlap:** if `lastRunId` points at a card that isn't terminal yet
   (a pipeline root not `done`/`failed`, a task card not
   `done`/`failed`/archived), don't fire: advance, `lastOutcome =

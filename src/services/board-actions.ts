@@ -1,6 +1,6 @@
 // What the board's buttons do, once (docs/SDD-wissel-app.md §3.7). Each
-// function is the body of one `POST /tasks/:id/...`, `/harnesses/:id/...`
-// or `/mcp-servers/:id/...` route, moved out of server.ts so the route
+// function is the body of one `POST /tasks/:id/...`, `/harnesses/:id/...`,
+// `/mcp-servers/:id/...` or `/schedules/...` route, moved out of server.ts so the route
 // and Ask's control actions run the very same code: Ask never calls our
 // own HTTP API and never has a second copy of an endpoint's checks.
 //
@@ -20,7 +20,10 @@ import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import { validateNotBefore } from "../core/not-before.ts";
 import { mergeTaskWorktree, removeTaskWorktree } from "./worktree.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
-import type { Harness, McpServer, TaskCard, TaskResult } from "../core/types.ts";
+import { ScheduleValidationError, type ScheduleInput, type SchedulePatch, type ScheduleStore } from "./schedules.ts";
+import { ScheduleNotFoundError, ScheduleOverlapError, type ScheduleRunner } from "../core/schedule-runner.ts";
+import { DEFAULT_SCHEDULE_TIMEZONE, describeCadence, nextRuns, validateSchedule } from "../core/schedule-time.ts";
+import type { Harness, McpServer, ScheduleDef, TaskCard, TaskResult } from "../core/types.ts";
 
 /** A route's answer before it is a Response: the value on success, or
  *  the status and error it answers with. 404 routes answer "not found". */
@@ -249,4 +252,115 @@ export async function setMcpToolTrust(deps: McpControlDeps, server: McpServer, t
   }
   await setMcpServerToolTrust(deps.mcpServersPath, server, toolName, trust);
   return ok(deps.mcpServers.setToolTrust(server.id, toolName, trust)!);
+}
+
+// ---------- schedules ----------
+
+/** The `/schedules` routes and (later) Ask's schedule actions share
+ *  these (docs/SDD-schedules.md §3.5, §3.9). */
+export interface ScheduleControlDeps {
+  schedules: ScheduleStore;
+  runner: ScheduleRunner;
+  /** The clock previews count from; the runner and store keep their own. */
+  now?: () => Date;
+}
+
+/** A schedule as the API shows it: plus its cadence in words and the
+ *  status of its last run card (null when there is none). */
+export type ScheduleView = ScheduleDef & { cadence: string; lastRunStatus: TaskCard["status"] | null };
+
+export interface SchedulePreview {
+  valid: boolean;
+  error?: string;
+  cadence: string;
+  /** The next 5 runs, ISO UTC; [] when invalid. */
+  next: string[];
+}
+
+const CREATE_FIELDS = new Set(["name", "kind", "pipelineId", "input", "repo", "taskTemplate", "cron", "timezone", "enabled", "catchUpHours"]);
+const PATCH_FIELDS = new Set(["name", "cron", "timezone", "enabled", "input", "repo", "taskTemplate", "catchUpHours"]);
+
+function bodyObject(body: unknown, allowed: Set<string>, fixed: string[] = []): Outcome<Record<string, unknown>> {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return no(400, "body must be a JSON object");
+  for (const key of Object.keys(body)) {
+    if (fixed.includes(key)) return no(400, `${key} can't be changed; make a new schedule instead`);
+    if (!allowed.has(key)) return no(400, `unknown field "${key}"`);
+  }
+  return ok(body as Record<string, unknown>);
+}
+
+/** The store's refusals are 400s with their own message; anything else
+ *  is a real failure and is rethrown. */
+async function storeOutcome<T>(fn: () => Promise<T>): Promise<Outcome<T>> {
+  try {
+    return ok(await fn());
+  } catch (e) {
+    if (e instanceof ScheduleValidationError) return no(400, e.message);
+    throw e;
+  }
+}
+
+export async function scheduleView(deps: ScheduleControlDeps, s: ScheduleDef): Promise<ScheduleView> {
+  return { ...s, cadence: describeCadence(s.cron), lastRunStatus: await deps.runner.lastRunStatus(s) };
+}
+
+/** `GET /schedules`. */
+export async function listSchedules(deps: ScheduleControlDeps): Promise<ScheduleView[]> {
+  return Promise.all((await deps.schedules.list()).map((s) => scheduleView(deps, s)));
+}
+
+/** `GET /schedules/:id`. */
+export async function getSchedule(deps: ScheduleControlDeps, id: string): Promise<Outcome<ScheduleView>> {
+  const s = await deps.schedules.get(id);
+  return s ? ok(await scheduleView(deps, s)) : no(404, "not found");
+}
+
+/** `POST /schedules`. `timezone` defaults to DEFAULT_SCHEDULE_TIMEZONE;
+ *  every other rule is the store's. */
+export async function createSchedule(deps: ScheduleControlDeps, body: unknown): Promise<Outcome<ScheduleView>> {
+  const b = bodyObject(body, CREATE_FIELDS);
+  if (!b.ok) return b;
+  const input = { ...b.value, timezone: b.value.timezone ?? DEFAULT_SCHEDULE_TIMEZONE } as unknown as ScheduleInput;
+  const created = await storeOutcome(() => deps.schedules.create(input));
+  return created.ok ? ok(await scheduleView(deps, created.value)) : created;
+}
+
+/** `PATCH /schedules/:id`: any of the PATCH_FIELDS; a new cron, timezone
+ *  or enabled recomputes `nextRunAt` (the store's rule). */
+export async function updateSchedule(deps: ScheduleControlDeps, id: string, body: unknown): Promise<Outcome<ScheduleView>> {
+  if (!(await deps.schedules.get(id))) return no(404, "not found");
+  const b = bodyObject(body, PATCH_FIELDS, ["kind", "pipelineId"]);
+  if (!b.ok) return b;
+  const updated = await storeOutcome(() => deps.schedules.update(id, b.value as SchedulePatch));
+  return updated.ok ? ok(await scheduleView(deps, updated.value)) : updated;
+}
+
+/** `DELETE /schedules/:id`. Its past run cards stay on the board. */
+export async function deleteSchedule(deps: ScheduleControlDeps, id: string): Promise<Outcome<null>> {
+  if (!(await deps.schedules.get(id))) return no(404, "not found");
+  await deps.schedules.delete(id);
+  return ok(null);
+}
+
+/** `POST /schedules/:id/run-now`: 409 while the last run is going, 400
+ *  when the run couldn't start (recorded on the schedule as `error`). */
+export async function runScheduleNow(deps: ScheduleControlDeps, id: string): Promise<Outcome<{ runId: string }>> {
+  try {
+    const fired = await deps.runner.runNow(id);
+    return fired.runId ? ok({ runId: fired.runId }) : no(400, fired.error ?? "the run didn't start");
+  } catch (e) {
+    if (e instanceof ScheduleNotFoundError) return no(404, "not found");
+    if (e instanceof ScheduleOverlapError) return no(409, e.message);
+    throw e;
+  }
+}
+
+/** `GET /schedules/preview`: what the editors show while you type. Never
+ *  a 400: an invalid cadence is `valid: false` with the reason. */
+export function previewSchedule(cron: unknown, timezone: unknown, now: Date): SchedulePreview {
+  const tz = timezone === undefined || timezone === null || timezone === "" ? DEFAULT_SCHEDULE_TIMEZONE : timezone;
+  const cadence = typeof cron === "string" ? describeCadence(cron) : "";
+  const check = validateSchedule({ cron, timezone: tz }, now);
+  if (!check.ok) return { valid: false, error: check.error, cadence, next: [] };
+  return { valid: true, cadence, next: nextRuns(cron as string, tz as string, 5, now).map((d) => d.toISOString()) };
 }

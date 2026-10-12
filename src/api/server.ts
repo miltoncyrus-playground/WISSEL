@@ -16,7 +16,9 @@ import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, carriedCardSettings, grantAndRetry, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts } from "../core/crash-recovery.ts";
-import { PipelineRepoRequiredError, resumePipelineStep, startPipelineRun, stepsNeedingRepo } from "../core/pipeline-runner.ts";
+import { PipelineNotFoundError, PipelineRepoRequiredError, resumePipelineStep, runPipelineNow, type PipelineRunDeps } from "../core/pipeline-runner.ts";
+import { ScheduleRunner, type ScheduleRunnerOptions } from "../core/schedule-runner.ts";
+import { SqliteScheduleStore, type ScheduleStore } from "../services/schedules.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
 import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH } from "../core/model-refresh-scheduler.ts";
@@ -35,7 +37,7 @@ import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
-import { validateNewTask, type NewTask } from "../services/task-input.ts";
+import { taskTemplateValidator, validateNewTask, type NewTask } from "../services/task-input.ts";
 import type { AnthropicMessagesClient } from "../executors/anthropic-api.ts";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
 import {
@@ -53,13 +55,21 @@ import {
   setMcpToolTrust,
   setTaskHarnessOverride,
   setTaskNotBefore,
+  createSchedule,
+  deleteSchedule,
+  getSchedule,
+  listSchedules,
+  previewSchedule,
+  runScheduleNow,
+  updateSchedule,
   type HarnessControlDeps,
   type McpControlDeps,
   type Outcome,
+  type ScheduleControlDeps,
 } from "../services/board-actions.ts";
 import { SqlitePendingActionStore } from "../services/pending-actions.ts";
 import { getVersionInfo } from "../core/version.ts";
-import { installShutdownHandlers } from "../executors/child-processes.ts";
+import { installShutdownHandlers, onShutdown } from "../executors/child-processes.ts";
 import { DEFAULT_APP_DIST, isAppPath, serveAppAsset } from "./serve-app.ts";
 import { createFeedSource } from "../services/feed-sources.ts";
 import { buildWrapped, WRAPPED_DEFAULT_PERIOD, WRAPPED_PERIOD_MAX_CHARS } from "../services/wrapped.ts";
@@ -272,6 +282,14 @@ export interface CreateAppOptions {
    *  with shorter waits than a podcast: Milton is waiting on the button.
    *  Tests shorten them further. */
   replyAudio?: { healthWaitMs?: number; healthRetryMs?: number; timeoutMs?: number; queueWaitMs?: number };
+  /** Starts the schedule ticker (src/core/schedule-runner.ts,
+   *  docs/SDD-schedules.md §3.4). Off by default here because tests build
+   *  many apps per process; the bootstrap always turns it on. The
+   *  `/schedules` routes, run-now included, work either way. */
+  schedulesEnabled?: boolean;
+  /** The ticker's clock, timers and logger, for tests. `now` is also the
+   *  schedule store's and the preview's clock, so all agree on what is due. */
+  scheduleClock?: Pick<ScheduleRunnerOptions, "now" | "setInterval" | "clearInterval" | "setTimeout" | "clearTimeout" | "logger">;
 }
 
 /** The bit of Bun's Server that createApp's fetch uses: lifting the idle
@@ -370,7 +388,40 @@ export function createApp(
   // off to agetor in this phase (see docs/SDD-pipelines.md §3.3), so it
   // reuses this exact pool rather than the automatic loop's
   // executeWriteTier-gated one.
-  const pipelines: PipelineStore = opts.pipelines ?? new SqlitePipelineStore((board as SqliteBoard).db);
+  const storedPipelines: PipelineStore = opts.pipelines ?? new SqlitePipelineStore((board as SqliteBoard).db);
+  // Schedules (docs/SDD-schedules.md §3.2) live in the board's DB; a task
+  // schedule's template meets the same checks as POST /tasks.
+  const validateTaskTemplate = taskTemplateValidator({ board: board as Board, registry, router, harnesses, modelsCachePath });
+  const schedules: ScheduleStore = new SqliteScheduleStore((board as SqliteBoard).db, {
+    now: opts.scheduleClock?.now,
+    pipelineExists: async (id) => (await storedPipelines.get(id)) !== undefined,
+    validateTaskTemplate,
+  });
+  // Every path that deletes a pipeline (DELETE /pipelines/:id, Ask's
+  // delete_pipeline) goes through this, so none leaves a schedule firing
+  // a pipeline that's gone.
+  const pipelines: PipelineStore = {
+    create: (def) => storedPipelines.create(def),
+    get: (id) => storedPipelines.get(id),
+    list: () => storedPipelines.list(),
+    update: (id, def) => storedPipelines.update(id, def),
+    delete: async (id) => {
+      await storedPipelines.delete(id);
+      await schedules.disableForPipeline(id, "pipeline deleted");
+    },
+  };
+  // What every pipeline run starts with: POST /pipelines/:id/run, Ask and
+  // the schedule ticker all go through runPipelineNow with this.
+  const pipelineRunDeps: PipelineRunDeps = { board: board as Board, registry, executors: manualExecutors, pipelines, harnesses, telemetry, memoryPath: opts.memoryPath };
+  const scheduleRunner = new ScheduleRunner({
+    store: schedules,
+    board: board as Board,
+    runPipelineNow: (pipelineId, repo, input, o) => runPipelineNow(pipelineRunDeps, pipelineId, repo, input, o),
+    validateTaskTemplate,
+    telemetry,
+    ...opts.scheduleClock,
+  });
+  const scheduleControl: ScheduleControlDeps = { schedules, runner: scheduleRunner, now: opts.scheduleClock?.now };
   const pipelineEditorDist = opts.pipelineEditorDist ?? DEFAULT_PIPELINE_EDITOR_DIST;
   const appDist = opts.appDist ?? DEFAULT_APP_DIST;
   const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
@@ -427,16 +478,9 @@ export function createApp(
     homeDir: opts.conciergeHomeDir,
     startPipeline: (pipeline, input) =>
       new Promise<TaskCard>((resolve, reject) => {
-        startPipelineRun(board as Board, registry, pipeline, undefined, input, {
-          executors: manualExecutors,
-          pipelines,
-          harnesses,
-          telemetry,
-          memoryPath: opts.memoryPath,
-          onRootCreated: resolve,
-          // Settled runs resolve too (a no-op after onRootCreated), so a
-          // path that never makes a root can't leave Ask waiting.
-        }).then(resolve, (e: unknown) => {
+        // Settled runs resolve too (a no-op after onRootCreated), so a
+        // path that never makes a root can't leave Ask waiting.
+        runPipelineNow(pipelineRunDeps, pipeline.id, undefined, input, { onRootCreated: resolve }).then(resolve, (e: unknown) => {
           // Before the root exists this rejects Ask's action; after, the
           // promise is settled and the run's own cards show the failure.
           reject(e);
@@ -578,6 +622,15 @@ export function createApp(
       runner: commandRunner,
       checkIntervalHours: opts.mergeHealthIntervalHours,
     });
+  }
+
+  // Always on in the real server (the bootstrap sets schedulesEnabled):
+  // an enabled schedule fires at its time with no restart
+  // (docs/SDD-schedules.md §3.4). Stopped before agent processes are
+  // killed on shutdown, so it can't start a run on the way down.
+  if (opts.schedulesEnabled) {
+    scheduleRunner.start();
+    onShutdown(() => scheduleRunner.stop());
   }
 
   return async function fetch(req: Request, server?: ServerLike): Promise<Response> {
@@ -1000,6 +1053,25 @@ export function createApp(
         return servePipelineEditorAsset(url.pathname, pipelineEditorDist);
       }
 
+      // Schedules (docs/SDD-schedules.md §3.5). The bodies are in
+      // board-actions.ts, shared with Ask. /schedules/preview is matched
+      // before /schedules/:id.
+      if (parts[0] === "schedules") {
+        if (parts.length === 1 && req.method === "GET") return json(await listSchedules(scheduleControl));
+        if (parts.length === 1 && req.method === "POST") return outcome(await createSchedule(scheduleControl, await req.json().catch(() => undefined)), 201);
+        if (parts.length === 2 && parts[1] === "preview" && req.method === "GET") {
+          const now = scheduleControl.now?.() ?? new Date();
+          return json(previewSchedule(url.searchParams.get("cron") ?? undefined, url.searchParams.get("timezone") ?? undefined, now));
+        }
+        if (parts.length === 2 && req.method === "GET") return outcome(await getSchedule(scheduleControl, parts[1]!));
+        if (parts.length === 2 && req.method === "PATCH") return outcome(await updateSchedule(scheduleControl, parts[1]!, await req.json().catch(() => undefined)));
+        if (parts.length === 2 && req.method === "DELETE") {
+          const deleted = await deleteSchedule(scheduleControl, parts[1]!);
+          return deleted.ok ? new Response(null, { status: 204 }) : outcome(deleted);
+        }
+        if (parts.length === 3 && parts[2] === "run-now" && req.method === "POST") return outcome(await runScheduleNow(scheduleControl, parts[1]!));
+      }
+
       if (parts[0] === "pipelines") {
         if (parts.length === 1 && req.method === "GET") {
           return json(await pipelines.list());
@@ -1050,23 +1122,13 @@ export function createApp(
           // access runs with no repo (scratch workspace per step) and an
           // optional input, e.g. "AI news podcast"
           // (docs/SDD-ai-news-podcast.md §3.3/§3.4). Anything else still
-          // needs both, and fails here, before a root card exists.
-          const repoless = stepsNeedingRepo(pipeline, registry).length === 0;
-          if (!repoless && (!body.repo || !body.input)) {
-            const names = stepsNeedingRepo(pipeline, registry).map((s) => `"${s.name}" (${s.agentId})`).join(", ");
-            return json({ error: `repo and input are required: this pipeline has steps with file/bash access: ${names}` }, 400);
-          }
+          // needs both (requireInput), and fails before a root card exists.
           let root: TaskCard;
           try {
-            root = await startPipelineRun(board as Board, registry, pipeline, body.repo || undefined, body.input ?? "", {
-              executors: manualExecutors,
-              pipelines,
-              harnesses,
-              telemetry,
-              memoryPath: opts.memoryPath,
-            });
+            root = await runPipelineNow(pipelineRunDeps, pipeline.id, body.repo || undefined, body.input, { requireInput: true });
           } catch (e) {
             if (e instanceof PipelineRepoRequiredError) return json({ error: e.message }, 400);
+            if (e instanceof PipelineNotFoundError) return notFound();
             throw e;
           }
           return json(root, 201);
@@ -1838,6 +1900,7 @@ if (import.meta.main) {
       tts,
       audioDir,
       stt,
+      schedulesEnabled: true,
       ...scripted,
     }),
   });

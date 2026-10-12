@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import type { RunUsage } from "../core/types.ts";
+import type { RunUsage, ScheduleOutcome } from "../core/types.ts";
 
 export type TelemetryEvent =
   | { type: "dispatch"; taskId: string; agentId: string; model?: string; estimatedCost?: number }
@@ -31,6 +31,17 @@ export type TelemetryEvent =
       ok: boolean;
       confirmedBy: "tier-a" | "confirm" | "undo";
       error?: string;
+    }
+  /** One schedule fire, skip or error (docs/SDD-schedules.md §3.6).
+   *  `at` is the ticker's clock, kept as given. */
+  | {
+      type: "schedule";
+      scheduleId: string;
+      name: string;
+      outcome: ScheduleOutcome;
+      runId?: string;
+      error?: string;
+      at: string;
     };
 
 /**
@@ -49,7 +60,7 @@ export class TelemetryLog {
 
   async record(event: TelemetryEvent): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    const line = JSON.stringify({ ...event, at: new Date().toISOString() });
+    const line = JSON.stringify({ ...event, at: ("at" in event ? event.at : undefined) ?? new Date().toISOString() });
     await appendFile(this.filePath, line + "\n");
   }
 
