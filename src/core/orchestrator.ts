@@ -1054,6 +1054,10 @@ export interface OrchestratorOptions {
    *  this module. Undefined means a rate-limited step waits forever, as
    *  before 2026-10-11. */
   resumePipelineStep?: (task: TaskCard) => Promise<unknown>;
+  /** The clock sweep() and the wake timer read `retryAfter` and
+   *  `notBefore` against, in ms. Defaults to Date.now; tests pass a fake
+   *  one to pin "before" and "after" without waiting. */
+  now?: () => number;
 }
 
 /** Midnight UTC on `now`'s calendar day — the window `spendCeilingUsd`
@@ -1097,17 +1101,28 @@ export class Orchestrator {
 
   private started = false;
   private onBoardEvent = () => void this.sweep();
-  /** The one pending wake-up for the earliest future `retryAfter` (a card
-   *  rescheduled after a 429). Board events alone never fire when a retry
-   *  time passes, so on a quiet board a rate-limited card waited until
-   *  some unrelated event or a restart (seen 2026-10-09: card d3f87348
-   *  sat ~2h past its retry time). */
+  /** The one pending wake-up for the earliest future time a waiting card
+   *  becomes eligible: its `retryAfter` (rescheduled after a 429) or its
+   *  `notBefore` (a person's start time). Board events alone never fire
+   *  when such a time passes, so on a quiet board a rate-limited card
+   *  waited until some unrelated event or a restart (seen 2026-10-09:
+   *  card d3f87348 sat ~2h past its retry time); a start time would do
+   *  the same without this. */
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private retryTimerAt: number | undefined;
 
+  private now(): number {
+    return this.opts.now ? this.opts.now() : Date.now();
+  }
+
+  /** When the wake-up is armed for (ms), or undefined if none is. */
+  get nextWakeAt(): number | undefined {
+    return this.retryTimer ? this.retryTimerAt : undefined;
+  }
+
   /** Runs an initial sweep, then re-sweeps on every board event that could
    *  make a previously-blocked task eligible, and when the earliest
-   *  scheduled retry comes due. */
+   *  `retryAfter` or `notBefore` comes due. */
   start(): void {
     this.started = true;
     this.board.events.on("event", this.onBoardEvent);
@@ -1124,23 +1139,28 @@ export class Orchestrator {
   }
 
   /** Arms (or moves earlier) a single timer for the earliest future
-   *  retryAfter among unrouted inbox/ready cards. Only while started, so
-   *  a test calling sweep() directly never leaves a timer behind. */
+   *  retryAfter or notBefore among unrouted, unarchived inbox/ready
+   *  cards. Only while started, so a test calling sweep() directly never
+   *  leaves a timer behind. A time past the setTimeout cap (~24.8 days;
+   *  notBefore may be 30) fires early, sweeps nothing, and re-arms. */
   private scheduleRetryWake(tasks: TaskCard[]): void {
     if (!this.started) return;
-    const now = Date.now();
+    const now = this.now();
     let earliest: number | undefined;
     for (const t of tasks) {
-      if (!t.retryAfter || t.routedTo || t.archivedAt || (t.status !== "inbox" && t.status !== "ready")) continue;
-      const at = new Date(t.retryAfter).getTime();
-      if (Number.isNaN(at) || at <= now) continue;
-      if (earliest === undefined || at < earliest) earliest = at;
+      if (t.routedTo || t.archivedAt || (t.status !== "inbox" && t.status !== "ready")) continue;
+      for (const when of [t.retryAfter, t.notBefore]) {
+        if (!when) continue;
+        const at = new Date(when).getTime();
+        if (Number.isNaN(at) || at <= now) continue;
+        if (earliest === undefined || at < earliest) earliest = at;
+      }
     }
     if (earliest === undefined) return;
     if (this.retryTimer && this.retryTimerAt !== undefined && this.retryTimerAt <= earliest) return;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimerAt = earliest;
-    // +1s so the retry time has definitely passed when the sweep reads it.
+    // +1s so the due time has definitely passed when the sweep reads it.
     this.retryTimer = setTimeout(() => {
       this.retryTimer = undefined;
       this.retryTimerAt = undefined;
@@ -1194,7 +1214,10 @@ export class Orchestrator {
       // A task Board.scheduleRetry rescheduled after a 429 isn't
       // eligible again until its clock has passed — reads the same as
       // "blocked" below, just on a timer instead of a dependency.
-      if (task.retryAfter && new Date(task.retryAfter).getTime() > Date.now()) continue;
+      if (task.retryAfter && new Date(task.retryAfter).getTime() > this.now()) continue;
+      // A person's "start at" (TaskCard.notBefore): same wait, their
+      // clock instead of the rate limit's. Not cleared on routing.
+      if (task.notBefore && new Date(task.notBefore).getTime() > this.now()) continue;
 
       const deps = task.dependsOn ?? [];
       // A dangling dependency, a not-yet-done one, and one whose id was
@@ -1228,7 +1251,7 @@ export class Orchestrator {
   private isDuePipelineRetry(task: TaskCard, tasks: TaskCard[]): boolean {
     if (!this.opts.resumePipelineStep || !task.pipelineRunId || !task.retryAfter || task.archivedAt) return false;
     if (task.status !== "inbox" && task.status !== "ready") return false;
-    if (new Date(task.retryAfter).getTime() > Date.now()) return false;
+    if (new Date(task.retryAfter).getTime() > this.now()) return false;
     return !tasks.some((t) => t.pipelineRunId === task.pipelineRunId && t.id !== task.id && (this.inFlight.has(t.id) || t.status === "running"));
   }
 
@@ -1243,7 +1266,8 @@ export class Orchestrator {
   /**
    * A human clicking "Run" on a specific card in the board UI — bypasses
    * every gate `sweep()` applies (routedTo already set, status, blocked
-   * dependencies) and the `executeWriteTier` flag: an explicit per-task
+   * dependencies, a future `notBefore`, which it also clears) and the
+   * `executeWriteTier` flag: an explicit per-task
    * click is a different, narrower trust decision than "auto-execute
    * every write-tier task that shows up," so it's always allowed to
    * force through with whatever executor pool the caller hands in (see
@@ -1271,7 +1295,20 @@ export class Orchestrator {
     }
 
     this.inFlight.add(taskId);
-    void this.process(task, { executors, forceExecute: true }).finally(() => this.inFlight.delete(taskId));
+    // Run now overrides the person's own start time (TaskCard.notBefore),
+    // so the card stops showing one it no longer waits for. Marked
+    // in-flight first: the board event this emits must not let a sweep
+    // pick the card up a second time.
+    let toRun = task;
+    if (task.notBefore) {
+      try {
+        toRun = await this.board.setNotBefore(taskId, undefined);
+      } catch (e) {
+        this.inFlight.delete(taskId);
+        throw e;
+      }
+    }
+    void this.process(toRun, { executors, forceExecute: true }).finally(() => this.inFlight.delete(taskId));
   }
 
   private async process(task: TaskCard, override?: { executors: Executor[]; forceExecute: boolean }): Promise<void> {

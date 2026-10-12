@@ -36,6 +36,7 @@ import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
+import { validateNotBefore } from "../core/not-before.ts";
 import type { AnthropicMessagesClient } from "../executors/anthropic-api.ts";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
 import {
@@ -52,6 +53,7 @@ import {
   setHarnessDefaultModel,
   setMcpToolTrust,
   setTaskHarnessOverride,
+  setTaskNotBefore,
   type HarnessControlDeps,
   type McpControlDeps,
   type Outcome,
@@ -1202,6 +1204,15 @@ export function createApp(
           const grants = validateExtraAllowedTools(body.extraAllowedTools);
           if (!grants.ok) return json({ error: grants.error }, 400);
           body.extraAllowedTools = grants.tools.length > 0 ? grants.tools : undefined;
+          // "Start at" (docs/SDD-schedules.md §4): future, at most 30
+          // days out, stored normalized to UTC.
+          if (body.notBefore !== undefined && body.notBefore !== null) {
+            const start = validateNotBefore(body.notBefore, new Date());
+            if (!start.ok) return json({ error: start.error }, 400);
+            body.notBefore = start.notBefore;
+          } else {
+            body.notBefore = undefined;
+          }
           // `harnessOverride` is validated eagerly, at creation time,
           // because we already know exactly which harness it names.
           // `model` with no `harnessOverride` is deliberately NOT
@@ -1393,6 +1404,16 @@ export function createApp(
           if (!task) return notFound();
           const { harness } = (await req.json().catch(() => ({}))) as { harness?: unknown };
           return outcome(await setTaskHarnessOverride(board as Board, harnesses, task, harness));
+        }
+
+        // Sets or clears (null) a queued card's start time
+        // (docs/SDD-schedules.md §4). Only before sweep() picks the card
+        // up: inbox/ready, unrouted, unarchived (notBeforeRefusal).
+        if (parts.length === 3 && parts[2] === "not-before" && req.method === "POST") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          const { notBefore } = (await req.json().catch(() => ({}))) as { notBefore?: unknown };
+          return outcome(await setTaskNotBefore(board as Board, task, notBefore, new Date()));
         }
 
         // mergeTask and discardTask (src/services/board-actions.ts) are

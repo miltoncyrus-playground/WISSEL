@@ -440,6 +440,16 @@ export interface TaskCard {
    *  way a blocked `dependsOn` is. ISO timestamp; undefined means no
    *  pending retry. */
   retryAfter?: string;
+  /** "Start at": a person's choice that this card isn't routed or run
+   *  before this time (docs/SDD-schedules.md §4). ISO timestamp, UTC,
+   *  validated by validateNotBefore (src/core/not-before.ts). `sweep()`
+   *  skips the card until it passes and the wake timer comes back for it
+   *  on a quiet board. Separate from `retryAfter` on purpose: that one is
+   *  the system's, cleared on routing and paired with `resumeSessionId`;
+   *  this one stays on the card, visible, and is NOT cleared on routing.
+   *  Only a manual Run (Orchestrator.runNow) clears it, as the person
+   *  overriding their own earlier choice. */
+  notBefore?: string;
   /** The `claude -p` session a session limit (429) cut off, set with
    *  `retryAfter` by Board.scheduleRetry. The retry runs `claude
    *  --resume <id>` and carries on from where it stopped instead of

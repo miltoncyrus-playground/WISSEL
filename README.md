@@ -141,6 +141,14 @@ in the error text instead of failing it (`docs/SDD-pipeline-automation.md`
 of starting over, and falls back to a fresh run when that session can't
 be found.
 
+A card can be given a start time: `notBefore` (ISO with a zone, e.g.
+`2026-10-12T23:00:00Z`, in the future, at most 30 days out) on
+`POST /tasks`, or `POST /tasks/:id/not-before {notBefore}` on a card in
+inbox or ready that isn't routed yet (`null` clears it; 409 otherwise).
+The card is not routed or run before then, and starts on time on a quiet
+board. **Run** on the card starts it anyway and clears the start time
+(`src/core/not-before.ts`, `docs/SDD-schedules.md` §4).
+
 `bun run usage:report [--since 2026-10-10] [--agent implementer]` shows
 where agent spend goes: per agent the runs, cost, turns, context per turn
 and output, and what runs cut off by a session limit cost
