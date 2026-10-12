@@ -1,6 +1,7 @@
 {
   "name": "wissel-app",
   "private": true,
+  "license": "MIT",
   "version": "0.0.0",
   "type": "module",
   "description": "The wissel app: chat-first Ask, Feed, Board, Listen and You. See docs/SDD-wissel-app.md. Served at /app by src/api/server.ts.",

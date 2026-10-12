@@ -440,3 +440,7 @@ The checked-in file registers none.
 - `docs/SDD-wissel-app.md`: the app at `/app`.
 - `docs/SDD-memory-curator.md`, `docs/SDD-memory-injection-toggle.md`: memory.
 - `docs/SDD-task-archiving.md`, `docs/SDD-version-info.md`, `docs/SDD-live-task-output.md`.
+
+## License
+
+MIT. Copyright (c) 2026 Milton Cyrus. See [LICENSE](LICENSE).

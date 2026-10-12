@@ -1,6 +1,7 @@
 {
   "name": "pipeline-editor",
   "private": true,
+  "license": "MIT",
   "version": "0.0.0",
   "type": "module",
   "description": "Canvas editor for authoring wissel PipelineDefs — see docs/SDD-pipelines.md §3.2. Served at /pipelines/edit by src/api/server.ts.",
