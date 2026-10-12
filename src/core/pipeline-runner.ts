@@ -36,6 +36,9 @@ export interface PipelineRunnerContext {
    *  run settles; Ask (src/services/concierge.ts) needs the run id
    *  straight away to show it as a live chip. */
   onRootCreated?: (root: TaskCard) => void;
+  /** Set on the root card only: the schedule that fired this run
+   *  (docs/SDD-schedules.md §3.2). */
+  scheduleId?: string;
 }
 
 /** The steps of `pipelineDef` whose agent needs a real repo: anything
@@ -59,6 +62,54 @@ export function stepsNeedingRepo(pipelineDef: PipelineDef, registry: Registry): 
 /** Thrown by startPipelineRun for a repo-less run of a pipeline that has
  *  a write/bash step, before anything is created on the board. */
 export class PipelineRepoRequiredError extends Error {}
+
+/** Thrown by runPipelineNow for an id with no stored pipeline. */
+export class PipelineNotFoundError extends Error {}
+
+/** What runPipelineNow needs besides the run's own arguments: the board,
+ *  the registry, and the context every step runs with. */
+export interface PipelineRunDeps extends Omit<PipelineRunnerContext, "onRootCreated" | "scheduleId"> {
+  board: Board;
+  registry: Registry;
+}
+
+export interface RunPipelineNowOptions {
+  onRootCreated?: (root: TaskCard) => void;
+  scheduleId?: string;
+  /** POST /pipelines/:id/run's rule: a pipeline with a write/bash step
+   *  needs an input as well as a repo. Ask and schedules don't ask it. */
+  requireInput?: boolean;
+}
+
+/**
+ * The one way a pipeline run starts: POST /pipelines/:id/run, Ask's
+ * run_pipeline and a schedule's fire (docs/SDD-schedules.md §3.4) all
+ * call this, so they share the lookup, the stepsNeedingRepo check, the
+ * executors and the harnesses. Throws PipelineNotFoundError or
+ * PipelineRepoRequiredError before any card exists; otherwise resolves
+ * like startPipelineRun, when the run settles.
+ */
+export async function runPipelineNow(
+  deps: PipelineRunDeps,
+  pipelineId: string,
+  repo: string | undefined,
+  input: string | undefined,
+  opts: RunPipelineNowOptions = {},
+): Promise<TaskCard> {
+  const pipeline = await deps.pipelines.get(pipelineId);
+  if (!pipeline) throw new PipelineNotFoundError(`pipeline not found: ${pipelineId}`);
+  const needing = stepsNeedingRepo(pipeline, deps.registry);
+  if (opts.requireInput && needing.length > 0 && (!repo || !input)) {
+    const names = needing.map((s) => `"${s.name}" (${s.agentId})`).join(", ");
+    throw new PipelineRepoRequiredError(`repo and input are required: this pipeline has steps with file/bash access: ${names}`);
+  }
+  const { board, registry, ...ctx } = deps;
+  return startPipelineRun(board, registry, pipeline, repo || undefined, input ?? "", {
+    ...ctx,
+    ...(opts.onRootCreated ? { onRootCreated: opts.onRootCreated } : {}),
+    ...(opts.scheduleId ? { scheduleId: opts.scheduleId } : {}),
+  });
+}
 
 /**
  * Starts a pipeline run: creates the root pipeline task, then drives
@@ -99,7 +150,14 @@ export async function startPipelineRun(
     }
     repo = undefined; // "" and undefined both mean no repo.
   }
-  const root = await board.create({ title: `Pipeline: ${pipelineDef.name}`, body: input, labels: [], repo, pipelineId: pipelineDef.id });
+  const root = await board.create({
+    title: `Pipeline: ${pipelineDef.name}`,
+    body: input,
+    labels: [],
+    repo,
+    pipelineId: pipelineDef.id,
+    ...(ctx.scheduleId ? { scheduleId: ctx.scheduleId } : {}),
+  });
   ctx.onRootCreated?.(root);
   await board.move(root.id, "running");
 

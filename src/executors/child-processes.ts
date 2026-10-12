@@ -115,6 +115,16 @@ export async function killTrackedChildren(opts: { graceMs?: number; log?: (line:
 
 const SIGNAL_EXIT_CODES: Record<"SIGTERM" | "SIGINT", number> = { SIGTERM: 143, SIGINT: 130 };
 
+const shutdownHooks = new Set<() => void>();
+
+/** Runs `stop` first thing on SIGTERM/SIGINT, before any child is
+ *  killed: an in-process timer (the schedule ticker) must not start a new
+ *  run while the server is going down. Returns the unregister. */
+export function onShutdown(stop: () => void): () => void {
+  shutdownHooks.add(stop);
+  return () => shutdownHooks.delete(stop);
+}
+
 /**
  * The server's SIGTERM/SIGINT handler, returned rather than installed so
  * a test can drive it with a fake `exit`. Kills every tracked child (see
@@ -131,6 +141,13 @@ export function createShutdownHandler(opts: { exit?: (code: number) => void; gra
   return (signal: "SIGTERM" | "SIGINT"): Promise<void> => {
     if (inProgress) return inProgress;
     inProgress = (async () => {
+      for (const stop of shutdownHooks) {
+        try {
+          stop();
+        } catch (e) {
+          log(`shutdown: a stop hook failed: ${(e as Error).message}`);
+        }
+      }
       const count = trackedChildren().length;
       log(`shutdown: ${signal} received, stopping ${count} agent process(es)`);
       await killTrackedChildren({ graceMs: opts.graceMs, log });

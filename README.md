@@ -347,6 +347,51 @@ link; it shows "Making audio..." while the step runs, and falls back to
 the browser's Read aloud when there is no audio. If Kokoro is down the
 step fails with the reason; Quick read and the script still show.
 
+## Schedules
+
+A schedule runs a stored pipeline, or creates a card from a task
+template, on a 5-field cron in an IANA timezone (`docs/SDD-schedules.md`).
+It lives in the board's SQLite DB (`src/services/schedules.ts`), and
+an in-process ticker (`src/core/schedule-runner.ts`) checks every 30 s,
+at start and right after any change, so a new time takes effect with no
+restart. When a schedule is due the ticker first moves `nextRunAt` to the
+next run after now (missed runs collapse into one; a crash can lose a run
+but never doubles one), then:
+
+- more than `catchUpHours` late (default 12; `0` = never catch up, with a
+  one-minute grace for the tick): skipped, `skipped-stale`;
+- its last run (`lastRunId`) still open (a pipeline root not done or
+  failed, a task card not done, failed or archived): skipped,
+  `skipped-overlap`;
+- otherwise a pipeline runs on the same path as `POST /pipelines/:id/run`
+  (`runPipelineNow`), or a task card is created with `scheduleId` and the
+  normal sweep picks it up with all its usual limits: `started`;
+- a missing pipeline, a missing repo or a template that no longer passes
+  the `POST /tasks` checks: `error`, `lastError` set, still enabled.
+  Deleting a pipeline disables its schedules with `lastError: "pipeline
+  deleted"`.
+
+API (every validation failure is a 400 `{error}` with a plain message,
+an unknown id is a 404):
+
+| Endpoint | What it does |
+|---|---|
+| `GET /schedules` | Every schedule, plus `cadence` ("every day at 06:00") and `lastRunStatus` (status of the `lastRunId` card, or `null`). |
+| `POST /schedules` | Create: `name`, `kind` (`pipeline` or `task`), `cron`, `timezone` (default `Europe/Madrid`), optional `enabled` (default true), `catchUpHours`, `repo`; `pipelineId` and `input` for a pipeline, `taskTemplate` `{title, body, labels, repo?, harnessOverride?, model?}` for a task. 201. |
+| `GET /schedules/:id` | One schedule, same shape as the list. |
+| `PATCH /schedules/:id` | Any of `name`, `cron`, `timezone`, `enabled`, `input`, `repo`, `taskTemplate`, `catchUpHours`. A new cron, timezone or `enabled` recomputes `nextRunAt`. `kind` and `pipelineId` can't change. |
+| `DELETE /schedules/:id` | 204. Past run cards stay. |
+| `POST /schedules/:id/run-now` | Fires now through the same code, leaves `nextRunAt` alone: `{runId}`. 409 while the last run is open, 400 if it can't start. |
+| `GET /schedules/preview?cron=&timezone=` | `{valid, error?, cadence, next}` with the next 5 runs as ISO UTC, for editors. |
+
+Every fire, skip and error logs one line (`schedule: "<name>" fired, run
+<id>`, `skipped (overlap)`, `skipped (stale)`, `error: ...`) and appends
+one telemetry event to `WISSEL_TELEMETRY_PATH`: `{"type": "schedule",
+"scheduleId", "name", "outcome", "runId"?, "error"?, "at"}`, where
+`outcome` is `started`, `skipped-overlap`, `skipped-stale` or `error`.
+On start the server logs `schedules: N enabled, next: <name> at <local
+time>`.
+
 ## Configuration
 
 ### Environment variables
