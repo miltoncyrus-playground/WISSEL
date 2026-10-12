@@ -5,6 +5,7 @@
 
 import { needsYouReason, type LaneId } from "./lanes";
 import { trackOf } from "./podcasts";
+import { startsChip } from "./schedules";
 import type { Track } from "./player";
 import type { AskResult, ChatMessage, ControlExecuted, ExecutedAction, PendingView, PipelineDef, PodcastEpisode, TaskCard, TaskStatus } from "./types";
 
@@ -56,8 +57,10 @@ export function toneOf(t: TaskCard): ChipTone {
   return "queued";
 }
 
-export function statusTextOf(t: TaskCard): string {
+export function statusTextOf(t: TaskCard, now: number = Date.now()): string {
   const word = STATUS_WORDS[t.status] ?? t.status;
+  // A queued card waiting for its start time says when it starts.
+  if (word === "Queued") return startsChip(t.notBefore, now) ?? word;
   if (word !== "Needs you") return word;
   const why = needsYouReason(t);
   return why === t.status ? word : `${word}: ${why}`;

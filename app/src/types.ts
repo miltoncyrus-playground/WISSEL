@@ -36,6 +36,32 @@ export interface TaskCard {
   pipelineId?: string;
   pipelineRunId?: string;
   pipelineStepId?: string;
+  /** "Start at" (docs/SDD-schedules.md §4): ISO UTC; the sweep leaves
+   *  the card alone until then. */
+  notBefore?: string;
+  /** The schedule that made it, when one did. */
+  scheduleId?: string;
+}
+
+/** GET /schedules (docs/SDD-schedules.md §3.5). Mirrors
+ *  src/services/board-actions.ts's ScheduleView: ScheduleDef plus its
+ *  cadence in words and its last run card's status. */
+export interface Schedule {
+  id: string;
+  name: string;
+  kind: "pipeline" | "task";
+  pipelineId?: string;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+  /** ISO UTC; absent while disabled. */
+  nextRunAt?: string;
+  lastRunAt?: string;
+  lastOutcome?: "started" | "skipped-overlap" | "skipped-stale" | "error";
+  lastError?: string;
+  lastRunId?: string;
+  cadence: string;
+  lastRunStatus: TaskStatus | null;
 }
 
 export interface PipelineDef {
@@ -144,7 +170,7 @@ export interface BoardEvent {
  *  src/services/concierge-actions.ts (DroppedAction) and
  *  src/services/concierge.ts (AskEvent, AskResult, PendingResult). */
 export interface ControlTarget {
-  kind: "card" | "harness" | "mcp-server" | "pipeline" | "project";
+  kind: "card" | "harness" | "mcp-server" | "pipeline" | "project" | "schedule";
   id: string;
   label: string;
 }

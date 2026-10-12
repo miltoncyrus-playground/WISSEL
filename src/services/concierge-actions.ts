@@ -6,6 +6,8 @@
 
 import type { TaskCard } from "../core/types.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
+import { validateNotBefore } from "../core/not-before.ts";
+import { describeCadence, validateSchedule } from "../core/schedule-time.ts";
 import { cardSettingsRefusal, escalationRefusal, mcpApprovalRefusal, worktreeRefusal } from "./board-actions.ts";
 
 /** Ask's first three: make a card, run a pipeline, point at a card. */
@@ -42,7 +44,17 @@ export const OTHER_CONTROL_TYPES = [
   "trust_mcp_tool",
   "delete_pipeline",
   "remove_project",
+  "create_schedule",
+  "update_schedule",
+  "set_schedule_enabled",
+  "run_schedule_now",
+  "delete_schedule",
 ] as const;
+
+/** The schedule actions (docs/SDD-schedules.md §3.9), each running the
+ *  `/schedules` route's own function (board-actions.ts). */
+export const SCHEDULE_ACTION_TYPES = ["create_schedule", "update_schedule", "set_schedule_enabled", "run_schedule_now", "delete_schedule"] as const;
+export type ScheduleActionType = (typeof SCHEDULE_ACTION_TYPES)[number];
 
 export const CONTROL_ACTION_TYPES = [...CARD_ACTION_TYPES, ...OTHER_CONTROL_TYPES] as const;
 export type ControlActionType = (typeof CONTROL_ACTION_TYPES)[number];
@@ -80,6 +92,13 @@ export const ACTION_TIERS: Record<ControlActionType, Tier> = {
   grant_allowed_tools: "B",
   trust_mcp_tool: "B",
   remove_project: "B",
+  // Recurring spend: a new schedule fires on its own from then on.
+  create_schedule: "B",
+  update_schedule: "A",
+  set_schedule_enabled: "A",
+  // Same as run_pipeline: one run, started on purpose.
+  run_schedule_now: "A",
+  delete_schedule: "B",
 };
 
 /** Card actions that take `where: {status}` for "every <status> card". */
@@ -117,7 +136,7 @@ export const MOVE_TARGETS = ["inbox", "ready", "review", "done", "failed"] as co
 const STATUSES: readonly TaskCard["status"][] = ["inbox", "ready", "running", "dispatched", "review", "done", "failed", "no-match", "pending-review", "escalated"];
 
 export type BasicAction =
-  | { type: "create_task"; title: string; body: string; labels: string[]; repo?: string }
+  | { type: "create_task"; title: string; body: string; labels: string[]; repo?: string; notBefore?: string }
   | { type: "run_pipeline"; pipelineId: string; name: string; input?: string }
   | { type: "show_task"; id: string };
 
@@ -144,7 +163,31 @@ export type OtherControl =
   | { type: "set_mcp_server_enabled"; tier: Tier; serverId: string; enabled: boolean }
   | { type: "trust_mcp_tool"; tier: Tier; serverId: string; tool: string; trust: "auto" | "approval-required" }
   | { type: "delete_pipeline"; tier: Tier; pipelineId: string; name: string }
-  | { type: "remove_project"; tier: Tier; projectId: string; name: string };
+  | { type: "remove_project"; tier: Tier; projectId: string; name: string }
+  | ScheduleControl;
+
+/** A schedule action, checked: the schedule resolved to its id, a new
+ *  cron and timezone already through validateSchedule. `name` is the
+ *  schedule's, for the reply. */
+export type ScheduleControl =
+  | {
+      type: "create_schedule";
+      tier: Tier;
+      name: string;
+      kind: "pipeline" | "task";
+      /** kind "pipeline": what it runs. */
+      pipelineId?: string;
+      pipelineName?: string;
+      input?: string;
+      /** kind "task": the card it makes, checked like create_task. */
+      taskTemplate?: { title: string; body: string; labels: string[]; repo?: string };
+      cron: string;
+      timezone: string;
+    }
+  | { type: "update_schedule"; tier: Tier; scheduleId: string; name: string; cron?: string; timezone?: string; input?: string | null }
+  | { type: "set_schedule_enabled"; tier: Tier; scheduleId: string; name: string; enabled: boolean }
+  | { type: "run_schedule_now"; tier: Tier; scheduleId: string; name: string }
+  | { type: "delete_schedule"; tier: Tier; scheduleId: string; name: string };
 
 export type ControlAction = CardControl | OtherControl;
 export type ValidAction = BasicAction | ControlAction;
@@ -185,6 +228,18 @@ export interface ContextMcpServer {
   tools: { name: string; trust: "auto" | "approval-required" }[];
 }
 
+/** A schedule as Ask's validator sees it (ScheduleDef, trimmed). */
+export interface ContextSchedule {
+  id: string;
+  name: string;
+  kind: "pipeline" | "task";
+  pipelineId?: string;
+  input?: string;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+}
+
 /** What validation checks against: the board as it is right now. */
 export interface ActionContext {
   /** Registered projects (src/services/projects.ts). */
@@ -214,6 +269,11 @@ export interface ActionContext {
   /** False when the server gave Ask no board controls: control actions
    *  are then dropped with a reason. */
   controlsEnabled?: boolean;
+  /** Every schedule (docs/SDD-schedules.md §3.9). */
+  schedules?: ContextSchedule[];
+  /** The clock a start time (notBefore) and a cadence's 5-minute gap
+   *  are checked against; the real clock when left out. */
+  now?: Date;
 }
 
 /** Matches a fenced ```wissel-actions block. Global so the last one wins,
@@ -286,6 +346,11 @@ const norm = (s: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+/** Matches `n` (already normalized) as whole words in a normalized name. */
+function wholeWords(n: string): RegExp {
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}\\p{N}])`, "u");
+}
+
 /** A card a title can name: not a pipeline step (its run's root stands
  *  for it), not replaced by a retry, and archived only when `archived`. */
 function nameable(t: TaskCard, archived: boolean): boolean {
@@ -314,7 +379,7 @@ export function resolveCard(ref: string, tasks: readonly TaskCard[], archived = 
   if (exact.length === 1) return { ok: true, task: exact[0]! };
   if (exact.length > 1) return { ok: false, reason: "ambiguous", candidates: exact };
   // Whole words only: "all" must not name "Install the linter".
-  const words = new RegExp(`(^|[^\\p{L}\\p{N}])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}($|[^\\p{L}\\p{N}])`, "u");
+  const words = wholeWords(n);
   const contains = pool.filter((t) => words.test(norm(t.title)));
   if (contains.length === 1) return { ok: true, task: contains[0]! };
   return { ok: false, reason: contains.length ? "ambiguous" : "none", candidates: contains };
@@ -441,7 +506,15 @@ function checkCreateTask(a: Record<string, unknown>, ctx: ActionContext): Checke
     const agent = ctx.repoRequiredBy(labels);
     if (agent) return refuse(`it would go to ${agent}, which needs a repo, and none was given`);
   }
-  return { ok: true, action: { type: "create_task", title, body, labels, ...(repo ? { repo } : {}) } };
+  // "Start this tonight at 11" (docs/SDD-schedules.md §4): the same check
+  // POST /tasks runs, stored in UTC.
+  let notBefore: string | undefined;
+  if (a.notBefore !== undefined && a.notBefore !== null && a.notBefore !== "") {
+    const start = validateNotBefore(a.notBefore, ctx.now ?? new Date());
+    if (!start.ok) return refuse(start.error);
+    notBefore = start.notBefore;
+  }
+  return { ok: true, action: { type: "create_task", title, body, labels, ...(repo ? { repo } : {}), ...(notBefore ? { notBefore } : {}) } };
 }
 
 function checkRunPipeline(a: Record<string, unknown>, ctx: ActionContext): Checked {
@@ -488,6 +561,11 @@ export const ACTION_VERBS: Record<ControlActionType, string> = {
   trust_mcp_tool: "change the trust of",
   delete_pipeline: "delete pipeline",
   remove_project: "remove project",
+  create_schedule: "create schedule",
+  update_schedule: "change schedule",
+  set_schedule_enabled: "change schedule",
+  run_schedule_now: "run schedule",
+  delete_schedule: "delete schedule",
 };
 
 /** The card action's own fields (status, dependsOn, harness, tools),
@@ -580,7 +658,135 @@ function findMcpServer(ref: string, ctx: ActionContext): ContextMcpServer | unde
   return all.find((s) => s.id.toLowerCase() === r) ?? all.find((s) => s.label.toLowerCase() === r);
 }
 
+// ---------- schedules (docs/SDD-schedules.md §3.9) ----------
+
+export type ScheduleMatch = { ok: true; schedule: ContextSchedule } | { ok: false; reason: "none" | "ambiguous"; candidates: ContextSchedule[] };
+
+/**
+ * The one schedule `ref` names: an id or an id prefix of 8+ characters,
+ * an exact name (case and quotes ignored), else the one name that
+ * contains it as whole words ("world news" names "World news podcast").
+ * Zero or several matches is not a match, the same as resolveCard.
+ */
+export function resolveSchedule(ref: string, schedules: readonly ContextSchedule[]): ScheduleMatch {
+  const r = ref.trim();
+  if (ID_REF.test(r)) {
+    const lower = r.toLowerCase();
+    const hits = schedules.filter((s) => s.id.toLowerCase().startsWith(lower));
+    if (hits.length === 1) return { ok: true, schedule: hits[0]! };
+    if (hits.length > 1) return { ok: false, reason: "ambiguous", candidates: hits };
+  }
+  const n = norm(r);
+  if (n.length < MIN_TITLE_REF) return { ok: false, reason: "none", candidates: [] };
+  const exact = schedules.filter((s) => norm(s.name) === n);
+  if (exact.length === 1) return { ok: true, schedule: exact[0]! };
+  if (exact.length > 1) return { ok: false, reason: "ambiguous", candidates: exact };
+  const words = wholeWords(n);
+  const contains = schedules.filter((s) => words.test(norm(s.name)));
+  if (contains.length === 1) return { ok: true, schedule: contains[0]! };
+  return { ok: false, reason: contains.length ? "ambiguous" : "none", candidates: contains };
+}
+
+function scheduleQuestion(ref: string, match: Extract<ScheduleMatch, { ok: false }>, verb: string): string {
+  if (match.reason === "none") return `Which schedule should I ${verb}? No schedule matches "${ref.trim()}".`;
+  const shown = match.candidates.slice(0, 5).map((s) => `'${s.name}'`);
+  return `Which schedule should I ${verb}: ${shown.slice(0, -1).join(", ")}${shown.length > 1 ? " or " : ""}${shown[shown.length - 1]}?`;
+}
+
+/** A trimmed string, or the value as it came (for validateSchedule to
+ *  refuse with its own words). */
+const trimmed = (v: unknown) => (typeof v === "string" ? v.trim() : v);
+
+/** A pipeline input: undefined is "not given", null clears it. */
+function inputOf(v: unknown): { ok: true; input: string | null | undefined } | { ok: false; reason: string } {
+  if (v === undefined) return { ok: true, input: undefined };
+  if (v === null) return { ok: true, input: null };
+  if (typeof v !== "string") return { ok: false, reason: "the input must be text" };
+  const input = v.trim();
+  if (input.length > MAX_BODY_LENGTH) return { ok: false, reason: `the input is longer than ${MAX_BODY_LENGTH} characters` };
+  return { ok: true, input: input === "" ? null : input };
+}
+
+/**
+ * The model proposes cron and timezone; validateSchedule (the same check
+ * the store and POST /schedules run) decides. A bad one is refused with
+ * its message, never repaired: no seconds field dropped, no gap
+ * stretched, no default zone filled in for a create.
+ */
+function checkSchedule(type: ScheduleActionType, a: Record<string, unknown>, ctx: ActionContext): Checked {
+  const tier = ACTION_TIERS[type];
+  const now = ctx.now ?? new Date();
+  if (type === "create_schedule") {
+    if (!nonEmptyString(a.timezone)) return refuse("say the timezone, an IANA name like Europe/Madrid");
+    const cron = trimmed(a.cron);
+    const timezone = a.timezone.trim();
+    const cadence = validateSchedule({ cron, timezone }, now);
+    if (!cadence.ok) return refuse(cadence.error);
+    if (a.name !== undefined && !nonEmptyString(a.name)) return refuse("the name must be text");
+    const given = nonEmptyString(a.name) ? a.name.trim() : undefined;
+    if (given && given.length > MAX_TITLE_LENGTH) return refuse(`the name is longer than ${MAX_TITLE_LENGTH} characters`);
+    const when = describeCadence(cron as string);
+    if (a.pipeline !== undefined && a.task !== undefined) return refuse("a schedule runs a pipeline or makes a card, not both");
+    if (nonEmptyString(a.pipeline)) {
+      const r = a.pipeline.trim();
+      const p = ctx.pipelines.find((x) => x.id === r) ?? ctx.pipelines.find((x) => x.name.toLowerCase() === r.toLowerCase());
+      if (!p) return refuse(`there is no pipeline called "${r}"`);
+      if (ctx.pipelineNeedsRepo(p.id)) return refuse(`"${p.name}" needs a repo; schedule it from the board`);
+      const inp = inputOf(a.input);
+      if (!inp.ok) return refuse(inp.reason);
+      const name = given ?? `${p.name}, ${when}`;
+      return { ok: true, action: { type, tier, name, kind: "pipeline", pipelineId: p.id, pipelineName: p.name, ...(inp.input ? { input: inp.input } : {}), cron: cron as string, timezone } };
+    }
+    if (isRecord(a.task)) {
+      // The card it makes meets create_task's own checks (labels, repo).
+      const card = checkCreateTask({ ...a.task, notBefore: undefined }, ctx);
+      if (!card.ok) return { ok: false, drop: { ...card.drop, reason: `the card it makes: ${card.drop.reason}` } };
+      const { title, body, labels, repo } = card.action as Extract<BasicAction, { type: "create_task" }>;
+      const name = given ?? `${title}, ${when}`;
+      return { ok: true, action: { type, tier, name, kind: "task", taskTemplate: { title, body, labels, ...(repo ? { repo } : {}) }, cron: cron as string, timezone } };
+    }
+    return refuse('say what it runs: "pipeline" (a pipeline name) or "task" (a card)');
+  }
+
+  const verb = type === "update_schedule" ? "change" : type === "set_schedule_enabled" ? (a.enabled === false ? "pause" : "turn on") : type === "run_schedule_now" ? "run" : "delete";
+  const ref = a.schedule ?? a.id;
+  if (!nonEmptyString(ref)) return refuse(`no schedule named; say which schedule to ${verb}`, { question: `Which schedule should I ${verb}?` });
+  const match = resolveSchedule(ref, ctx.schedules ?? []);
+  if (!match.ok) return refuse(`no single schedule matches "${ref.trim()}"`, { question: scheduleQuestion(ref, match, verb) });
+  const s = match.schedule;
+  const base = { tier, scheduleId: s.id, name: s.name };
+  const refused = (why: string) => refuse(why, { text: `Did not ${verb} schedule '${s.name}': ${why}.` });
+
+  if (type === "set_schedule_enabled") {
+    if (typeof a.enabled !== "boolean") return refuse("say enabled: true or false");
+    if (s.enabled === a.enabled) return refused(`it is already ${s.enabled ? "on" : "paused"}`);
+    return { ok: true, action: { type, ...base, enabled: a.enabled } };
+  }
+  if (type === "run_schedule_now" || type === "delete_schedule") return { ok: true, action: { type, ...base } };
+
+  // update_schedule: time and days (both in cron), timezone, input.
+  // What is left out keeps its value; the result is checked whole.
+  const cron = a.cron === undefined ? undefined : trimmed(a.cron);
+  const timezone = a.timezone === undefined ? undefined : trimmed(a.timezone);
+  const inp = inputOf(a.input);
+  if (!inp.ok) return refused(inp.reason);
+  if (inp.input !== undefined && s.kind !== "pipeline") return refused("only a pipeline schedule takes an input");
+  if (cron === undefined && timezone === undefined && inp.input === undefined) return refused("say what to change: cron, timezone or input");
+  if (cron !== undefined || timezone !== undefined) {
+    const cadence = validateSchedule({ cron: cron ?? s.cron, timezone: timezone ?? s.timezone }, now);
+    if (!cadence.ok) return refused(cadence.error);
+  }
+  const changes = {
+    ...(cron !== undefined && cron !== s.cron ? { cron: cron as string } : {}),
+    ...(timezone !== undefined && timezone !== s.timezone ? { timezone: timezone as string } : {}),
+    ...(inp.input !== undefined && inp.input !== (s.input ?? null) ? { input: inp.input } : {}),
+  };
+  if (Object.keys(changes).length === 0) return refused(`it already runs ${describeCadence(s.cron)} (${s.timezone})${inp.input !== undefined ? " with that input" : ""}`);
+  return { ok: true, action: { type, ...base, ...changes } };
+}
+
 function checkOther(type: (typeof OTHER_CONTROL_TYPES)[number], a: Record<string, unknown>, ctx: ActionContext): Checked {
+  if ((SCHEDULE_ACTION_TYPES as readonly string[]).includes(type)) return checkSchedule(type as ScheduleActionType, a, ctx);
   const tier = ACTION_TIERS[type];
   if (type === "set_harness_enabled" || type === "set_harness_model") {
     if (!nonEmptyString(a.harness)) return refuse("no harness named");
@@ -626,7 +832,7 @@ function checkOther(type: (typeof OTHER_CONTROL_TYPES)[number], a: Record<string
   const r = a.project.trim();
   const p = ctx.projects.find((x) => x.id === r || x.path === r) ?? ctx.projects.find((x) => x.name.toLowerCase() === r.toLowerCase());
   if (!p || !p.id) return refuse(`there is no project called "${r}"`);
-  return { ok: true, action: { type, tier, projectId: p.id, name: p.name } };
+  return { ok: true, action: { type: "remove_project", tier, projectId: p.id, name: p.name } };
 }
 
 // ---------- never from chat ----------
@@ -658,6 +864,10 @@ export function isControl(a: ValidAction): a is ControlAction {
 
 export function isCardControl(a: ControlAction): a is CardControl {
   return "taskIds" in a;
+}
+
+export function isScheduleControl(a: ControlAction): a is ScheduleControl {
+  return (SCHEDULE_ACTION_TYPES as readonly string[]).includes(a.type);
 }
 
 /** A control action that waits for a Confirm tap: Tier B, or a batch
@@ -740,9 +950,38 @@ export function recheckControl(action: ControlAction, ctx: ActionContext): { act
             ? { type: action.type, server: action.serverId, tool: action.tool, trust: action.trust }
             : action.type === "delete_pipeline"
               ? { type: action.type, pipeline: action.pipelineId }
-              : { type: action.type, project: action.projectId };
+              : action.type === "remove_project"
+                ? { type: action.type, project: action.projectId }
+                : scheduleRaw(action);
   const checked = checkOther(action.type, raw, ctx);
   return checked.ok ? { action: checked.action as ControlAction, refused: [] } : { action: null, refused: [{ reason: checked.drop.reason }] };
+}
+
+/** A checked schedule action back in the model's words, so a recheck
+ *  runs the very same checks on the schedules as they are now. */
+function scheduleRaw(action: ScheduleControl): Record<string, unknown> {
+  switch (action.type) {
+    case "create_schedule":
+      return {
+        type: action.type,
+        name: action.name,
+        cron: action.cron,
+        timezone: action.timezone,
+        ...(action.kind === "pipeline" ? { pipeline: action.pipelineId, ...(action.input ? { input: action.input } : {}) } : { task: action.taskTemplate }),
+      };
+    case "update_schedule":
+      return {
+        type: action.type,
+        schedule: action.scheduleId,
+        ...(action.cron !== undefined ? { cron: action.cron } : {}),
+        ...(action.timezone !== undefined ? { timezone: action.timezone } : {}),
+        ...(action.input !== undefined ? { input: action.input } : {}),
+      };
+    case "set_schedule_enabled":
+      return { type: action.type, schedule: action.scheduleId, enabled: action.enabled };
+    default:
+      return { type: action.type, schedule: action.scheduleId };
+  }
 }
 
 const ACTION_WORDS: Record<string, string> = {

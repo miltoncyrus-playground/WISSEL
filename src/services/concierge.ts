@@ -34,6 +34,7 @@ import {
 import { executeControl, pendingLines, type ControlDeps } from "./concierge-control.ts";
 import { pendingView, REFUSAL_TEXT, type SqlitePendingActionStore } from "./pending-actions.ts";
 import { readModelsCache } from "../core/model-refresh-scheduler.ts";
+import { listSchedules } from "./board-actions.ts";
 import type { ChatMessage, ControlExecuted, Conversation, ExecutedAction, PendingView, SqliteConversationStore } from "./conversations.ts";
 
 export const CONCIERGE_AGENT_ID = "concierge";
@@ -137,6 +138,7 @@ export function createConcierge(deps: ConciergeDeps) {
     const worktrees = new Set(worktreeIds ?? (await worktreeIdsOf(tasks)));
     const controls = deps.controls && deps.pending ? deps.controls : undefined;
     const models = controls ? await readModelsCache(controls.harness.modelsCachePath) : {};
+    const schedules = controls ? await controls.schedules.schedules.list() : [];
     // Same rule as POST /tasks: a confident route to an agent with file
     // or bash access needs a repo. Routing is async, validation is not,
     // so every proposed card's labels are routed here first.
@@ -166,6 +168,17 @@ export function createConcierge(deps: ConciergeDeps) {
       harnesses: controls ? controls.harness.harnesses.all().map((h) => ({ id: h.id, label: h.label, enabled: h.enabled, ...(h.model ? { model: h.model } : {}) })) : [],
       mcpServers: controls ? controls.mcp.mcpServers.all().map((s) => ({ id: s.id, label: s.label, enabled: s.enabled, tools: s.tools })) : [],
       availableModels: (id) => models[id]?.models ?? [],
+      schedules: schedules.map((s) => ({
+        id: s.id,
+        name: s.name,
+        kind: s.kind,
+        ...(s.pipelineId ? { pipelineId: s.pipelineId } : {}),
+        ...(s.input ? { input: s.input } : {}),
+        cron: s.cron,
+        timezone: s.timezone,
+        enabled: s.enabled,
+      })),
+      now: now(),
     };
   }
 
@@ -221,7 +234,13 @@ export function createConcierge(deps: ConciergeDeps) {
   async function execute(action: BasicAction): Promise<ExecutedAction> {
     try {
       if (action.type === "create_task") {
-        const task = await deps.board.create({ title: action.title, body: action.body, labels: action.labels, ...(action.repo ? { repo: action.repo } : {}) });
+        const task = await deps.board.create({
+          title: action.title,
+          body: action.body,
+          labels: action.labels,
+          ...(action.repo ? { repo: action.repo } : {}),
+          ...(action.notBefore ? { notBefore: action.notBefore } : {}),
+        });
         return { type: "create_task", ok: true, taskId: task.id, title: task.title };
       }
       if (action.type === "run_pipeline") {
@@ -269,6 +288,7 @@ export function createConcierge(deps: ConciergeDeps) {
         ? {
             harnesses: controls.harness.harnesses.all().map((h) => ({ id: h.id, label: h.label, enabled: h.enabled, ...(h.model ? { model: h.model } : {}) })),
             mcpServers: controls.mcp.mcpServers.all().map((s) => ({ id: s.id, label: s.label, enabled: s.enabled, tools: s.tools })),
+            schedules: await listSchedules(controls.schedules),
           }
         : {}),
     });

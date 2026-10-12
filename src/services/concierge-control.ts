@@ -16,6 +16,8 @@ import { grantAndRetry } from "../core/orchestrator.ts";
 import {
   abandonEscalation,
   approveMcpRequest,
+  createSchedule,
+  deleteSchedule,
   denyMcpRequest,
   disableHarness,
   disableMcpServer,
@@ -23,15 +25,19 @@ import {
   enableHarness,
   enableMcpServer,
   mergeTask,
+  runScheduleNow,
   setAllowedTools,
   setHarnessDefaultModel,
   setMcpToolTrust,
   setTaskHarnessOverride,
+  updateSchedule,
   type HarnessControlDeps,
   type McpControlDeps,
   type Outcome,
+  type ScheduleControlDeps,
 } from "./board-actions.ts";
-import { ACTION_VERBS, cardName, isCardControl, recheckControl, type ActionContext, type CardControl, type ControlAction, type OtherControl } from "./concierge-actions.ts";
+import { describeCadence } from "../core/schedule-time.ts";
+import { ACTION_VERBS, cardName, isCardControl, isScheduleControl, recheckControl, type ActionContext, type CardControl, type ControlAction, type OtherControl, type ScheduleControl } from "./concierge-actions.ts";
 import type { ControlExecuted, ControlTarget } from "./conversations.ts";
 
 /** What Ask's control actions run on: the same objects createApp gives
@@ -46,6 +52,8 @@ export interface ControlDeps {
   mcp: McpControlDeps;
   pipelines: PipelineStore;
   projects: ProjectStore;
+  /** What the `/schedules` routes run on (docs/SDD-schedules.md §3.9). */
+  schedules: ScheduleControlDeps;
 }
 
 /** Past tense, for what was done. */
@@ -95,8 +103,35 @@ export function otherSentence(action: OtherControl, error?: string): string {
   return error ? `Did not ${infinitive}: ${error}.` : past;
 }
 
+/** [what it would do, what it did] for a schedule action. */
+function scheduleWords(action: ScheduleControl): [string, string] {
+  const name = `'${action.name}'`;
+  switch (action.type) {
+    case "create_schedule": {
+      const what = action.kind === "pipeline" ? `runs ${action.pipelineName}` : `makes the card '${action.taskTemplate!.title}'`;
+      const when = `${describeCadence(action.cron)} (${action.timezone})`;
+      return [`create schedule ${name}: ${what} ${when}`, `Created schedule ${name}: ${what} ${when}.`];
+    }
+    case "update_schedule": {
+      const parts = [
+        ...(action.cron !== undefined ? [describeCadence(action.cron)] : []),
+        ...(action.timezone !== undefined ? [`in ${action.timezone}`] : []),
+        ...(action.input !== undefined ? [action.input === null ? "with no input" : "with the new input"] : []),
+      ].join(" ");
+      return [`change schedule ${name} to ${parts}`, `Schedule ${name} now runs ${parts}.`];
+    }
+    case "set_schedule_enabled":
+      return action.enabled ? [`turn on schedule ${name}`, `Turned on schedule ${name}.`] : [`pause schedule ${name}`, `Paused schedule ${name}; it won't run until you turn it back on.`];
+    case "run_schedule_now":
+      return [`run schedule ${name} now`, `Started schedule ${name} now; its next run stays as it was.`];
+    case "delete_schedule":
+      return [`delete schedule ${name}`, `Deleted schedule ${name} (its past runs stay on the board).`];
+  }
+}
+
 /** [what it would do, what it did] for a non-card action. */
 function otherWords(action: OtherControl): [string, string] {
+  if (isScheduleControl(action)) return scheduleWords(action);
   return action.type === "set_harness_enabled"
       ? [`${action.enabled ? "enable" : "disable"} harness ${action.harnessId}`, `${action.enabled ? "Enabled" : "Disabled"} harness ${action.harnessId}.`]
       : action.type === "set_harness_model"
@@ -126,6 +161,14 @@ function otherTarget(action: OtherControl): ControlTarget {
       return { kind: "pipeline", id: action.pipelineId, label: action.name };
     case "remove_project":
       return { kind: "project", id: action.projectId, label: action.name };
+    case "create_schedule":
+      // No id until it exists: runOther fills it in.
+      return { kind: "schedule", id: "", label: action.name };
+    case "update_schedule":
+    case "set_schedule_enabled":
+    case "run_schedule_now":
+    case "delete_schedule":
+      return { kind: "schedule", id: action.scheduleId, label: action.name };
   }
 }
 
@@ -195,7 +238,9 @@ async function runOnCard(action: CardControl, task: TaskCard, deps: ControlDeps)
   }
 }
 
-async function runOther(action: OtherControl, deps: ControlDeps): Promise<string | undefined> {
+/** `target` is the reply's target for this action: a new schedule's id
+ *  is filled in once it exists. */
+async function runOther(action: OtherControl, deps: ControlDeps, target: ControlTarget): Promise<string | undefined> {
   try {
     switch (action.type) {
       case "set_harness_enabled": {
@@ -224,6 +269,33 @@ async function runOther(action: OtherControl, deps: ControlDeps): Promise<string
       case "remove_project":
         await deps.projects.delete(action.projectId);
         return undefined;
+      // The `/schedules` routes' own functions, with the body the route
+      // would get: the store validates again and has the last word.
+      case "create_schedule": {
+        const created = await createSchedule(deps.schedules, {
+          name: action.name,
+          kind: action.kind,
+          cron: action.cron,
+          timezone: action.timezone,
+          ...(action.kind === "pipeline" ? { pipelineId: action.pipelineId, ...(action.input ? { input: action.input } : {}) } : { taskTemplate: action.taskTemplate }),
+        });
+        if (created.ok) target.id = created.value.id;
+        return outcomeError(created);
+      }
+      case "update_schedule":
+        return outcomeError(
+          await updateSchedule(deps.schedules, action.scheduleId, {
+            ...(action.cron !== undefined ? { cron: action.cron } : {}),
+            ...(action.timezone !== undefined ? { timezone: action.timezone } : {}),
+            ...(action.input !== undefined ? { input: action.input } : {}),
+          }),
+        );
+      case "set_schedule_enabled":
+        return outcomeError(await updateSchedule(deps.schedules, action.scheduleId, { enabled: action.enabled }));
+      case "run_schedule_now":
+        return outcomeError(await runScheduleNow(deps.schedules, action.scheduleId));
+      case "delete_schedule":
+        return outcomeError(await deleteSchedule(deps.schedules, action.scheduleId));
     }
   } catch (e) {
     return errorText(e);
@@ -256,7 +328,7 @@ export async function executeControl(action: ControlAction, ctx: ActionContext, 
       const error = rechecked.refused[0]?.reason ?? "it can't be done now";
       return { executed: [{ ...base, ok: false, target, error, text: otherSentence(action, error) }], inverse };
     }
-    const error = await runOther(action, deps);
+    const error = await runOther(action, deps, target);
     executed.push({ ...base, ok: !error, target, text: otherSentence(action, error), ...(error ? { error } : {}) });
     if (!error && action.type === "set_harness_enabled") inverse.push({ ...action, enabled: !action.enabled });
     return { executed, inverse };

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchFeed, fetchPipelines, fetchPodcasts, fetchTasks } from "./api";
+import { fetchFeed, fetchPipelines, fetchPodcasts, fetchSchedules, fetchTasks } from "./api";
 import { events, type ConnectionState } from "./events";
 import { parseRoute, type Route } from "./routes";
-import type { FeedItem, PipelineDef, PodcastEpisode, TaskCard } from "./types";
+import type { FeedItem, PipelineDef, PodcastEpisode, Schedule, TaskCard } from "./types";
 
 export function useHashRoute(): Route {
   const [route, setRoute] = useState(() => parseRoute(location.hash));
@@ -187,6 +187,59 @@ export function usePodcasts(): PodcastData {
   }, [refresh]);
 
   return { episodes, loaded, error };
+}
+
+export interface ScheduleData {
+  schedules: Schedule[];
+  loaded: boolean;
+  error: string | null;
+  reload: () => Promise<void>;
+}
+
+/** Schedule changes aren't board events, so the list also refetches on
+ *  Ask's own action events and once a minute (which also moves "today"
+ *  and "tomorrow" on). */
+const SCHEDULES_POLL_MS = 60_000;
+
+/** GET /schedules, refetched on any `/events` message (a fire makes a
+ *  card), on Ask's action events and every minute. */
+export function useSchedules(): ScheduleData {
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setSchedules(await fetchSchedules());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const soon = () => {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => void refresh(), REFETCH_DEBOUNCE_MS);
+    };
+    const off = events.subscribe(soon);
+    const offAsk = events.subscribeAsk((e) => {
+      if (e.type === "ask.action" || e.type === "ask.confirmed") soon();
+    });
+    const poll = setInterval(() => void refresh(), SCHEDULES_POLL_MS);
+    return () => {
+      off();
+      offAsk();
+      clearInterval(poll);
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, [refresh]);
+
+  return { schedules, loaded, error, reload: refresh };
 }
 
 /** True when the viewport is at least the desktop breakpoint (rail +
