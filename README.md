@@ -442,6 +442,7 @@ The checked-in file registers none.
 - `docs/SDD-memory-curator.md`, `docs/SDD-memory-injection-toggle.md`: memory.
 - `docs/SDD-task-archiving.md`, `docs/SDD-version-info.md`, `docs/SDD-live-task-output.md`.
 - `docs/SDD-remote-control.md`: every card run as a claude.ai Remote Control session.
+- `docs/SDD-schedules.md`: schedules for pipelines and tasks, and "Start at" for a card (approved, being built).
 
 ## License
 
