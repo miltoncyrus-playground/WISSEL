@@ -43,6 +43,8 @@ runs write-tier work locally in a worktree.
 | `bun run test:e2e` | Playwright tests against a live server. |
 | `bun run test:e2e:affected` | Only the e2e specs affected by your changes. |
 | `bun run live-check:shutdown` | Real server, real agent spawn, SIGTERM: asserts no agent process survives. |
+| `bun run seed:ai-news` | Create or upgrade the stored podcast pipelines (see Pipelines). |
+| `bun run seed:schedules` | Create the two morning podcast schedules, disabled (see Schedules). Idempotent. |
 
 Paid evals (real LLM calls), one script each:
 
@@ -392,6 +394,13 @@ one telemetry event to `WISSEL_TELEMETRY_PATH`: `{"type": "schedule",
 On start the server logs `schedules: N enabled, next: <name> at <local
 time>`.
 
+The morning podcasts move here from the systemd timer
+(`ops/systemd/README.md`). `bun run seed:schedules` creates "AI news
+podcast" and "World news podcast" (`0 6 * * *`, `Europe/Madrid`,
+`catchUpHours: 12`) **disabled**, by name, and never touches one that
+already exists. Enable them only after the timer is off, or each podcast
+runs twice.
+
 ## Configuration
 
 ### Environment variables
@@ -495,7 +504,7 @@ The checked-in file registers none.
 - `docs/SDD-memory-curator.md`, `docs/SDD-memory-injection-toggle.md`: memory.
 - `docs/SDD-task-archiving.md`, `docs/SDD-version-info.md`, `docs/SDD-live-task-output.md`.
 - `docs/SDD-remote-control.md`: every card run as a claude.ai Remote Control session.
-- `docs/SDD-schedules.md`: schedules for pipelines and tasks, and "Start at" for a card (approved, being built).
+- `docs/SDD-schedules.md`: schedules for pipelines and tasks, and "Start at" for a card; §7 is the switch-over from systemd.
 
 ## License
 
