@@ -627,3 +627,143 @@ test.describe("at 1440x900", () => {
     await page.screenshot({ path: "test-results/ui-a3/new-pipeline-run-1440x900.png" });
   });
 });
+
+// docs/SDD-schedules.md §3.7 and §4: the Task tab's optional Start at
+// (sent as UTC notBefore, shown as a "Starts" chip, changed or cleared
+// from the drawer) and Repeat (saves a task schedule instead of a card).
+// Times are read on the browser's clock, pinned here.
+test.describe("Start at and Repeat", () => {
+  const TZ = "Europe/Madrid";
+  test.use({ timezoneId: TZ });
+
+  type PageFns = {
+    localDateTimeToIso(v: string, tz: string): string | null;
+    startsChipText(t: unknown, now: Date, tz: string): string | null;
+  };
+
+  // `days` from today at `hhmm` on the browser's clock, as a
+  // datetime-local value.
+  function localValue(page: Page, days: number, hhmm: string): Promise<string> {
+    return page.evaluate(([d, t]) => {
+      const at = new Date(Date.now() + Number(d) * 86_400_000);
+      const p = (n: number) => String(n).padStart(2, "0");
+      return `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())}T${t}`;
+    }, [String(days), hhmm]);
+  }
+
+  function toIso(page: Page, value: string): Promise<string | null> {
+    return page.evaluate(([v, tz]) => (window as unknown as PageFns).localDateTimeToIso(v!, tz!), [value, TZ]);
+  }
+
+  async function taskByTitle(request: APIRequestContext, title: string) {
+    const tasks = (await (await request.get("/tasks")).json()) as { id: string; title: string; notBefore?: string; status: string }[];
+    return tasks.filter((t) => t.title === title);
+  }
+
+  test("Start at is sent as UTC notBefore, the card shows a Starts chip, and the drawer changes and clears it", async ({ page, request }) => {
+    await page.goto("/board");
+    await openNewDrawer(page);
+    await expect(page.locator("#ntStartAtZone")).toHaveText(TZ);
+    const title = unique("Starts later");
+    await page.locator("#ntTitle").fill(title);
+    await page.locator("#ntBody").fill("waits for its start time");
+    await page.locator("#ntRepo").fill("/tmp/wissel-e2e-repo");
+    const startAt = await localValue(page, 1, "23:00");
+    await page.locator("#ntStartAt").fill(startAt);
+
+    const posted = page.waitForRequest((r) => r.url().endsWith("/tasks") && r.method() === "POST");
+    await page.locator("#ntSubmit").click();
+    const iso = await toIso(page, startAt);
+    // 23:00 in Madrid is 21:00 or 22:00 UTC, depending on the season.
+    expect(iso).toMatch(/T2[12]:00:00\.000Z$/);
+    expect((await posted).postDataJSON().notBefore).toBe(iso);
+    await expect(page.locator("#ntStatus")).toContainText("Created");
+    await expect(page.locator("#ntStartAt")).toHaveValue("");
+
+    const [task] = await taskByTitle(request, title);
+    expect(task).toMatchObject({ status: "inbox", notBefore: iso });
+    await page.locator("#newClose").click();
+    const chip = page.locator(`#kanbanBody .kcard[data-task-id="${task!.id}"] .start-chip`);
+    const chipText = await page.evaluate(([t, tz]) => (window as unknown as PageFns).startsChipText(JSON.parse(t!), new Date(), tz!), [JSON.stringify(task), TZ]);
+    // Not today, so the date is in it.
+    expect(chipText).toMatch(/^Starts \w{3} \d{1,2} \w{3}( \d{4})? 23:00$/);
+    await expect(chip).toHaveText(chipText!);
+
+    // The drawer shows it, clears it, and sets a new one.
+    await page.locator(`#kanbanBody .kcard[data-task-id="${task!.id}"]`).click();
+    await expect(page.locator("#tdStartSection")).toBeVisible();
+    await expect(page.locator("#tdStartAt")).toHaveValue(startAt);
+    await page.locator("#tdStartClear").click();
+    await expect(chip).toHaveCount(0);
+    await expect(page.locator("#tdStartClear")).toBeDisabled();
+    expect((await taskByTitle(request, title))[0]!.notBefore).toBeUndefined();
+
+    await page.locator("#tdStartSet").click();
+    await expect(page.locator("#tdStartError")).toHaveText("Pick a date and time first.");
+    const later = await localValue(page, 2, "08:15");
+    await page.locator("#tdStartAt").fill(later);
+    await page.locator("#tdStartSet").click();
+    await expect(chip).toHaveText(/ 08:15$/);
+    expect((await taskByTitle(request, title))[0]!.notBefore).toBe((await toIso(page, later))!);
+    await expect(page.locator("#tdStartHint")).toContainText("Waits until");
+  });
+
+  test("Repeat saves a task schedule from the form's fields instead of creating a card", async ({ page, request }) => {
+    await page.goto("/board");
+    await openNewDrawer(page);
+    const title = unique("Repeating task");
+    await page.locator("#ntTitle").fill(title);
+    await page.locator("#ntBody").fill("made by a schedule");
+    await page.locator("#ntRepo").fill("/tmp/wissel-e2e-repo");
+    await page.locator("#ntLabelInput").fill("intake");
+    await page.locator("#ntLabelInput").press("Enter");
+
+    // Off by default.
+    await expect(page.locator("#ntRepeat")).not.toBeChecked();
+    await expect(page.locator("#ntRepeatFields")).toBeHidden();
+    await page.locator("#ntRepeat").check();
+    await expect(page.locator("#ntRepeatFields")).toBeVisible();
+    await expect(page.locator("#ntStartAtField")).toBeHidden();
+    await expect(page.locator("#ntSubmit")).toHaveText("Create schedule");
+    await expect(page.locator("#nrMode")).toHaveValue("daily");
+    await expect(page.locator("#nrTz")).toHaveValue(TZ);
+    await expect(page.locator("#nrPreview li")).toHaveCount(3);
+
+    // Weekly with no day can't be saved.
+    await page.locator("#nrMode").selectOption("weekly");
+    await expect(page.locator("#nrPreviewError")).toHaveText("Pick at least one day.");
+    await expect(page.locator("#ntSubmit")).toBeDisabled();
+    // Three days from now, so it can't come round while the suite runs.
+    const day = await page.evaluate(() => (new Date().getDay() + 3) % 7);
+    await page.locator(`#nrDaysField [data-day="${day}"]`).check();
+    await page.locator("#nrTime").fill("03:00");
+    await expect(page.locator("#nrCron")).toHaveValue(`0 3 * * ${day}`);
+    await expect(page.locator("#nrPreview li")).toHaveCount(3);
+    await expect(page.locator("#ntSubmit")).toBeEnabled();
+
+    const posted = page.waitForRequest((r) => r.url().endsWith("/schedules") && r.method() === "POST");
+    await page.locator("#ntSubmit").click();
+    const body = (await posted).postDataJSON();
+    expect(body).toMatchObject({
+      kind: "task", cron: `0 3 * * ${day}`, timezone: TZ,
+      taskTemplate: { title, body: "made by a schedule", labels: ["intake"], repo: "/tmp/wissel-e2e-repo" },
+    });
+    expect(body.name.startsWith(`${title}, `)).toBe(true);
+    await expect(page.locator("#ntStatus")).toContainText("Scheduled");
+    // The form resets, Repeat off again.
+    await expect(page.locator("#ntRepeat")).not.toBeChecked();
+    await expect(page.locator("#ntSubmit")).toHaveText("Create task");
+
+    // A schedule, not a card.
+    expect(await taskByTitle(request, title)).toHaveLength(0);
+    const schedules = (await (await request.get("/schedules")).json()) as { id: string; kind: string; enabled: boolean; taskTemplate?: { title: string } }[];
+    const made = schedules.filter((s) => s.taskTemplate?.title === title);
+    expect(made).toHaveLength(1);
+    expect(made[0]).toMatchObject({ kind: "task", enabled: true });
+
+    await page.locator("#newClose").click();
+    await page.goto("/board#/pipelines");
+    await expect(page.locator(`#schedulesList [data-schedule-id="${made[0]!.id}"] .sc-target`)).toHaveText(`Task: ${title}`);
+    await request.patch(`/schedules/${made[0]!.id}`, { data: { enabled: false } });
+  });
+});

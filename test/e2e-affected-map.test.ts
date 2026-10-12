@@ -20,6 +20,7 @@ const ALL_SPECS = [
   "pipeline-editor.spec.ts",
   "pipelines.spec.ts",
   "projects.spec.ts",
+  "schedules.spec.ts",
   "theme.spec.ts",
   "voice.spec.ts",
   "you.spec.ts",
@@ -141,6 +142,7 @@ describe("resolveAffectedSpecs", () => {
       "pipeline-editor.spec.ts",
       "pipelines.spec.ts",
       "projects.spec.ts",
+      "schedules.spec.ts",
       "theme.spec.ts",
     ]);
     expect(result.fullSuite).toBe(false);
@@ -156,12 +158,15 @@ describe("resolveAffectedSpecs", () => {
 
   // Since B1, board-pipelines.js's isPipelineRunRoot also picks the run
   // cards on the board, and board-runs.js draws every board card.
-  test("board-pipelines.js and board-runs.js resolve to every spec that opens the board", () => {
+  // board-schedules.js draws the Start at chip on every board card too.
+  test("board-pipelines.js, board-runs.js and board-schedules.js resolve to every spec that opens the board", () => {
     for (const path of [
       "src/api/public/board-pipelines.js",
       "src/api/public/board-pipelines.d.ts",
       "src/api/public/board-runs.js",
       "src/api/public/board-runs.d.ts",
+      "src/api/public/board-schedules.js",
+      "src/api/public/board-schedules.d.ts",
     ]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
       expect(result.specs).toEqual([
@@ -171,6 +176,7 @@ describe("resolveAffectedSpecs", () => {
         "pipeline-editor.spec.ts",
         "pipelines.spec.ts",
         "projects.spec.ts",
+        "schedules.spec.ts",
         "theme.spec.ts",
       ]);
       expect(result.fullSuite).toBe(false);

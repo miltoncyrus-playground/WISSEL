@@ -733,6 +733,13 @@ export function createApp(
         return new Response(Bun.file(new URL("board-news.js", PUBLIC_DIR)));
       }
 
+      // The Schedules panel, the schedule editor's picker and a card's
+      // Start at (docs/SDD-schedules.md §3.7, §4). Same static-sibling
+      // reasoning.
+      if (url.pathname === "/board-schedules.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("board-schedules.js", PUBLIC_DIR)));
+      }
+
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
       }

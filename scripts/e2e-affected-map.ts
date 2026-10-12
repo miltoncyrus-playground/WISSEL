@@ -45,9 +45,11 @@ const THEME_MARKER = /theme/i;
 /** board.html is one monolithic page. Verified (grep) it contains the
  *  markup/JS for: the theme toggle, the new-task form (#ntTitle etc.),
  *  the projects panel (#projLocalForm etc.), the live-output panel
- *  (#liveOutputPanel, calls renderTaskOutputRows), and the Pipelines
+ *  (#liveOutputPanel, calls renderTaskOutputRows), the Pipelines
  *  page (#pipelinesPage) whose New pipeline link pipeline-editor.spec.ts
- *  follows and pipelines.spec.ts drives.
+ *  follows and pipelines.spec.ts drives, and the Schedules panel, the
+ *  schedule editor (#schedDrawer) and Start at that schedules.spec.ts
+ *  drives (docs/SDD-schedules.md §3.7, §4).
  *  So any change to the file that isn't provably confined to the theme
  *  section (see THEME_MARKER) conservatively triggers every spec that
  *  touches board.html at all. */
@@ -59,6 +61,7 @@ const BOARD_HTML_DEFAULT_SPECS: string[] = [
   "live-task-output.spec.ts",
   "pipeline-editor.spec.ts",
   "pipelines.spec.ts",
+  "schedules.spec.ts",
 ];
 
 /** board.html itself (not its JS modules) also carries the header link
@@ -189,6 +192,12 @@ export const FILE_RULES: FileRule[] = [
       "board-news.js/.d.ts is the run drawer's Quick read and Listen tabs for an AI news run, and since docs/SDD-wissel-app.md §3.3 the app's Listen tab Quick read (quickReadView via app/src/news.ts). Verified (grep): newsView and createNewsReader are called only by board.html's run drawer (syncRunNews), which only pipelines.spec.ts opens; quickReadView is drawn only by the app's Listen tab, which listen.spec.ts opens.",
     match: (p) => p === "src/api/public/board-news.js" || p === "src/api/public/board-news.d.ts",
     resolve: () => ["listen.spec.ts", "pipelines.spec.ts"],
+  },
+  {
+    description:
+      "board-schedules.js/.d.ts is the Schedules panel, the schedule editor's picker and New task's Repeat (schedules.spec.ts), and since docs/SDD-schedules.md §4 also the Start at chip buildKanbanCard draws on every board card (startsChipText), so every spec that finds a card on /board depends on it: the same set as a non-theme board.html change.",
+    match: (p) => p === "src/api/public/board-schedules.js" || p === "src/api/public/board-schedules.d.ts",
+    resolve: () => BOARD_HTML_DEFAULT_SPECS,
   },
   {
     description:

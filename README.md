@@ -149,7 +149,10 @@ A card can be given a start time: `notBefore` (ISO with a zone, e.g.
 inbox or ready that isn't routed yet (`null` clears it; 409 otherwise).
 The card is not routed or run before then, and starts on time on a quiet
 board. **Run** on the card starts it anyway and clears the start time
-(`src/core/not-before.ts`, `docs/SDD-schedules.md` §4).
+(`src/core/not-before.ts`, `docs/SDD-schedules.md` §4). On the board, the
+Task tab's optional **Start at** (your browser's time, sent as UTC) sets
+it, the card shows a "Starts 23:00" chip (with the date when it isn't
+today) until it's picked up, and the card's drawer changes or clears it.
 
 `bun run usage:report [--since 2026-10-10] [--agent implementer]` shows
 where agent spend goes: per agent the runs, cost, turns, context per turn
@@ -294,8 +297,9 @@ notes (word error rate at most 15%, `eval/fixtures/stt/`).
 ## Pipelines
 
 A pipeline is a saved step graph (`src/core/pipeline-runner.ts`,
-`docs/SDD-pipelines.md`). The Pipelines page lists them with **Run** and
-**Edit**. The editor opens inside the board (`#/pipelines/new`,
+`docs/SDD-pipelines.md`). The Pipelines page lists them with **Run**,
+**Edit** and **Add schedule**, and each one's next scheduled run (see
+[Schedules](#schedules)). The editor opens inside the board (`#/pipelines/new`,
 `#/pipelines/edit/<id>`) and needs `pipeline-editor/dist/` built (see
 above). `src/core/review-handoff-pipeline.ts` and
 `src/core/full-lifecycle-pipeline.ts` define the built-in reviewer loop
@@ -393,6 +397,19 @@ one telemetry event to `WISSEL_TELEMETRY_PATH`: `{"type": "schedule",
 `outcome` is `started`, `skipped-overlap`, `skipped-stale` or `error`.
 On start the server logs `schedules: N enabled, next: <name> at <local
 time>`.
+
+On the board, the Pipelines page's **Schedules** panel lists every
+schedule: what it runs, cadence, timezone, next run and last run (with
+its outcome and a link to the run card) in your browser's time, an
+enabled toggle, **Run now** (a 409 overlap shows as is), **Edit** and
+**Delete**. A pipeline's **Add schedule** and Edit open the schedule
+editor: every day, weekdays, weekly on chosen days or every N hours, a
+time and a timezone (your browser's preselected), or **Advanced: cron**.
+It shows the next three runs from `/schedules/preview` as you type, or
+the error, and Save stays off while it's invalid. In **+ New**, the Task
+tab's **Repeat** saves a task schedule from the form instead of creating
+a card. The picker, row text and request bodies are
+`src/api/public/board-schedules.js`.
 
 The morning podcasts move here from the systemd timer
 (`ops/systemd/README.md`). `bun run seed:schedules` creates "AI news
