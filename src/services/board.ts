@@ -168,6 +168,7 @@ interface TaskRow {
   escalationContext: string | null;
   retryAfter: string | null;
   notBefore: string | null;
+  scheduleId: string | null;
   resumeSessionId: string | null;
   suggestedGrants: string | null;
   doneAt: string | null;
@@ -207,6 +208,7 @@ function rowToCard(row: TaskRow): TaskCard {
     escalationContext: row.escalationContext ?? undefined,
     retryAfter: row.retryAfter ?? undefined,
     notBefore: row.notBefore ?? undefined,
+    scheduleId: row.scheduleId ?? undefined,
     resumeSessionId: row.resumeSessionId ?? undefined,
     suggestedGrants: row.suggestedGrants ? (JSON.parse(row.suggestedGrants) as string[]) : undefined,
     doneAt: row.doneAt ?? undefined,
@@ -273,7 +275,8 @@ export class SqliteBoard implements Board {
         pendingMcpApproval TEXT,
         extraAllowedDirs TEXT,
         extraAllowedTools TEXT,
-        notBefore TEXT
+        notBefore TEXT,
+        scheduleId TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -309,6 +312,8 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN extraAllowedTools TEXT;",
       // docs/SDD-schedules.md §4.
       "ALTER TABLE tasks ADD COLUMN notBefore TEXT;",
+      // docs/SDD-schedules.md §3.2.
+      "ALTER TABLE tasks ADD COLUMN scheduleId TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -515,7 +520,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -540,6 +545,7 @@ export class SqliteBoard implements Board {
         full.extraAllowedDirs ? JSON.stringify(full.extraAllowedDirs) : null,
         full.extraAllowedTools ? JSON.stringify(full.extraAllowedTools) : null,
         full.notBefore ?? null,
+        full.scheduleId ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
