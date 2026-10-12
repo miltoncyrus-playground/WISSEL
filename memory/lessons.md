@@ -7,6 +7,8 @@ When Playwright is denied but `bun test` works, a throwaway bun test that drives
 
 A fresh worktree has no `pipeline-editor/dist` (gitignored), and a headless agent can't `bun install` to build it, so the editor bundle `/pipelines/edit/pipeline-editor.js` returns 503, the board's editor page (`#/pipelines/new`) shows the build command, and `e2e/pipeline-editor.spec.ts` fails at "New pipeline" / "Start blank". The editor's TSX can't be typechecked there either (root `tsc` doesn't cover `pipeline-editor/`). Say so instead of calling it your regression. A board-side spec that only needs the board's half should stub the bundle with a module exporting `mountPipelineEditor`, as `e2e/pipelines.spec.ts` does. Keep editor logic you want gated in dependency-free modules (`templates.ts`, `theme.ts`) so `test/` can import them.
 
+The same applies to `app/` (the `/app` bundle): a fresh worktree has no `app/node_modules`, `app/dist` or `app/bun.lock`, and `bun install` / `npm install` are refused. A card that needs the install or lockfile cannot finish headless. Say BLOCKED once with the exact commands for Milton, and do not resubmit the same worktree; reviewers should not loop `changes_requested` on an item the builder cannot do. Likewise a fixture that needs `bun run scripts/...` (such as the STT `.opus` notes) needs an allowed-tools grant on the card (`POST /tasks/:id/allowed-tools`) or Milton running it.
+
 ## Implementers can't commit, and reviewers must not demand it
 In worktree cards the implementer has no git write access, and `mergeTaskWorktree` (`src/services/worktree.ts:145`) stages and commits everything uncommitted as `<title>\n\ntask: <id>` before the merge commit. So uncommitted changes (including untracked files) are normal at review time. Don't send a card back for "nothing is committed"; that loop can never be satisfied.
 
@@ -17,12 +19,13 @@ A full `e2e/board.spec.ts` run inside a review cost about $2.40 against a $0.12 
 
 `playwright.config.ts` pins every `WISSEL_*` automation flag to `"0"` in `webServer.env`. Keep it that way. `webServer.env` merges on top of `process.env`, so any flag exported in your shell leaks in. The test server's real orchestrator then starts paid Claude sessions against fixture tasks, and tests fail at random with a different subset each run. That was the real cause of the "different tests fail each identical run" symptom. If you add a new `WISSEL_*` flag in `src/api/server.ts`, pin it there too and add it to the array in `test/playwright-config.test.ts`, which guards this.
 
-The config's `webServer.command` also resets `/tmp/wissel-e2e-memory-lessons.md` and `/tmp/wissel-e2e-telemetry.jsonl` before boot and creates `/tmp/wissel-e2e-repo` (`pipeline-editor.spec.ts` dispatches real agents into it; a missing cwd makes `Bun.spawn` fail with ENOENT and step 3 of the join test never appears). The e2e port 8790 is fixed, so another session's server can squat on it. Wait for it to free up rather than testing against its copy.
+The config's `webServer.command` also resets `/tmp/wissel-e2e-memory-lessons.md` and `/tmp/wissel-e2e-telemetry.jsonl` before boot and creates `/tmp/wissel-e2e-repo` (`pipeline-editor.spec.ts` dispatches real agents into it; a missing cwd makes `Bun.spawn` fail with ENOENT and step 3 of the join test never appears). The e2e port 8790 is fixed, so another session's server can squat on it. Wait for it to free up rather than testing against its copy. `e2e/pipeline-editor.spec.ts` "run it for real" calls the real `claude -p` and can time out in a full run while passing alone; that is model slowness, not your regression.
 
 e2e locators and forms:
 - A pushback, retry or review lineage produces several cards with byte-identical titles (and a `Review: <title>` card contains the title as a substring). `getByText(title)`, even with `exact: true`, then hits a strict-mode violation. Select cards by `#kanbanBody .kcard[data-task-id="..."]` (`buildKanbanCard` stamps it).
 - A native `required` attribute on a form without `novalidate` makes Chromium block the submit before your JS handler runs, so inline-error code never fires (`#mcpAddForm`).
 - Don't hardcode counts that drift, such as the number of agents in `agents/manifest.yaml`, and don't assume an earlier test left a Done card behind. Tests share one in-memory DB, so create what you assert on.
+- `toContainText` is case-sensitive; copy expected strings from the fixture, not from memory.
 
 ## Adding a TaskCard status value
 Change `src/core/types.ts` and add one entry to `STATUS_DISPLAY` in `src/api/public/board-lanes.js`: its lane (`queued`, `working`, `in-review`, `done`, or `NEEDS_YOU` if a human must act), label and colour token. That one table drives the board's lanes, the Needs you strip, every status tag and the drawer's status pill. `test/board-lanes.test.ts` reads the status union out of types.ts and fails until the table covers it. An unmapped status lands in Needs you rather than vanishing.
@@ -52,6 +55,8 @@ Copy `parseReviewVerdict`'s shape (last fenced block wins, fail to `null`), as `
 Copy everything `orchestrator.process()` does around its `executor.run()` call, not just the call: `HarnessPool.acquire()`/`release()` in try/finally, cost tracking and harness stamping. `pipeline-runner.ts` once skipped the pool and broke concurrency limits.
 
 `acquire(tool, harnessId?, preferred?)` takes the override first, then the agent's `harnesses` list in order, then least-loaded. A non-empty list never falls through to a harness it doesn't name, and an override onto a full harness throws `HarnessOverrideError` rather than waiting. The hold in the orchestrator uses `canAcquire`, which shares `pick()` with `acquire()` so the two can't disagree. `HarnessPool.autoload` ignores only a missing `harnesses.yaml`; any other load error stops startup.
+
+Non-LLM executors (`executor: tts`, `digest`, `concierge`) must be excluded from `ReadOnlyExecutor.canHandle`, registered in both server pools, and skipped by `validateAgentHarnesses` and the model-catalog test; a test should show every other agent's executor resolution is unchanged.
 
 ## Prompts go to agents on stdin, never argv
 A long prompt passed as a command-line argument crashes the spawn with `E2BIG` (the kernel limit is about 128KB for one argv element; reproduced at 131072 bytes). `runViaBun` takes a `stdin` option, and both `runClaude` and `runCodex` send the prompt that way. Any new place that spawns `claude` or `codex` must do the same, and tests should assert on `opts.stdin`, not on the `cmd` array.
@@ -87,13 +92,19 @@ Card text and docs can point at the wrong file, section or line. Grep first and 
 When the code deliberately differs from an SDD, add a named revision note in the doc. Word claims about verification honestly ("checked against the docs" is not "observed in a live run").
 
 ## Browser code runs over plain HTTP, not a secure context
-The board and pipeline editor are opened at `http://192.168.10.25:8787`, plain HTTP on a LAN IP, so browser APIs that need a secure context are missing: `crypto.randomUUID`, `navigator.clipboard`, service workers. e2e runs on `localhost`, which counts as secure, so tests pass while the real UI breaks.
+The board and pipeline editor are opened at `http://192.168.10.25:8787`, plain HTTP on a LAN IP, so browser APIs that need a secure context are missing: `crypto.randomUUID`, `navigator.clipboard`, service workers, and `getUserMedia` (the app's mic falls back to `<input type=file capture>`). e2e runs on `localhost`, which counts as secure, so tests pass while the real UI breaks.
 
 Use `newId()` (`pipeline-editor/src/id.ts`), which falls back to `crypto.getRandomValues`. Check any new browser API against MDN's "secure context" note. To reproduce the LAN case in Playwright, remove the API in `page.addInitScript` (see the randomUUID test in `e2e/pipeline-editor.spec.ts`).
 
-Don't import `src/api/public/*.js` into e2e specs. Those modules export only through a `module.exports` guard, which works in `bun test` but exports nothing under Playwright (the repo is `"type": "module"`), so the whole spec file fails to load. Call them with `page.evaluate` on the globals the board defines. `test/e2e-public-imports.test.ts` enforces this.
+Don't import `src/api/public/*.js` into e2e specs. Those modules export only through a `module.exports` guard, which works in `bun test` but exports nothing under Playwright (the repo is `"type": "module"`), so the whole spec file fails to load. Call them with `page.evaluate` on the globals the board defines. `test/e2e-public-imports.test.ts` enforces this. The `/app` bundle reuses `board-news.js` through the `browserScript` plugin in `app/vite.config.ts` rather than copying it; `test/app-shell.test.ts` fails on a copy.
 
 Async board code: `refetchTasks()` uses a "latest applied response wins" sequence guard plus a `.catch`. Don't switch it to "latest started request wins". That version starves under sustained traffic, which is why `loadDrawerResult` reverted it.
+
+## Bun drops requests that take over 10 s
+`Bun.serve` closes any request that hasn't answered within 10 s. Routes that wait on a model or TTS (`POST /ask`, `/voice`, `/ask/:id/audio`) must call `server.timeout(req, 0)`; the regression test checks it over a real socket with a control request. `POST /pipelines/:id/run` on the board still has the 10 s drop.
+
+## Chat control of the board (Ask)
+Ask actions run through the same service functions as the board routes (`src/services/board-actions.ts`), never the HTTP API. Code, not the model, resolves the target card (`resolveCard`) and rechecks the live board before running and again at Confirm (`recheckControl`). Tier B (destructive) actions only become rows in `pending-actions.ts`; only `POST /ask/actions/:id/confirm` runs them, via one atomic `UPDATE ... WHERE usedAt IS NULL AND expiresAt > ?`. The model never sees pending ids and has no confirm action. `ACTION_TIERS` is a `Record`, so a new action type without a tier fails to compile. Merge and Discard need `review` status plus a worktree, matching when the board shows those buttons.
 
 ## Process management
 Kill processes by PID. `pkill -f <pattern>` can match the shell running it and kill your own command. Don't kill a process you didn't start, such as another session's server on the e2e port.
