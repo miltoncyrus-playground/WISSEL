@@ -3,6 +3,8 @@ import { routeHash } from "../routes";
 import type { TaskCard } from "../types";
 import { Icon } from "../components/Icon";
 import { TaskRow } from "../components/TaskRow";
+import { ScheduledSection } from "../components/ScheduledSection";
+import { startsChip } from "../schedules";
 
 const EMPTY: Record<string, string> = {
   running: "Nothing running.",
@@ -49,6 +51,7 @@ export function BoardScreen({ lanes, loaded, error }: { lanes: Lanes; loaded: bo
           ))}
         </div>
       )}
+      <ScheduledSection />
     </div>
   );
 }
@@ -58,6 +61,7 @@ export function BoardScreen({ lanes, loaded, error }: { lanes: Lanes; loaded: bo
 export function CardDetail({ taskId, tasks, loaded }: { taskId: string; tasks: TaskCard[]; loaded: boolean }) {
   const task = tasks.find((t) => t.id === taskId);
   const lane = task ? laneOf(task, startOfLocalDay(Date.now())) : null;
+  const starts = startsChip(task?.notBefore, Date.now());
   return (
     <div className="screen card-detail">
       <div className="screen-head">
@@ -74,6 +78,7 @@ export function CardDetail({ taskId, tasks, loaded }: { taskId: string; tasks: T
             <dt>Status</dt>
             <dd>
               <span className={`pill lane-${lane ?? "other"}`}>{task.status}</span>
+              {starts && <span className="starts-chip">{starts}</span>}
             </dd>
             {task.routedTo && (
               <>

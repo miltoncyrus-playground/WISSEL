@@ -24,6 +24,8 @@ import type { TaskCard } from "../src/core/types.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { SqlitePipelineStore } from "../src/services/pipelines.ts";
 import { SqliteProjectStore } from "../src/services/projects.ts";
+import { SqliteScheduleStore } from "../src/services/schedules.ts";
+import { ScheduleRunner } from "../src/core/schedule-runner.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -108,9 +110,9 @@ describe("the tier table", () => {
     expect(Object.keys(ACTION_TIERS).sort()).toEqual([...CONTROL_ACTION_TYPES].sort());
   });
 
-  test("Tier B is exactly the destructive list in §3.7", () => {
+  test("Tier B is exactly the destructive list in §3.7, plus the schedule ones in docs/SDD-schedules.md §3.9", () => {
     const b = CONTROL_ACTION_TYPES.filter((t) => ACTION_TIERS[t] === "B").sort();
-    expect(b).toEqual(["delete_pipeline", "delete_task", "discard_task", "grant_allowed_tools", "merge_task", "remove_project", "trust_mcp_tool"]);
+    expect(b).toEqual(["create_schedule", "delete_pipeline", "delete_schedule", "delete_task", "discard_task", "grant_allowed_tools", "merge_task", "remove_project", "trust_mcp_tool"]);
   });
 
   test("the allowed list is the three basic types plus every control type", () => {
@@ -430,6 +432,10 @@ describe("executeControl: the same functions the endpoints call, on the board as
       mcp: { mcpServers, mcpServersPath: join(dir, `m-${Math.random()}.yaml`), reachability: {} },
       pipelines,
       projects,
+      schedules: (() => {
+        const store = new SqliteScheduleStore(board.db);
+        return { schedules: store, runner: new ScheduleRunner({ store, board, runPipelineNow: async () => Promise.reject(new Error("no runs here")) }) };
+      })(),
     };
     const now = async (): Promise<ActionContext> =>
       ctx({

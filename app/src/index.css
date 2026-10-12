@@ -190,6 +190,31 @@ kbd {
 .task-title { font-weight: 700; overflow-wrap: anywhere; }
 .task-sub { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 
+/* The Scheduled section (docs/SDD-schedules.md §3.8): a task row with
+   the toggle and Run now on its right. */
+.lane-scheduled { margin-top: 14px; }
+.sched-row {
+  display: flex; gap: 10px; align-items: center;
+  min-height: 44px; padding: 8px 0; border-bottom: 1px solid var(--line); min-width: 0;
+}
+.sched-row .task-dot { align-self: flex-start; background: var(--accent); }
+.sched-row.is-paused .task-dot { background: var(--muted); }
+.sched-row .task-text { flex: 1; }
+.sched-actions { flex: none; display: flex; gap: 8px; align-items: center; }
+.sched-toggle { display: inline-flex; gap: 6px; align-items: center; min-height: 44px; font-size: 14px; cursor: pointer; }
+.sched-toggle input { width: 20px; height: 20px; accent-color: var(--accent); }
+.sched-error { color: var(--coral); }
+.sched-notice { margin: 0; color: var(--muted); font-size: 14px; }
+.shell:not(.is-desktop) .sched-row { flex-wrap: wrap; }
+.shell:not(.is-desktop) .sched-actions { margin-left: 18px; }
+
+/* "Starts 23:00" on a card waiting for its start time (§4). */
+.starts-chip {
+  display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 3px;
+  border: 1px solid var(--accent); color: var(--text); font-family: var(--font-mono); font-size: 12px;
+}
+.facts .starts-chip { margin-left: 8px; }
+
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 16px; margin: 0; }
 .facts dt { color: var(--muted); font-size: 14px; }
 .facts dd { margin: 0; overflow-wrap: anywhere; }

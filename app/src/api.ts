@@ -1,7 +1,7 @@
 // The server endpoints the shell reads. Same origin: the server that
 // serves /app also serves the API.
 
-import type { AgentInfo, AskResult, Conversation, ConversationDetail, FeedPage, PendingResult, PipelineDef, PodcastEpisode, TaskCard, Wrapped } from "./types";
+import type { AgentInfo, AskResult, Conversation, ConversationDetail, FeedPage, PendingResult, PipelineDef, PodcastEpisode, Schedule, TaskCard, Wrapped } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -121,6 +121,30 @@ export async function postReplyAudio(messageId: string): Promise<{ audioUrl: str
   const res = await fetch(`/ask/${encodeURIComponent(messageId)}/audio`, { method: "POST", headers: { accept: "application/json" } });
   if (!res.ok) throw new Error(await errorOf(res));
   return (await res.json()) as { audioUrl: string };
+}
+
+/** GET /schedules (docs/SDD-schedules.md §3.5): every schedule, with its
+ *  cadence in words. */
+export const fetchSchedules = () => getJson<Schedule[]>("/schedules");
+
+/** PATCH /schedules/:id with `enabled`: the Scheduled section's toggle.
+ *  Resolves to the schedule as stored (its new `nextRunAt`). */
+export async function setScheduleEnabled(id: string, enabled: boolean): Promise<Schedule> {
+  const res = await fetch(`/schedules/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) throw new Error(await errorOf(res));
+  return (await res.json()) as Schedule;
+}
+
+/** POST /schedules/:id/run-now: one run now, the next run left as it
+ *  was. Throws the server's message (409 while the last run is going). */
+export async function runScheduleNow(id: string): Promise<{ runId: string }> {
+  const res = await fetch(`/schedules/${encodeURIComponent(id)}/run-now`, { method: "POST", headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(await errorOf(res));
+  return (await res.json()) as { runId: string };
 }
 
 /** GET /conversations: most recently active first. */

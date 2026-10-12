@@ -196,6 +196,58 @@ for (const vp of VIEWPORTS) {
       await noSideways(page);
     });
 
+    // docs/SDD-schedules.md §3.8: upcoming runs with the toggle and Run
+    // now. A task schedule of its own (a card from a template), never a
+    // podcast pipeline: Run now only makes an inert card here (the
+    // orchestrator is off), and the cron is far off so the ticker never
+    // fires it during the run.
+    test("Board tab: the Scheduled section lists a schedule; the toggle and Run now work", async ({ page, request }) => {
+      const name = `App schedule ${vp.name} ${Date.now()}`;
+      const made = await request.post("/schedules", {
+        data: { name, kind: "task", taskTemplate: { title: `${name} card`, body: "from app.spec", labels: ["code"], repo: REPO }, cron: "0 3 1 1 *", timezone: "Europe/Madrid", enabled: true },
+      });
+      expect(made.ok()).toBe(true);
+      const { id } = (await made.json()) as { id: string };
+
+      await page.goto("/app#/board");
+      const section = page.locator('[data-lane="scheduled"]');
+      await expect(section.getByRole("heading", { name: /Scheduled/ })).toBeVisible();
+      const row = section.locator(`[data-schedule-id="${id}"]`);
+      await expect(row).toContainText(name);
+      // No template covers a yearly cadence, so it reads as the cron.
+      await expect(row).toContainText("0 3 1 1 * (Europe/Madrid)");
+      const toggle = row.getByRole("checkbox", { name: `${name}: on` });
+      await expect(toggle).toBeChecked();
+
+      await toggle.uncheck();
+      await expect(row).toContainText("paused");
+      await expect.poll(async () => ((await (await request.get(`/schedules/${id}`)).json()) as { enabled: boolean }).enabled).toBe(false);
+      await toggle.check();
+      await expect(row).toContainText("next ");
+      await expect.poll(async () => ((await (await request.get(`/schedules/${id}`)).json()) as { enabled: boolean }).enabled).toBe(true);
+
+      await row.getByRole("button", { name: `Run ${name} now` }).click();
+      await expect(section.getByRole("status")).toHaveText(`Started ${name}.`);
+      await expect
+        .poll(async () => ((await (await request.get("/tasks")).json()) as { title: string; scheduleId?: string }[]).filter((t) => t.scheduleId === id).map((t) => t.title))
+        .toEqual([`${name} card`]);
+      await noSideways(page);
+      await onlyRealControls(page);
+      await request.delete(`/schedules/${id}`);
+    });
+
+    test("a card with a start time shows the Starts chip", async ({ page, request }) => {
+      const title = `Starts later ${vp.name} ${Date.now()}`;
+      const notBefore = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+      const res = await request.post("/tasks", { data: { title, body: "from app.spec", labels: ["code"], repo: REPO, notBefore } });
+      expect(res.ok()).toBe(true);
+      const { id } = (await res.json()) as { id: string };
+      await page.goto(`/app#/board/${id}`);
+      await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
+      const hhmm = await page.evaluate((iso) => new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(iso)), notBefore);
+      await expect(page.locator(".starts-chip")).toHaveText(`Starts ${hhmm}`);
+    });
+
     test("one EventSource for the whole app, across screen changes", async ({ page }) => {
       await page.addInitScript(() => {
         const Orig = window.EventSource;

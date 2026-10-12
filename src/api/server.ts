@@ -272,6 +272,11 @@ export interface CreateAppOptions {
   conciergeHarnesses?: HarnessPool;
   /** Home for Ask's shared scratch cwd; tests use a temp dir. */
   conciergeHomeDir?: string;
+  /** Ask's clock: the "now" its context shows the model and that its
+   *  actions validate against (create_task's notBefore, pending expiry).
+   *  Defaults to the real clock; eval/ask-schedules.eval.ts pins it so
+   *  "tonight at 11" is measured at any hour. */
+  conciergeNow?: () => Date;
   /** The local speaches speech-to-text service `POST /voice` calls
    *  (src/services/stt.ts, docs/SDD-wissel-app.md §3.5). Read once from
    *  `WISSEL_STT_URL` / `WISSEL_STT_MODEL` / `WISSEL_STT_LANGUAGE`;
@@ -464,6 +469,9 @@ export function createApp(
       mcp: mcpControl,
       pipelines,
       projects,
+      // The /schedules routes' deps: Ask's schedule actions run the same
+      // functions (docs/SDD-schedules.md §3.9).
+      schedules: scheduleControl,
     },
     pending: new SqlitePendingActionStore((board as SqliteBoard).db),
     board: board as Board,
@@ -476,6 +484,7 @@ export function createApp(
     executor: opts.conciergeExecutor ?? new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory }),
     telemetry,
     homeDir: opts.conciergeHomeDir,
+    ...(opts.conciergeNow ? { now: opts.conciergeNow } : {}),
     startPipeline: (pipeline, input) =>
       new Promise<TaskCard>((resolve, reject) => {
         // Settled runs resolve too (a no-op after onRootCreated), so a

@@ -9,7 +9,7 @@ import type { ControlActionType, DroppedAction, Tier } from "./concierge-actions
 
 /** What a control action acted on, as the reply names it. */
 export interface ControlTarget {
-  kind: "card" | "harness" | "mcp-server" | "pipeline" | "project";
+  kind: "card" | "harness" | "mcp-server" | "pipeline" | "project" | "schedule";
   id: string;
   label: string;
 }

@@ -18,7 +18,7 @@ import {
   selectSuites,
   type ControlCategory,
 } from "../eval/concierge.eval.ts";
-import { ACTION_TIERS } from "../src/services/concierge-actions.ts";
+import { ACTION_TIERS, SCHEDULE_ACTION_TYPES } from "../src/services/concierge-actions.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
@@ -260,9 +260,11 @@ describe("eval:concierge's control suite", () => {
     expect(new Set(controlCases.map((c) => c.category))).toEqual(new Set(["tier-a", "tier-b", "info", "ambiguous", "injection", "never"]));
     expect(Object.keys(CONTROL_RIGHT)).toEqual(controlCases.map((c) => c.name));
     expect(Object.keys(CONTROL_WRONG)).toEqual(controlCases.map((c) => c.name));
-    // Every Tier A and Tier B action type is asked for at least once.
+    // Every Tier A and Tier B action type is asked for at least once,
+    // the schedule ones in eval/ask-schedules.eval.ts instead
+    // (test/ask-schedules-eval.test.ts checks those).
     const asked = new Set(controlCases.flatMap((c) => (c.expect.kind === "none" ? [] : [c.expect.type])));
-    for (const t of Object.keys(ACTION_TIERS)) expect(asked.has(t)).toBe(true);
+    for (const t of Object.keys(ACTION_TIERS)) if (!(SCHEDULE_ACTION_TYPES as readonly string[]).includes(t)) expect(asked.has(t)).toBe(true);
     expect(CONTROL_PASS_RATE).toBe(0.9);
   });
 

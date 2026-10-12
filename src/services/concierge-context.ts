@@ -6,7 +6,8 @@
 // (src/core/pipeline-runner.ts) fences a pipeline handoff. Only Milton's
 // new message is outside the fence.
 
-import type { AgentDef, TaskCard } from "../core/types.ts";
+import type { AgentDef, ScheduleDef, TaskCard } from "../core/types.ts";
+import { DEFAULT_SCHEDULE_TIMEZONE, describeCadence } from "../core/schedule-time.ts";
 
 /** Open cards the context lists at most, newest first. */
 export const MAX_OPEN_CARDS = 40;
@@ -31,7 +32,8 @@ export interface ContextMessage {
 
 export interface ConciergeContextInput {
   tasks: TaskCard[];
-  pipelines: { name: string }[];
+  /** `id` names what a pipeline schedule runs. */
+  pipelines: { id?: string; name: string }[];
   projects: { name: string; path: string }[];
   /** Enabled harnesses, as on the board's account line. */
   accounts: ContextAccount[];
@@ -51,6 +53,25 @@ export interface ConciergeContextInput {
   mcpServers?: { id: string; label: string; enabled: boolean; tools: { name: string; trust: string }[] }[];
   /** Cards whose latest result has a worktree: Merge and Discard. */
   worktreeIds?: string[];
+  /** Every schedule (docs/SDD-schedules.md §3.9). */
+  schedules?: Pick<ScheduleDef, "id" | "name" | "kind" | "pipelineId" | "taskTemplate" | "input" | "cron" | "timezone" | "enabled" | "nextRunAt">[];
+}
+
+/** "2026-10-12 23:00" in `timeZone`. Pure; Intl does the zone rules. */
+export function wallClock(at: Date, timeZone: string): string {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+      .formatToParts(at)
+      .map((x) => [x.type, x.value]),
+  );
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
+/** The zone's offset at `at`, as an ISO suffix: "+02:00", "+00:00". */
+export function utcOffset(at: Date, timeZone: string): string {
+  const name = new Intl.DateTimeFormat("en", { timeZone, timeZoneName: "longOffset" }).formatToParts(at).find((x) => x.type === "timeZoneName")?.value ?? "GMT";
+  const m = /^GMT([+-]\d{2}):?(\d{2})?$/.exec(name);
+  return m ? `${m[1]}:${m[2] ?? "00"}` : "+00:00";
 }
 
 /** Archived cards the context lists, newest first (for unarchive). */
@@ -121,8 +142,15 @@ export function conciergeData(input: ConciergeContextInput) {
     .sort((a, b) => (b.archivedAt ?? "").localeCompare(a.archivedAt ?? ""))
     .slice(0, ARCHIVED_CARDS);
   const worktrees = new Set(input.worktreeIds ?? []);
+  // "Tonight at 11" and "7:00" are wall-clock times in Milton's zone: the
+  // offset is worked out here, in code, so the model only copies it.
+  const at = new Date(input.now);
+  const tz = DEFAULT_SCHEDULE_TIMEZONE;
+  const pipelineName = (id?: string) => input.pipelines.find((p) => p.id === id)?.name ?? "a deleted pipeline";
   return {
     now: input.now,
+    localNow: `${wallClock(at, tz)} ${tz} (UTC${utcOffset(at, tz)})`,
+    defaultTimezone: tz,
     // Newest first: the board lists cards in creation order.
     openCards: open
       .slice(-MAX_OPEN_CARDS)
@@ -136,6 +164,22 @@ export function conciergeData(input: ConciergeContextInput) {
     accounts: accountsLine(input.accounts),
     ...(input.harnesses ? { harnesses: input.harnesses.map((h) => ({ id: h.id, label: h.label, enabled: h.enabled, ...(h.model ? { model: h.model } : {}) })) } : {}),
     ...(input.mcpServers ? { mcpServers: input.mcpServers.map((s) => ({ id: s.id, label: s.label, enabled: s.enabled, tools: s.tools.map((t) => `${t.name} (${t.trust})`) })) } : {}),
+    ...(input.schedules
+      ? {
+          schedules: input.schedules.map((s) => ({
+            id: s.id,
+            name: s.name,
+            runs: s.kind === "pipeline" ? `pipeline ${pipelineName(s.pipelineId)}` : `card '${s.taskTemplate?.title ?? ""}'`,
+            cadence: describeCadence(s.cron),
+            cron: s.cron,
+            timezone: s.timezone,
+            enabled: s.enabled,
+            // Local, in the schedule's own zone; null while paused.
+            nextRun: s.nextRunAt ? `${wallClock(new Date(s.nextRunAt), s.timezone)} ${s.timezone}` : null,
+            ...(s.input ? { input: clip(s.input, 200) } : {}),
+          })),
+        }
+      : {}),
     labels: input.knownLabels,
     conversation: input.history.slice(-HISTORY_MESSAGES).map((m) => ({ role: m.role, text: clip(m.text, HISTORY_TEXT_LIMIT) })),
   };

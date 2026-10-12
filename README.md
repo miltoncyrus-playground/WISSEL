@@ -292,7 +292,9 @@ and 1440 px. `bun run eval:concierge` is the paid eval of the real
 concierge (`--suite basic` or `--suite control`, both by default; the
 control suite's 41 requests report a pass rate per category);
 `bun run eval:stt` checks the real speaches on five fixture
-notes (word error rate at most 15%, `eval/fixtures/stt/`).
+notes (word error rate at most 15%, `eval/fixtures/stt/`);
+`bun run eval:ask-schedules` checks Ask's schedule actions (see
+Schedules below).
 
 ## Pipelines
 
@@ -417,6 +419,35 @@ podcast" and "World news podcast" (`0 6 * * *`, `Europe/Madrid`,
 `catchUpHours: 12`) **disabled**, by name, and never touches one that
 already exists. Enable them only after the timer is off, or each podcast
 runs twice.
+
+**In Ask** (`docs/SDD-schedules.md` §3.9): the concierge sees every
+schedule (id, name, what it runs, cadence, cron, timezone, next run in its
+own zone, enabled), the default timezone and the local time now, and can
+propose these actions. Each runs the same `board-actions.ts` function as
+its route, after `validateSchedule` checks the cron and timezone the model
+gave: a bad one (6 fields, an unknown zone, runs under 5 minutes apart) is
+refused with that message and never repaired.
+
+| Action | Tier | Runs |
+|---|---|---|
+| `update_schedule` (`cron`, `timezone`, `input`) | A, at once | `PATCH /schedules/:id`. "Move the news podcasts to 7:00" is one per podcast schedule. |
+| `set_schedule_enabled` | A | `PATCH /schedules/:id` with `enabled`. |
+| `run_schedule_now` | A | `POST /schedules/:id/run-now`. |
+| `create_schedule` (`pipeline` or `task`, `cron`, `timezone`, `name`?) | B, waits for Confirm | `POST /schedules`. The timezone is required here. |
+| `delete_schedule` | B | `DELETE /schedules/:id`. |
+
+A schedule is named by id, an 8+ character id prefix, its exact name or
+whole words of it; zero or several matches is a question back, not an
+action. `create_task` also takes an optional `notBefore` ("start this
+tonight at 11"), checked by `validateNotBefore` like `POST /tasks`.
+
+**In the app**: the Board tab has a Scheduled section, runs in the next
+24 h first, each with an On toggle and Run now (editing stays on the
+board and in Ask). A card waiting for its start time shows a "Starts
+23:00" chip on the Board tab, the card page and Ask's chips.
+
+`bun run eval:ask-schedules` is the paid eval of the real concierge on ten
+schedule phrasings (pass 9 of 10, see `eval/README.md`).
 
 ## Configuration
 
