@@ -34,6 +34,12 @@ export interface Board {
    *  card that exists already (a queued chain, or an escalated card about
    *  to be retried). */
   setExtraAllowedTools(id: string, tools: string[]): Promise<TaskCard>;
+  /** Sets (or, with undefined, clears) a card's start time
+   *  (TaskCard.notBefore), already validated by validateNotBefore
+   *  (src/core/not-before.ts). Used by `POST /tasks/:id/not-before`
+   *  through setTaskNotBefore (src/services/board-actions.ts), and by
+   *  Orchestrator.runNow to clear it. */
+  setNotBefore(id: string, notBefore: string | undefined): Promise<TaskCard>;
   /** Moves a task to `escalated` and records why in one atomic step —
    *  there's no valid intermediate state where a task is `escalated`
    *  without an `escalationContext`, so this never exists as two calls
@@ -133,6 +139,7 @@ export type BoardEvent =
   | { type: "task.harness-override"; task: TaskCard }
   | { type: "task.superseded"; task: TaskCard }
   | { type: "task.allowed-tools"; task: TaskCard }
+  | { type: "task.not-before"; task: TaskCard }
   | { type: "task.decided"; decision: RoutingDecision }
   | { type: "task.result"; result: TaskResult }
   | { type: "task.override"; taskId: string; routerPick: string; humanPick: string; actor?: string; reason?: string; at: string }
@@ -160,6 +167,7 @@ interface TaskRow {
   supersededBy: string | null;
   escalationContext: string | null;
   retryAfter: string | null;
+  notBefore: string | null;
   resumeSessionId: string | null;
   suggestedGrants: string | null;
   doneAt: string | null;
@@ -198,6 +206,7 @@ function rowToCard(row: TaskRow): TaskCard {
     supersededBy: row.supersededBy ?? undefined,
     escalationContext: row.escalationContext ?? undefined,
     retryAfter: row.retryAfter ?? undefined,
+    notBefore: row.notBefore ?? undefined,
     resumeSessionId: row.resumeSessionId ?? undefined,
     suggestedGrants: row.suggestedGrants ? (JSON.parse(row.suggestedGrants) as string[]) : undefined,
     doneAt: row.doneAt ?? undefined,
@@ -263,7 +272,8 @@ export class SqliteBoard implements Board {
         mcpAccessOverride TEXT,
         pendingMcpApproval TEXT,
         extraAllowedDirs TEXT,
-        extraAllowedTools TEXT
+        extraAllowedTools TEXT,
+        notBefore TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -297,6 +307,8 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN pendingMcpApproval TEXT;",
       "ALTER TABLE tasks ADD COLUMN extraAllowedDirs TEXT;",
       "ALTER TABLE tasks ADD COLUMN extraAllowedTools TEXT;",
+      // docs/SDD-schedules.md §4.
+      "ALTER TABLE tasks ADD COLUMN notBefore TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -503,7 +515,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -527,6 +539,7 @@ export class SqliteBoard implements Board {
         full.mcpAccessOverride ? JSON.stringify(full.mcpAccessOverride) : null,
         full.extraAllowedDirs ? JSON.stringify(full.extraAllowedDirs) : null,
         full.extraAllowedTools ? JSON.stringify(full.extraAllowedTools) : null,
+        full.notBefore ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
@@ -591,6 +604,15 @@ export class SqliteBoard implements Board {
     this.db.run("UPDATE tasks SET extraAllowedTools = ? WHERE id = ?", [tools.length > 0 ? JSON.stringify(tools) : null, id]);
     const updated: TaskCard = { ...existing, extraAllowedTools: tools.length > 0 ? tools : undefined };
     this.events.emit("event", { type: "task.allowed-tools", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async setNotBefore(id: string, notBefore: string | undefined): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET notBefore = ? WHERE id = ?", [notBefore ?? null, id]);
+    const updated: TaskCard = { ...existing, notBefore };
+    this.events.emit("event", { type: "task.not-before", task: updated } satisfies BoardEvent);
     return updated;
   }
 

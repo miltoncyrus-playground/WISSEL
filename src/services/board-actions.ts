@@ -17,6 +17,7 @@ import { checkHarnessAuth } from "../core/harness-discovery.ts";
 import { setHarnessEnabled, setHarnessModel } from "../core/harness-manifest.ts";
 import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
+import { validateNotBefore } from "../core/not-before.ts";
 import { mergeTaskWorktree, removeTaskWorktree } from "./worktree.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { Harness, McpServer, TaskCard, TaskResult } from "../core/types.ts";
@@ -49,6 +50,17 @@ export function mcpApprovalRefusal(task: Pick<TaskCard, "status" | "pendingMcpAp
  *  running: a running card keeps what it started with. */
 export function cardSettingsRefusal(task: Pick<TaskCard, "status">, what: "tools" | "harness"): string | undefined {
   return task.status === "running" || task.status === "dispatched" ? `task is ${task.status}; change its ${what} once it stops` : undefined;
+}
+
+/** A start time (TaskCard.notBefore) only means something on a card
+ *  sweep() has yet to pick up: queued, not routed, not archived, and not
+ *  a pipeline card (the pipeline runner starts those, never sweep). */
+export function notBeforeRefusal(task: Pick<TaskCard, "status" | "routedTo" | "archivedAt" | "pipelineId">): string | undefined {
+  if (task.archivedAt) return "task is archived; unarchive it to give it a start time";
+  if (task.pipelineId !== undefined) return "a pipeline card starts with its pipeline, not on its own start time";
+  if (task.status !== "inbox" && task.status !== "ready") return `task is ${task.status}; a start time only applies to a card in inbox or ready`;
+  if (task.routedTo) return `task is already routed to ${task.routedTo}; it is past its start`;
+  return undefined;
 }
 
 // ---------- tasks ----------
@@ -139,6 +151,18 @@ export async function setTaskHarnessOverride(board: Board, harnesses: HarnessPoo
   if (harnessId !== null && typeof harnessId !== "string") return no(400, "body needs harness (a harness id, or null to clear)");
   if (typeof harnessId === "string" && !harnesses.get(harnessId)) return no(400, `unknown harness "${harnessId}"`);
   return ok(await board.setHarnessOverride(task.id, harnessId ?? undefined));
+}
+
+/** `POST /tasks/:id/not-before`: the card's start time
+ *  (TaskCard.notBefore), or null to clear it. Same rules as a new
+ *  card's `notBefore` in POST /tasks (validateNotBefore). */
+export async function setTaskNotBefore(board: Board, task: TaskCard, notBefore: unknown, now: Date): Promise<Outcome<TaskCard>> {
+  const refused = notBeforeRefusal(task);
+  if (refused) return no(409, refused);
+  if (notBefore === null) return ok(await board.setNotBefore(task.id, undefined));
+  const check = validateNotBefore(notBefore, now);
+  if (!check.ok) return no(400, check.error);
+  return ok(await board.setNotBefore(task.id, check.notBefore));
 }
 
 // ---------- harnesses ----------
