@@ -84,7 +84,8 @@ lines 533–539).
 **Verified live** (per the parent card's shared context, not re-derived
 here): `claude --help` and `codex --help` have no list-models
 subcommand — neither CLI exposes a way to ask "what models can I pick
-from" at runtime. `@anthropic-ai/sdk` is already a dependency
+from" at runtime. (Revised 2026-10-13: codex-cli 0.155.1's `codex debug
+models` does list them; see §7.) `@anthropic-ai/sdk` is already a dependency
 (`package.json`, `^0.127.0`, used today only for `messages.create` in
 `anthropic-api.ts`) and exposes a real `client.models.list()` call.
 
@@ -215,13 +216,14 @@ parent card's shared context:
 | Tool | Source | Why |
 |---|---|---|
 | `claude-cli` | **Static maintained list**, hand-updated in code (subtask 2) | `claude --help` has no list-models subcommand. No live introspection possible; the list is a checked-in constant, refreshed by a human/agent editing it when new models ship, not by a runtime call. |
-| `codex-cli` | **Static maintained list**, hand-updated in code (subtask 2) | Same reasoning — `codex --help` has no list-models subcommand either. |
+| `codex-cli` | **Live**, via `codex debug models` (`queryCodexModels` in `src/core/model-catalog.ts`) | **Revised 2026-10-13.** This row first said codex had no list-models subcommand, same as claude. codex-cli 0.155.1 has `codex debug models`, which prints `{"models":[{slug, display_name, visibility, priority, supported_in_api, ...}]}` for the account under `CODEX_HOME`. `queryCodexModels` runs it with `harness.env`, keeps `visibility === "list"`, sorts by ascending `priority` (1 = codex's default) and returns the slugs. It throws on a non-zero exit, bad JSON or zero visible models; the refresh tick then keeps that harness's previous cache entry. `CODEX_CLI_STATIC_MODELS` stays as a dated snapshot for code that needs ids without spawning codex. |
 | `anthropic-api` | **Live**, via `client.models.list()` (subtask 3) | The already-installed `@anthropic-ai/sdk` (`^0.127.0`) exposes a real models-listing endpoint. This is the one tool where "daily-refreshed" means an actual network call, not a manual edit. |
 
 "Daily-refreshed" therefore means two different things depending on
-tool: for `claude-cli`/`codex-cli` it's a static list that a human
-keeps current (no automation can do better without a CLI subcommand to
-call); for `anthropic-api` it's a real cache with a real TTL (§8).
+tool: for `claude-cli` it's a static list that a human keeps current
+(no automation can do better without a CLI subcommand to call); for
+`codex-cli` and `anthropic-api` it's a real cache with a real TTL (§8),
+refilled by a live call per harness.
 
 ## 8. Cache — file-based, same convention as every other wissel state file
 
@@ -266,17 +268,21 @@ Format:
   },
   "codex-personal": {
     "fetchedAt": "2026-09-23T00:00:00.000Z",
-    "models": ["gpt-5.1-codex"]
+    "models": ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
   }
 }
 ```
 
-One entry per `Harness.id`. `claude-cli`/`codex-cli` harnesses' entries
-are populated from the static list (§7) every time the cache is
-written — "refreshed daily" for these just means the cache file's
-`fetchedAt` rolls forward and re-copies the current static list, so
-every harness shares one refresh mechanism and one file format even
-though only `anthropic-api` harnesses do a real network call.
+One entry per `Harness.id`. `claude-cli` harnesses' entries are
+populated from the static list (§7) every time the cache is written —
+"refreshed daily" for these just means the cache file's `fetchedAt`
+rolls forward and re-copies the current static list, so every harness
+shares one refresh mechanism and one file format. `codex-cli` harnesses'
+entries come from a live `codex debug models` run under the harness's
+`CODEX_HOME` (§7, revised 2026-10-13), with the same keep-previous-entry
+rule on failure as `anthropic-api` below.
+`bun run models:refresh` (`scripts/refresh-models-once.ts`) runs one
+tick against the real pool on demand and prints each harness's entry.
 `anthropic-api` harnesses' entries are refreshed by calling
 `client.models.list()` when `fetchedAt` is more than 24h old; a fetch
 failure keeps that harness's existing cached entry rather than clearing

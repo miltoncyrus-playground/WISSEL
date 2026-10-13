@@ -3,8 +3,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HarnessPool } from "../src/core/harness-pool.ts";
-import { CLAUDE_CLI_STATIC_MODELS, CODEX_CLI_STATIC_MODELS, type AnthropicModelsClient } from "../src/core/model-catalog.ts";
+import { CLAUDE_CLI_STATIC_MODELS, type AnthropicModelsClient } from "../src/core/model-catalog.ts";
 import { runModelRefreshTick, startModelRefreshScheduler, type ModelsCache } from "../src/core/model-refresh-scheduler.ts";
+import type { CommandRunner } from "../src/executors/claude-cli.ts";
 
 async function tmpCachePath(): Promise<{ dir: string; cachePath: string }> {
   const dir = await mkdtemp(join(tmpdir(), "wissel-model-refresh-scheduler-test-"));
@@ -15,9 +16,15 @@ function fakeAnthropicClient(ids: string[]): (apiKey?: string) => AnthropicModel
   return () => ({ models: { list: async () => ({ data: ids.map((id) => ({ id })) }) } });
 }
 
+const CODEX_DEBUG_MODELS_FIXTURE = await Bun.file(new URL("./fixtures/codex-debug-models.json", import.meta.url)).text();
+
+/** Answers `codex debug models` with the fixture; never spawns codex. */
+const fakeCodexRunner: CommandRunner = async () => ({ stdout: CODEX_DEBUG_MODELS_FIXTURE, stderr: "", exitCode: 0 });
+const failingCodexRunner: CommandRunner = async () => ({ stdout: "", stderr: "codex: not logged in", exitCode: 1 });
+
 // --- runModelRefreshTick: resolves every harness, writes the cache file ---
 
-test("runModelRefreshTick: writes static lists for claude-cli/codex-cli and a live-queried list for anthropic-api, keyed by harness id", async () => {
+test("runModelRefreshTick: writes the static list for claude-cli and live-queried lists for codex-cli and anthropic-api, keyed by harness id", async () => {
   const { dir, cachePath } = await tmpCachePath();
   try {
     const harnesses = HarnessPool.from([
@@ -26,10 +33,10 @@ test("runModelRefreshTick: writes static lists for claude-cli/codex-cli and a li
       { id: "api-key-1", tool: "anthropic-api", label: "API key", enabled: true },
     ]);
 
-    const cache = await runModelRefreshTick(harnesses, cachePath, fakeAnthropicClient(["claude-sonnet-5", "claude-opus-5-5"]));
+    const cache = await runModelRefreshTick(harnesses, cachePath, fakeAnthropicClient(["claude-sonnet-5", "claude-opus-5-5"]), new Date(), fakeCodexRunner);
 
     expect(cache["claude-personal"]!.models).toEqual(CLAUDE_CLI_STATIC_MODELS);
-    expect(cache["codex-personal"]!.models).toEqual(CODEX_CLI_STATIC_MODELS);
+    expect(cache["codex-personal"]!.models).toEqual(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.4"]);
     expect(cache["api-key-1"]!.models).toEqual(["claude-sonnet-5", "claude-opus-5-5"]);
     for (const entry of Object.values(cache)) {
       expect(typeof entry.fetchedAt).toBe("string");
@@ -70,6 +77,33 @@ test("runModelRefreshTick: one harness's query throwing never blocks another's, 
     const second = await runModelRefreshTick(harnesses, cachePath, fakeAnthropicClient(["claude-sonnet-5"]), new Date("2025-01-02T00:00:00.000Z"));
     expect(second["broken-api"]).toEqual(seeded["broken-api"]);
     expect(second["claude-personal"]!.fetchedAt).not.toBe(first["claude-personal"]!.fetchedAt);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("runModelRefreshTick: a failing codex refresh keeps codex's previous cache entry while other harnesses still refresh", async () => {
+  const { dir, cachePath } = await tmpCachePath();
+  try {
+    const harnesses = HarnessPool.from([
+      { id: "codex", tool: "codex-cli", label: "Codex", enabled: true, env: { CODEX_HOME: "/home/test/.codex" } },
+      { id: "claude-personal", tool: "claude-cli", label: "Claude personal", enabled: true },
+      { id: "api-key-1", tool: "anthropic-api", label: "API key", enabled: true },
+    ]);
+    const previous: ModelsCache = {
+      codex: { models: ["gpt-6-astra"], fetchedAt: "2026-10-12T00:00:00.000Z" },
+      "claude-personal": { models: ["old"], fetchedAt: "2026-10-12T00:00:00.000Z" },
+      "api-key-1": { models: ["old"], fetchedAt: "2026-10-12T00:00:00.000Z" },
+    };
+    await Bun.write(cachePath, JSON.stringify(previous));
+
+    const now = new Date("2026-10-13T00:00:00.000Z");
+    const cache = await runModelRefreshTick(harnesses, cachePath, fakeAnthropicClient(["claude-sonnet-5"]), now, failingCodexRunner);
+
+    expect(cache.codex).toEqual(previous.codex);
+    expect(cache["claude-personal"]).toEqual({ models: CLAUDE_CLI_STATIC_MODELS, fetchedAt: now.toISOString() });
+    expect(cache["api-key-1"]).toEqual({ models: ["claude-sonnet-5"], fetchedAt: now.toISOString() });
+    expect(JSON.parse(await readFile(cachePath, "utf8"))).toEqual(cache);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
