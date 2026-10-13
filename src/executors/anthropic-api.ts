@@ -19,6 +19,9 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
   "claude-sonnet-5": { input: 2.0, output: 10.0 },
   "claude-sonnet-4-6": { input: 3.0, output: 15.0 },
   "claude-haiku-4-5": { input: 1.0, output: 5.0 },
+  // Tiered: prompts over 100K tokens cost $0.50 / $2.50, so computeCost
+  // under-reports them (it only knows the <=100K rate).
+  "claude-haiku-5-5": { input: 0.1, output: 0.5 },
 };
 
 function computeCost(model: string, usage: Anthropic.Usage): number | undefined {

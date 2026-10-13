@@ -81,12 +81,16 @@ async function resolveHarnessModels(harness: Harness, clientFactory?: (apiKey?: 
  * that two ticks produce different `fetchedAt` values can pass distinct
  * clock values instead of relying on real wall-clock elapsing between
  * two back-to-back calls, which routinely land in the same millisecond.
+ *
+ * `onError`, when given, also receives each per-harness failure, so
+ * `scripts/models-refresh.ts` can report it next to that harness's row.
  */
 export async function runModelRefreshTick(
   harnesses: Pick<HarnessPool, "all">,
   cachePath: string = DEFAULT_MODELS_CACHE_PATH,
   clientFactory?: (apiKey?: string) => AnthropicModelsClient,
   now: Date = new Date(),
+  onError?: (harnessId: string, error: Error) => void,
 ): Promise<ModelsCache> {
   const cache = await readModelsCache(cachePath);
   const fetchedAt = now.toISOString();
@@ -97,6 +101,7 @@ export async function runModelRefreshTick(
       cache[harness.id] = { models, fetchedAt };
     } catch (e) {
       console.error(`model-refresh-scheduler: failed to resolve models for harness "${harness.id}": ${(e as Error).message}`);
+      onError?.(harness.id, e as Error);
     }
   }
 

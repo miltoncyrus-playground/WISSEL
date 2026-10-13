@@ -14,9 +14,16 @@ import type { Harness } from "./types.ts";
  * model surface the raw API does.
  *
  * How a human updates this: when a new model ships, add its id here
- * (and to `MODEL_PRICING` in `anthropic-api.ts` if its per-token pricing
- * is known). There is no command that derives this list automatically —
- * it has to be edited by hand.
+ * and its verified price per million tokens to `MODEL_PRICING` in
+ * `anthropic-api.ts` (`test/model-catalog-manifest.test.ts` fails if
+ * either is missing). No command derives this list, but two scripts
+ * check and publish it (docs/SDD-model-selection.md §7.1/§8):
+ * - `bun run scripts/verify-claude-models.ts [--harness <id>] [--models a,b]`
+ *   runs `claude -p --model <id>` per entry on one claude-cli harness
+ *   (default `claude`) and prints ok/FAIL. Spends tokens; manual only.
+ * - `bun run models:refresh` writes this list (and every other
+ *   harness's) into `~/.wissel/models-cache.json` once, without
+ *   `WISSEL_MODEL_REFRESH`.
  */
 export const CLAUDE_CLI_STATIC_MODELS: string[] = [
   "claude-fable-5-1",
@@ -30,6 +37,7 @@ export const CLAUDE_CLI_STATIC_MODELS: string[] = [
   "claude-sonnet-5",
   "claude-sonnet-4-6",
   "claude-haiku-4-5",
+  "claude-haiku-5-5",
 ];
 
 /**
