@@ -1,4 +1,6 @@
+import { homedir } from "node:os";
 import Anthropic from "@anthropic-ai/sdk";
+import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
 import type { Harness } from "./types.ts";
 
 /**
@@ -33,27 +35,102 @@ export const CLAUDE_CLI_STATIC_MODELS: string[] = [
 ];
 
 /**
- * Known `codex-cli` model ids — hand-maintained, not enumerable.
- * Verified live (per the parent card's shared design context): `codex
- * --help` has no list-models subcommand either. `gpt-5.1-codex` is the
- * only model id this project's research has turned up so far (see
- * docs/SDD-codex-cli-harness.md §6.1/§8.5 and
- * `src/executors/codex-cli.ts`'s own `MODEL_PRICING` comment) — it is
- * kept in this list as a *known candidate id*, not a *verified working*
- * one: it currently 404s against this project's own API key
- * ("The model gpt-5.1-codex does not exist or you do not have access to
- * it."). A model-selection UI surfacing this id is expected to let a
- * fail-loud error (docs/SDD-model-selection.md §5) surface if it's
- * picked and doesn't resolve for a given account, rather than this list
- * silently omitting the only id known to exist.
+ * Known `codex-cli` model ids — a snapshot, not the live source. The live
+ * list comes from `queryCodexModels` below (`codex debug models`, codex-cli
+ * 0.155.1+), which the refresh scheduler calls for every `codex-cli`
+ * harness. This constant is the fallback/validation list for code that
+ * needs codex ids without spawning codex (e.g.
+ * test/model-catalog-manifest.test.ts).
  *
- * How a human updates this: when OpenAI ships a new Codex CLI model, add
- * its id here. Verify it actually resolves via a real `codex exec -m
- * <id>` run before treating it as more than a "known candidate" the way
- * `gpt-5.1-codex` is today — there is no command that derives this list
- * automatically.
+ * Snapshot: the `visibility: "list"` slugs, in ascending priority, that
+ * `queryCodexModels` returned for the `codex` and `codex-personal`
+ * harnesses (codex-cli 0.155.1, `CODEX_HOME=/home/mcyrus/.codex`) in a
+ * live `bun run models:refresh` on 2026-10-13. `codex debug models` also
+ * lists `gpt-5.4`, `codex-auto-review` and `gpt-daybreak-{blue,red}-latest`,
+ * but not as `list`, so they're left out. The old entry `gpt-5.1-codex`
+ * was dropped: it 404s for this account.
+ *
+ * How a human updates this: run `bun run models:refresh` and copy the
+ * `codex` line it prints (the same list it writes to
+ * ~/.wissel/models-cache.json), then update the date above.
  */
-export const CODEX_CLI_STATIC_MODELS: string[] = ["gpt-5.1-codex"];
+export const CODEX_CLI_STATIC_MODELS: string[] = [
+  "gpt-6-astra",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+];
+
+/** How long `queryCodexModels` waits for `codex debug models` by default. */
+export const CODEX_MODELS_TIMEOUT_MS = 30_000;
+
+/** One entry of `codex debug models`' `models` array. Only the fields this
+ *  module reads; codex prints many more (display_name, supported_in_api,
+ *  reasoning levels, ...). */
+interface CodexDebugModel {
+  slug: string;
+  visibility: string;
+  priority: number;
+}
+
+/**
+ * Live model listing for the `codex-cli` harness tool via `codex debug
+ * models`, which prints `{"models":[{slug, visibility, priority, ...}]}`.
+ * Keeps entries with `visibility === "list"` (the ones codex's own model
+ * picker shows; "hide" entries are internal) sorted by ascending
+ * `priority` (1 = codex's default), and returns their slugs.
+ *
+ * Runs under `harness.env` (CODEX_HOME), so each codex harness lists the
+ * models its own account can use. `runner` is injectable, defaulting to
+ * `runViaBun`, same as the codex executors, so tests never spawn codex.
+ *
+ * Throws on a non-zero exit, unparseable JSON, a missing `models` array,
+ * zero visible models, or no result within `timeoutMs` (default 30s; a
+ * live call takes about a second). The timeout exists because the refresh
+ * tick queries harnesses one after another, so a hung codex would stall
+ * every harness after it. On timeout the child is left running (runViaBun
+ * tracks it, so server shutdown still stops it); only the wait ends. Never
+ * returns a fallback list: the caller (the refresh scheduler) catches per
+ * harness and keeps the previous cache entry instead.
+ */
+export async function queryCodexModels(
+  harness: Harness,
+  runner: CommandRunner = runViaBun,
+  timeoutMs: number = CODEX_MODELS_TIMEOUT_MS,
+): Promise<string[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`harness "${harness.id}": \`codex debug models\` gave no result within ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+  const result = await Promise.race([
+    runner(["codex", "debug", "models"], { cwd: homedir(), env: harness.env }),
+    timeout,
+  ]).finally(() => clearTimeout(timer));
+  if (result.exitCode !== 0) {
+    throw new Error(`harness "${harness.id}": \`codex debug models\` exited ${result.exitCode}: ${result.stderr.trim().slice(0, 500)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch (e) {
+    throw new Error(`harness "${harness.id}": \`codex debug models\` printed invalid JSON: ${(e as Error).message}`);
+  }
+  const models = (parsed as { models?: unknown }).models;
+  if (!Array.isArray(models)) {
+    throw new Error(`harness "${harness.id}": \`codex debug models\` output has no "models" array`);
+  }
+  const visible = (models as CodexDebugModel[])
+    .filter((m) => m && m.visibility === "list" && typeof m.slug === "string" && m.slug.length > 0)
+    .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER));
+  if (visible.length === 0) {
+    throw new Error(`harness "${harness.id}": \`codex debug models\` listed no models with visibility "list"`);
+  }
+  return visible.map((m) => m.slug);
+}
 
 /** Minimal surface this module needs from an Anthropic client — mirrors
  *  `AnthropicMessagesClient` in `src/executors/anthropic-api.ts` exactly,

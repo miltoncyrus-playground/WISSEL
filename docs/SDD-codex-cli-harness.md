@@ -199,7 +199,9 @@ nobody adds it defensively later without knowing why it was never needed.
   default anywhere in Phase 1 code; `MODEL_PRICING` computing no cost for
   an unrecognized/inaccessible model is already the correct fallback
   (same contract `anthropic-api.ts` already relies on), not a bug to work
-  around.
+  around. To see which ids this account can actually pick, use `codex
+  debug models` (codex-cli 0.155.1+), which the model refresh tick now
+  calls per harness; see §8 item 5.
 - `--json`: JSONL event stream on stdout (confirmed schema, §6.2)
   instead of `-o <file>` — deliberately avoids introducing a filesystem
   side-channel into the executor. `-o` writes the final message to a
@@ -412,7 +414,19 @@ ran in. Flagged in §8 as an open risk, not silently resolved.
    Codex use its own default is the only verified-working path right
    now. Don't hardcode a model id anywhere in Phase 1; `MODEL_PRICING`
    simply won't compute a cost for a model it doesn't recognize, which is
-   the existing, correct fallback.
+   the existing, correct fallback. **Update 2026-10-13:** the model list
+   no longer has to be guessed. codex-cli 0.155.1's `codex debug models`
+   prints the account's models as JSON; `queryCodexModels`
+   (`src/core/model-catalog.ts`) runs it under each harness's
+   `CODEX_HOME`, and the model refresh tick writes the result to
+   `~/.wissel/models-cache.json` under the harness id (see
+   docs/SDD-model-selection.md §7). A live `bun run models:refresh` on
+   2026-10-13 wrote `gpt-6-astra` (priority 1, codex's default),
+   `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` and `gpt-5.5` for both
+   `codex` and `codex-personal`; `gpt-5.4`, `codex-auto-review` and
+   `gpt-daybreak-*-latest` are in the raw output but not
+   `visibility: "list"`, so they're filtered out. `MODEL_PRICING` in
+   `src/executors/codex-cli.ts` is still empty: no verified rates yet.
 6. **No dispatched wissel task can run shell probes** (§7.1) — a general
    limitation of `acceptEdits`, not specific to this SDD, surfaced while
    building it. Worth its own follow-up someday; out of scope here.
