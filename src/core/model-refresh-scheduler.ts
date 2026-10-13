@@ -90,6 +90,9 @@ async function resolveHarnessModels(
  *
  * `codexRunner` is passed straight through to `queryCodexModels`
  * (default `runViaBun`), so tests never spawn codex.
+ *
+ * `onError`, when given, also receives each per-harness failure, so
+ * `scripts/models-refresh.ts` can report it next to that harness's row.
  */
 export async function runModelRefreshTick(
   harnesses: Pick<HarnessPool, "all">,
@@ -97,6 +100,7 @@ export async function runModelRefreshTick(
   clientFactory?: (apiKey?: string) => AnthropicModelsClient,
   now: Date = new Date(),
   codexRunner?: CommandRunner,
+  onError?: (harnessId: string, error: Error) => void,
 ): Promise<ModelsCache> {
   const cache = await readModelsCache(cachePath);
   const fetchedAt = now.toISOString();
@@ -107,6 +111,7 @@ export async function runModelRefreshTick(
       cache[harness.id] = { models, fetchedAt };
     } catch (e) {
       console.error(`model-refresh-scheduler: failed to resolve models for harness "${harness.id}": ${(e as Error).message}`);
+      onError?.(harness.id, e as Error);
     }
   }
 

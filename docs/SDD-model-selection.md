@@ -225,6 +225,39 @@ tool: for `claude-cli` it's a static list that a human keeps current
 `codex-cli` and `anthropic-api` it's a real cache with a real TTL (§8),
 refilled by a live call per harness.
 
+### 7.1 Checking the claude-cli list on demand
+
+Since the claude-cli list can't be enumerated, it can drift from what
+the account can actually run. `scripts/verify-claude-models.ts` is the
+manual check: for one claude-cli harness (default `claude`) it runs
+`claude -p --model <id> --output-format json "reply ok"` under that
+harness's `CLAUDE_CONFIG_DIR`, once per id in `CLAUDE_CLI_STATIC_MODELS`,
+and prints an ok/FAIL table. A model passes only on exit 0, a non-error
+result, and (when claude reports `modelUsage`) the requested id among
+the models that ran, so a silent fallback to another model fails.
+
+```
+bun run scripts/verify-claude-models.ts                       # harness claude
+bun run scripts/verify-claude-models.ts --harness <id>
+bun run scripts/verify-claude-models.ts --models claude-haiku-5-5
+```
+
+A modelUsage key matches only the exact requested id, optionally with a
+`-<YYYYMMDD>` snapshot suffix or a `[...]` context tag. Requesting
+`claude-opus-5` fails when `claude-opus-5-5` ran.
+
+It spends real tokens (one short prompt per model), so it is not a gate
+test; its unit tests (`test/verify-claude-models-script.test.ts`) run on
+an injected runner. It refuses the corporate account (`claude-adevinta`,
+by id or by a `.claude-adevinta` config dir) unless
+`--harness claude-adevinta` is passed explicitly. A FAIL with "out of
+usage credits" is the account, not the id.
+
+When a new Claude model ships: add its id to `CLAUDE_CLI_STATIC_MODELS`
+and its verified price to `MODEL_PRICING` (`src/executors/anthropic-api.ts`;
+`test/model-catalog-manifest.test.ts` enforces the pairing), run this
+script with `--models <new-id>`, then `bun run models:refresh` (§8).
+
 ## 8. Cache — file-based, same convention as every other wissel state file
 
 **Revises this section's own first draft, named here per §2's own
@@ -291,6 +324,18 @@ harness's refresh in the same tick. This refresh function is subtask
 2's deliverable; subtask 5 wires it to run daily (a
 `setInterval`-based scheduler, same shape as
 `src/core/memory-scheduler.ts`/`src/core/archive-scheduler.ts`).
+
+The scheduler only runs with `WISSEL_MODEL_REFRESH=1`, so with it off
+the cache can be empty or stale. `bun run models:refresh`
+(`scripts/models-refresh.ts`) fills it once without the scheduler: it
+loads the pool with `HarnessPool.autoload` as `src/api/server.ts` does,
+runs one `runModelRefreshTick`, and prints each harness with its tool,
+enabled flag, model count, `fetchedAt` and any error. It exits 1 when a
+harness failed; that harness keeps its old entry, so its row shows the
+old `fetchedAt` next to the error. Honors `WISSEL_HARNESSES_PATH` and
+`WISSEL_MODELS_CACHE_PATH`. Bun loads `.env` from the current directory,
+so run it from the checkout that holds the `ANTHROPIC_API_KEY` the
+server uses, or the anthropic-api harness reports the key as unset.
 
 ## 9. Endpoints
 
