@@ -256,7 +256,41 @@ usage credits" is the account, not the id.
 When a new Claude model ships: add its id to `CLAUDE_CLI_STATIC_MODELS`
 and its verified price to `MODEL_PRICING` (`src/executors/anthropic-api.ts`;
 `test/model-catalog-manifest.test.ts` enforces the pairing), run this
-script with `--models <new-id>`, then `bun run models:refresh` (§8).
+script with `--models <new-id>`, then `bun run models:refresh` (§8),
+then rank it (§7.2).
+
+### 7.2 Model rank — which model is "best"
+
+`MODEL_RANK` in `src/core/model-catalog.ts` lists each tool's model ids,
+best first. `bestModelFor(tool, available)` returns the highest-ranked
+id in `available`, ignores ids the rank doesn't know (dated snapshots,
+retired models), and returns `undefined` when nothing ranked is
+available. It is pure: callers pass in whatever list they have (a
+static list, or `readModelsCache()` from
+`src/core/model-refresh-scheduler.ts`). This turns "use the best
+available model by default" into a lookup instead of a per-card call.
+
+| Tool | Order |
+|---|---|
+| `claude-cli`, `anthropic-api` (one shared list) | Capability tier first (fable > opus > sonnet > haiku), then newest first within a tier: claude-fable-5-1, claude-fable-5, claude-opus-5-5, claude-opus-5, claude-opus-4-8, claude-opus-4-7, claude-opus-4-6, claude-sonnet-5-5, claude-sonnet-5, claude-sonnet-4-6, claude-haiku-5-5, claude-haiku-4-5 |
+| `codex-cli` | `codex debug models` priority order (ascending `priority`, 1 = codex's default), the same order as `CODEX_CLI_STATIC_MODELS`: gpt-6-astra, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5 |
+
+When a new model ships:
+
+1. Add it to the static list (`CLAUDE_CLI_STATIC_MODELS` or
+   `CODEX_CLI_STATIC_MODELS`) as §7.1 / the codex constant's comment
+   describe.
+2. Insert it into `MODEL_RANK` for its tool. Claude: at the top of its
+   tier (a new opus goes above every older opus, below every fable).
+   A new tier name needs an explicit decision on where the tier sits.
+   Codex: copy the order `bun run models:refresh` prints for `codex`.
+3. Run `bun test test/model-catalog.test.ts`. It fails if a static-list
+   id is missing from the rank, if the rank has a duplicate, or if the
+   codex rank drifts from `CODEX_CLI_STATIC_MODELS`' order.
+
+A live list can hold ids the rank doesn't know (anthropic-api returns
+whatever the account sees). `bestModelFor` skips them rather than
+guessing, so a new model is never picked until it is ranked here.
 
 ## 8. Cache — file-based, same convention as every other wissel state file
 
