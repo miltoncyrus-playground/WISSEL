@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import Anthropic from "@anthropic-ai/sdk";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
-import type { Harness } from "./types.ts";
+import type { Harness, HarnessTool } from "./types.ts";
 
 /**
  * Known `claude-cli` model ids — hand-maintained, not enumerable.
@@ -69,6 +69,49 @@ export const CODEX_CLI_STATIC_MODELS: string[] = [
   "gpt-5.6-luna",
   "gpt-5.5",
 ];
+
+/** Claude model ids, best first: capability tier (fable > opus > sonnet >
+ *  haiku), then newest first within a tier. Shared by claude-cli and
+ *  anthropic-api, which run on the same model surface. */
+const CLAUDE_MODEL_RANK: string[] = [
+  "claude-fable-5-1",
+  "claude-fable-5",
+  "claude-opus-5-5",
+  "claude-opus-5",
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+  "claude-sonnet-5-5",
+  "claude-sonnet-5",
+  "claude-sonnet-4-6",
+  "claude-haiku-5-5",
+  "claude-haiku-4-5",
+];
+
+/**
+ * Model ids per harness tool, best first. `bestModelFor` reads this so
+ * "use the best available model" is a lookup, not a judgment call.
+ *
+ * codex-cli follows `codex debug models` priority order (the order of
+ * `CODEX_CLI_STATIC_MODELS`). `test/model-catalog.test.ts` fails when an
+ * id in either static list is missing here; see
+ * docs/SDD-model-selection.md §7.2 for how to place a new model.
+ */
+export const MODEL_RANK: Record<HarnessTool, string[]> = {
+  "claude-cli": CLAUDE_MODEL_RANK,
+  "anthropic-api": CLAUDE_MODEL_RANK,
+  "codex-cli": ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
+};
+
+/**
+ * The highest-ranked id in `available` for `tool`, per `MODEL_RANK`.
+ * Ids `MODEL_RANK` doesn't know are ignored; returns undefined when no
+ * ranked id is available. Pure: no I/O, `available` is not modified.
+ */
+export function bestModelFor(tool: HarnessTool, available: string[]): string | undefined {
+  const have = new Set(available);
+  return MODEL_RANK[tool].find((id) => have.has(id));
+}
 
 /** How long `queryCodexModels` waits for `codex debug models` by default. */
 export const CODEX_MODELS_TIMEOUT_MS = 30_000;

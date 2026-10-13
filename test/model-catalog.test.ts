@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import {
   CLAUDE_CLI_STATIC_MODELS,
   CODEX_CLI_STATIC_MODELS,
+  MODEL_RANK,
+  bestModelFor,
   queryAnthropicModels,
   queryCodexModels,
   type AnthropicModelsClient,
@@ -19,6 +21,70 @@ test("CLAUDE_CLI_STATIC_MODELS is non-empty", () => {
 test("CODEX_CLI_STATIC_MODELS is non-empty", () => {
   expect(CODEX_CLI_STATIC_MODELS.length).toBeGreaterThan(0);
   for (const id of CODEX_CLI_STATIC_MODELS) expect(typeof id).toBe("string");
+});
+
+// --- MODEL_RANK / bestModelFor ---
+
+test("every CLAUDE_CLI_STATIC_MODELS id is ranked for claude-cli and anthropic-api", () => {
+  for (const id of CLAUDE_CLI_STATIC_MODELS) {
+    expect(MODEL_RANK["claude-cli"]).toContain(id);
+    expect(MODEL_RANK["anthropic-api"]).toContain(id);
+  }
+});
+
+test("every CODEX_CLI_STATIC_MODELS id is ranked for codex-cli", () => {
+  for (const id of CODEX_CLI_STATIC_MODELS) expect(MODEL_RANK["codex-cli"]).toContain(id);
+});
+
+test("MODEL_RANK has no duplicate ids per tool", () => {
+  for (const [tool, ids] of Object.entries(MODEL_RANK)) {
+    expect({ tool, size: new Set(ids).size }).toEqual({ tool, size: ids.length });
+  }
+});
+
+test("MODEL_RANK codex-cli keeps `codex debug models` priority order", () => {
+  expect(MODEL_RANK["codex-cli"]).toEqual(CODEX_CLI_STATIC_MODELS);
+});
+
+test("bestModelFor picks claude-fable-5-1 from the full claude-cli list", () => {
+  expect(bestModelFor("claude-cli", CLAUDE_CLI_STATIC_MODELS)).toBe("claude-fable-5-1");
+});
+
+test("bestModelFor picks fable over opus regardless of input order", () => {
+  expect(bestModelFor("claude-cli", ["claude-opus-5-5", "claude-fable-5"])).toBe("claude-fable-5");
+});
+
+test("bestModelFor skips unavailable ids: opus-5-5 when no fable is available", () => {
+  const noFable = CLAUDE_CLI_STATIC_MODELS.filter((id) => !id.startsWith("claude-fable"));
+  expect(bestModelFor("claude-cli", noFable)).toBe("claude-opus-5-5");
+  expect(bestModelFor("anthropic-api", noFable)).toBe("claude-opus-5-5");
+});
+
+test("bestModelFor ranks haiku-5-5 over haiku-4-5", () => {
+  expect(bestModelFor("claude-cli", ["claude-haiku-4-5", "claude-haiku-5-5"])).toBe("claude-haiku-5-5");
+});
+
+test("bestModelFor returns undefined for an empty list", () => {
+  expect(bestModelFor("claude-cli", [])).toBeUndefined();
+  expect(bestModelFor("codex-cli", [])).toBeUndefined();
+});
+
+test("bestModelFor returns undefined when nothing available is ranked", () => {
+  expect(bestModelFor("claude-cli", ["claude-2", "gpt-6-astra"])).toBeUndefined();
+});
+
+test("bestModelFor ignores unknown ids mixed in with ranked ones", () => {
+  expect(bestModelFor("anthropic-api", ["claude-zeta-9", "claude-sonnet-5", "claude-opus-4-1-20250805"])).toBe("claude-sonnet-5");
+});
+
+test("bestModelFor ranks per tool: claude ids don't count for codex-cli", () => {
+  expect(bestModelFor("codex-cli", ["claude-fable-5-1", "gpt-5.5", "gpt-5.6-sol"])).toBe("gpt-5.6-sol");
+});
+
+test("bestModelFor does not modify its input", () => {
+  const input = ["claude-sonnet-5", "claude-opus-5"];
+  bestModelFor("claude-cli", input);
+  expect(input).toEqual(["claude-sonnet-5", "claude-opus-5"]);
 });
 
 // --- queryAnthropicModels: injected fake client only, never a real SDK client ---
