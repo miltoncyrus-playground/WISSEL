@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startPipelineRun, stepsNeedingRepo, type PipelineRunnerContext } from "../src/core/pipeline-runner.ts";
 import { Registry } from "../src/core/registry.ts";
+import { bestModelFor, CLAUDE_CLI_STATIC_MODELS } from "../src/core/model-catalog.ts";
 import type { AgentDef, Executor, PipelineDef, TaskCard } from "../src/core/types.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
 import { ApiExecutor } from "../src/executors/anthropic-api.ts";
@@ -83,13 +84,13 @@ test("DigestExecutor defaults to wissel's own docs/ directory", () => {
 
 // ---- manifest -------------------------------------------------------------
 
-test("manifest: wissel-digest is a no-LLM readonly skill on executor digest; the analyst a readonly no-tools sonnet pipeline-handoff agent; each tag unique", async () => {
+test("manifest: wissel-digest is a no-LLM readonly skill on executor digest; the analyst a readonly no-tools pipeline-handoff agent on the best claude-cli model; each tag unique", async () => {
   const registry = await Registry.load();
   const digest = registry.get("wissel-digest")!;
   expect(digest).toMatchObject({ kind: "skill", tier: "readonly", executor: "digest", toolAccess: [], costProfile: { model: "none", estUsdPerTask: 0 } });
   expect(digest.outputContract).toBeUndefined();
   const analyst = registry.get("wissel-retro-analyst")!;
-  expect(analyst).toMatchObject({ kind: "agent", tier: "readonly", executor: "readonly", toolAccess: [], outputContractFormat: "pipeline-handoff", costProfile: { model: "claude-sonnet-5-5" } });
+  expect(analyst).toMatchObject({ kind: "agent", tier: "readonly", executor: "readonly", toolAccess: [], outputContractFormat: "pipeline-handoff", costProfile: { model: bestModelFor("claude-cli", CLAUDE_CLI_STATIC_MODELS)! } });
   for (const a of [digest, analyst]) {
     expect(a.tags).toHaveLength(1);
     expect(registry.all().filter((o) => o.id !== a.id && o.tags.includes(a.tags[0]!)), a.id).toEqual([]);

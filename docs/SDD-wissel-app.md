@@ -250,7 +250,8 @@ tests.
 The one LLM part. Everything around it is code.
 
 - **Agent `concierge`** (agents/manifest.yaml): `tier: readonly`,
-  `toolAccess: []`, model `claude-opus-5-5` (best model by default),
+  `toolAccess: []`, model `claude-fable-5-1` (best model by default, enforced by
+  docs/SDD-model-selection.md §7.3),
   unique tag, never routed by the fuzzy router, private `claude`
   harness only (respects disabled harnesses like every agent).
   Runs through `ReadOnlyExecutor` (local `claude -p`), no API.
