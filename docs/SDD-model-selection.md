@@ -292,6 +292,114 @@ A live list can hold ids the rank doesn't know (anthropic-api returns
 whatever the account sees). `bestModelFor` skips them rather than
 guessing, so a new model is never picked until it is ranked here.
 
+### 7.3 Manifest policy — every agent and skill on the best model
+
+House rule: always use the best available model unless Milton
+explicitly instructs otherwise. Since 2026-10-13 a gate test enforces it
+for `agents/manifest.yaml`.
+
+**Where the mapping lives.** `costProfile.model` on each manifest entry,
+`kind: agent` and `kind: skill` alike. It is the last tier of
+`resolveModel` (§4: TaskCard.model > Harness.model > costProfile.model),
+so a card or harness override still wins for one run. There is no
+second mapping file.
+
+**Tool per executor** (`toolForExecutor`, `src/core/model-catalog.ts`):
+
+| `executor` | Tool | Model list |
+|---|---|---|
+| `readonly`, `handoff`, `concierge` | `claude-cli` | `CLAUDE_CLI_STATIC_MODELS` |
+| `api` | `anthropic-api` | `CLAUDE_CLI_STATIC_MODELS` (same model surface) |
+| `codex` | `codex-cli` | `CODEX_CLI_STATIC_MODELS` |
+| `tts` (podcast-audio, Kokoro), `digest` (wissel-digest) | none, not an LLM | skipped |
+
+**The rule.** For every LLM entry, `costProfile.model ===
+expectedModelFor(entry)`: its row in `APPROVED_DOWNGRADES` if it has
+one, otherwise `bestModelFor(tool, staticModelsFor(tool))`. Today that
+is `claude-fable-5-1` for every entry (no manifest entry uses codex).
+
+**Downgrade table.** `APPROVED_DOWNGRADES` in
+`src/core/model-catalog.ts`, keyed by manifest id:
+
+```ts
+export const APPROVED_DOWNGRADES: Record<string, ApprovedDowngrade> = {
+  // "commit-message-drafter": { model: "claude-haiku-5-5", reason: "...", approvedBy: "Milton", date: "2026-10-13" },
+};
+```
+
+It starts empty. Only Milton adds rows. A row must name an LLM entry,
+a model its tool's static list has, a model below the best one (a row
+on the best model is pointless and fails), `approvedBy: "Milton"`, a
+non-empty reason and a `YYYY-MM-DD` date.
+
+**Tests** (`test/model-catalog-manifest.test.ts`, gate lane):
+
+- every manifest `executor` is mapped to a tool or listed as non-LLM,
+  so a new executor type can't slip past the policy;
+- `toolForExecutor` matches the `harnessTool` of the real executor pool
+  (`ReadOnlyExecutor`, `WriteExecutor`, `ApiExecutor`, the codex pair)
+  for every entry a pool handles;
+- the policy itself, and the downgrade table's validity;
+- both checks against a fixture, so they are proven to catch an
+  off-policy entry and a bad row.
+
+Tests that used to pin a literal model (`test/ai-news-podcast.test.ts`,
+`test/ask-api.test.ts`, `test/wissel-retro-podcast.test.ts`,
+`test/team-preset.test.ts`, `test/project-eli5.test.ts`) derive the
+expected value from `bestModelFor` instead. The two non-manifest
+defaults follow the same rule: `buildTeamPreset`
+(`src/core/team-preset.ts`, claude-cli) and `generateProjectEli5`
+(`src/services/project-eli5.ts`, anthropic-api).
+
+**When a better model ships.** Rank it (§7.2), then the policy test
+fails for every entry. Fix it with:
+
+    bun run scripts/apply-best-models.ts           # dry run: before/after table
+    bun run scripts/apply-best-models.ts --write   # rewrite agents/manifest.yaml
+
+The script moves each LLM entry to `expectedModelFor` (so approved
+downgrades stay put) and scales `estUsdPerTask` by
+new input price / old input price from `MODEL_PRICING`, rounded to the
+cent. That is exact for any token mix only when both models price
+output at the same multiple of input (5x for every model today); when
+they differ it stops and the entry is re-estimated by hand from real
+token counts. A manifest change goes through review and Milton's merge
+like any other.
+
+**The 2026-10-13 remap** (`claude-sonnet-5-5` x5, `claude-opus-5-5`
+x2.5, `claude-haiku-4-5` x10 on cost):
+
+| Entry | Kind | Tool | Old model | Old est | New est |
+|---|---|---|---|---|---|
+| triager | agent | claude-cli | claude-sonnet-5-5 | $0.03 | $0.15 |
+| planner | agent | claude-cli | claude-opus-5-5 | $0.08 | $0.20 |
+| reviewer | agent | claude-cli | claude-opus-5-5 | $0.12 | $0.30 |
+| pipeline-reviewer | agent | claude-cli | claude-opus-5-5 | $0.12 | $0.30 |
+| mcp-tool-caller | agent | claude-cli | claude-sonnet-5-5 | $0.05 | $0.25 |
+| ai-news-gatherer | agent | claude-cli | claude-sonnet-5-5 | $0.40 | $2.00 |
+| world-news-gatherer | agent | claude-cli | claude-sonnet-5-5 | $0.40 | $2.00 |
+| ai-news-explainer | agent | claude-cli | claude-sonnet-5-5 | $0.10 | $0.50 |
+| world-news-explainer | agent | claude-cli | claude-sonnet-5-5 | $0.10 | $0.50 |
+| podcast-scriptwriter | agent | claude-cli | claude-sonnet-5-5 | $0.10 | $0.50 |
+| wissel-retro-analyst | agent | claude-cli | claude-sonnet-5-5 | $0.15 | $0.75 |
+| repo-briefer | agent | claude-cli | claude-sonnet-5-5 | $0.15 | $0.75 |
+| memory-curator | agent | claude-cli | claude-sonnet-5-5 | $0.05 | $0.25 |
+| concierge | agent | claude-cli | claude-opus-5-5 | $0.10 | $0.25 |
+| implementer | agent | claude-cli | claude-opus-5-5 | $0.60 | $1.50 |
+| fixer | agent | claude-cli | claude-opus-5-5 | $0.35 | $0.88 |
+| integrator | agent | claude-cli | claude-opus-5-5 | $0.25 | $0.63 |
+| commit-message-drafter | skill | anthropic-api | claude-haiku-4-5 | $0.01 | $0.10 |
+| pr-description-writer | skill | anthropic-api | claude-haiku-4-5 | $0.02 | $0.20 |
+| changelog-writer | skill | anthropic-api | claude-haiku-4-5 | $0.03 | $0.30 |
+| quick-answer | skill | anthropic-api | claude-haiku-4-5 | $0.01 | $0.10 |
+| lint-fixer | skill | claude-cli | claude-sonnet-5-5 | $0.05 | $0.25 |
+
+One task on every entry: $3.27 before, $12.66 after (x3.87). This
+replaces the 2026-10-07 choice of sonnet for the news podcast agents
+(docs/SDD-ai-news-podcast.md §3.2). The podcast evals' run-cost limits
+(`maxCostUsd` 1.50 and 1.00 in `eval/ai-news-checks.ts`) were set for
+sonnet and sit below the new estimates for those pipelines.
+
 ## 8. Cache — file-based, same convention as every other wissel state file
 
 **Revises this section's own first draft, named here per §2's own

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { parse } from "yaml";
 import { applyTeamPreset, buildTeamPreset, renderTeamPresetYaml } from "../src/core/team-preset.ts";
+import { bestModelFor, CLAUDE_CLI_STATIC_MODELS } from "../src/core/model-catalog.ts";
 import type { AgentDef } from "../src/core/types.ts";
 
 test("buildTeamPreset wires a coordinator that hands off to three specialists that hand off to no one", () => {
@@ -22,7 +23,10 @@ test("every generated agent satisfies the full AgentDef capability contract", ()
     expect(a.tier).toBe("readonly");
     expect(a.inputs.length).toBeGreaterThan(0);
     expect(a.outputs.length).toBeGreaterThan(0);
-    expect(a.costProfile.model).toBeTruthy();
+    // Every preset agent is executor: readonly (claude-cli): the best
+    // claude-cli model, same rule as agents/manifest.yaml.
+    expect(a.executor).toBe("readonly");
+    expect(a.costProfile.model).toBe(bestModelFor("claude-cli", CLAUDE_CLI_STATIC_MODELS)!);
     expect(a.costProfile.estUsdPerTask).toBeGreaterThan(0);
     expect(["low", "medium", "high"]).toContain(a.trustLevel);
   }

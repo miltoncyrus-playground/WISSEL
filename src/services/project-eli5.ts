@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import type { AnthropicMessagesClient } from "../executors/anthropic-api.ts";
+import { bestModelFor, CLAUDE_CLI_STATIC_MODELS } from "../core/model-catalog.ts";
 
 /** The one genuinely latent-space piece of the project summary box —
  *  everything else (branch, dirty state, latest commit, in
@@ -64,10 +65,8 @@ export interface ProjectEli5Options {
    *  client using ambient credentials, overridable so tests never spend
    *  a real token. */
   clientFactory?: (apiKey?: string) => AnthropicMessagesClient;
-  /** Defaults to claude-sonnet-5, matching every agent in
-   *  agents/manifest.yaml's own costProfile — no reason for this one
-   *  call to pick a different default model than everything else in
-   *  this project already uses. */
+  /** Defaults to the best anthropic-api model (`bestModelFor`), the same
+   *  rule every entry in agents/manifest.yaml follows. */
   model?: string;
 }
 
@@ -81,7 +80,7 @@ export interface ProjectEli5Options {
 export async function generateProjectEli5(path: string, name: string, opts: ProjectEli5Options = {}): Promise<{ eli5: string } | { error: string }> {
   const grounding = gatherGroundingText(path);
   const clientFactory = opts.clientFactory ?? ((apiKey?: string) => new Anthropic(apiKey ? { apiKey } : {}));
-  const model = opts.model ?? "claude-sonnet-5";
+  const model = opts.model ?? bestModelFor("anthropic-api", CLAUDE_CLI_STATIC_MODELS)!;
   const client = clientFactory();
 
   const prompt = [

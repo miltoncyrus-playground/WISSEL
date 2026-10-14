@@ -227,7 +227,7 @@ top bar.
   runs the board's own `board-news.js` for it through `app/src/news.ts`.
 - **Ask.** Chat with wissel (`POST /ask`, `GET /conversations`,
   `GET /conversations/:id`; `docs/SDD-wissel-app.md` §3.4). The
-  `concierge` agent (claude-opus-5-5, no tools, private `claude` harness
+  `concierge` agent (claude-fable-5-1, no tools, private `claude` harness
   only) reads the board as fenced data and proposes actions, checked in
   code before anything happens, at most three per message: create a
   card (labels from the board's set, repo only a registered project),

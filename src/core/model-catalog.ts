@@ -113,6 +113,68 @@ export function bestModelFor(tool: HarnessTool, available: string[]): string | u
   return MODEL_RANK[tool].find((id) => have.has(id));
 }
 
+/**
+ * The harness tool a manifest `executor` value runs on, or undefined for
+ * the non-LLM executors (`tts` is Kokoro, `digest` reads the board).
+ * `concierge` runs through ReadOnlyExecutor on the `claude` harness
+ * (src/services/concierge.ts). An executor value this doesn't know also
+ * returns undefined; `test/model-catalog-manifest.test.ts` fails on any
+ * manifest executor that is neither mapped here nor listed as non-LLM.
+ */
+export function toolForExecutor(executor: string): HarnessTool | undefined {
+  switch (executor) {
+    case "readonly":
+    case "handoff":
+    case "concierge":
+      return "claude-cli";
+    case "api":
+      return "anthropic-api";
+    case "codex":
+      return "codex-cli";
+    default:
+      return undefined;
+  }
+}
+
+/** The checked-in model list for `tool`. anthropic-api shares the
+ *  claude-cli list (same model surface, see CLAUDE_CLI_STATIC_MODELS). */
+export function staticModelsFor(tool: HarnessTool): string[] {
+  return tool === "codex-cli" ? CODEX_CLI_STATIC_MODELS : CLAUDE_CLI_STATIC_MODELS;
+}
+
+/** One approved exception to "every agent runs on the best model". */
+export interface ApprovedDowngrade {
+  model: string;
+  reason: string;
+  approvedBy: string;
+  /** YYYY-MM-DD. */
+  date: string;
+}
+
+/**
+ * Agents and skills Milton has approved to run below the best model for
+ * their tool, keyed by manifest id. Only Milton adds rows. Every other
+ * LLM entry in agents/manifest.yaml must have `costProfile.model ===
+ * bestModelFor(tool, staticModelsFor(tool))`;
+ * `test/model-catalog-manifest.test.ts` fails otherwise. See
+ * docs/SDD-model-selection.md §7.3.
+ */
+export const APPROVED_DOWNGRADES: Record<string, ApprovedDowngrade> = {};
+
+/**
+ * The model an agent's `costProfile.model` must be under the house rule:
+ * its approved downgrade if it has one, otherwise the best model in its
+ * tool's static list. Undefined for non-LLM executors.
+ */
+export function expectedModelFor(
+  agent: { id: string; executor: string },
+  downgrades: Record<string, ApprovedDowngrade> = APPROVED_DOWNGRADES,
+): string | undefined {
+  const tool = toolForExecutor(agent.executor);
+  if (!tool) return undefined;
+  return downgrades[agent.id]?.model ?? bestModelFor(tool, staticModelsFor(tool));
+}
+
 /** How long `queryCodexModels` waits for `codex debug models` by default. */
 export const CODEX_MODELS_TIMEOUT_MS = 30_000;
 

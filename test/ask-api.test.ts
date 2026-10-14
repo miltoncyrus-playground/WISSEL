@@ -9,6 +9,7 @@ import { SqlitePipelineStore } from "../src/services/pipelines.ts";
 import { TelemetryLog } from "../src/services/telemetry.ts";
 import { Registry } from "../src/core/registry.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
+import { bestModelFor, CLAUDE_CLI_STATIC_MODELS } from "../src/core/model-catalog.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import { failureReply } from "../src/services/concierge.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
@@ -315,7 +316,8 @@ describe("POST /ask", () => {
       ["dispatch", `ask-${body.user.id}`, "concierge"],
       ["result", `ask-${body.user.id}`, "concierge"],
     ]);
-    expect(lines[0]).toMatchObject({ model: "claude-opus-5-5", estimatedCost: 0.1 });
+    const { costProfile } = (await Registry.load()).get("concierge")!;
+    expect(lines[0]).toMatchObject({ model: costProfile.model, estimatedCost: costProfile.estUsdPerTask });
     expect(lines[1]).toMatchObject({ actualCost: 0.0123, harnessId: "claude" });
   });
 
@@ -346,7 +348,7 @@ describe("the concierge agent", () => {
     const registry = await Registry.load();
     const agent = registry.get("concierge")!;
     expect(agent).toMatchObject({ tier: "readonly", toolAccess: [], executor: "concierge", harnesses: ["claude"], tags: ["ask-chat-concierge"] });
-    expect(agent.costProfile.model).toBe("claude-opus-5-5");
+    expect(agent.costProfile.model).toBe(bestModelFor("claude-cli", CLAUDE_CLI_STATIC_MODELS)!);
     expect(registry.all().filter((a) => a.id !== "concierge" && a.tags.includes("ask-chat-concierge"))).toEqual([]);
     expect(agent.outputContract).toContain("```wissel-actions");
   });

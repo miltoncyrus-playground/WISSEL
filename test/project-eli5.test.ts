@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generateProjectEli5 } from "../src/services/project-eli5.ts";
 import type { AnthropicMessagesClient } from "../src/executors/anthropic-api.ts";
+import { bestModelFor, CLAUDE_CLI_STATIC_MODELS } from "../src/core/model-catalog.ts";
 import type Anthropic from "@anthropic-ai/sdk";
 
 async function tmp(prefix: string): Promise<string> {
@@ -14,12 +15,13 @@ async function tmp(prefix: string): Promise<string> {
  *  the actual prompt sent back to the caller via `capturedPrompt`, so
  *  tests can assert on what real content actually reached the model
  *  (the README/package.json text), not just that some call happened. */
-function fakeClient(text: string, capture: { prompt?: string }): (apiKey?: string) => AnthropicMessagesClient {
+function fakeClient(text: string, capture: { prompt?: string; model?: string }): (apiKey?: string) => AnthropicMessagesClient {
   return () => ({
     messages: {
       create: async (params): Promise<Anthropic.Message> => {
         const content = params.messages[0]!.content;
         capture.prompt = typeof content === "string" ? content : JSON.stringify(content);
+        capture.model = params.model;
         return {
           id: "msg_1", type: "message", role: "assistant", model: params.model,
           content: [{ type: "text", text, citations: null }],
@@ -41,6 +43,19 @@ test("grounds the prompt in a real README and returns the model's paragraph", as
     expect(result).toEqual({ eli5: "Wissel is a helper that hands your to-do items to the right robot." });
     expect(capture.prompt).toContain("README (README.md)");
     expect(capture.prompt).toContain("Routes tasks to a fleet of agents and skills.");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("defaults to the best anthropic-api model, and an explicit model wins", async () => {
+  const dir = await tmp("model");
+  try {
+    const capture: { model?: string } = {};
+    await generateProjectEli5(dir, "x", { clientFactory: fakeClient("summary", capture) });
+    expect(capture.model).toBe(bestModelFor("anthropic-api", CLAUDE_CLI_STATIC_MODELS)!);
+    await generateProjectEli5(dir, "x", { clientFactory: fakeClient("summary", capture), model: "claude-haiku-5-5" });
+    expect(capture.model).toBe("claude-haiku-5-5");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

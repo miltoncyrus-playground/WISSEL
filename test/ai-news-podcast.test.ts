@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createApp } from "../src/api/server.ts";
 import { PipelineRepoRequiredError, startPipelineRun, stepsNeedingRepo, type PipelineRunnerContext } from "../src/core/pipeline-runner.ts";
 import { Registry } from "../src/core/registry.ts";
+import { bestModelFor, CLAUDE_CLI_STATIC_MODELS } from "../src/core/model-catalog.ts";
 import type { AgentDef, Executor, PipelineDef, PipelineGraph, TaskCard } from "../src/core/types.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
 import { ReadOnlyExecutor, WEB_ALLOWED_TOOLS } from "../src/executors/readonly.ts";
@@ -112,7 +113,7 @@ test("web grant: the registry rejects web on a write-tier agent, or on a readonl
 
 // ---- §3.2 the three agents ------------------------------------------
 
-test("manifest: the news agents load as readonly pipeline-handoff agents on claude-sonnet-5-5 (Milton, 2026-10-07: cheaper model where it makes sense), each with one tag nobody else uses", async () => {
+test("manifest: the news agents load as readonly pipeline-handoff agents on the best claude-cli model, each with one tag nobody else uses", async () => {
   const registry = await Registry.load();
   const all = registry.all();
   for (const id of NEWS_AGENTS) {
@@ -122,7 +123,7 @@ test("manifest: the news agents load as readonly pipeline-handoff agents on clau
     expect(a!.executor).toBe("readonly");
     expect(a!.kind).toBe("agent");
     expect(a!.outputContractFormat).toBe("pipeline-handoff");
-    expect(a!.costProfile.model).toBe("claude-sonnet-5-5");
+    expect(a!.costProfile.model).toBe(bestModelFor("claude-cli", CLAUDE_CLI_STATIC_MODELS)!);
     expect(a!.tags).toHaveLength(1);
     const others = all.filter((o) => o.id !== id);
     expect(others.some((o) => o.tags.includes(a!.tags[0]!)), `${id}'s tag ${a!.tags[0]} is shared`).toBe(false);

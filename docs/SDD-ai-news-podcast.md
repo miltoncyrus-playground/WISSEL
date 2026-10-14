@@ -63,10 +63,12 @@ All `tier: readonly`, `executor: readonly`, each with one unique tag
 comment in the manifest) and `outputContractFormat: pipeline-handoff`,
 so each step's structured output is handed to the next as fenced data
 (`buildNextStepBody`, `src/core/pipeline-runner.ts:303`).
-Model: `claude-sonnet-5-5` for all three. Revision 2026-10-07, Milton:
-use a cheaper model where it makes sense. Sonnet is half opus's price;
-haiku was not chosen because gathering needs source judgment and the
-script must read well aloud. Change any of them in the model table.
+Model: the best claude-cli model (`claude-fable-5-1` today) for all
+three, per the best-model policy (docs/SDD-model-selection.md §7.3).
+Revision 2026-10-13: this replaces the 2026-10-07 choice of
+`claude-sonnet-5-5` ("use a cheaper model where it makes sense").
+Going back to sonnet for any of them is a row in `APPROVED_DOWNGRADES`
+(`src/core/model-catalog.ts`), which only Milton adds.
 
 1. **ai-news-gatherer** (`toolAccess: [web]`). Finds the most important
    AI news of the last 7 days (default 6 to 8 stories, mix of research,
@@ -289,7 +291,7 @@ background the source itself gives. No speculation, no hype words.
 
 **B. Level per pipeline.** `eli5-explainer` is replaced by two agents
 with the same contract shape and different audiences (both readonly,
-no tools, `claude-sonnet-5-5`, `pipeline-handoff`, one unique tag each):
+no tools, the best claude-cli model (§3.2), `pipeline-handoff`, one unique tag each):
 
 - `ai-news-explainer` (tag `ai-news-explain-step`, kept): for a
   software engineer who follows AI. Keep model, lab, benchmark and

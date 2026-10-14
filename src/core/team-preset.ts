@@ -1,3 +1,4 @@
+import { bestModelFor, CLAUDE_CLI_STATIC_MODELS } from "./model-catalog.ts";
 import type { AgentDef } from "./types.ts";
 
 export interface TeamPresetResult {
@@ -16,7 +17,10 @@ export interface TeamPresetResult {
  */
 export function buildTeamPreset(prefix: string): AgentDef[] {
   const specialistIds = [`${prefix}-researcher`, `${prefix}-writer`, `${prefix}-reviewer`];
-  const cost = (estUsdPerTask: number): AgentDef["costProfile"] => ({ model: "claude-sonnet-5", estUsdPerTask });
+  // Every preset agent is executor: readonly (claude-cli), so it gets the
+  // best claude-cli model, same rule as agents/manifest.yaml.
+  const model = bestModelFor("claude-cli", CLAUDE_CLI_STATIC_MODELS)!;
+  const cost = (estUsdPerTask: number): AgentDef["costProfile"] => ({ model, estUsdPerTask });
 
   return [
     {
@@ -33,7 +37,7 @@ export function buildTeamPreset(prefix: string): AgentDef[] {
       outputs: ["subtask-cards"],
       trustLevel: "low",
       toolAccess: ["read"],
-      costProfile: cost(0.08),
+      costProfile: cost(0.40),
     },
     {
       id: `${prefix}-researcher`,
@@ -49,7 +53,7 @@ export function buildTeamPreset(prefix: string): AgentDef[] {
       outputs: ["research-brief"],
       trustLevel: "low",
       toolAccess: ["read"],
-      costProfile: cost(0.10),
+      costProfile: cost(0.50),
     },
     {
       id: `${prefix}-writer`,
@@ -65,7 +69,7 @@ export function buildTeamPreset(prefix: string): AgentDef[] {
       outputs: ["draft"],
       trustLevel: "low",
       toolAccess: ["read"],
-      costProfile: cost(0.10),
+      costProfile: cost(0.50),
     },
     {
       id: `${prefix}-reviewer`,
@@ -81,7 +85,7 @@ export function buildTeamPreset(prefix: string): AgentDef[] {
       outputs: ["review-findings"],
       trustLevel: "medium",
       toolAccess: ["read"],
-      costProfile: cost(0.10),
+      costProfile: cost(0.50),
     },
   ];
 }
