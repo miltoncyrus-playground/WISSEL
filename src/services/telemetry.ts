@@ -18,6 +18,11 @@ export type TelemetryEvent =
       usage?: RunUsage;
       /** Only on a run that resumed a session a 429 cut off. */
       resumed?: true;
+      /** Raw permission_denials count of a `claude -p` run
+       *  (TaskResult.denials). */
+      denials?: number;
+      /** Bash sandbox state of a `claude -p` run (TaskResult.sandbox). */
+      sandbox?: "on" | "off" | "unavailable";
     }
   /** One control action Ask ran on one target (docs/SDD-wissel-app.md
    *  §3.7): what, on what, which tier, and who let it run. */

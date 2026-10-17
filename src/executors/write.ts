@@ -3,6 +3,8 @@ import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { resolveModel } from "../core/model-resolution.ts";
 import { runClaude, runViaBun, type CommandRunner } from "./claude-cli.ts";
 import { createTaskWorktree } from "../services/worktree.ts";
+import { readProjectAllowRules } from "../core/allowed-tools.ts";
+import { buildSandboxSettings, harnessConfigDirs, type SandboxStatus } from "./sandbox.ts";
 
 export interface WriteExecutorOptions {
   runner?: CommandRunner;
@@ -41,7 +43,21 @@ export interface WriteExecutorOptions {
    *  see its own doc comment. Off unless the caller (src/api/server.ts,
    *  from WISSEL_REMOTE_CONTROL) turns it on. */
   remoteControl?: boolean;
+  /** The startup sandbox preflight's verdict (probeSandbox,
+   *  src/executors/sandbox.ts). Only "on" sandboxes Bash; "off" (the
+   *  default, so tests and evals keep today's argv) and "unavailable"
+   *  run under the allowlist alone. Never broad Bash without the
+   *  sandbox: the two only ever come together. */
+  sandbox?: SandboxStatus;
+  /** Extra read-denied paths for the sandbox: every configured
+   *  harness's CLAUDE_CONFIG_DIR / CODEX_HOME (harnessConfigDirs). The
+   *  running harness's own is always added. */
+  sandboxDenyRead?: string[];
 }
+
+/** Always granted: the two commands every write-tier verificationContract
+ *  runs. */
+export const BASE_ALLOWED_TOOLS = ["Bash(bun test:*)", "Bash(bun run typecheck:*)"] as const;
 
 /**
  * Opt-in local execution for write-tier work — headless `claude -p` with
@@ -49,6 +65,13 @@ export interface WriteExecutorOptions {
  * the loop but anything riskier (Bash and friends) still needs an
  * approval a headless run can't give, and surfaces as a permission
  * denial in the result rather than silently going through.
+ *
+ * When the startup preflight found Claude Code's Bash sandbox can start
+ * (`sandbox.state === "on"`), Bash instead runs inside it and is
+ * approved by it: writes only to the worktree, the temp dir and
+ * extraAllowedDirs, credential dirs unreadable, network limited to the
+ * npm registry and github.com, no unsandboxed retry. See
+ * src/executors/sandbox.ts and docs/SDD-write-tier-sandbox.md.
  *
  * Runs inside an isolated git worktree, never task.repo's own working
  * tree directly (see createTaskWorktree) — a real subprocess was
@@ -77,6 +100,8 @@ export class WriteExecutor implements Executor {
   private injectMemory?: boolean;
   private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
+  private sandbox: SandboxStatus;
+  private sandboxDenyRead: string[];
 
   constructor(opts: WriteExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
@@ -87,6 +112,8 @@ export class WriteExecutor implements Executor {
     this.injectMemory = opts.injectMemory;
     this.mcpServers = opts.mcpServers;
     this.onChunk = opts.onChunk;
+    this.sandbox = opts.sandbox ?? { state: "off", problems: [] };
+    this.sandboxDenyRead = opts.sandboxDenyRead ?? [];
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -107,6 +134,17 @@ export class WriteExecutor implements Executor {
     const worktree = await createTaskWorktree(task.repo!, worktreeKey, { runner: this.runner, homeDir: this.homeDir });
     if ("error" in worktree) return fail(task, agent, worktree.error);
 
+    // The repo's own .claude/settings.json allow rules, which claude
+    // drops in an untrusted worktree; only the ones a per-card grant
+    // could also be (see readProjectAllowRules).
+    const project = await readProjectAllowRules(task.repo!);
+    for (const r of project.refused) console.warn(`write: task ${task.id}: not passing project allow rule ${r.error}`);
+
+    const sandboxOn = this.sandbox.state === "on";
+    const settings = sandboxOn
+      ? buildSandboxSettings({ repo: task.repo!, extraDenyRead: [...this.sandboxDenyRead, ...harnessConfigDirs([harness?.env])] })
+      : undefined;
+
     const result = await runClaude({
       runner: this.runner,
       task: { ...task, repo: worktree.path },
@@ -125,7 +163,13 @@ export class WriteExecutor implements Executor {
       // task-specific grants beyond this fixed pair — undefined/empty for
       // every task before that field existed, so this is byte-identical
       // to the fixed two-entry array for every caller that doesn't set it.
-      allowedTools: ["Bash(bun test:*)", "Bash(bun run typecheck:*)", ...(task.extraAllowedTools ?? [])],
+      // With the sandbox on, sandboxed Bash is approved by the sandbox
+      // itself (autoAllowBashIfSandboxed), so this list is no longer the
+      // gate; it stays for the commands auto-allow still sends through
+      // the permission flow (a leading VAR=value, for one).
+      allowedTools: dedupe([...BASE_ALLOWED_TOOLS, ...(task.extraAllowedTools ?? []), ...project.allowed]),
+      settings,
+      sandbox: this.sandbox.state,
       addDir: task.extraAllowedDirs,
       memoryPath: this.memoryPath,
       injectMemory: this.injectMemory,
@@ -144,6 +188,10 @@ export class WriteExecutor implements Executor {
     const withHarness = harness ? { ...result, harnessId: harness.id } : result;
     return { ...withHarness, worktree };
   }
+}
+
+function dedupe(items: string[]): string[] {
+  return items.filter((x, i) => items.indexOf(x) === i);
 }
 
 function fail(task: TaskCard, agent: AgentDef, summary: string): TaskResult {

@@ -79,6 +79,8 @@ test("runs claude in acceptEdits mode inside an isolated worktree and parses a s
       agentId: "implementer",
       ok: true,
       summary: "shipped",
+      sandbox: "off",
+      denials: 0,
       worktree: { path: join(home, ".wissel", "worktrees", "t1"), branch: "wissel/t1" },
     });
   } finally {

@@ -1174,6 +1174,11 @@ agents:
       `mergeTaskWorktree`/`src/services/worktree.ts`). Report your
       status from the code and tests alone; do not treat a git-write
       denial as a concern to flag or a blocker to work around.
+
+      Tools: read and search with Read, Grep and Glob; change files with
+      Edit and Write, never sed -i or shell redirects. Run `bun test` and
+      `bun run typecheck` as plain commands: no pipes, no `time`, no
+      redirects. Never run `bun -e` or `node -e`.
     # Declaring "reviewer" here (not implementer-specific — see the
     # comment on reviewer.outputContract above) is the whole trigger for
     # the automated push-back loop: a successful run lands on
@@ -1193,6 +1198,12 @@ agents:
     trustLevel: high
     toolAccess: [read, write, bash]
     costProfile: { model: claude-fable-5-1, estUsdPerTask: 0.88 }
+    # Same tool steering as implementer's (docs/SDD-write-tier-sandbox.md).
+    verificationContract: |
+      Tools: read and search with Read, Grep and Glob; change files with
+      Edit and Write, never sed -i or shell redirects. Run `bun test` and
+      `bun run typecheck` as plain commands: no pipes, no `time`, no
+      redirects. Never run `bun -e` or `node -e`.
 
   - id: integrator
     name: Integrator
@@ -1213,6 +1224,12 @@ agents:
     trustLevel: high
     toolAccess: [read, write, bash]
     costProfile: { model: claude-fable-5-1, estUsdPerTask: 0.63 }
+    # Same tool steering as implementer's (docs/SDD-write-tier-sandbox.md).
+    verificationContract: |
+      Tools: read and search with Read, Grep and Glob; change files with
+      Edit and Write, never sed -i or shell redirects. Run `bun test` and
+      `bun run typecheck` as plain commands: no pipes, no `time`, no
+      redirects. Never run `bun -e` or `node -e`.
 
   # --- skills: narrower, more mechanical than a full agent. Same model
   # rule as agents: the best one for the tool unless APPROVED_DOWNGRADES
@@ -1287,3 +1304,9 @@ agents:
     trustLevel: medium
     toolAccess: [read, write, bash]
     costProfile: { model: claude-fable-5-1, estUsdPerTask: 0.25 }
+    # Same tool steering as implementer's (docs/SDD-write-tier-sandbox.md).
+    verificationContract: |
+      Tools: read and search with Read, Grep and Glob; change files with
+      Edit and Write, never sed -i or shell redirects. Run `bun test` and
+      `bun run typecheck` as plain commands: no pipes, no `time`, no
+      redirects. Never run `bun -e` or `node -e`.

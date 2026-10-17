@@ -67,7 +67,9 @@ test("runs claude in plan mode and parses a successful result", async () => {
     }),
   });
   const result = await executor.run(task, agent);
-  expect(result).toEqual({ taskId: "t1", agentId: "triager", ok: true, summary: "pong" });
+  // Readonly runs never get the Bash sandbox: always "off", and the raw
+  // denial count (0 here) for telemetry.
+  expect(result).toEqual({ taskId: "t1", agentId: "triager", ok: true, summary: "pong", sandbox: "off", denials: 0 });
 });
 
 // Confirmed live (docs/SDD-subagent-visibility.md §2) — subagent_stats
