@@ -7,7 +7,15 @@ import type { Registry } from "./registry.ts";
 import type { Router } from "./router.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import { runViaBun } from "../executors/claude-cli.ts";
-import { determineWorktreeMergeState, mergeTaskWorktree, removeTaskWorktree, type TaskWorktree } from "../services/worktree.ts";
+import {
+  determineWorktreeMergeState,
+  mergeTaskWorktree,
+  removeTaskWorktree,
+  toMergeContext,
+  type MergeContext,
+  type MergeResult,
+  type TaskWorktree,
+} from "../services/worktree.ts";
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
 import { handlePipelineStepResult } from "./pipeline-runner.ts";
 import { validateExtraAllowedTools } from "./allowed-tools.ts";
@@ -116,10 +124,14 @@ export async function finishResult(
   registry: Registry,
   result: TaskResult,
   telemetry?: TelemetryLog,
-  runner: CommandRunner = runViaBun,
+  runnerOrMerge: CommandRunner | MergeContext = runViaBun,
   memoryPath: string = DEFAULT_MEMORY_PATH,
   pipelineCtx?: PipelineFinishContext,
 ): Promise<void> {
+  // The merge path's context (gate, telemetry); a bare runner means no
+  // gate, and this call's own telemetry log for the merge events.
+  const merge = toMergeContext(runnerOrMerge);
+  const runner: MergeContext = merge.telemetry || !telemetry ? merge : { ...merge, telemetry };
   await board.recordResult(result);
   const audio = audioTelemetry(result);
   await telemetry?.record({
@@ -268,9 +280,15 @@ export async function finishResult(
     return;
   }
 
-  if (agent.autoMerge && agent.trustLevel === "high" && (await tryAutoMerge(board, registry, result, runner))) {
-    await board.move(result.taskId, "done");
-    return;
+  if (agent.autoMerge && agent.trustLevel === "high") {
+    const outcome = await tryAutoMerge(board, registry, result, runner);
+    if (outcome === "landed") {
+      await board.move(result.taskId, "done");
+      return;
+    }
+    // A gate failure already went back as a pushback (or escalated):
+    // the card is superseded, so it leaves "running" for review.
+    if (outcome === "escalated") return;
   }
 
   // Either no auto-merge exception applies, or it does but couldn't
@@ -389,7 +407,7 @@ async function spawnSubtasksFromPlan(board: Board, plannerTask: TaskCard, plan: 
  * to a human (changes_requested, at the limit) — see resumeAfterApproval,
  * spawnPushbackImplementer, and the escalation branch below respectively.
  */
-async function handleReviewVerdict(board: Board, registry: Registry, result: TaskResult, runner: CommandRunner): Promise<void> {
+async function handleReviewVerdict(board: Board, registry: Registry, result: TaskResult, runner: CommandRunner | MergeContext): Promise<void> {
   const reviewerTask = await board.get(result.taskId);
   if (!reviewerTask) return; // vanished mid-run — nothing left to resolve
 
@@ -423,7 +441,7 @@ export async function resumeAfterReviewVerdict(
   registry: Registry,
   reviewerTask: TaskCard,
   result: TaskResult,
-  runner: CommandRunner,
+  runner: CommandRunner | MergeContext,
 ): Promise<ReviewVerdictOutcome> {
   if (!reviewerTask.parentTaskId) return "no-op";
   const implementerTask = await board.get(reviewerTask.parentTaskId);
@@ -450,14 +468,47 @@ export async function resumeAfterReviewVerdict(
   }
 
   const pushbackCount = implementerTask.pushbackCount ?? 0;
-  if (pushbackCount >= 5) {
+  if (pushbackCount >= MAX_PUSHBACKS) {
     const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
     const escalationContext = await buildEscalationContext(board, lineageId);
     await board.escalate(implementerTask.id, escalationContext);
     return "escalated";
   }
 
-  await spawnPushbackImplementer(board, implementerTask, reviewerTask, result);
+  await spawnPushbackImplementer(board, implementerTask, reviewerTask.id, {
+    heading: "Reviewer feedback",
+    text: result.reviewFeedback ?? "(reviewer requested changes but gave no feedback text)",
+  });
+  return "pushback";
+}
+
+/** The pushback cap: a lineage gets this many re-attempts, whether a
+ *  reviewer or the merge gate sent them back, then escalates. */
+export const MAX_PUSHBACKS = 5;
+
+/**
+ * A merge-gate failure (mergeTaskWorktree's `gate-failed`) goes back
+ * through the same pushback loop a reviewer's changes_requested does:
+ * same lineage, same worktree, the same MAX_PUSHBACKS cap counted on the
+ * same `pushbackCount`. No second retry mechanism. The feedback is the
+ * failing command and the tail of its output (GateReport.feedback).
+ *
+ * The re-attempt hangs off this attempt's reviewer card when there is
+ * one (so it routes exactly as a reviewer pushback would), else off the
+ * attempt's own parent. Used by the auto-merge path (tryAutoMerge) and
+ * the board's Merge button (board-actions.ts mergeTask).
+ */
+export async function pushBackGateFailure(board: Board, implementerTask: TaskCard, feedback: string): Promise<"pushback" | "escalated"> {
+  const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
+  if ((implementerTask.pushbackCount ?? 0) >= MAX_PUSHBACKS) {
+    const history = await buildEscalationContext(board, lineageId);
+    const note = `The merge gate failed after ${MAX_PUSHBACKS} re-attempts; nothing landed.\n\n${feedback}`;
+    await board.escalate(implementerTask.id, history ? `${history}\n\n${note}` : note);
+    return "escalated";
+  }
+  const lineage = await board.getLineage(lineageId);
+  const reviewer = lineage.filter((c) => c.routedTo === "reviewer" && c.parentTaskId === implementerTask.id).pop();
+  await spawnPushbackImplementer(board, implementerTask, reviewer?.id ?? implementerTask.parentTaskId, { heading: "Merge gate feedback", text: feedback });
   return "pushback";
 }
 
@@ -488,24 +539,37 @@ export async function resumeAfterReviewVerdict(
  * reaches this function once, with a worktree branch that was only ever
  * just created, never already merged — so this costs two extra cheap
  * `git` calls there and changes nothing else.
+ *
+ * A merge gate failure (mergeTaskWorktree's `gate-failed`) goes back as
+ * a pushback, or escalates at the cap — see pushBackGateFailure.
  */
-export async function resumeAfterApproval(board: Board, registry: Registry, implementerTask: TaskCard, runner: CommandRunner): Promise<ReviewVerdictOutcome> {
+export async function resumeAfterApproval(
+  board: Board,
+  registry: Registry,
+  implementerTask: TaskCard,
+  runnerOrMerge: CommandRunner | MergeContext,
+): Promise<ReviewVerdictOutcome> {
+  const merge = toMergeContext(runnerOrMerge);
   const agent = implementerTask.routedTo ? registry.get(implementerTask.routedTo) : undefined;
   const originalResult = await board.getResult(implementerTask.id);
 
   if (agent?.autoMerge && agent.trustLevel === "high" && originalResult?.worktree) {
-    const mergeState = await determineWorktreeMergeState(implementerTask.repo!, originalResult.worktree, implementerTask, runner);
+    const mergeState = await determineWorktreeMergeState(implementerTask.repo!, originalResult.worktree, implementerTask, merge.runner, originalResult.mergedSha);
     if (mergeState === "unknown") return "unresolved";
     if (mergeState === "merged") {
-      await removeTaskWorktree(implementerTask.repo!, originalResult.worktree, runner);
+      await removeTaskWorktree(implementerTask.repo!, originalResult.worktree, merge.runner);
       await board.move(implementerTask.id, "done");
       return "done";
     }
   }
 
-  if (agent?.autoMerge && agent.trustLevel === "high" && originalResult && (await tryAutoMerge(board, registry, originalResult, runner))) {
-    await board.move(implementerTask.id, "done");
-    return "done";
+  if (agent?.autoMerge && agent.trustLevel === "high" && originalResult) {
+    const outcome = await tryAutoMerge(board, registry, originalResult, merge);
+    if (outcome === "landed") {
+      await board.move(implementerTask.id, "done");
+      return "done";
+    }
+    if (outcome === "pushback" || outcome === "escalated") return outcome;
   }
 
   await board.move(implementerTask.id, "review");
@@ -568,7 +632,10 @@ export async function grantAndRetry(board: Board, task: TaskCard, tools?: string
   if (!reviewer) return "no review of this attempt to continue from; use Retry instead";
 
   const granted = await board.setExtraAllowedTools(task.id, merged.tools);
-  return await spawnPushbackImplementer(board, granted, reviewer.card, reviewer.result);
+  return await spawnPushbackImplementer(board, granted, reviewer.card.id, {
+    heading: "Reviewer feedback",
+    text: reviewer.result.reviewFeedback ?? "(reviewer requested changes but gave no feedback text)",
+  });
 }
 
 /**
@@ -601,11 +668,19 @@ export function carriedCardSettings(task: TaskCard): Partial<Omit<TaskCard, "id"
  * `failed` (see TaskCard.supersededBy — this isn't a real failure, and
  * conflating the two would skew failure-rate metrics for something
  * that's actually the system working as designed).
+ *
+ * `parentTaskId` is the reviewer card for a reviewer pushback; a merge
+ * gate pushback (pushBackGateFailure) passes the same when the attempt
+ * had one. `feedback.heading` names who sent it back.
  */
-async function spawnPushbackImplementer(board: Board, implementerTask: TaskCard, reviewerTask: TaskCard, result: TaskResult): Promise<TaskCard> {
+async function spawnPushbackImplementer(
+  board: Board,
+  implementerTask: TaskCard,
+  parentTaskId: string | undefined,
+  feedback: { heading: string; text: string },
+): Promise<TaskCard> {
   const newPushbackCount = (implementerTask.pushbackCount ?? 0) + 1;
   const reviewLineageId = implementerTask.reviewLineageId ?? implementerTask.id;
-  const feedback = result.reviewFeedback ?? "(reviewer requested changes but gave no feedback text)";
   // What this attempt was refused (TaskResult.permissionDenials), so the
   // next one doesn't spend its turn retrying it. 2026-10-10: "Wissel app
   // 1/6" was refused `bun install` five rounds running without knowing.
@@ -618,14 +693,14 @@ async function spawnPushbackImplementer(board: Board, implementerTask: TaskCard,
     (refused.length > 0
       ? `\n\nRefused on the last attempt: ${refused.join(", ")}. Don't retry these: they need a grant on the card (POST /tasks/:id/allowed-tools). Do everything else, and say plainly which checks you couldn't run.`
       : "") + (nowGranted.length > 0 ? `\n\nRefused on the last attempt and granted since, so run them now: ${nowGranted.join(", ")}.` : "");
-  const body = `${implementerTask.body}\n\n---\nReviewer feedback (attempt ${newPushbackCount}):\n${feedback}${refusedNote}`;
+  const body = `${implementerTask.body}\n\n---\n${feedback.heading} (attempt ${newPushbackCount}):\n${feedback.text}${refusedNote}`;
 
   const nextAttempt = await board.create({
     title: implementerTask.title,
     body,
     labels: implementerTask.labels,
     repo: implementerTask.repo,
-    parentTaskId: reviewerTask.id,
+    parentTaskId,
     reviewLineageId,
     pushbackCount: newPushbackCount,
     ...carriedCardSettings(implementerTask),
@@ -657,36 +732,52 @@ async function buildEscalationContext(board: Board, reviewLineageId: string): Pr
   return entries.join("\n\n");
 }
 
-/** True only when the write-tier success is actually safe to land on
+/** How an unattended merge attempt ended for the card: `landed` (safe
+ *  to move to done), `pushback`/`escalated` (the gate failed and the
+ *  pushback loop took it; see pushBackGateFailure), or `review` (any
+ *  other miss: a human looks). */
+export type AutoMergeOutcome = "landed" | "pushback" | "escalated" | "review";
+
+/** `landed` only when the write-tier success is actually safe to land on
  *  `done` unattended: no worktree to merge (nothing to reconcile — e.g.
  *  an external report with no local execution behind it), or a worktree
- *  whose merge genuinely succeeded (git merge --no-ff, same as a human
- *  clicking Merge — never a bare status change masquerading as one).
+ *  that really landed through the merge path (mergeTaskWorktree, same as
+ *  a human clicking Merge — never a bare status change masquerading as
+ *  one).
  *
- *  A fresh conflict (merge.ok === false) is the one moment
- *  docs/SDD-crash-recovery.md §3.3 identifies as safe to attempt
- *  automatic resolution in — see maybeSpawnConflictIntegrator below —
- *  so it's fired here, right where the conflict is first discovered,
- *  not deferred to some later check. Either way this still returns
- *  `false`: the caller's own existing fallback (land on `review` for a
- *  human) is unchanged, now just running alongside whatever the spawned
- *  integrator task produces instead of a bare conflict. */
-async function tryAutoMerge(board: Board, registry: Registry, result: TaskResult, runner: CommandRunner): Promise<boolean> {
-  if (!result.worktree) return true;
+ *  A fresh conflict (outcome `conflict`, now left in the worktree, never
+ *  in task.repo) is the one moment docs/SDD-crash-recovery.md §3.3
+ *  identifies as safe to attempt automatic resolution in — see
+ *  maybeSpawnConflictIntegrator below — so it's fired here, right where
+ *  the conflict is first discovered. Only for a conflict: a
+ *  blocked-local-changes, head-moved or error result isn't one, and an
+ *  integrator can't fix it. */
+async function tryAutoMerge(board: Board, registry: Registry, result: TaskResult, merge: MergeContext): Promise<AutoMergeOutcome> {
+  if (!result.worktree) return "landed";
   const task = await board.get(result.taskId);
-  if (!task) return false;
+  if (!task) return "review";
   // A worktree only ever exists for a write-tier run, which requires
   // `repo` at creation time (see POST /tasks' validation) — never
   // reachable for a repo-less readonly task.
-  const merge = await mergeTaskWorktree(task.repo!, result.worktree, task, runner);
-  if (!merge.ok) {
+  const res = await mergeTaskWorktree(task.repo!, result.worktree, task, merge, (sha) => board.recordMerge(task.id, sha));
+  return afterMergeAttempt(board, registry, task, result.worktree, res);
+}
+
+/** What every merge caller does with a failed MergeResult: a gate
+ *  failure goes back through the pushback loop, a conflict gets its one
+ *  integrator. Shared by the auto-merge path and the board's Merge
+ *  button (board-actions.ts mergeTask), so the two can't drift. */
+export async function afterMergeAttempt(board: Board, registry: Registry, task: TaskCard, worktree: TaskWorktree, res: MergeResult): Promise<AutoMergeOutcome> {
+  if (res.ok) return "landed";
+  if (res.outcome === "gate-failed") return pushBackGateFailure(board, task, res.message);
+  if (res.outcome === "conflict") {
     try {
-      await maybeSpawnConflictIntegrator(board, registry, task, result.worktree, merge.message);
+      await maybeSpawnConflictIntegrator(board, registry, task, worktree, res.message);
     } catch (e) {
       console.error(`orchestrator: failed to check/spawn conflict integrator for ${task.id}: ${(e as Error).message}`);
     }
   }
-  return merge.ok;
+  return "review";
 }
 
 /** Tag the auto-spawned conflict follow-up carries — the exact string
@@ -760,22 +851,24 @@ function conflictIntegratorTitle(originalTask: TaskCard): string {
  * dedicated `handoffs`-enabled agent id if conflict-resolution quality
  * in practice ever calls for it.
  *
- * Sets `extraAllowedDirs: [originalTask.repo]` on the created task —
+ * Sets `extraAllowedDirs: [worktree.path]` on the created task —
  * not optional decoration. This follow-up's own write-tier run gets a
  * *fresh* worktree of its own (WriteExecutor/createTaskWorktree, same
  * as every other write-tier task), a different absolute path from
- * `originalTask.repo`, where the real conflict actually lives (that's
- * where `mergeTaskWorktree`'s `git merge` ran). Without this grant, the
+ * the original card's worktree, where the real conflict actually lives
+ * (that's where `mergeTaskWorktree` merges the repo's HEAD into the
+ * branch; since 2026-10-17 a conflict never reaches `originalTask.repo`
+ * at all). Without this grant, the
  * `--add-dir`-gated sandbox that confirmed-live denies file/Bash access
  * outside a run's own worktree (see TaskCard.extraAllowedDirs's own doc
  * comment, docs/SDD-pipeline-automation.md's Subtask 3 smoke-test
  * notes) would make every instruction below to touch
- * `originalTask.repo` directly fail closed instead of actually
+ * that worktree directly fail closed instead of actually
  * resolving anything — a task that *looks* actionable but structurally
  * can't do the one thing it was spawned to do.
  *
  * Also sets `extraAllowedTools` granting the exact `git -C
- * <originalTask.repo> status/diff/add/commit` invocations
+ * <worktree.path> status/diff/add/commit` invocations
  * `buildConflictIntegratorBody` below instructs the agent to run —
  * `extraAllowedDirs` alone only grants file-system access to the path
  * (`--add-dir`), it does NOT make `acceptEdits`' own Bash gating
@@ -800,36 +893,40 @@ export async function maybeSpawnConflictIntegrator(
   const existing = (await board.list()).some((t) => t.title === title && t.labels.includes(CONFLICT_LABEL));
   if (existing) return;
 
-  const repo = originalTask.repo!;
+  // The conflict lives in the original card's worktree (the merge path
+  // merges the repo's HEAD into the branch there, never in task.repo),
+  // so that is the one path this follow-up is granted.
+  const where = worktree.path;
   await board.create({
     title,
     body: buildConflictIntegratorBody(originalTask, worktree, conflictMessage),
     labels: [CONFLICT_LABEL],
     repo: originalTask.repo,
-    extraAllowedDirs: [repo],
+    extraAllowedDirs: [where],
     extraAllowedTools: [
-      `Bash(git -C ${repo} status:*)`,
-      `Bash(git -C ${repo} diff:*)`,
-      `Bash(git -C ${repo} add:*)`,
-      `Bash(git -C ${repo} commit:*)`,
+      `Bash(git -C ${where} status:*)`,
+      `Bash(git -C ${where} diff:*)`,
+      `Bash(git -C ${where} add:*)`,
+      `Bash(git -C ${where} commit:*)`,
     ],
   });
 }
 
 function buildConflictIntegratorBody(originalTask: TaskCard, worktree: TaskWorktree, conflictMessage: string): string {
+  const where = worktree.path;
   return [
-    `Auto-merging "${originalTask.title}" (task ${originalTask.id}) hit a conflict merging worktree branch`,
-    `\`${worktree.branch}\` into \`${originalTask.repo}\`. The worktree itself (${worktree.path}) is untouched;`,
-    `the conflict is sitting in ${originalTask.repo}'s own working tree right now, left exactly as git produced`,
-    "it — nothing has been committed, aborted, or otherwise cleaned up.",
+    `Merging "${originalTask.title}" (task ${originalTask.id}) hit a conflict merging \`${originalTask.repo}\`'s`,
+    `current HEAD into its branch \`${worktree.branch}\`. The merge ran in that card's own worktree, ${where},`,
+    `and the conflict is sitting there right now, left exactly as git produced it. ${originalTask.repo} itself`,
+    "was never touched: nothing has been committed, aborted, or otherwise cleaned up.",
     "",
     "IMPORTANT — your own working directory for this task is a fresh, separate git worktree checked out clean",
     `from the current HEAD of ${originalTask.repo}. It does NOT contain the conflict — your own files will look`,
     "untouched and your own `git status` will come back clean. The actual conflict markers live only at",
-    `${originalTask.repo} itself (an absolute path, not your own working directory). You've been granted explicit`,
+    `${where} (an absolute path, not your own working directory). You've been granted explicit`,
     `access to that path (--add-dir) specifically so this works — use Bash with that absolute path — e.g.`,
-    "`git -C " + originalTask.repo + " status`, `git -C " + originalTask.repo + " diff`, editing files" +
-      ` by their full path under ${originalTask.repo} — to actually inspect and resolve the conflict there. Do not`,
+    "`git -C " + where + " status`, `git -C " + where + " diff`, editing files" +
+      ` by their full path under ${where} — to actually inspect and resolve the conflict there. Do not`,
     "trust or edit your own working directory's copy of the file; it reflects a different, unrelated commit.",
     "",
     "Real git conflict output:",
@@ -839,8 +936,10 @@ function buildConflictIntegratorBody(originalTask: TaskCard, worktree: TaskWorkt
     "",
     "The common case for a conflict here is two features additively touching the same section or file — both",
     "sides added real content, nothing contradictory. If that's what this is, resolve it directly in",
-    `${originalTask.repo}'s own working tree by combining both sides faithfully: keep everything either side`,
-    "added, drop nothing from either, then `git add`/`git commit` there to finish the merge.",
+    `${where} by combining both sides faithfully: keep everything either side added, drop nothing from either,`,
+    "then `git -C " + where + " add` the files and `git -C " + where + " commit --no-edit` to finish the merge.",
+    "Keep `--no-edit`: the merge message git prepared is the one the board counts the landed card by. Nothing",
+    `lands in ${originalTask.repo} until someone merges task ${originalTask.id} again; that runs its merge gate.`,
     "",
     "But if this looks like a genuine semantic contradiction instead — not just two additions near each other,",
     "but two changes that actually disagree about what the code should do — stop. Leave the conflict exactly as",
@@ -1012,6 +1111,10 @@ export interface OrchestratorOptions {
    *  write-tier success still lands in `review`, never `done` — see
    *  finishResult — regardless of who ran it. */
   executeWriteTier?: boolean;
+  /** The merge path's context for every auto-merge this orchestrator
+   *  runs: the repo gate lookup and the git runner (see MergeContext).
+   *  Undefined means the real git runner and no gate. */
+  merge?: MergeContext;
   /** When set, every task wissel runs locally (readonly, or write-tier
    *  with executeWriteTier on) is run under a Harness picked from this
    *  pool instead of the ambient environment. Undefined means "no
@@ -1479,7 +1582,7 @@ export class Orchestrator {
       } finally {
         if (harness) this.opts.harnesses!.release(harness.id);
       }
-      await finishResult(this.board, this.registry, result, this.telemetry, undefined, this.opts.memoryPath);
+      await finishResult(this.board, this.registry, result, this.telemetry, this.opts.merge, this.opts.memoryPath);
     } catch (e) {
       console.error(`orchestrator: unexpected error processing task ${task.id}: ${(e as Error).message}`);
     }

@@ -102,6 +102,10 @@ export interface Board {
   /** Most recent execution result for a task, if any — what the board
    *  UI's task detail panel shows once a run has finished. */
   getResult(taskId: string): Promise<TaskResult | undefined>;
+  /** Stamps `mergedSha` and `mergedAt` on the task's latest result, in
+   *  one write: the merge path's record that its worktree landed (see
+   *  TaskResult.mergedSha). Throws when the task has no result. */
+  recordMerge(taskId: string, sha: string): Promise<void>;
   /** Every task's latest result, small fields only (no summary), keyed
    *  by task id: one query for the feed (src/services/feed.ts) instead
    *  of a getResult per card. */
@@ -468,6 +472,10 @@ export class SqliteBoard implements Board {
       // TaskResult.remoteSessionUrl: the run's claude.ai Remote Control
       // session, so a finished card still links to its conversation.
       "ALTER TABLE task_results ADD COLUMN remoteSessionUrl TEXT;",
+      // TaskResult.mergedSha/mergedAt (Board.recordMerge): the landed
+      // commit, so crash recovery stops guessing from the commit log.
+      "ALTER TABLE task_results ADD COLUMN mergedSha TEXT;",
+      "ALTER TABLE task_results ADD COLUMN mergedAt TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -802,6 +810,8 @@ export class SqliteBoard implements Board {
       reviewGrants: string | null;
       remoteSessionUrl: string | null;
       finishedAt: string | null;
+      mergedSha: string | null;
+      mergedAt: string | null;
     } | null;
     if (!row) return undefined;
     return {
@@ -820,8 +830,21 @@ export class SqliteBoard implements Board {
       permissionDenials: row.permissionDenials ? (JSON.parse(row.permissionDenials) as string[]) : undefined,
       ...(row.reviewGrants ? { reviewGrants: JSON.parse(row.reviewGrants) as string[] } : {}),
       ...(row.remoteSessionUrl ? { remoteSessionUrl: row.remoteSessionUrl } : {}),
+      ...(row.mergedSha ? { mergedSha: row.mergedSha, mergedAt: row.mergedAt ?? undefined } : {}),
       finishedAt: row.finishedAt ?? undefined,
     };
+  }
+
+  async recordMerge(taskId: string, sha: string): Promise<void> {
+    const mergedAt = new Date().toISOString();
+    // The latest result row, the one getResult reads.
+    const changed = this.db.run(
+      "UPDATE task_results SET mergedSha = ?, mergedAt = ? WHERE rowid = (SELECT rowid FROM task_results WHERE taskId = ? ORDER BY rowid DESC LIMIT 1)",
+      [sha, mergedAt, taskId],
+    );
+    if (changed.changes === 0) throw new Error(`no result to record a merge on: ${taskId}`);
+    const result = await this.getResult(taskId);
+    if (result) this.events.emit("event", { type: "task.result", result } satisfies BoardEvent);
   }
 
   async listResultMeta(): Promise<Map<string, ResultMeta>> {

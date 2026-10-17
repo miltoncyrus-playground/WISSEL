@@ -120,6 +120,9 @@ export interface DigestStats {
   merges: number;
   /** Commits that aren't merges, in the window, across the same repos. */
   commits: number;
+  /** Merge path attempts in the window (telemetry `merge` events, one
+   *  per mergeTaskWorktree call), by outcome. */
+  mergeAttempts: { total: number; landed: number; gateFailed: number; conflict: number; blockedLocalChanges: number; headMoved: number; error: number };
   /** Telemetry `result` events in the window, 429 retries left out. */
   agentRuns: number;
   /** The agent with the most paid runs (actualCost > 0) in the window,
@@ -169,6 +172,8 @@ interface TelemetryLine {
   actualCost?: number;
   harnessId?: string;
   retryAfter?: string;
+  /** On a `merge` event. */
+  outcome?: string;
   at?: string;
 }
 
@@ -389,6 +394,25 @@ export async function buildWisselDigest(inp: DigestInputs): Promise<WisselDigest
       paid.set(agent, { runs: p.runs + 1, spend: p.spend + cost });
     }
   }
+  // The merge path's own trace (telemetry `merge` events): how many
+  // attempts landed and how each miss ended. The gate's catch rate and
+  // the spurious-conflict rate read off these.
+  const mergeAttempts: DigestStats["mergeAttempts"] = { total: 0, landed: 0, gateFailed: 0, conflict: 0, blockedLocalChanges: 0, headMoved: 0, error: 0 };
+  const outcomeKey: Record<string, keyof typeof mergeAttempts> = {
+    landed: "landed",
+    "gate-failed": "gateFailed",
+    conflict: "conflict",
+    "blocked-local-changes": "blockedLocalChanges",
+    "head-moved": "headMoved",
+    error: "error",
+  };
+  for (const e of events) {
+    if (e.type !== "merge" || !inWindow(e.at)) continue;
+    const key = outcomeKey[e.outcome ?? ""];
+    if (!key) continue;
+    mergeAttempts.total++;
+    mergeAttempts[key]++;
+  }
   const [topId, top] = [...paid].sort(([a, x], [b, y]) => y.runs - x.runs || y.spend - x.spend || (a < b ? -1 : 1))[0] ?? [];
   const topAgent = topId && top ? { id: topId, runs: top.runs, spendUsd: cents(top.spend) } : null;
 
@@ -592,6 +616,7 @@ export async function buildWisselDigest(inp: DigestInputs): Promise<WisselDigest
       pipelineRuns,
       merges: commits.length,
       commits: plainCommits,
+      mergeAttempts,
       agentRuns,
       topAgent,
     },

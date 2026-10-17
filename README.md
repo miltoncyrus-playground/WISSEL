@@ -57,6 +57,7 @@ bun run eval:pipeline-full-lifecycle
 bun run eval:pipeline-mcp-integration
 bun run eval:live-task-output
 bun run eval:conflict-integrator
+bun run eval:merge-gate
 bun run eval:memory-curation-quality
 bun run eval:claude-cli-429-replay
 bun run eval:ai-news
@@ -85,8 +86,10 @@ Stop the server with Ctrl-C or `kill <pid>` (SIGINT/SIGTERM), never
 `kill -9`. The shutdown handler kills every agent subprocess it started
 (`src/executors/child-processes.ts`). On the next start, crash recovery
 kills any agent process left behind, requeues tasks stranded at
-`running`, and finishes review verdicts a restart interrupted
-(`src/core/crash-recovery.ts`, `docs/SDD-crash-recovery.md` §9, §10).
+`running`, moves cards whose merge already landed (their recorded
+`mergedSha` is in HEAD) to `done`, and finishes review verdicts a
+restart interrupted (`src/core/crash-recovery.ts`,
+`docs/SDD-crash-recovery.md` §9, §10, §11).
 
 Use `bun run serve`, not `bun run dev`, when wissel works on its own
 source. An auto-merge into `src/` restarts the `--watch` process mid-merge.
@@ -121,11 +124,30 @@ Recovery handles it on the next start, but the restart is avoidable.
    (`POST /tasks/:id/escalation/grant-and-retry`) adds the grant and
    continues in the same worktree.
 7. **Merge.** On approve, an agent with `autoMerge: true` and
-   `trustLevel: high` is merged with `git merge --no-ff` into whatever is
-   checked out in the task's repo, and the card moves to `done`.
-   implementer has this on. Without it, or on a merge conflict, the card
-   stops at `review` for a human **Merge** or **Discard**
-   (`POST /tasks/:id/merge`, `/discard`).
+   `trustLevel: high` is merged and the card moves to `done`. Without it,
+   the card stops at `review` for a human **Merge** or **Discard**
+   (`POST /tasks/:id/merge`, `/discard`). Both go through one merge path
+   (`mergeTaskWorktree`, `docs/SDD-worktree-isolation.md` §7): the repo's
+   current HEAD is merged into the card's branch in the worktree, the
+   project's merge gate runs there, and only then does the repo's
+   checkout fast-forward to it. Nothing merges in your checkout, so a
+   conflict never leaves `MERGE_HEAD` there and your uncommitted edits
+   are never touched. Merges into one repo run one at a time. What the
+   Merge button can answer instead of landing:
+   - **Merge gate failed**: names the command; the card goes back as a
+     pushback attempt with the output (same 5-round limit as review).
+   - **Conflict**: left in the worktree, one integrator card resolves it
+     there; Merge again after.
+   - **Blocked by uncommitted local changes in: files**: commit or move
+     those edits in your checkout, then Merge again. No integrator.
+   - **HEAD moved twice**: someone kept committing; Merge again.
+
+   The gate is per project: `POST /projects/:id/merge-gate
+   {"mergeGate": [["bun","run","typecheck"],["bun","run","test"]],
+   "mergeGateTimeoutMs": 600000}` (`null` clears it; default timeout 10
+   minutes per command). wissel's own checkout is seeded with
+   typecheck + test. No gate means the merge lands as before, recorded
+   as `gate: "none"` on the `merge` telemetry event.
    An implementer may run only `bun test` and `bun run typecheck`
    unless the card grants more: `extraAllowedTools` on `POST /tasks`, or
    `POST /tasks/:id/allowed-tools` (command-scoped Bash only, e.g.

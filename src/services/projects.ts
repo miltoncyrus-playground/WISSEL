@@ -1,10 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { Project } from "../core/types.ts";
+import { WISSEL_MERGE_GATE, type MergeGateConfig } from "./merge-gate.ts";
 
 /**
  * Registers a project/repo two ways: an existing local folder, or a
@@ -26,6 +27,12 @@ export interface ProjectStore {
    *  if the id doesn't exist, matching every other mutator in this file
    *  (addLocalProject/addGithubProject only ever produce a real row). */
   setEli5(id: string, eli5: string): Promise<Project>;
+  /** Sets (or, with null or [], clears) the project's merge gate and its
+   *  per-command timeout. Throws on an unknown id. */
+  setMergeGate(id: string, mergeGate: string[][] | null, timeoutMs?: number | null): Promise<Project>;
+  /** The gate for the project registered at `repo`, if it has one: the
+   *  merge path's MergeGateResolver. */
+  mergeGateFor(repo: string): Promise<MergeGateConfig | undefined>;
 }
 
 interface ProjectRow {
@@ -37,6 +44,8 @@ interface ProjectRow {
   createdAt: string;
   eli5: string | null;
   eli5UpdatedAt: string | null;
+  mergeGate?: string | null;
+  mergeGateTimeoutMs?: number | null;
 }
 
 function rowToProject(row: ProjectRow): Project {
@@ -49,7 +58,22 @@ function rowToProject(row: ProjectRow): Project {
     createdAt: row.createdAt,
     eli5: row.eli5 ?? undefined,
     eli5UpdatedAt: row.eli5UpdatedAt ?? undefined,
+    ...(row.mergeGate ? { mergeGate: JSON.parse(row.mergeGate) as string[][] } : {}),
+    ...(row.mergeGateTimeoutMs ? { mergeGateTimeoutMs: row.mergeGateTimeoutMs } : {}),
   };
+}
+
+/** The gate a newly registered checkout starts with: WISSEL_MERGE_GATE
+ *  for a wissel checkout (its package.json says `"name": "wissel"`),
+ *  none for anything else. Other repos get theirs set by hand
+ *  (POST /projects/:id/merge-gate). */
+export function seedMergeGateFor(path: string): string[][] | undefined {
+  try {
+    const pkg = JSON.parse(readFileSync(join(path, "package.json"), "utf8")) as { name?: unknown };
+    return pkg.name === "wissel" ? WISSEL_MERGE_GATE : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Sibling of worktreesRoot's own `~/.wissel/worktrees` convention (see
@@ -117,6 +141,45 @@ export class SqliteProjectStore implements ProjectStore {
         // already has the column
       }
     }
+    // Project.mergeGate (src/services/merge-gate.ts). Seeded once, in the
+    // same step that adds the column: every already-registered wissel
+    // checkout gets WISSEL_MERGE_GATE. Only then, so a gate a human later
+    // clears stays cleared.
+    let addedGate = false;
+    try {
+      this.db.run("ALTER TABLE projects ADD COLUMN mergeGate TEXT;");
+      addedGate = true;
+    } catch {
+      // already has the column
+    }
+    try {
+      this.db.run("ALTER TABLE projects ADD COLUMN mergeGateTimeoutMs INTEGER;");
+    } catch {
+      // already has the column
+    }
+    if (addedGate) {
+      const rows = this.db.query("SELECT id, path FROM projects").all() as { id: string; path: string }[];
+      for (const row of rows) {
+        const seed = seedMergeGateFor(row.path);
+        if (seed) this.db.run("UPDATE projects SET mergeGate = ? WHERE id = ?", [JSON.stringify(seed), row.id]);
+      }
+    }
+  }
+
+  async setMergeGate(id: string, mergeGate: string[][] | null, timeoutMs?: number | null): Promise<Project> {
+    const row = this.db.query("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | null;
+    if (!row) throw new Error(`project not found: ${id}`);
+    const gate = mergeGate && mergeGate.length > 0 ? JSON.stringify(mergeGate) : null;
+    const timeout = timeoutMs ?? null;
+    this.db.run("UPDATE projects SET mergeGate = ?, mergeGateTimeoutMs = ? WHERE id = ?", [gate, timeout, id]);
+    return rowToProject({ ...row, mergeGate: gate, mergeGateTimeoutMs: timeout });
+  }
+
+  async mergeGateFor(repo: string): Promise<MergeGateConfig | undefined> {
+    const key = resolve(repo);
+    const project = (await this.list()).find((p) => resolve(p.path) === key);
+    if (!project?.mergeGate?.length) return undefined;
+    return { commands: project.mergeGate, ...(project.mergeGateTimeoutMs ? { timeoutMs: project.mergeGateTimeoutMs } : {}) };
   }
 
   async addLocalProject(path: string, opts: { initGit?: boolean }, runner: CommandRunner): Promise<{ project: Project } | { error: string }> {
@@ -135,14 +198,23 @@ export class SqliteProjectStore implements ProjectStore {
       }
     }
 
-    const project: Project = { id: randomUUID(), name: basename(path), path, source: "local", createdAt: new Date().toISOString() };
-    this.db.run("INSERT INTO projects (id, name, path, source, sourceUrl, createdAt) VALUES (?, ?, ?, ?, ?, ?)", [
+    const seed = seedMergeGateFor(path);
+    const project: Project = {
+      id: randomUUID(),
+      name: basename(path),
+      path,
+      source: "local",
+      createdAt: new Date().toISOString(),
+      ...(seed ? { mergeGate: seed } : {}),
+    };
+    this.db.run("INSERT INTO projects (id, name, path, source, sourceUrl, createdAt, mergeGate) VALUES (?, ?, ?, ?, ?, ?, ?)", [
       project.id,
       project.name,
       project.path,
       project.source,
       null,
       project.createdAt,
+      seed ? JSON.stringify(seed) : null,
     ]);
     return { project };
   }
@@ -170,6 +242,7 @@ export class SqliteProjectStore implements ProjectStore {
       return { error: (clone.stderr || clone.stdout).trim() || `failed to clone ${normalized}` };
     }
 
+    const seed = seedMergeGateFor(destPath);
     const project: Project = {
       id,
       name: opts.name ?? deriveNameFromUrl(normalized),
@@ -177,14 +250,16 @@ export class SqliteProjectStore implements ProjectStore {
       source: "github",
       sourceUrl: normalized,
       createdAt: new Date().toISOString(),
+      ...(seed ? { mergeGate: seed } : {}),
     };
-    this.db.run("INSERT INTO projects (id, name, path, source, sourceUrl, createdAt) VALUES (?, ?, ?, ?, ?, ?)", [
+    this.db.run("INSERT INTO projects (id, name, path, source, sourceUrl, createdAt, mergeGate) VALUES (?, ?, ?, ?, ?, ?, ?)", [
       project.id,
       project.name,
       project.path,
       project.source,
       project.sourceUrl ?? null,
       project.createdAt,
+      seed ? JSON.stringify(seed) : null,
     ]);
     return { project };
   }

@@ -2,7 +2,7 @@ import type { Board } from "../services/board.ts";
 import type { Registry } from "./registry.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import { resumeAfterReviewVerdict } from "./orchestrator.ts";
-import { taskWorktreePath } from "../services/worktree.ts";
+import { removeTaskWorktree, taskWorktreePath, type MergeContext } from "../services/worktree.ts";
 import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { basename } from "node:path";
 
@@ -199,6 +199,46 @@ export async function killExternalProcess(pid: number, graceMs = 3000): Promise<
 }
 
 /**
+ * Startup-only recovery for a card whose worktree already landed but
+ * that never reached `done`: the merge path records the landed sha on
+ * the result (Board.recordMerge, TaskResult.mergedSha) before it cleans
+ * up and before its caller moves the card, so a crash in between leaves
+ * the card at `pending-review` (an approved auto-merge) or `review` (a
+ * human's Merge) with a sha that is already in the repo's history.
+ * 2026-10-05, card bf6fe7fe: exactly this, before the sha existed.
+ *
+ * Proof is `git merge-base --is-ancestor <mergedSha> HEAD` in task.repo,
+ * nothing else; no commit-log search. A sha that isn't in HEAD (history
+ * rewritten since) leaves the card as found. Finishes the cleanup the
+ * crash may have cut short (removeTaskWorktree; a no-op when it's gone),
+ * then moves the card to done. Superseded and archived cards are left
+ * alone. One failing card never stops the rest. Returns how many moved.
+ */
+export async function reconcileLandedMerges(board: Board, runner: CommandRunner): Promise<number> {
+  const candidates = [...(await board.list({ status: "pending-review" })), ...(await board.list({ status: "review" }))];
+  let moved = 0;
+  for (const task of candidates) {
+    if (task.supersededBy !== undefined || task.archivedAt !== undefined || !task.repo) continue;
+    try {
+      const result = await board.getResult(task.id);
+      if (!result?.mergedSha) continue;
+      const landed = await runner(["git", "merge-base", "--is-ancestor", result.mergedSha, "HEAD"], { cwd: task.repo });
+      if (landed.exitCode !== 0) {
+        console.error(`crash recovery: task ${task.id} ("${task.title}") recorded merge ${result.mergedSha.slice(0, 12)}, which isn't in ${task.repo}'s HEAD; left at ${task.status} for a human`);
+        continue;
+      }
+      if (result.worktree) await removeTaskWorktree(task.repo, result.worktree, runner);
+      await board.move(task.id, "done");
+      console.log(`crash recovery: task ${task.id} ("${task.title}") had already landed at ${result.mergedSha.slice(0, 12)}; moved ${task.status} -> done`);
+      moved++;
+    } catch (e) {
+      console.error(`crash recovery: failed to check landed merge for task ${task.id}: ${(e as Error).message}`);
+    }
+  }
+  return moved;
+}
+
+/**
  * Startup-only recovery for an implementer task stuck at
  * `"pending-review"` whose reviewer already reported a verdict before a
  * crash interrupted whatever `handleReviewVerdict` was about to do next
@@ -238,7 +278,7 @@ export async function killExternalProcess(pid: number, graceMs = 3000): Promise<
  * unconditionally, same reasoning: this is cleanup of existing state,
  * not automation of new work.
  */
-export async function reconcileInterruptedReviewVerdicts(board: Board, registry: Registry, runner: CommandRunner): Promise<number> {
+export async function reconcileInterruptedReviewVerdicts(board: Board, registry: Registry, runner: CommandRunner | MergeContext): Promise<number> {
   const candidates = await board.list({ status: "pending-review" });
   let recovered = 0;
 

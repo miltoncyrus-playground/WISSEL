@@ -362,6 +362,13 @@ export interface Project {
    *  rather than silently trusting a summary that may predate the
    *  project's current state. */
   eli5UpdatedAt?: string;
+  /** The checks a card's work must pass in its worktree before it lands
+   *  in this repo (src/services/merge-gate.ts): argv arrays, run in
+   *  order. Undefined or empty means no gate (recorded as `gate:
+   *  "none"`). Seeded for wissel's own checkout. */
+  mergeGate?: string[][];
+  /** Per-command gate timeout; default DEFAULT_GATE_TIMEOUT_MS (10 min). */
+  mergeGateTimeoutMs?: number;
 }
 
 export interface TaskCard {
@@ -730,6 +737,14 @@ export interface TaskResult {
    *  /tasks/:id/merge`/`/discard` act on it. Never set for a read-only
    *  run, or a dispatched task wissel never executed itself. */
   worktree?: { path: string; branch: string };
+  /** The commit the merge path fast-forwarded task.repo to when this
+   *  result's worktree landed (mergeTaskWorktree), with `mergedAt`.
+   *  Written by Board.recordMerge, never by recordResult. Crash recovery
+   *  proves "merged" from this (`git merge-base --is-ancestor`), not
+   *  from the commit log. Undefined until landed, and on rows from
+   *  before the field existed. */
+  mergedSha?: string;
+  mergedAt?: string;
   /** Subagents this run spawned — claude-cli only (see
    *  docs/SDD-subagent-visibility.md; no codex-cli equivalent has been
    *  checked). Undefined when the harness/executor doesn't report this,

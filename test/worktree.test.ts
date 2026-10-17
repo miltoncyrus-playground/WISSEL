@@ -3,20 +3,19 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { mkdirSync, writeFileSync, readFileSync, lstatSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTaskWorktree, mergeTaskWorktree, removeTaskWorktree } from "../src/services/worktree.ts";
-import type { CommandResult } from "../src/executors/claude-cli.ts";
+import {
+  createTaskWorktree,
+  landingCommitMessage,
+  linkNodeModules,
+  mergeTaskWorktree,
+  parseOverwrittenFiles,
+  parsePorcelainZ,
+  removeTaskWorktree,
+} from "../src/services/worktree.ts";
+import { parseMergeSubject } from "../src/services/wissel-digest.ts";
 import type { TaskCard } from "../src/core/types.ts";
 
 const task: TaskCard = { id: "t1", title: "Build the thing", body: "", labels: [], repo: "/repo", status: "dispatched" };
-
-function fakeGit(responses: Record<string, CommandResult>) {
-  return async (cmd: string[], _opts?: { cwd: string; env?: Record<string, string> }) => {
-    const key = cmd.join(" ");
-    const hit = responses[key];
-    if (!hit) throw new Error(`unexpected command: ${key}`);
-    return hit;
-  };
-}
 
 async function fakeHome(): Promise<string> {
   return mkdtemp(join(tmpdir(), "wissel-worktree-test-"));
@@ -183,74 +182,120 @@ test("removeTaskWorktree removes the worktree and deletes its branch", async () 
   ]);
 });
 
-test("mergeTaskWorktree commits uncommitted changes, merges, then removes the worktree", async () => {
-  const seenCmds: string[][] = [];
-  const runner = fakeGit({
-    "git status --porcelain": { stdout: " M file.txt\n", stderr: "", exitCode: 0 },
-    "git add -A": { stdout: "", stderr: "", exitCode: 0 },
-    "git commit -m Build the thing\n\ntask: t1": { stdout: "", stderr: "", exitCode: 0 },
-    "git merge --no-ff wissel/t1 -m Merge wissel/t1: Build the thing": { stdout: "", stderr: "", exitCode: 0 },
-    "git worktree remove --force /wt/t1": { stdout: "", stderr: "", exitCode: 0 },
-    "git branch -D wissel/t1": { stdout: "", stderr: "", exitCode: 0 },
-  });
-  const wrapped = async (cmd: string[], opts: { cwd: string }) => {
-    seenCmds.push(cmd);
-    return runner(cmd, opts);
-  };
-
-  const result = await mergeTaskWorktree("/repo", { path: "/wt/t1", branch: "wissel/t1" }, task, wrapped);
-
-  expect(result).toEqual({ ok: true, message: "merged wissel/t1 into /repo" });
-  expect(seenCmds).toEqual([
-    ["git", "status", "--porcelain"],
-    ["git", "add", "-A"],
-    ["git", "commit", "-m", "Build the thing\n\ntask: t1"],
-    ["git", "merge", "--no-ff", "wissel/t1", "-m", "Merge wissel/t1: Build the thing"],
-    ["git", "worktree", "remove", "--force", "/wt/t1"],
-    ["git", "branch", "-D", "wissel/t1"],
-  ]);
-});
-
-test("mergeTaskWorktree skips committing when the worktree is already clean", async () => {
-  const seenCmds: string[][] = [];
-  const runner = async (cmd: string[]) => {
-    seenCmds.push(cmd);
-    if (cmd.join(" ") === "git status --porcelain") return { stdout: "", stderr: "", exitCode: 0 };
-    return { stdout: "", stderr: "", exitCode: 0 };
-  };
-
-  const result = await mergeTaskWorktree("/repo", { path: "/wt/t1", branch: "wissel/t1" }, task, runner);
-
-  expect(result.ok).toBe(true);
-  expect(seenCmds.some((c) => c[0] === "git" && c[1] === "commit")).toBe(false);
-});
-
-test("mergeTaskWorktree reports a merge conflict instead of throwing, and never removes the worktree on failure", async () => {
-  const seenCmds: string[][] = [];
-  const runner = async (cmd: string[]) => {
-    seenCmds.push(cmd);
-    const key = cmd.join(" ");
-    if (key === "git status --porcelain") return { stdout: "", stderr: "", exitCode: 0 };
-    if (cmd[1] === "merge") return { stdout: "", stderr: "CONFLICT (content): Merge conflict in file.txt", exitCode: 1 };
-    return { stdout: "", stderr: "", exitCode: 0 };
-  };
-
-  const result = await mergeTaskWorktree("/repo", { path: "/wt/t1", branch: "wissel/t1" }, task, runner);
-
-  expect(result).toEqual({ ok: false, message: "CONFLICT (content): Merge conflict in file.txt" });
-  expect(seenCmds.some((c) => c[1] === "worktree" && c[2] === "remove")).toBe(false);
-});
+// The merge path itself (gate, ff-only landing, the lock, the recorded
+// sha, every refusal) runs against real git in test/merge-path.test.ts.
+// What's left here needs no repo at all.
 
 test("mergeTaskWorktree reports a commit failure instead of merging a half-committed worktree", async () => {
   const runner = async (cmd: string[]) => {
     const key = cmd.join(" ");
+    if (key === "git rev-parse -q --verify MERGE_HEAD") return { stdout: "", stderr: "", exitCode: 1 };
     if (key === "git status --porcelain") return { stdout: " M file.txt\n", stderr: "", exitCode: 0 };
     if (cmd[0] === "git" && cmd[1] === "add") return { stdout: "", stderr: "", exitCode: 0 };
     if (cmd[1] === "commit") return { stdout: "", stderr: "commit failed: hook rejected", exitCode: 1 };
     throw new Error(`unexpected command reached after commit failure: ${key}`);
   };
 
-  const result = await mergeTaskWorktree("/repo", { path: "/wt/t1", branch: "wissel/t1" }, task, runner);
+  const wt = await fakeHome();
+  try {
+    const result = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, runner);
+    expect(result).toMatchObject({ ok: false, outcome: "error", message: expect.stringContaining("commit failed: hook rejected") });
+  } finally {
+    await rm(wt, { recursive: true, force: true });
+  }
+});
 
-  expect(result).toEqual({ ok: false, message: expect.stringContaining("commit failed: hook rejected") });
+test("mergeTaskWorktree answers, never throws, for a worktree that's already gone (a second Merge behind the one that landed it)", async () => {
+  const runner = async (cmd: string[]) => {
+    throw new Error(`no git should run: ${cmd.join(" ")}`);
+  };
+  const result = await mergeTaskWorktree("/repo", { path: "/no/such/worktree", branch: "wissel/t1" }, task, runner);
+  expect(result).toMatchObject({ ok: false, outcome: "error" });
+  expect(result.message).toContain("already merged or discarded");
+});
+
+test("mergeTaskWorktree turns a throwing runner into an error outcome, still recording telemetry", async () => {
+  const wt = await fakeHome();
+  const events: unknown[] = [];
+  try {
+    const result = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, {
+      runner: async () => {
+        throw new Error("ENOENT: repo is gone");
+      },
+      telemetry: { record: async (e) => void events.push(e) },
+    });
+    expect(result).toMatchObject({ ok: false, outcome: "error", message: "merge failed: ENOENT: repo is gone" });
+    expect(events).toEqual([expect.objectContaining({ type: "merge", outcome: "error" })]);
+  } finally {
+    await rm(wt, { recursive: true, force: true });
+  }
+});
+
+test("mergeTaskWorktree refuses a worktree with an unfinished merge instead of committing its conflict markers", async () => {
+  const seen: string[] = [];
+  const runner = async (cmd: string[]) => {
+    seen.push(cmd.join(" "));
+    if (cmd.join(" ") === "git rev-parse -q --verify MERGE_HEAD") return { stdout: "abc\n", stderr: "", exitCode: 0 };
+    throw new Error(`unexpected command after the MERGE_HEAD check: ${cmd.join(" ")}`);
+  };
+
+  const wt = await fakeHome();
+  try {
+    const result = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, runner);
+    expect(result).toMatchObject({ ok: false, outcome: "conflict" });
+    expect(result.message).toContain("unfinished merge");
+    expect(seen).toEqual(["git rev-parse -q --verify MERGE_HEAD"]);
+  } finally {
+    await rm(wt, { recursive: true, force: true });
+  }
+});
+
+test("parsePorcelainZ: every path, including both sides of a rename", () => {
+  expect(parsePorcelainZ(" M a.txt\0?? new dir/b.txt\0R  new.txt\0old.txt\0 D gone.txt\0")).toEqual(["a.txt", "new dir/b.txt", "new.txt", "old.txt", "gone.txt"]);
+  expect(parsePorcelainZ("")).toEqual([]);
+});
+
+test("parseOverwrittenFiles: tracked and untracked lists from a refused merge", () => {
+  const text = [
+    "error: Your local changes to the following files would be overwritten by merge:",
+    "\tshared.txt",
+    "\tsrc/a.ts",
+    "Please commit your changes or stash them before you merge.",
+    "error: The following untracked working tree files would be overwritten by merge:",
+    "\tnew.txt",
+    "Please move or remove them before you merge.",
+    "Aborting",
+  ].join("\n");
+  expect(parseOverwrittenFiles(text)).toEqual(["new.txt", "shared.txt", "src/a.ts"]);
+  expect(parseOverwrittenFiles("fatal: Not possible to fast-forward, aborting.")).toEqual([]);
+});
+
+test("landingCommitMessage is the exact subject the digest counts by", () => {
+  const subject = landingCommitMessage({ path: "/wt/t1", branch: "wissel/t1" }, task);
+  expect(subject).toBe("Merge wissel/t1: Build the thing");
+  expect(parseMergeSubject(subject)).toEqual({ key: "t1", title: "Build the thing" });
+});
+
+test("linkNodeModules links nested packages' node_modules too, never clobbering one already there", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "wissel-worktree-repo-"));
+  const wt = await mkdtemp(join(tmpdir(), "wissel-worktree-wt-"));
+  try {
+    mkdirSync(join(repo, "node_modules"), { recursive: true });
+    mkdirSync(join(repo, "app", "node_modules", "react"), { recursive: true });
+    mkdirSync(join(repo, "editor", "node_modules"), { recursive: true });
+    mkdirSync(join(repo, "not-checked-out", "node_modules"), { recursive: true });
+    mkdirSync(join(wt, "app"), { recursive: true });
+    mkdirSync(join(wt, "editor", "node_modules"), { recursive: true }); // its own install
+
+    linkNodeModules(repo, wt);
+
+    expect(lstatSync(join(wt, "node_modules")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(wt, "app", "node_modules")).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(wt, "app", "node_modules", "react"))).toBe(true);
+    expect(lstatSync(join(wt, "editor", "node_modules")).isSymbolicLink()).toBe(false);
+    expect(existsSync(join(wt, "not-checked-out"))).toBe(false);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+    await rm(wt, { recursive: true, force: true });
+  }
 });

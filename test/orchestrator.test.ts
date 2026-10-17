@@ -15,6 +15,8 @@ import {
 } from "../src/core/orchestrator.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
 import { TelemetryLog } from "../src/services/telemetry.ts";
+import { runViaBun } from "../src/executors/claude-cli.ts";
+import { createTaskWorktree } from "../src/services/worktree.ts";
 import type { AgentDef, Executor, Harness, TaskCard } from "../src/core/types.ts";
 
 // agents/manifest.yaml's real tags: "intake" -> triager (readonly),
@@ -579,91 +581,108 @@ test("autoMerge + trustLevel high, no worktree on the result — lands straight 
   expect(gitCalled).toBe(false);
 });
 
-test("autoMerge + trustLevel high, a worktree result — actually merges (real git commands), then lands on done", async () => {
+/** A real repo with a real worktree for `taskId`, its file edited
+ *  uncommitted (as an implementer leaves it); `diverge` also commits a
+ *  conflicting edit of that file on the repo's own branch. */
+async function realWorktree(taskId: string, opts: { diverge?: boolean } = {}) {
+  const root = await mkdtemp(join(tmpdir(), "wissel-orch-merge-"));
+  const repo = join(root, "repo");
+  const g = (args: string[], cwd: string) => {
+    const r = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString("utf8")}`);
+    return r.stdout.toString("utf8").trim();
+  };
+  await Bun.write(join(repo, "f.txt"), "base\n");
+  g(["init", "-q", "-b", "main"], repo);
+  g(["config", "user.email", "t@example.com"], repo);
+  g(["config", "user.name", "t"], repo);
+  g(["add", "."], repo);
+  g(["commit", "-q", "-m", "start"], repo);
+  const wt = await createTaskWorktree(repo, taskId, { runner: runViaBun, homeDir: root });
+  if ("error" in wt) throw new Error(wt.error);
+  await Bun.write(join(wt.path, "f.txt"), "from the worktree\n");
+  if (opts.diverge) {
+    await Bun.write(join(repo, "f.txt"), "from main\n");
+    g(["commit", "-q", "-am", "diverge"], repo);
+  }
+  return { root, repo, wt, git: g };
+}
+
+test("autoMerge + trustLevel high, a worktree result — actually merges (real git), then lands on done", async () => {
   const board = new SqliteBoard();
   const registry = Registry.from([autoMergeAgent]);
-  const task = await board.create({ title: "t", body: "", labels: [], repo: "/repo" });
-  const seenCmds: string[][] = [];
-  const runner = async (cmd: string[]) => {
-    seenCmds.push(cmd);
-    return { stdout: "", stderr: "", exitCode: 0 };
-  };
+  const { root, repo, wt, git } = await realWorktree("auto-1");
+  try {
+    const task = await board.create({ title: "t", body: "", labels: [], repo });
 
-  await finishResult(
-    board,
-    registry,
-    { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done", worktree: { path: "/wt/t", branch: "wissel/t" } },
-    undefined,
-    runner,
-  );
+    await finishResult(board, registry, { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done", worktree: wt }, undefined, runViaBun);
 
-  expect((await board.get(task.id))!.status).toBe("done");
-  expect(seenCmds.some((c) => c[0] === "git" && c[1] === "merge")).toBe(true);
-  expect(seenCmds.some((c) => c[0] === "git" && c[1] === "worktree" && c[2] === "remove")).toBe(true);
+    expect((await board.get(task.id))!.status).toBe("done");
+    expect(git(["log", "-1", "--format=%s"], repo)).toBe(`Merge ${wt.branch}: t`);
+    expect(await Bun.file(join(repo, "f.txt")).text()).toBe("from the worktree\n");
+    expect((await board.getResult(task.id))!.mergedSha).toBe(git(["rev-parse", "HEAD"], repo));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("autoMerge + trustLevel high, but the merge actually conflicts — falls back to review, not a silent done", async () => {
   const board = new SqliteBoard();
   const registry = Registry.from([autoMergeAgent]);
-  const task = await board.create({ title: "t", body: "", labels: [], repo: "/repo" });
-  const runner = async (cmd: string[]) => {
-    if (cmd[1] === "merge") return { stdout: "", stderr: "CONFLICT", exitCode: 1 };
-    return { stdout: "", stderr: "", exitCode: 0 };
-  };
+  const { root, repo, wt } = await realWorktree("auto-2", { diverge: true });
+  try {
+    const task = await board.create({ title: "t", body: "", labels: [], repo });
 
-  await finishResult(
-    board,
-    registry,
-    { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done", worktree: { path: "/wt/t", branch: "wissel/t" } },
-    undefined,
-    runner,
-  );
+    await finishResult(board, registry, { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done", worktree: wt }, undefined, runViaBun);
 
-  expect((await board.get(task.id))!.status).toBe("review");
-  // No "integrator" agent is registered in this synthetic registry —
-  // maybeSpawnConflictIntegrator must no-op (not throw, not create
-  // anything), the same "nothing registered to route to" regression
-  // maybeSpawnIntegrator already covers for its own trigger.
-  expect((await board.list()).filter((t) => t.id !== task.id)).toHaveLength(0);
+    expect((await board.get(task.id))!.status).toBe("review");
+    // No "integrator" agent is registered in this synthetic registry —
+    // maybeSpawnConflictIntegrator must no-op (not throw, not create
+    // anything), the same "nothing registered to route to" regression
+    // maybeSpawnIntegrator already covers for its own trigger.
+    expect((await board.list()).filter((t) => t.id !== task.id)).toHaveLength(0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("autoMerge + trustLevel high, merge conflicts, integrator registered — auto-spawns exactly one integrator-routed follow-up task", async () => {
   const board = new SqliteBoard();
   const realAgents = (await Registry.load()).all();
   const registry = Registry.from([...realAgents, autoMergeAgent]);
-  const task = await board.create({ title: "Add a feature", body: "Implement X.", labels: [], repo: "/repo" });
-  const conflictMessage = "CONFLICT (content): Merge conflict in src/feature.ts\nAutomatic merge failed; fix conflicts and then commit the result.";
-  const runner = async (cmd: string[]) => {
-    if (cmd[1] === "merge") return { stdout: "", stderr: conflictMessage, exitCode: 1 };
-    return { stdout: "", stderr: "", exitCode: 0 };
-  };
+  const { root, repo, wt } = await realWorktree("auto-3", { diverge: true });
+  try {
+    const task = await board.create({ title: "Add a feature", body: "Implement X.", labels: [], repo });
 
-  await finishResult(
-    board,
-    registry,
-    { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done", worktree: { path: "/wt/t", branch: "wissel/t" } },
-    undefined,
-    runner,
-  );
+    await finishResult(board, registry, { taskId: task.id, agentId: "trusted-auto", ok: true, summary: "done", worktree: wt }, undefined, runViaBun);
 
-  expect((await board.get(task.id))!.status).toBe("review");
+    expect((await board.get(task.id))!.status).toBe("review");
 
-  const followUps = (await board.list()).filter((t) => t.id !== task.id);
-  expect(followUps).toHaveLength(1);
-  const followUp = followUps[0]!;
-  expect(followUp.title).toBe(`Resolve merge conflict: ${task.id}`);
-  expect(followUp.labels).toEqual(["conflict"]);
-  expect(followUp.repo).toBe("/repo");
-  expect(followUp.extraAllowedDirs).toEqual(["/repo"]);
-  expect(followUp.extraAllowedTools).toEqual([
-    "Bash(git -C /repo status:*)",
-    "Bash(git -C /repo diff:*)",
-    "Bash(git -C /repo add:*)",
-    "Bash(git -C /repo commit:*)",
-  ]);
-  expect(followUp.body).toContain(task.id);
-  expect(followUp.body).toContain("wissel/t");
-  expect(followUp.body).toContain(conflictMessage);
+    const followUps = (await board.list()).filter((t) => t.id !== task.id);
+    expect(followUps).toHaveLength(1);
+    const followUp = followUps[0]!;
+    expect(followUp.title).toBe(`Resolve merge conflict: ${task.id}`);
+    expect(followUp.labels).toEqual(["conflict"]);
+    expect(followUp.repo).toBe(repo);
+    // The conflict is in the card's worktree, so that is what's granted.
+    expect(followUp.extraAllowedDirs).toEqual([wt.path]);
+    expect(followUp.extraAllowedTools).toEqual([
+      `Bash(git -C ${wt.path} status:*)`,
+      `Bash(git -C ${wt.path} diff:*)`,
+      `Bash(git -C ${wt.path} add:*)`,
+      `Bash(git -C ${wt.path} commit:*)`,
+    ]);
+    expect(followUp.body).toContain(task.id);
+    expect(followUp.body).toContain(wt.branch);
+    expect(followUp.body).toContain("CONFLICT (content): Merge conflict in f.txt");
+    expect(followUp.body).toContain("commit --no-edit");
+    await checkConflictFollowUp(followUp, registry);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+async function checkConflictFollowUp(followUp: TaskCard, registry: Registry): Promise<void> {
   // "stop, don't guess" instruction must actually be in the task body a
   // human/the integrator agent reads — not just implied by code comments.
   expect(followUp.body.toLowerCase()).toContain("stop");
@@ -675,7 +694,7 @@ test("autoMerge + trustLevel high, merge conflicts, integrator registered — au
   const decision = await router.route(followUp);
   expect(decision.confident).toBe(true);
   expect(decision.selected).toBe("integrator");
-});
+}
 
 test("maybeSpawnConflictIntegrator is idempotent: a second conflict event for the same task creates no duplicate follow-up", async () => {
   const board = new SqliteBoard();
@@ -690,10 +709,11 @@ test("maybeSpawnConflictIntegrator is idempotent: a second conflict event for th
   expect(followUps).toHaveLength(1);
 });
 
-test("maybeSpawnConflictIntegrator grants the follow-up task access to the original repo outside its own worktree via extraAllowedDirs", async () => {
+test("maybeSpawnConflictIntegrator grants the follow-up task access to the conflicted worktree outside its own via extraAllowedDirs", async () => {
   // The follow-up's own write-tier run gets a fresh worktree of its
-  // own, a different absolute path from originalTask.repo — where the
-  // real conflict actually lives. Without this grant, claude's own
+  // own, a different absolute path from the original card's worktree —
+  // where the real conflict actually lives (the merge path merges the
+  // repo's HEAD into the branch there). Without this grant, claude's own
   // sandbox denies file/Bash access outside a run's own worktree (see
   // TaskCard.extraAllowedDirs's own doc comment), so this follow-up
   // would be structurally unable to do the one thing it was spawned to
@@ -707,10 +727,10 @@ test("maybeSpawnConflictIntegrator grants the follow-up task access to the origi
 
   const followUps = (await board.list()).filter((t) => t.id !== task.id);
   expect(followUps).toHaveLength(1);
-  expect(followUps[0]!.extraAllowedDirs).toEqual(["/repo"]);
+  expect(followUps[0]!.extraAllowedDirs).toEqual(["/wt/t"]);
 });
 
-test("maybeSpawnConflictIntegrator also grants the follow-up task extraAllowedTools for git -C <repo> status/diff/add/commit — extraAllowedDirs alone doesn't make acceptEdits' Bash gating allow these commands", async () => {
+test("maybeSpawnConflictIntegrator also grants the follow-up task extraAllowedTools for git -C <worktree> status/diff/add/commit — extraAllowedDirs alone doesn't make acceptEdits' Bash gating allow these commands", async () => {
   // Confirmed live: a real run with only extraAllowedDirs set hit
   // repeated Bash permission denials on exactly these commands and
   // never completed the merge (see TaskCard.extraAllowedTools' own doc
@@ -725,10 +745,10 @@ test("maybeSpawnConflictIntegrator also grants the follow-up task extraAllowedTo
   const followUps = (await board.list()).filter((t) => t.id !== task.id);
   expect(followUps).toHaveLength(1);
   expect(followUps[0]!.extraAllowedTools).toEqual([
-    "Bash(git -C /repo status:*)",
-    "Bash(git -C /repo diff:*)",
-    "Bash(git -C /repo add:*)",
-    "Bash(git -C /repo commit:*)",
+    "Bash(git -C /wt/t status:*)",
+    "Bash(git -C /wt/t diff:*)",
+    "Bash(git -C /wt/t add:*)",
+    "Bash(git -C /wt/t commit:*)",
   ]);
 });
 
