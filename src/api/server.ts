@@ -30,6 +30,7 @@ import { appendTaskOutput, getBufferedOutput, getTaskOutput, TASK_OUTPUT_EVENTS 
 import { buildPipelineRunSummary } from "../services/pipeline-run-summary.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
+import { harnessConfigDirs, probeSandbox, sandboxStartupLines, type SandboxStatus } from "../executors/sandbox.ts";
 import { ApiExecutor } from "../executors/anthropic-api.ts";
 import { CodexReadOnlyExecutor } from "../executors/codex-readonly.ts";
 import { CodexWriteExecutor } from "../executors/codex-write.ts";
@@ -175,6 +176,14 @@ export interface CreateAppOptions {
    *  `WISSEL_REMOTE_CONTROL` at the bootstrap entrypoint: on unless set
    *  to 0 or false. Undefined here (tests, other callers) means off. */
   remoteControl?: boolean;
+  /** The startup Bash sandbox preflight (probeSandbox,
+   *  src/executors/sandbox.ts), handed to every WriteExecutor and shown
+   *  on GET /version as `writeSandbox`. Undefined (tests, other
+   *  callers) means "off": write-tier Bash uses the allowlist. */
+  writeSandbox?: SandboxStatus;
+  /** Extra read-denied paths for that sandbox (every harness's config
+   *  dir, the board database). See WriteExecutorOptions.sandboxDenyRead. */
+  writeSandboxDenyRead?: string[];
   /** Starts the in-process auto-archive scheduler (see
    *  src/core/archive-scheduler.ts) — off by default, same gate pattern
    *  as memoryCurationEnabled. Unlike memory curation, needs no
@@ -366,6 +375,17 @@ export function createApp(
       runner: opts.commandRunner ?? runViaBun,
       agentModel: (id) => registry.get(id)?.costProfile.model,
     });
+  const writeSandbox: SandboxStatus = opts.writeSandbox ?? { state: "off", problems: [] };
+  const writeExecutor = () =>
+    new WriteExecutor({
+      memoryPath: opts.memoryPath,
+      injectMemory: opts.injectMemory,
+      mcpServers,
+      onChunk: onTaskOutputChunk,
+      remoteControl: opts.remoteControl,
+      sandbox: writeSandbox,
+      sandboxDenyRead: opts.writeSandboxDenyRead,
+    });
   const autoExecutors: Executor[] = [
     new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
     new ApiExecutor(),
@@ -375,14 +395,14 @@ export function createApp(
   ];
   if (executeWriteTier)
     autoExecutors.push(
-      new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
+      writeExecutor(),
       new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     );
   const manualExecutors: Executor[] = opts.manualExecutors ?? [
     new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
     new ApiExecutor(),
     new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
-    new WriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
+    writeExecutor(),
     new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     ttsExecutor(),
     digestExecutor(),
@@ -692,7 +712,7 @@ export function createApp(
       if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
 
       // No auth, same as /health — nothing in VersionInfo is sensitive.
-      if (url.pathname === "/version") return json(getVersionInfo());
+      if (url.pathname === "/version") return json({ ...getVersionInfo(), writeSandbox });
 
       if ((url.pathname === "/" || url.pathname === "/board") && req.method === "GET") {
         return new Response(Bun.file(new URL("board.html", PUBLIC_DIR)));
@@ -1848,6 +1868,13 @@ if (import.meta.main) {
   const mcpServersPath = process.env.WISSEL_MCP_SERVERS_PATH ?? "mcp-servers.yaml";
   const mcpServers = await McpServerPool.load(mcpServersPath).catch(() => McpServerPool.from([]));
 
+  // Can write-tier Bash run inside Claude Code's OS sandbox here? Probed
+  // once (bubblewrap, socat, AppArmor userns); "unavailable" falls back
+  // to the allowlist and is logged loudly below and on GET /version.
+  // WISSEL_WRITE_SANDBOX=off turns it off. docs/SDD-write-tier-sandbox.md.
+  const writeSandbox = await probeSandbox(undefined, ["0", "false", "off"].includes(process.env.WISSEL_WRITE_SANDBOX ?? ""));
+  const writeSandboxDenyRead = [...harnessConfigDirs(harnesses.all().map((h) => h.env)), `${dbPath}*`];
+
   // Off by default: this loop routes eligible tasks automatically the
   // moment they appear. Read-only agents run in-process; write-tier
   // agents are only decided and handed off (unless executeWriteTier is
@@ -1948,6 +1975,8 @@ if (import.meta.main) {
       memoryPath,
       injectMemory,
       remoteControl,
+      writeSandbox,
+      writeSandboxDenyRead,
       autoArchiveEnabled,
       archiveCheckIntervalHours,
       modelRefreshEnabled,
@@ -1966,6 +1995,7 @@ if (import.meta.main) {
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
   const v = getVersionInfo();
   console.log(`version: ${v.commitShort}${v.dirty ? "+dirty" : ""} (${v.branch})`);
+  for (const line of sandboxStartupLines(writeSandbox)) (writeSandbox.state === "unavailable" ? console.error : console.log)(line);
   console.log(
     orchestratorEnabled
       ? `wissel orchestrator running${executeWriteTier ? " — executing write-tier work locally, no agetor handoff" : ""}`

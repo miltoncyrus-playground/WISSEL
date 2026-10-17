@@ -148,6 +148,10 @@ export async function finishResult(
     // usage:report` (docs/proposal-agent-run-efficiency.md items 1, 2).
     ...(result.usage ? { usage: result.usage } : {}),
     ...(result.resumed ? { resumed: true } : {}),
+    // Raw refusals and the Bash sandbox state of a claude-cli run, for
+    // the write-tier sandbox target (docs/SDD-write-tier-sandbox.md).
+    ...(result.denials !== undefined ? { denials: result.denials } : {}),
+    ...(result.sandbox ? { sandbox: result.sandbox } : {}),
   });
 
   const agent = registry.get(result.agentId);

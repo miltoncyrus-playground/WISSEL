@@ -16,6 +16,9 @@
  * (file tools are already governed by the worktree and acceptEdits).
  */
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 export const MAX_EXTRA_ALLOWED_TOOLS = 12;
 
 const GRANT_RE = /^Bash\(([a-z][a-z0-9._-]*(?: [A-Za-z0-9@._:/=-]+)*)(:\*)?\)$/;
@@ -56,22 +59,67 @@ export function validateExtraAllowedTools(value: unknown): AllowedToolsCheck {
   const tools: string[] = [];
   for (const entry of value) {
     if (typeof entry !== "string") return { ok: false, error: "extraAllowedTools must be a list of strings" };
-    const m = GRANT_RE.exec(entry);
-    if (!m) return { ok: false, error: `"${entry}" is not a command-scoped grant like "Bash(bun install:*)"` };
-    const words = m[1]!.split(" ");
-    const program = words[0]!;
-    if (REFUSED_PROGRAMS.has(program)) return { ok: false, error: `"${entry}" grants "${program}", which is never granted per card` };
-    // `bun --cwd app run test`: the subcommand is the first word that
-    // isn't an option or an option's value.
-    const sub = firstSubcommand(words.slice(1));
-    if (sub && REFUSED_SUBCOMMANDS[program]?.has(sub)) return { ok: false, error: `"${entry}" grants "${program} ${sub}", which is never granted per card` };
-    const targets = ALLOWED_RUNNER_TARGETS[program];
-    if (targets && !(sub && targets.has(sub))) {
-      return { ok: false, error: `"${entry}": ${program} may only run ${[...targets].join(", ")}` };
-    }
+    const error = grantError(entry);
+    if (error) return { ok: false, error };
     if (!tools.includes(entry)) tools.push(entry);
   }
   return { ok: true, tools };
+}
+
+/** Why one grant is refused, or undefined when it's acceptable. */
+export function grantError(entry: string): string | undefined {
+  const m = GRANT_RE.exec(entry);
+  if (!m) return `"${entry}" is not a command-scoped grant like "Bash(bun install:*)"`;
+  const words = m[1]!.split(" ");
+  const program = words[0]!;
+  if (REFUSED_PROGRAMS.has(program)) return `"${entry}" grants "${program}", which is never granted per card`;
+  // `bun --cwd app run test`: the subcommand is the first word that
+  // isn't an option or an option's value.
+  const sub = firstSubcommand(words.slice(1));
+  if (sub && REFUSED_SUBCOMMANDS[program]?.has(sub)) return `"${entry}" grants "${program} ${sub}", which is never granted per card`;
+  const targets = ALLOWED_RUNNER_TARGETS[program];
+  if (targets && !(sub && targets.has(sub))) return `"${entry}": ${program} may only run ${[...targets].join(", ")}`;
+  return undefined;
+}
+
+export interface ProjectAllowRules {
+  /** Rules that pass grantError, in file order, deduplicated. */
+  allowed: string[];
+  /** Rules that don't, each with why. */
+  refused: { rule: string; error: string }[];
+}
+
+/**
+ * The repo's own `.claude/settings.json` `permissions.allow` rules, run
+ * through the same check as a per-card grant. WriteExecutor passes the
+ * allowed ones with `--allowedTools`, because `claude -p` in a worktree
+ * drops them ("Ignoring 4 permissions.allow entries from
+ * .claude/settings.json: this workspace has not been trusted"). Marking
+ * every worktree trusted in ~/.claude.json instead would also trust
+ * whatever else that file holds (hooks, MCP servers, any allow rule at
+ * all), unchecked.
+ *
+ * Read from `repo`, the human-controlled main checkout, never from the
+ * worktree: an agent that edited the worktree's copy must not grant its
+ * own next attempt anything. A missing or malformed file is no rules.
+ */
+export async function readProjectAllowRules(repo: string): Promise<ProjectAllowRules> {
+  const out: ProjectAllowRules = { allowed: [], refused: [] };
+  let rules: unknown;
+  try {
+    const raw = await readFile(join(repo, ".claude", "settings.json"), "utf8");
+    rules = (JSON.parse(raw) as { permissions?: { allow?: unknown } } | null)?.permissions?.allow;
+  } catch {
+    return out;
+  }
+  if (!Array.isArray(rules)) return out;
+  for (const rule of rules) {
+    if (typeof rule !== "string") continue;
+    const error = grantError(rule);
+    if (error) out.refused.push({ rule, error });
+    else if (!out.allowed.includes(rule)) out.allowed.push(rule);
+  }
+  return out;
 }
 
 const OPTIONS_WITH_VALUE = new Set(["--cwd", "--prefix", "-C"]);

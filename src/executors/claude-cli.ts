@@ -12,6 +12,7 @@ import { parseMcpCalls } from "./parse-mcp-calls.ts";
 import { resolveScratchWorkspace } from "../services/scratch-workspace.ts";
 import { mcpApprovalRequestBlockPresent, parseMcpApprovalRequest } from "./parse-mcp-approval-request.ts";
 import { trackChild } from "./child-processes.ts";
+import type { SandboxState } from "./sandbox.ts";
 
 /** A retriable 429's reset time must be within this window of "now" —
  *  parseSessionLimitReset can in principle only ever return same-day or
@@ -387,6 +388,14 @@ export interface RunClaudeOptions {
    *  WISSEL_REMOTE_CONTROL by src/api/server.ts, never read from
    *  process.env here. */
   remoteControl?: boolean;
+  /** Passed as `--settings <json>`, the CLI settings scope (a repo's
+   *  .claude/settings.json can't loosen what it locks). WriteExecutor
+   *  sets it to the Bash sandbox settings (src/executors/sandbox.ts).
+   *  Undefined means no `--settings` at all. */
+  settings?: Record<string, unknown>;
+  /** Recorded on the result (TaskResult.sandbox) for telemetry.
+   *  Undefined reads as "off": no sandbox was asked for. */
+  sandbox?: SandboxState;
 }
 
 /**
@@ -413,7 +422,9 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     mcpAccessPreApproved,
     addDir,
     remoteControl,
+    settings,
   } = opts;
+  const sandbox: SandboxState = opts.sandbox ?? "off";
   const memory = injectMemory ? await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH) : undefined;
 
   // Resolving against the pool happens once, up front — every other MCP
@@ -484,6 +495,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   const combinedAllowedTools = [...(allowedTools ?? []), ...mcpAllowedToolNames(auto)];
   if (combinedAllowedTools.length > 0) cmd.push("--allowedTools", ...combinedAllowedTools);
   if (addDir && addDir.length > 0) cmd.push("--add-dir", ...addDir);
+  if (settings) cmd.push("--settings", JSON.stringify(settings));
 
   // Always force these two empty, harness or no harness — confirmed
   // live (not just for the auth-status probe): an ambient
@@ -579,12 +591,12 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
           summary: `claude session limit hit — retrying after ${resetAt.toISOString()}`,
           actualCost: parsed.total_cost_usd,
           retryAfter: resetAt.toISOString(),
-          ...runFacts(parsed, resumeId, remoteSessionUrl),
+          ...runFacts(parsed, resumeId, remoteSessionUrl, sandbox),
           ...(mcpCalls ? { mcpCalls } : {}),
         };
       }
     }
-    return { ...fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`, parsed?.total_cost_usd, mcpCalls), ...runFacts(parsed, resumeId, remoteSessionUrl) };
+    return { ...fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`, parsed?.total_cost_usd, mcpCalls), ...runFacts(parsed, resumeId, remoteSessionUrl, sandbox) };
   }
 
   if (!parsed) {
@@ -693,7 +705,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     // being null above.
     ...(verdict ? { verdict: verdict.verdict, reviewFeedback: verdict.feedback } : {}),
     ...(verdict?.grants?.length ? { reviewGrants: verdict.grants } : {}),
-    ...runFacts(parsed, resumeId, remoteSessionUrl),
+    ...runFacts(parsed, resumeId, remoteSessionUrl, sandbox),
     ...(plan ? { subtaskPlan: plan } : {}),
     ...(handoff ? { pipelineHandoff: handoff } : {}),
     ...(mcpCalls ? { mcpCalls } : {}),
@@ -702,15 +714,22 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
   };
 }
 
-/** Usage, session id, resumed flag and Remote Control URL for a run's
- *  TaskResult, each only when known. */
+/** Usage, session id, resumed flag, Remote Control URL, raw denial
+ *  count and sandbox state for a run's TaskResult, each only when known
+ *  (the sandbox state always is). */
 function runFacts(
   parsed: ClaudeResultJson | undefined,
   resumeId: string | undefined,
   remoteSessionUrl: string | undefined,
-): Pick<TaskResult, "usage" | "sessionId" | "resumed" | "remoteSessionUrl"> {
+  sandbox: SandboxState,
+): Pick<TaskResult, "usage" | "sessionId" | "resumed" | "remoteSessionUrl" | "denials" | "sandbox"> {
   const usage = runUsageFrom(parsed);
+  // The raw count, before summarizeDenials dedupes it into keys: the
+  // number docs/SDD-write-tier-sandbox.md's target (median <= 1) is on.
+  const denials = parsed ? (Array.isArray(parsed.permission_denials) ? parsed.permission_denials.length : 0) : undefined;
   return {
+    sandbox,
+    ...(denials !== undefined ? { denials } : {}),
     ...(usage ? { usage } : {}),
     ...(typeof parsed?.session_id === "string" && parsed.session_id ? { sessionId: parsed.session_id } : {}),
     ...(resumeId ? { resumed: true } : {}),

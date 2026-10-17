@@ -777,6 +777,17 @@ export interface TaskResult {
    *  Undefined when nothing was refused. The next attempt and its
    *  reviewer are told (spawnPushbackImplementer, spawnReviewerTask). */
   permissionDenials?: string[];
+  /** How many raw `permission_denials` this `claude -p` run's result
+   *  JSON carried (not deduplicated, unlike permissionDenials). On the
+   *  telemetry result event; docs/SDD-write-tier-sandbox.md's target is
+   *  a median <= 1 per implementer run. Undefined when no result JSON
+   *  was parsed and for non-claude executors. */
+  denials?: number;
+  /** Whether this `claude -p` run's Bash ran in the OS sandbox ("on"),
+   *  under the allowlist ("off"), or under the allowlist because the
+   *  startup preflight found the sandbox can't start ("unavailable").
+   *  See src/executors/sandbox.ts. Undefined for non-claude executors. */
+  sandbox?: "on" | "off" | "unavailable";
   /** Token use of this `claude -p` run, from its result JSON (see
    *  RunUsage). Recorded on the telemetry result event; `bun run
    *  usage:report` reads it. Undefined for a run that produced no result

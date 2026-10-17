@@ -43,6 +43,8 @@ runs write-tier work locally in a worktree.
 | `bun run test:e2e` | Playwright tests against a live server. |
 | `bun run test:e2e:affected` | Only the e2e specs affected by your changes. |
 | `bun run live-check:shutdown` | Real server, real agent spawn, SIGTERM: asserts no agent process survives. |
+| `bun run live-check:sandbox` | Real `claude -p` write-tier run with the Bash sandbox on: piped Bash works; writes outside the worktree, `~/.ssh` reads, off-allowlist hosts and `git commit` don't. Skips when the sandbox can't start. |
+| `bun run denials:baseline` | Permission denials per implementer run (raw, old keys, new keys); `--telemetry` for the after numbers by sandbox state. |
 | `bun run seed:ai-news` | Create or upgrade the stored podcast pipelines (see Pipelines). |
 | `bun run seed:schedules` | Create the two morning podcast schedules, disabled (see Schedules). Idempotent. |
 
@@ -62,7 +64,36 @@ bun run eval:memory-curation-quality
 bun run eval:claude-cli-429-replay
 bun run eval:ai-news
 bun run eval:world-news
+bun run eval:sandbox-denials
 ```
+
+### One-time host setup: the write-tier Bash sandbox
+
+Write-tier agents run Bash inside Claude Code's OS sandbox
+(`docs/SDD-write-tier-sandbox.md`). On Linux it needs bubblewrap and
+socat, and on Ubuntu 24.04+ (where
+`sysctl kernel.apparmor_restrict_unprivileged_userns` prints 1) an
+AppArmor profile that lets bwrap create user namespaces:
+
+```bash
+sudo apt-get install bubblewrap socat
+sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap /usr/bin/bwrap flags=(unconfined) {
+  userns,
+  include if exists <local/bwrap>
+}
+EOF
+sudo systemctl reload apparmor
+```
+
+Then restart the server. Startup logs `write-tier sandbox: on`, and
+`GET /version` shows `writeSandbox.state`. If anything is missing,
+startup logs `write-tier sandbox: UNAVAILABLE` with the fix for each
+problem and write-tier Bash falls back to the allowlist (more permission
+denials, same boundary). `bun run live-check:sandbox` proves it end to end.
 
 The pipeline editor and the app are separate Vite bundles.
 `pipeline-editor/dist/` and `app/dist/` are gitignored; `bun run serve`
@@ -487,6 +518,7 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_MEMORY_INTERVAL_HOURS` | 24 | How often curation checks if it's due. |
 | `WISSEL_MEMORY_INJECTION` | off | Add `memory/lessons.md` to every claude-cli/codex-cli prompt. Curation keeps running either way. |
 | `WISSEL_REMOTE_CONTROL` | on | Every claude-cli card run (board cards and pipeline steps, not Ask) gets a Remote Control session you can follow and steer from claude.ai/code or the Claude app. The live output shows the link. `0` turns it off. |
+| `WISSEL_WRITE_SANDBOX` | on | Run write-tier Bash inside Claude Code's OS sandbox when the startup preflight finds it can start (see "One-time host setup"). `off` (or `0`/`false`) forces the allowlist mode. |
 | `WISSEL_MEMORY_PATH` | `memory/lessons.md` | Lessons file location. |
 | `WISSEL_AUTO_ARCHIVE` | off | Archive `done` cards 24h after `doneAt`. |
 | `WISSEL_ARCHIVE_CHECK_INTERVAL_HOURS` | 1 | Auto-archive check interval. |
@@ -557,7 +589,8 @@ The checked-in file registers none.
 
 ## Known gaps
 
-- No sandboxing beyond what the agent CLI itself does.
+- Only write-tier Bash is sandboxed (`docs/SDD-write-tier-sandbox.md`);
+  Claude's own file tools, readonly runs and codex runs are not.
 - Deleting a task does not remove its worktree. It stays under
   `~/.wissel/worktrees/` until cleaned up by hand.
 
@@ -574,6 +607,7 @@ The checked-in file registers none.
 - `docs/SDD-memory-curator.md`, `docs/SDD-memory-injection-toggle.md`: memory.
 - `docs/SDD-task-archiving.md`, `docs/SDD-version-info.md`, `docs/SDD-live-task-output.md`.
 - `docs/SDD-remote-control.md`: every card run as a claude.ai Remote Control session.
+- `docs/SDD-write-tier-sandbox.md`: write-tier Bash in Claude Code's OS sandbox, denial counting, project allow rules.
 - `docs/SDD-schedules.md`: schedules for pipelines and tasks, and "Start at" for a card; §7 is the switch-over from systemd.
 
 ## License
