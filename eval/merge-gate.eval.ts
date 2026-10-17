@@ -36,6 +36,7 @@ import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
 import { Orchestrator, resolveLiveTip } from "../src/core/orchestrator.ts";
+import { HarnessPool } from "../src/core/harness-pool.ts";
 import { WriteExecutor } from "../src/executors/write.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import { runViaBun } from "../src/executors/claude-cli.ts";
@@ -85,7 +86,12 @@ async function main(): Promise<void> {
   const board = new SqliteBoard();
   const registry = await Registry.load();
   const executors = [new WriteExecutor({ runner: runViaBun, homeDir }), new ReadOnlyExecutor({ runner: runViaBun })];
-  const orchestrator = new Orchestrator(board, registry, new Router(registry), executors, undefined, { executeWriteTier: true, merge });
+  // The real harness pool, built the way the server builds it (autoload
+  // validates each harness, so a stale entry is dropped): model precedence is
+  // task.model ?? harness.model ?? manifest (resolveModel), so without a
+  // harness the eval ran the manifest model, not what production runs.
+  const harnesses = await HarnessPool.autoload();
+  const orchestrator = new Orchestrator(board, registry, new Router(registry), executors, undefined, { executeWriteTier: true, merge, harnesses });
 
   try {
     git(["init", "-q", "-b", "main"], repo);
@@ -132,12 +138,22 @@ async function main(): Promise<void> {
       const all = await board.list();
       tip = resolveLiveTip(await board.get(task.id), new Map(all.map((c) => [c.id, c])));
       console.log(`  round ${round}/${ROUNDS}: tip ${tip?.id.slice(0, 8)} status=${tip?.status} pushbackCount=${tip?.pushbackCount ?? 0}`);
-      if (tip?.status === "review" || tip?.status === "escalated" || tip?.status === "failed") break;
+      if (tip?.status === "done" || tip?.status === "review" || tip?.status === "escalated" || tip?.status === "failed") break;
+    }
+    // A failed/escalated tip says nothing on its own; print the run's own
+    // summary so a FAIL below is diagnosable without rerunning.
+    if (tip && (tip.status === "failed" || tip.status === "escalated")) {
+      const result = await board.getResult(tip.id);
+      console.log(`  tip result (ok=${result?.ok}): ${(result?.summary ?? "no result recorded").slice(0, 2000)}`);
     }
 
     console.log("Merge 2 (the real fix):");
+    // Two legitimate ways the fix lands: the reviewer approves and the
+    // orchestrator's auto-merge lands it (tip "done"), or it stops in
+    // "review" and the human Merge lands it. Both must go through the gate.
     const second = tip && tip.status === "review" ? await mergeTask(board, tip.id, merge, registry) : undefined;
-    console.log(`  -> ${second === undefined ? "not attempted" : second.ok ? second.value.message : second.error}`);
+    const autoLanded = tip?.status === "done";
+    console.log(`  -> ${autoLanded ? "landed by auto-merge after review approval" : second === undefined ? "not attempted" : second.ok ? second.value.message : second.error}`);
 
     const mergeEvents = events.filter((e): e is Extract<TelemetryEvent, { type: "merge" }> => e.type === "merge");
     const repoTests = Bun.spawnSync(["bun", "test"], { cwd: repo, stdout: "pipe", stderr: "pipe" });
@@ -147,7 +163,7 @@ async function main(): Promise<void> {
       { name: "first merge refused by the gate, nothing landed", pass: !first.ok && mergeEvents[0]?.outcome === "gate-failed" && headAfterFirst === headBefore },
       { name: "pushback created with pushbackCount 1", pass: pushback?.pushbackCount === 1 && pushback.reviewLineageId === task.id },
       { name: "pushback body carries the gate output (the failing test)", pass: !!pushback?.body.includes("Merge gate feedback") && !!pushback?.body.includes("trims surrounding whitespace") },
-      { name: "second merge landed through the gate", pass: second?.ok === true && mergeEvents.at(-1)?.outcome === "landed" && mergeEvents.at(-1)?.gate === "passed" },
+      { name: "second merge landed through the gate", pass: (second?.ok === true || autoLanded) && mergeEvents.at(-1)?.taskId === tip?.id && mergeEvents.at(-1)?.outcome === "landed" && mergeEvents.at(-1)?.gate === "passed" },
       { name: "the repo's own tests pass on what landed", pass: repoTests.exitCode === 0 },
       { name: "the landed slug() does both", pass: probe.stdout.toString("utf8").trim() === JSON.stringify(["hello-world", "spaced-out"]) },
       { name: "the user's checkout never had a merge in progress", pass: !existsSync(join(repo, ".git", "MERGE_HEAD")) },
