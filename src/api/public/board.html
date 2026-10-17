@@ -2091,7 +2091,9 @@
   function mergeTask(taskId) {
     setDrawerActionError(null);
     fetch("/tasks/" + taskId + "/merge", { method: "POST" }).then(function (r) {
-      if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || ("HTTP " + r.status)); });
+      // A refused merge can still change the board: a failed gate sends
+      // the card back as a new attempt, a conflict spawns its integrator.
+      if (!r.ok) return r.json().then(function (e) { return refetchTasks().then(function () { throw new Error(e.error || ("HTTP " + r.status)); }); });
       return refetchTasks();
     }).catch(function (err) { setDrawerActionError(err.message); });
   }

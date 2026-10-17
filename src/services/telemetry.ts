@@ -32,6 +32,26 @@ export type TelemetryEvent =
       confirmedBy: "tier-a" | "confirm" | "undo";
       error?: string;
     }
+  /** One merge attempt (mergeTaskWorktree, docs/SDD-worktree-isolation.md
+   *  §7): how it ended, what the gate ran, how long the repo
+   *  lock was waited on and held, and the sha that landed. The digest
+   *  counts these (DigestStats.mergeAttempts). */
+  | {
+      type: "merge";
+      taskId: string;
+      repo: string;
+      branch: string;
+      outcome: "landed" | "gate-failed" | "conflict" | "blocked-local-changes" | "head-moved" | "error";
+      gate: "none" | "passed" | "failed" | "skipped";
+      gateRuns: { argv: string[]; exitCode: number | null; durationMs: number; timedOut: boolean }[];
+      gateMs: number;
+      lockWaitMs: number;
+      lockHoldMs: number;
+      landedSha?: string;
+      blockedFiles?: string[];
+      /** Why it didn't land; capped at 500 characters. */
+      message?: string;
+    }
   /** One schedule fire, skip or error (docs/SDD-schedules.md §3.6).
    *  `at` is the ticker's clock, kept as given. */
   | {

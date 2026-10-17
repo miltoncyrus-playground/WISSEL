@@ -303,6 +303,20 @@ second fix has since been confirmed against a real `claude` run: 2/2
 PASS (clean git status, merge commit landed, both features present
 each run) — see eval/README.md's updated status note.
 
+**Third revision (2026-10-17): the conflict moved into the worktree.**
+The merge path no longer merges in `originalTask.repo` at all
+(docs/SDD-worktree-isolation.md §7): the repo's HEAD is merged into the
+card's branch inside the card's own worktree, and that is where a
+conflict is left. So `maybeSpawnConflictIntegrator` now grants and
+points at `worktree.path`, not the repo (`extraAllowedDirs:
+[worktree.path]`, `git -C <worktree.path> status/diff/add/commit`), and
+tells the integrator to finish with `git commit --no-edit` so the
+prepared `Merge <branch>: <title>` message survives. Nothing lands until
+the original card is merged again, which runs its gate. Dangling-merge
+detection (§2) still watches the repos; wissel itself can no longer
+leave `MERGE_HEAD` in one. A conflict is also the only miss that spawns
+an integrator: `blocked-local-changes`, `head-moved` and errors never do.
+
 ## 7. Sequencing
 
 1 and 2 are fully independent of each other and of 3 — all three can run
@@ -488,3 +502,47 @@ children. Recovery then reset the task under a still-live writer.
   against `:memory:` with a fake `claude` that `exec`s `sleep 300`, runs
   a task, sends the server SIGTERM, and asserts the `sleep` is gone. It
   fails with the handler removed (verified).
+
+## 11. Revision: the landed sha (2026-10-17)
+
+§9 proved "already merged" from git state alone: branch ancestry while
+the worktree exists, a commit-log grep for `Merge <branch>: <title>`
+once it's gone, `unknown` otherwise. The grep is a guess (a renamed card
+misses it; a reused title could false-match), and `unknown` leaves a
+really-merged card stranded for a human.
+
+**Fix.** The merge path records what it landed
+(docs/SDD-worktree-isolation.md §7.5): `mergeTaskWorktree` calls
+`onLanded(sha)` right after the fast-forward and before cleanup, and
+every caller passes `board.recordMerge(id, sha)`, one UPDATE that sets
+`task_results.mergedSha` and `mergedAt` on the latest result row. So the
+order of a landing is: fast-forward, record the sha, remove the
+worktree, move the card. A crash after the second step leaves a card
+whose result names a commit that's in HEAD.
+
+- `determineWorktreeMergeState(repo, worktree, task, runner, mergedSha)`
+  checks the sha first: `git merge-base --is-ancestor <sha> HEAD` means
+  `merged`, whatever the worktree and branch look like. The §9 checks
+  run only for a result without one; the grep is marked legacy in the
+  code, kept for rows written before the column existed.
+- New startup pass `reconcileLandedMerges(board, runner)`
+  (`src/core/crash-recovery.ts`), run in `createApp` after
+  `reconcileOrphanedTasks` and before `reconcileInterruptedReviewVerdicts`:
+  every `pending-review` or `review` card, not superseded, not archived,
+  whose result has a `mergedSha` in its repo's HEAD gets the cleanup the
+  crash may have cut short (`removeTaskWorktree`, a no-op when gone) and
+  moves to `done`. A sha not in HEAD (history rewritten since) leaves the
+  card as found and logs it. Logged as `crash recovery: moved N
+  already-landed card(s) to done`.
+
+The windows left: a crash between the fast-forward and the sha write
+(milliseconds; the worktree is still there, so §9's ancestry check
+covers it), and a crash mid-gate (nothing landed; the card is retried by
+the next Merge or approve).
+
+**Acceptance criteria** (test/merge-path.test.ts)
+- Crash after landing, before `board.move`: reconciliation moves the
+  card to done from `mergedSha`; a second pass changes nothing.
+- A recorded sha that isn't in HEAD: card left as found.
+- A stored sha proves `merged` after a title change the grep can't see.
+- A legacy row with no `mergedSha` still resolves through the grep.

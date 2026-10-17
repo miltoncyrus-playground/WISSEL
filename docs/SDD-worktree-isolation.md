@@ -37,11 +37,13 @@ tree — self-hosted or not.
   `--watch`-style tool pointed at a repo to ever see these edits.
   Idempotent: a second call for the same task (a retry via `POST
   /tasks/:id/run`) reuses the existing worktree instead of erroring.
-- **`mergeTaskWorktree(repo, worktree, task, runner)`** — commits
-  whatever's uncommitted in the worktree (no-op if clean), `git merge
-  --no-ff` that branch into whatever's checked out in `repo`, then
-  removes the worktree. The *only* place a worktree's changes ever reach
-  the live repo — always this one explicit, human-triggered call.
+- **`mergeTaskWorktree(repo, worktree, task, context, onLanded?)`** —
+  commits whatever's uncommitted in the worktree (no-op if clean), then
+  the merge path in §7: the repo's HEAD merged into the branch in the
+  worktree, the project's gate run there, a fast-forward of `repo`, the
+  landed sha recorded, the worktree removed. The *only* place a
+  worktree's changes ever reach the live repo. (Before 2026-10-17 this
+  ran `git merge --no-ff <branch>` in `repo` itself; §7 says why not.)
 - **`removeTaskWorktree(repo, worktree, runner)`** — discards a
   worktree and its branch without merging.
 
@@ -85,14 +87,13 @@ buttons.
   worktree should reflect the repo's real history, not leak whatever a
   human happened to have half-written at dispatch time. Confirmed live
   (§6) that this is exactly what happens, not assumed.
-- **Doesn't resolve merge conflicts.** `mergeTaskWorktree` reports a
-  conflict as a clean `{ok: false, message}` and leaves the worktree
-  entirely alone (never removed on failure — confirmed by test) so
-  nothing is lost; resolving it by hand and re-merging is still a manual
-  step. A merge conflict on the live `task.repo` side (your own
-  uncommitted changes colliding with the incoming merge) is refused by
-  `git merge` itself, the normal safe default — not specially handled
-  here, doesn't need to be.
+- **Doesn't resolve merge conflicts itself.** `mergeTaskWorktree`
+  reports a conflict as `{ok: false, outcome: "conflict"}` and leaves it
+  in the worktree (never removed on failure), where the auto-spawned
+  integrator or a human resolves it; see §7. Your own uncommitted
+  changes in `task.repo` colliding with the landing are reported as
+  `blocked-local-changes` with the file list, never merged around and
+  never touched.
 
 ## 4. `autoMerge` — an opt-in, per-agent exception to the review gate
 
@@ -119,8 +120,9 @@ produced it.
 
 Critically, this is never just a status flip. When the result carries a
 `worktree`, `finishResult` calls the exact same `mergeTaskWorktree` the
-board's own Merge button calls — a real `git merge --no-ff`, not a
-shortcut that pretends the merge happened. **A genuine merge conflict
+board's own Merge button calls — the real merge path (§7), gate
+included, not a shortcut that pretends the merge happened. A gate
+failure goes back as a pushback (§7.3). **A genuine merge conflict
 falls back to the normal `review` stop**, not a silently-abandoned
 `done` — auto-merge only ever succeeds by actually merging cleanly; any
 failure gets the same human attention every other write-tier task gets.
@@ -173,3 +175,148 @@ original repo → both changes landed correctly → `git worktree remove
 back to just the main tree). Also confirmed `git worktree list
 --porcelain`'s exact output shape (`worktree <path>` lines) matches
 `createTaskWorktree`'s idempotency check.
+
+## 7. Merge path (2026-10-17)
+
+Ideas from Anthropic's Scion write-up
+(https://www.anthropic.com/engineering/redesigning-source-control):
+test after the merge, not before it; never merge in the client's copy;
+read merge status from the system of record, not the commit log.
+
+### 7.1 What was wrong
+
+- `git merge --no-ff <branch>` ran with `cwd = task.repo`: the user's
+  own checkout, usually with uncommitted edits in it. A conflict left
+  `MERGE_HEAD` there for a human to clean up.
+- Nothing ran the code before it landed. The reviewer (read-only, no
+  Bash) was the only check.
+- The orchestrator's auto-merge and the board's Merge button could merge
+  into one repo at the same moment. A `.git/index.lock` collision read as
+  a merge failure and could spawn an integrator for a conflict that
+  didn't exist.
+- "Did this land?" was answered by `git log --all --grep` for the merge
+  message, `unknown` otherwise. A crash between the merge and
+  `board.move` stranded card bf6fe7fe in `pending-review` (2026-10-05).
+
+### 7.2 The flow
+
+`mergeTaskWorktree` (`src/services/worktree.ts`), every caller: the
+Merge button (`board-actions.ts` `mergeTask`), Ask's merge
+(`concierge-control.ts`), the auto-merge (`orchestrator.ts`
+`tryAutoMerge`). All of it under the repo's lock (§7.4).
+
+1. Refuse a worktree with an unfinished merge (`MERGE_HEAD` in the
+   worktree): committing it would commit conflict markers.
+2. Commit the worktree's uncommitted changes, as before.
+3. `base` = the repo's HEAD, `tip` = the branch.
+   - `tip` already in `base`: nothing to land. Recorded as landed at
+     `base`, gate `skipped`.
+   - `base` in `tip` (main hasn't moved): the merged tree is `tip`'s.
+   - Otherwise `git merge-tree --write-tree base tip` computes it in the
+     object store, no working tree touched. A conflict there is redone as
+     a real `git merge --no-ff -m "Merge <branch>: <title>" base` in the
+     worktree, on the branch, and the result is `conflict`: the integrator
+     (or a human) resolves it there and runs `git commit --no-edit`, which
+     makes that commit the landing commit; the next Merge lands it as is.
+4. The landing commit: `git commit-tree <tree> -p base -p tip -m
+   "Merge <branch>: <title>"`. Same parents, same order, same subject as
+   the old `git merge --no-ff` in the repo made, so `git log
+   --first-parent` and every counter of `Merge wissel/` commits (digest,
+   streaks, Wrapped) read exactly as before
+   (`test/merge-history-counts.test.ts` builds one history both ways and
+   compares).
+5. The gate: the worktree is checked out at the landing commit
+   (detached), `linkNodeModules` links the repo's `node_modules` and each
+   top-level package's (`app/`, `pipeline-editor/`), and the project's
+   gate commands run there in order (`src/services/merge-gate.ts`). Then
+   the worktree goes back onto its branch, pass or fail. The branch
+   itself never moves, so a failed attempt leaves nothing behind for the
+   pushback attempt to trip over.
+6. Land: HEAD must still be `base`. If a human committed meanwhile, go
+   back to step 3 once with the new HEAD (re-merge, re-gate); a second
+   miss is `head-moved`. Uncommitted files in the repo that the landing
+   changes (`git status -z` against `git diff --name-only base landing`,
+   untracked included) make it `blocked-local-changes`, listed by name.
+   Then `git merge --ff-only <landing>`. The only write to the user's
+   checkout in the whole path is that fast-forward, which git refuses
+   rather than overwrite a local edit.
+7. `onLanded(sha)`: the caller's `board.recordMerge(id, sha)`, before
+   cleanup (§7.5). Then `removeTaskWorktree`.
+
+Never anywhere: `merge --abort`, `reset`, `checkout -f`, `stash`.
+
+| Outcome | Repo touched | Card | Integrator |
+|---|---|---|---|
+| `landed` | fast-forwarded | `done` | no |
+| `gate-failed` | no | pushback attempt, or `escalated` at the cap | no |
+| `conflict` | no (conflict in the worktree) | `review` | one, idempotent |
+| `blocked-local-changes` | no | `review` | no |
+| `head-moved` | no | `review` | no |
+| `error` | no | `review` | no |
+
+### 7.3 The gate
+
+`Project.mergeGate`: argv arrays, run in order, first failure stops;
+`mergeGateTimeoutMs` per command, default 10 minutes; a timeout kills the
+command's whole process group and counts as a failure. Set with `POST
+/projects/:id/merge-gate`, read per merge. The migration that adds the
+column seeds every registered wissel checkout (its `package.json` says
+`"name": "wissel"`) with `[["bun","run","typecheck"],["bun","run","test"]]`,
+once; `addLocalProject`/`addGithubProject` seed a new one the same way.
+No gate: lands as before, `gate: "none"` on the telemetry event. A gate
+lookup that throws refuses the merge; it never lands ungated by accident.
+
+A failure goes back through the existing pushback loop
+(`pushBackGateFailure`, `orchestrator.ts`): same lineage, same worktree,
+`pushbackCount` + 1, the same `MAX_PUSHBACKS` (5) cap the reviewer loop
+uses, escalation at the cap. The new attempt's body gets a `Merge gate
+feedback (attempt N)` section: the command, its exit code or timeout,
+and the last 200 lines of its output. It hangs off the attempt's
+reviewer card when there is one, so it routes exactly as a reviewer
+pushback would.
+
+### 7.4 The lock
+
+`withRepoLock(repo, fn)` (`src/services/repo-lock.ts`): one promise
+chain per resolved repo path, in-process, held from step 1 to cleanup.
+Every merge caller goes through `mergeTaskWorktree`, so every merge
+takes it. The `merge` telemetry event carries `lockWaitMs` and
+`lockHoldMs`.
+
+### 7.5 The recorded sha
+
+`task_results.mergedSha` / `mergedAt`, written by `Board.recordMerge` in
+one UPDATE on the latest result row. `determineWorktreeMergeState` checks
+it first (`git merge-base --is-ancestor <sha> HEAD`); the commit-log grep
+remains only for rows from before the column (marked legacy in the
+code). Startup reconciliation `reconcileLandedMerges`
+(`crash-recovery.ts`) moves a `pending-review` or `review` card whose
+`mergedSha` is in HEAD to `done`; see docs/SDD-crash-recovery.md §11.
+
+### 7.6 Trace
+
+One `merge` telemetry event per attempt: `taskId`, `repo`, `branch`,
+`outcome`, `gate` (`none|passed|failed|skipped`), `gateRuns` (argv, exit
+code, duration, timedOut), `gateMs`, `lockWaitMs`, `lockHoldMs`,
+`landedSha`, `blockedFiles`, `message` (misses only, 500 chars). The
+digest counts them as `stats.mergeAttempts` by outcome. What to watch:
+`gateFailed / total` (the gate's catch rate), `conflict` that wasn't a
+real conflict (should be 0; an index.lock collision can no longer be
+one), cards left in `pending-review` with a `mergedSha` (should be 0
+after a start).
+
+### 7.7 Known limits
+
+- After an integrator resolves a conflict in the worktree, the original
+  card still needs a Merge (button or Ask). Nothing re-merges it
+  automatically.
+- If a resolved conflict sits while HEAD moves again, the next landing
+  wraps it in a second `Merge wissel/<id>` commit; the digest counts that
+  card twice. Rare (a conflict, then more commits before the re-merge).
+- The lock is in-process. A second wissel server on the same repo, or a
+  human's own `git` at the same moment, can still race the fast-forward;
+  that shows as `head-moved` (retried once) or `error`, never as a
+  conflict.
+- The gate runs in the server process's environment with the repo's own
+  `node_modules`. A repo whose gate needs more setup than that (a
+  database, a build step) has to say so in its gate commands.

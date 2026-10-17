@@ -371,8 +371,9 @@ test("a fresh merge conflict on approve auto-spawns exactly one integrator-route
 
     // Round 1, sweep 2: the reviewer approves -> resumeAfterApproval ->
     // tryAutoMerge -> mergeTaskWorktree commits the worktree's own
-    // feature.txt for real, then a real `git merge --no-ff` into
-    // fixture.repo genuinely conflicts.
+    // feature.txt for real, then merging fixture.repo's HEAD into the
+    // branch, in the worktree, genuinely conflicts.
+    const repoHeadBefore = git(["rev-parse", "HEAD"], fixture.repo);
     await fixture.orchestrator.sweep();
 
     // The existing fallback is completely unchanged: a conflicted
@@ -383,13 +384,17 @@ test("a fresh merge conflict on approve auto-spawns exactly one integrator-route
     const reviewerTask = (await fixture.board.list()).find((t) => t.parentTaskId === task.id);
     expect(reviewerTask!.status).toBe("done");
 
-    // The worktree is untouched (removeTaskWorktree only ever runs on a
-    // successful merge) — the conflict sits in fixture.repo's own
-    // working tree, left exactly as git produced it.
+    // The conflict sits in the worktree (removeTaskWorktree only ever
+    // runs on a landing), left exactly as git produced it; fixture.repo,
+    // the user's checkout, is untouched: same HEAD, clean, no MERGE_HEAD.
     const worktreePath = (await fixture.board.getResult(task.id))!.worktree!.path;
     expect(existsSync(worktreePath)).toBe(true);
+    const worktreeStatus = Bun.spawnSync(["git", "status", "--porcelain"], { cwd: worktreePath, stdout: "pipe" }).stdout.toString("utf8");
+    expect(worktreeStatus).toContain("feature.txt");
     const repoStatus = Bun.spawnSync(["git", "status", "--porcelain"], { cwd: fixture.repo, stdout: "pipe" }).stdout.toString("utf8");
-    expect(repoStatus).toContain("feature.txt");
+    expect(repoStatus).toBe("");
+    expect(git(["rev-parse", "HEAD"], fixture.repo)).toBe(repoHeadBefore);
+    expect(existsSync(join(fixture.repo, ".git", "MERGE_HEAD"))).toBe(false);
 
     // Exactly one integrator-routed follow-up, carrying the repo, the
     // worktree branch, and the real conflict output.
@@ -402,19 +407,19 @@ test("a fresh merge conflict on approve auto-spawns exactly one integrator-route
     expect(followUp.body).toContain("CONFLICT");
     expect(followUp.body).toContain("feature.txt");
     // Grants the follow-up's own write-tier run (a fresh worktree of
-    // its own, a different absolute path from fixture.repo) access to
-    // fixture.repo directly — without this, claude's own sandbox denies
+    // its own, a different absolute path) access to the conflicted
+    // worktree directly — without this, claude's own sandbox denies
     // the out-of-worktree access the body above instructs it to use.
-    expect(followUp.extraAllowedDirs).toEqual([fixture.repo]);
+    expect(followUp.extraAllowedDirs).toEqual([worktreePath]);
     // extraAllowedDirs alone only grants file-system access (--add-dir);
     // it does not make acceptEdits' own Bash gating allow the git
     // commands the body above instructs — extraAllowedTools is the
     // separate grant for that (see TaskCard.extraAllowedTools).
     expect(followUp.extraAllowedTools).toEqual([
-      `Bash(git -C ${fixture.repo} status:*)`,
-      `Bash(git -C ${fixture.repo} diff:*)`,
-      `Bash(git -C ${fixture.repo} add:*)`,
-      `Bash(git -C ${fixture.repo} commit:*)`,
+      `Bash(git -C ${worktreePath} status:*)`,
+      `Bash(git -C ${worktreePath} diff:*)`,
+      `Bash(git -C ${worktreePath} add:*)`,
+      `Bash(git -C ${worktreePath} commit:*)`,
     ]);
 
     // Routed to "integrator" for real, through the orchestrator's own
@@ -428,14 +433,14 @@ test("a fresh merge conflict on approve auto-spawns exactly one integrator-route
 
     // The integrator's own real dispatch (the 2nd write-tier call this
     // fixture makes — the implementer's own call is the 1st) actually
-    // carried --add-dir <fixture.repo>, not just that the task field was
-    // set — proves the wiring reaches all the way to the spawned
-    // command, through a real sweep(), not just through WriteExecutor's
-    // own isolated unit tests.
+    // carried --add-dir <the conflicted worktree>, not just that the
+    // task field was set — proves the wiring reaches all the way to the
+    // spawned command, through a real sweep(), not just through
+    // WriteExecutor's own isolated unit tests.
     const integratorCmd = fixture.runner.writeCmds!()[1]!;
     const addDirIdx = integratorCmd.indexOf("--add-dir");
     expect(addDirIdx).toBeGreaterThan(-1);
-    expect(integratorCmd[addDirIdx + 1]).toBe(fixture.repo);
+    expect(integratorCmd[addDirIdx + 1]).toBe(worktreePath);
     // Same proof for --allowedTools: the git grants reach the real
     // spawned command, not just the task field.
     const allowedToolsIdx = integratorCmd.indexOf("--allowedTools");
@@ -443,10 +448,10 @@ test("a fresh merge conflict on approve auto-spawns exactly one integrator-route
     expect(integratorCmd.slice(allowedToolsIdx + 1, addDirIdx)).toEqual([
       "Bash(bun test:*)",
       "Bash(bun run typecheck:*)",
-      `Bash(git -C ${fixture.repo} status:*)`,
-      `Bash(git -C ${fixture.repo} diff:*)`,
-      `Bash(git -C ${fixture.repo} add:*)`,
-      `Bash(git -C ${fixture.repo} commit:*)`,
+      `Bash(git -C ${worktreePath} status:*)`,
+      `Bash(git -C ${worktreePath} diff:*)`,
+      `Bash(git -C ${worktreePath} add:*)`,
+      `Bash(git -C ${worktreePath} commit:*)`,
     ]);
   } finally {
     await cleanup(fixture);

@@ -18,7 +18,9 @@ import { setHarnessEnabled, setHarnessModel } from "../core/harness-manifest.ts"
 import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import { validateNotBefore } from "../core/not-before.ts";
-import { mergeTaskWorktree, removeTaskWorktree } from "./worktree.ts";
+import { mergeTaskWorktree, removeTaskWorktree, type MergeContext } from "./worktree.ts";
+import { afterMergeAttempt, MAX_PUSHBACKS } from "../core/orchestrator.ts";
+import { Registry } from "../core/registry.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import { ScheduleValidationError, type ScheduleInput, type SchedulePatch, type ScheduleStore } from "./schedules.ts";
 import { ScheduleNotFoundError, ScheduleOverlapError, type ScheduleRunner } from "../core/schedule-runner.ts";
@@ -68,9 +70,22 @@ export function notBeforeRefusal(task: Pick<TaskCard, "status" | "routedTo" | "a
 
 // ---------- tasks ----------
 
-/** `POST /tasks/:id/merge`: commits and merges the worktree into
- *  task.repo, removes it, and moves the card to done. */
-export async function mergeTask(board: Board, id: string, runner: CommandRunner): Promise<Outcome<{ merged: true; message: string; task: TaskCard }>> {
+/** `POST /tasks/:id/merge`: runs the merge path (mergeTaskWorktree:
+ *  gate in the worktree, fast-forward into task.repo, recorded sha),
+ *  and moves the card to done once it lands. Every miss is a 409 whose
+ *  error says what happened:
+ *  - gate failed: the card goes back as a pushback attempt (or
+ *    escalates at the cap), same as a reviewer's changes_requested;
+ *  - conflict: left in the worktree, one integrator card spawned;
+ *  - blocked by uncommitted local changes: lists the files; nothing
+ *    touched, no integrator (it isn't a conflict);
+ *  - HEAD moved twice while checking: merge again. */
+export async function mergeTask(
+  board: Board,
+  id: string,
+  runner: CommandRunner | MergeContext,
+  registry?: Registry,
+): Promise<Outcome<{ merged: true; message: string; task: TaskCard; mergedSha?: string }>> {
   const task = await board.get(id);
   if (!task) return no(404, "not found");
   const result = await board.getResult(id);
@@ -79,10 +94,25 @@ export async function mergeTask(board: Board, id: string, runner: CommandRunner)
   // A worktree only ever exists for a write-tier run, which requires
   // `repo` at creation time (see POST /tasks) — never reachable for a
   // repo-less readonly task.
-  const merge = await mergeTaskWorktree(task.repo!, result!.worktree!, task, runner);
-  if (!merge.ok) return no(409, merge.message);
+  const worktree = result!.worktree!;
+  const merge = await mergeTaskWorktree(task.repo!, worktree, task, runner, (sha) => board.recordMerge(task.id, sha));
+  if (!merge.ok) {
+    const next = await afterMergeAttempt(board, registry ?? Registry.from([]), task, worktree, merge);
+    // The gate's full output tail goes to the new attempt's body, not to
+    // the button: the error names the command and where to look.
+    const failed = merge.gate.runs[merge.gate.runs.length - 1];
+    const gateLine = failed
+      ? `Merge gate failed: \`${failed.argv.join(" ")}\` ${failed.timedOut ? "timed out" : `exited ${failed.exitCode}`}. Nothing landed.`
+      : merge.message;
+    if (next === "pushback") {
+      const attempt = (await board.get(task.id))?.supersededBy;
+      return no(409, `${gateLine} Sent back for re-attempt ${(task.pushbackCount ?? 0) + 1} of ${MAX_PUSHBACKS}${attempt ? ` (card ${attempt})` : ""}, with the output.`);
+    }
+    if (next === "escalated") return no(409, `${gateLine} Escalated: the pushback limit is reached.`);
+    return no(409, merge.message);
+  }
   const moved = await board.move(task.id, "done");
-  return ok({ merged: true as const, message: merge.message, task: moved });
+  return ok({ merged: true as const, message: merge.message, task: moved, ...(merge.mergedSha ? { mergedSha: merge.mergedSha } : {}) });
 }
 
 /** `POST /tasks/:id/discard`: removes the worktree and its branch

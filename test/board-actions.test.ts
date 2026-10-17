@@ -67,15 +67,13 @@ describe("predicates", () => {
 });
 
 describe("task actions", () => {
-  test("mergeTask: 404, 409 without a worktree, else merges and moves to done", async () => {
+  // The merge itself (gate, ff landing, every refusal, done + mergedSha)
+  // runs against real git in test/merge-path.test.ts.
+  test("mergeTask: 404, 409 without a worktree", async () => {
     const board = new SqliteBoard();
     expect(await mergeTask(board, "nope", gitRunner)).toEqual({ ok: false, status: 404, error: "not found" });
     const bare = await reviewCard(board, false);
     expect(await mergeTask(board, bare.id, gitRunner)).toEqual({ ok: false, status: 409, error: "task has no worktree to merge" });
-    const t = await reviewCard(board);
-    const out = await mergeTask(board, t.id, gitRunner);
-    expect(out.ok && out.value.task.status).toBe("done");
-    expect(runs.some((c) => c[0] === "git" && c.includes("merge"))).toBe(true);
   });
 
   test("discardTask: removes the worktree and moves to failed", async () => {

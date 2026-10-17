@@ -15,7 +15,9 @@ import { Registry } from "../core/registry.ts";
 import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, carriedCardSettings, grantAndRetry, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
-import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts } from "../core/crash-recovery.ts";
+import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts, reconcileLandedMerges } from "../core/crash-recovery.ts";
+import type { MergeContext } from "../services/worktree.ts";
+import { validateMergeGate } from "../services/merge-gate.ts";
 import { PipelineNotFoundError, PipelineRepoRequiredError, resumePipelineStep, runPipelineNow, type PipelineRunDeps } from "../core/pipeline-runner.ts";
 import { ScheduleRunner, type ScheduleRunnerOptions } from "../core/schedule-runner.ts";
 import { SqliteScheduleStore, type ScheduleStore } from "../services/schedules.ts";
@@ -217,6 +219,9 @@ export interface CreateAppOptions {
    *  re-validation check. Overridable so tests never spawn a real `git`
    *  subprocess for the failure-path cases (bad URL, auth failure). */
   commandRunner?: CommandRunner;
+  /** Overrides for the merge path's context (a fake gate runner, a test
+   *  seam); merged over the real one createApp builds. */
+  mergeContext?: Partial<MergeContext>;
   /** Injectable Anthropic client factory for `GET /projects/:id/eli5`
    *  (src/services/project-eli5.ts) — same convention as ApiExecutor's
    *  own `clientFactory` option (src/executors/anthropic-api.ts):
@@ -431,6 +436,17 @@ export function createApp(
   const appDist = opts.appDist ?? DEFAULT_APP_DIST;
   const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
   const commandRunner = opts.commandRunner ?? runViaBun;
+  // The merge path's context (docs/SDD-worktree-isolation.md §7): the
+  // one every merge goes through, the Merge button, Ask's
+  // merge and the orchestrator's auto-merge alike. The gate is the
+  // project's (Project.mergeGate), looked up per merge so an edit takes
+  // effect without a restart.
+  const mergeContext: MergeContext = {
+    runner: runViaBun,
+    gateFor: (repo) => projects.mergeGateFor(repo),
+    ...(telemetry ? { telemetry } : {}),
+    ...opts.mergeContext,
+  };
   const feed = createFeedSource({
     board: board as Board,
     pipelines,
@@ -465,6 +481,8 @@ export function createApp(
       // The board's Run now: same orchestrator, same in-flight guard.
       runNow: (taskId) => orchestrator.runNow(taskId, manualExecutors),
       gitRunner: runViaBun,
+      merge: mergeContext,
+      registry,
       harness: harnessControl,
       mcp: mcpControl,
       pipelines,
@@ -533,6 +551,7 @@ export function createApp(
     telemetry,
     {
       executeWriteTier,
+      merge: mergeContext,
       harnesses,
       maxConcurrentTasks: opts.maxConcurrentTasks,
       spendCeilingUsd: opts.spendCeilingUsd,
@@ -561,13 +580,22 @@ export function createApp(
     });
     console.log(`crash recovery: reset ${orphanedCount} orphaned running task(s) back to inbox`);
 
+    // A card whose worktree landed (TaskResult.mergedSha in HEAD) but
+    // that a crash left short of done. Before the verdict pass, so that
+    // pass never re-drives a merge for a card this already settled.
+    const landedCount = await reconcileLandedMerges(board as Board, commandRunner).catch((e) => {
+      console.error(`crash recovery: landed-merge reconciliation failed: ${(e as Error).message}`);
+      return 0;
+    });
+    console.log(`crash recovery: moved ${landedCount} already-landed card(s) to done`);
+
     // Sequenced strictly after the above, not raced against it — a
     // "running" implementer that's also somehow its own reviewer's
     // parent (impossible today, but this ordering costs nothing and
     // avoids ever having to reason about the two passes interleaving).
     // See docs/SDD-crash-recovery.md's interrupted-review-verdict
     // section and reconcileInterruptedReviewVerdicts's own doc comment.
-    const recoveredCount = await reconcileInterruptedReviewVerdicts(board as Board, registry, commandRunner).catch((e) => {
+    const recoveredCount = await reconcileInterruptedReviewVerdicts(board as Board, registry, { ...mergeContext, runner: commandRunner }).catch((e) => {
       console.error(`crash recovery: review-verdict reconciliation failed: ${(e as Error).message}`);
       return 0;
     });
@@ -1261,6 +1289,20 @@ export function createApp(
           const updated = await projects.setEli5(project.id, generated.eli5);
           return json({ eli5: updated.eli5, eli5UpdatedAt: updated.eli5UpdatedAt, cached: false });
         }
+
+        // The project's merge gate (Project.mergeGate, src/services/
+        // merge-gate.ts): `{ mergeGate: [["bun","run","test"]],
+        // mergeGateTimeoutMs?: 600000 }`; `mergeGate: []` or null clears
+        // it. Read per merge, so it applies to the next one.
+        if (parts.length === 3 && parts[2] === "merge-gate" && req.method === "POST") {
+          const project = (await projects.list()).find((p) => p.id === parts[1]);
+          if (!project) return notFound();
+          const body = (await req.json().catch(() => ({}))) as { mergeGate?: unknown; mergeGateTimeoutMs?: unknown };
+          if (body.mergeGate === null) return json(await projects.setMergeGate(project.id, null, null));
+          const check = validateMergeGate(body.mergeGate, body.mergeGateTimeoutMs);
+          if (!check.ok) return json({ error: check.error }, 400);
+          return json(await projects.setMergeGate(project.id, check.gate.commands, check.gate.timeoutMs ?? null));
+        }
       }
 
       if (parts[0] === "tasks") {
@@ -1321,7 +1363,7 @@ export function createApp(
           // meaning any caller of this endpoint (including a fixture
           // server) writes memory-curator results into the real project's
           // memory/lessons.md regardless of opts.memoryPath.
-          await finishResult(board as Board, registry, { ...body, taskId: parts[1]! }, telemetry, runViaBun, opts.memoryPath ?? DEFAULT_MEMORY_PATH);
+          await finishResult(board as Board, registry, { ...body, taskId: parts[1]! }, telemetry, mergeContext, opts.memoryPath ?? DEFAULT_MEMORY_PATH);
           return new Response(null, { status: 204 });
         }
 
@@ -1436,7 +1478,7 @@ export function createApp(
         // mergeTask and discardTask (src/services/board-actions.ts) are
         // the bodies of these two; Ask's merge_task/discard_task call them.
         if (parts.length === 3 && parts[2] === "merge" && req.method === "POST") {
-          return outcome(await mergeTask(board as Board, parts[1]!, runViaBun));
+          return outcome(await mergeTask(board as Board, parts[1]!, mergeContext, registry));
         }
 
         // The board UI's "Discard" action for a worktree-run task —

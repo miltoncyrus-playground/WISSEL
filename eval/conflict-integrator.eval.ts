@@ -24,13 +24,19 @@
  * only real, paid `claude` call this eval ever makes is the one under
  * test: the integrator's own conflict-resolution attempt.
  *
- * Pass bar: after the real integrator run, `repo`'s working tree must
- * have (a) no unresolved conflict markers, (b) no unmerged paths in
- * `git status`, (c) both the implementer's line and the HEAD line
- * present in the file, and (d) a real merge commit — `git log` on the
- * current branch must contain a commit whose message matches the
- * original task's merge commit message. Any single miss fails the
- * eval; this is a correctness bar, not a partial-credit score.
+ * Since 2026-10-17 the conflict lives in the original card's worktree
+ * (the merge path merges the repo's HEAD into the branch there, never in
+ * `repo` itself), so that is where the integrator resolves it; the
+ * original card then lands through a second Merge (board-actions
+ * mergeTask), the way a human finishes it.
+ *
+ * Pass bar: `repo` untouched by the conflict (clean, same HEAD); after
+ * the real integrator run, the worktree has (a) no unresolved conflict
+ * markers, (b) no unmerged paths and no merge in progress, (c) both the
+ * implementer's line and the HEAD line present; and the second Merge
+ * lands it in `repo` with exactly one `Merge wissel/<id>: ...` commit.
+ * Any single miss fails the eval; this is a correctness bar, not a
+ * partial-credit score.
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -44,6 +50,7 @@ import { WriteExecutor } from "../src/executors/write.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import { runViaBun } from "../src/executors/claude-cli.ts";
 import { createTaskWorktree } from "../src/services/worktree.ts";
+import { mergeTask } from "../src/services/board-actions.ts";
 import type { AgentDef } from "../src/core/types.ts";
 
 /**
@@ -143,9 +150,14 @@ async function main(): Promise<void> {
     console.log("Driving the real tryAutoMerge path (real git, real conflict)...");
     // Exercises the actual production trigger, not a reimplementation:
     // finishResult -> tryAutoMerge -> mergeTaskWorktree hits a real
-    // conflict exit code from a real `git merge`, then
+    // conflict merging repo HEAD into the branch in the worktree, then
     // maybeSpawnConflictIntegrator spawns the real follow-up.
+    const headBefore = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repo, stdout: "pipe" }).stdout.toString("utf8").trim();
     await finishResult(board, registry, { taskId: task.id, agentId: autoMergeAgent.id, ok: true, summary: "added feature-a", worktree }, undefined, runViaBun);
+    const repoUntouched =
+      Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repo, stdout: "pipe" }).stdout.toString("utf8").trim() === headBefore &&
+      Bun.spawnSync(["git", "status", "--porcelain"], { cwd: repo, stdout: "pipe" }).stdout.toString("utf8").trim() === "" &&
+      !existsSync(join(repo, ".git", "MERGE_HEAD"));
 
     const original = await board.get(task.id);
     if (original?.status !== "review") {
@@ -166,22 +178,35 @@ async function main(): Promise<void> {
     const result = await board.getResult(followUp.id);
     console.log(`Integrator run finished: routedTo=${routed?.routedTo} status=${routed?.status} ok=${result?.ok} summary=${result?.summary?.slice(0, 300)}`);
 
-    const repoStatus = Bun.spawnSync(["git", "status", "--porcelain"], { cwd: repo, stdout: "pipe" }).stdout.toString("utf8");
+    // The resolution, where the integrator made it: the worktree.
+    const wtStatus = Bun.spawnSync(["git", "status", "--porcelain"], { cwd: worktree.path, stdout: "pipe" }).stdout.toString("utf8");
+    const wtMerging = Bun.spawnSync(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: worktree.path }).exitCode === 0;
+    const wtContent = existsSync(join(worktree.path, FILE)) ? readFileSync(join(worktree.path, FILE), "utf8") : "";
+
+    // Then the original card lands the way a human finishes it: Merge.
+    console.log("Merging the original card again (gate none, ff-only into repo)...");
+    const landed = await mergeTask(board, task.id, runViaBun, registry);
+    console.log(`  -> ${landed.ok ? landed.value.message : landed.error}`);
     const fileContent = existsSync(join(repo, FILE)) ? readFileSync(join(repo, FILE), "utf8") : "";
     const log = Bun.spawnSync(["git", "log", "--oneline", "-n", "10"], { cwd: repo, stdout: "pipe" }).stdout.toString("utf8");
+    const landings = Bun.spawnSync(["git", "log", "--merges", "--format=%s"], { cwd: repo, stdout: "pipe" })
+      .stdout.toString("utf8")
+      .split("\n")
+      .filter((s) => s.startsWith(`Merge ${worktree.branch}:`));
 
     const checks = [
+      { name: "repo untouched by the conflict (same HEAD, clean, no MERGE_HEAD)", pass: repoUntouched },
       { name: "routed to integrator", pass: routed?.routedTo === "integrator" },
-      { name: "no unmerged paths (clean git status)", pass: !/^(U|AA|DD)/m.test(repoStatus) && repoStatus.trim() === "" },
-      { name: "no leftover conflict markers in file", pass: !fileContent.includes("<<<<<<<") && !fileContent.includes(">>>>>>>") },
-      { name: "feature-a present", pass: fileContent.includes('"feature-a"') },
-      { name: "feature-b present", pass: fileContent.includes('"feature-b"') },
-      { name: "a real merge commit landed", pass: /Merge wissel\//.test(log) || /merge/i.test(log) },
+      { name: "worktree: no unmerged paths, merge finished", pass: !/^(U|AA|DD)/m.test(wtStatus) && wtStatus.trim() === "" && !wtMerging },
+      { name: "worktree: no leftover conflict markers", pass: !wtContent.includes("<<<<<<<") && !wtContent.includes(">>>>>>>") },
+      { name: "feature-a present after landing", pass: fileContent.includes('"feature-a"') },
+      { name: "feature-b present after landing", pass: fileContent.includes('"feature-b"') },
+      { name: "landed with exactly one Merge wissel/ commit", pass: landed.ok && landings.length === 1 },
     ];
 
     console.log("");
     console.log(`Final ${FILE}:\n---\n${fileContent}---`);
-    console.log(`\ngit status --porcelain:\n${repoStatus || "(clean)"}`);
+    console.log(`\nworktree git status --porcelain:\n${wtStatus || "(clean)"}`);
     console.log(`\ngit log:\n${log}`);
     console.log("");
     for (const c of checks) console.log(`${c.pass ? "PASS" : "FAIL"}  ${c.name}`);

@@ -12,6 +12,8 @@ import type { PipelineStore } from "./pipelines.ts";
 import type { ProjectStore } from "./projects.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { TaskCard } from "../core/types.ts";
+import type { Registry } from "../core/registry.ts";
+import type { MergeContext } from "./worktree.ts";
 import { grantAndRetry } from "../core/orchestrator.ts";
 import {
   abandonEscalation,
@@ -48,6 +50,11 @@ export interface ControlDeps {
   runNow(taskId: string): Promise<void>;
   /** For merge and discard's git (runViaBun in the server). */
   gitRunner: CommandRunner;
+  /** The merge path's context (gate, telemetry) and the registry a
+   *  conflict's integrator routes through: the same ones the board's
+   *  Merge button uses. Without them, merge runs with no gate. */
+  merge?: MergeContext;
+  registry?: Registry;
   harness: HarnessControlDeps;
   mcp: McpControlDeps;
   pipelines: PipelineStore;
@@ -224,7 +231,7 @@ async function runOnCard(action: CardControl, task: TaskCard, deps: ControlDeps)
       case "set_task_harness":
         return { error: outcomeError(await setTaskHarnessOverride(board, deps.harness.harnesses, task, action.harness ?? null)) };
       case "merge_task":
-        return { error: outcomeError(await mergeTask(board, task.id, deps.gitRunner)) };
+        return { error: outcomeError(await mergeTask(board, task.id, deps.merge ?? deps.gitRunner, deps.registry)) };
       case "discard_task":
         return { error: outcomeError(await discardTask(board, task.id, deps.gitRunner)) };
       case "delete_task":
