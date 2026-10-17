@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { Registry } from "../src/core/registry.ts";
 import { WriteExecutor } from "../src/executors/write.ts";
 import { probeSandbox } from "../src/executors/sandbox.ts";
+import { evalHarness } from "../eval/eval-harness.ts";
 import { bashCalls, findCall, isPermissionRefusal, tinyBunRepo } from "../eval/sandbox-checks.ts";
 
 const status = await probeSandbox();
@@ -51,6 +52,7 @@ if (status.state !== "on") {
       const repo = await tinyBunRepo("live-check-sandbox");
       const home = await mkdtemp(join(tmpdir(), "wissel-live-check-sandbox-home-"));
       const lines: unknown[] = [];
+      const run = await evalHarness();
       try {
         const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repo }).stdout.toString().trim();
         const base = (await Registry.load()).get("implementer")!;
@@ -72,6 +74,7 @@ if (status.state !== "on") {
             status: "dispatched",
           },
           agent,
+          run.harness,
         );
         const calls = bashCalls(lines);
         console.log(JSON.stringify({ ok: result.ok, sandbox: result.sandbox, denials: result.denials, permissionDenials: result.permissionDenials, calls }, null, 2));
@@ -106,6 +109,7 @@ if (status.state !== "on") {
         expect(Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repo }).stdout.toString().trim()).toBe(head);
         expect(Bun.spawnSync(["git", "log", "--all", "--format=%s"], { cwd: repo }).stdout.toString()).not.toContain("sandbox-probe");
       } finally {
+        run.release();
         await rm(probe, { force: true });
         await rm(repo, { recursive: true, force: true });
         await rm(home, { recursive: true, force: true });

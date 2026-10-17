@@ -28,6 +28,7 @@ import { Registry } from "../src/core/registry.ts";
 import { WriteExecutor } from "../src/executors/write.ts";
 import { probeSandbox } from "../src/executors/sandbox.ts";
 import { tinyBunRepo } from "./sandbox-checks.ts";
+import { evalHarness } from "./eval-harness.ts";
 
 export const MAX_DENIALS_PER_RUN = 1;
 
@@ -55,10 +56,12 @@ async function main(): Promise<number> {
   for (const f of FIXTURES) {
     const repo = await tinyBunRepo(`eval-sandbox-${f.name}`);
     const home = await mkdtemp(join(tmpdir(), "wissel-eval-sandbox-home-"));
+    const run = await evalHarness();
     try {
       const result = await new WriteExecutor({ homeDir: home, sandbox: status }).run(
         { id: `eval-sandbox-${f.name}-${process.pid}`, title: f.title, body: f.body, labels: ["code"], repo, status: "dispatched" },
         agent,
+        run.harness,
       );
       const worktree = result.worktree?.path;
       const testsPass = worktree ? Bun.spawnSync(["bun", "test"], { cwd: worktree, stdout: "ignore", stderr: "ignore" }).exitCode === 0 : false;
@@ -69,6 +72,7 @@ async function main(): Promise<number> {
         JSON.stringify({ fixture: f.name, pass, ok: result.ok, testsPass, sandbox: result.sandbox, denials: result.denials, keys: result.permissionDenials ?? [], cost: result.actualCost }),
       );
     } finally {
+      run.release();
       await rm(repo, { recursive: true, force: true });
       await rm(home, { recursive: true, force: true });
     }
