@@ -36,7 +36,7 @@ import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
 import { Orchestrator, resolveLiveTip } from "../src/core/orchestrator.ts";
-import { HarnessPool } from "../src/core/harness-pool.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 import { WriteExecutor } from "../src/executors/write.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import { runViaBun } from "../src/executors/claude-cli.ts";
@@ -86,11 +86,11 @@ async function main(): Promise<void> {
   const board = new SqliteBoard();
   const registry = await Registry.load();
   const executors = [new WriteExecutor({ runner: runViaBun, homeDir }), new ReadOnlyExecutor({ runner: runViaBun })];
-  // The real harness pool, built the way the server builds it (autoload
-  // validates each harness, so a stale entry is dropped): model precedence is
-  // task.model ?? harness.model ?? manifest (resolveModel), so without a
-  // harness the eval ran the manifest model, not what production runs.
-  const harnesses = await HarnessPool.autoload();
+  // The server's harness pool, from the server's harnesses.yaml
+  // (eval/eval-harness.ts): model precedence is task.model ??
+  // harness.model ?? manifest (resolveModel), so without a harness the
+  // eval ran the manifest model, not what production runs.
+  const harnesses = await evalHarnessPool();
   const orchestrator = new Orchestrator(board, registry, new Router(registry), executors, undefined, { executeWriteTier: true, merge, harnesses });
 
   try {

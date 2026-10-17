@@ -38,7 +38,8 @@ import { SqlitePipelineStore } from "../src/services/pipelines.ts";
 import { SqlitePendingActionStore } from "../src/services/pending-actions.ts";
 import { SqliteProjectStore } from "../src/services/projects.ts";
 import { Registry } from "../src/core/registry.ts";
-import { HarnessPool } from "../src/core/harness-pool.ts";
+import type { HarnessPool } from "../src/core/harness-pool.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 import { DEFAULT_SCHEDULE_TIMEZONE, nextRuns, validateSchedule } from "../src/core/schedule-time.ts";
 import { utcOffset, wallClock } from "../src/services/concierge-context.ts";
 import { selectCases } from "./concierge.eval.ts";
@@ -322,7 +323,7 @@ if (import.meta.main) {
   }
   const spotCheck = argv.includes("--case");
 
-  const harnesses = await HarnessPool.autoload(process.env.WISSEL_HARNESSES_PATH ?? "harnesses.yaml");
+  const harnesses = await evalHarnessPool(null);
   if (!harnesses.all().some((h) => h.id === "claude" && h.enabled)) {
     console.error("SKIP: the `claude` harness is missing or disabled; the concierge only runs on it. Nothing was spent.");
     process.exit(2);

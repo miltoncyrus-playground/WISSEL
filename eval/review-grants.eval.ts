@@ -30,7 +30,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { HarnessPool } from "../src/core/harness-pool.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 import { finishResult } from "../src/core/orchestrator.ts";
 import { Registry } from "../src/core/registry.ts";
 import type { Harness, TaskCard, TaskResult } from "../src/core/types.ts";
@@ -133,7 +133,7 @@ async function runCase(c: GrantCase, registry: Registry, harness: Harness, scrat
 }
 
 if (import.meta.main) {
-  const pool = await HarnessPool.autoload(process.env.WISSEL_HARNESSES_PATH ?? "harnesses.yaml");
+  const pool = await evalHarnessPool(null);
   const harness = pool.acquire("claude-cli", undefined, ["claude"]);
   if (!harness) {
     console.error("SKIP: the private `claude` harness is missing or disabled. Nothing was spent.");

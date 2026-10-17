@@ -31,8 +31,9 @@
  * runs only those cases as a spot check (exit 0 only if all correct,
  * never claims PASS, writes spot-check.json).
  *
- * Uses the same harnesses file as the server (WISSEL_HARNESSES_PATH or
- * ./harnesses.yaml) for the concierge's own account: it only runs on the
+ * Uses the server's harness pool (evalHarnessPool, eval/eval-harness.ts:
+ * WISSEL_HARNESSES_PATH or the main checkout's harnesses.yaml) for the
+ * concierge's own account: it only runs on the
  * private `claude` harness, and a disabled one stops the eval before any
  * spend.
  */
@@ -46,6 +47,7 @@ import { SqlitePipelineStore } from "../src/services/pipelines.ts";
 import { SqlitePendingActionStore } from "../src/services/pending-actions.ts";
 import { Registry } from "../src/core/registry.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import { isCardControl, type ControlAction } from "../src/services/concierge-actions.ts";
 import type { Executor, TaskCard } from "../src/core/types.ts";
@@ -730,7 +732,7 @@ if (import.meta.main) {
   const controlSelected = suites.includes("control") ? controlCases.filter((c) => names.has(c.name)) : [];
   const spotCheck = argv.includes("--case");
 
-  const harnesses = await HarnessPool.autoload(process.env.WISSEL_HARNESSES_PATH ?? "harnesses.yaml");
+  const harnesses = await evalHarnessPool(null);
   if (!harnesses.all().some((h) => h.id === "claude" && h.enabled)) {
     console.error("SKIP: the `claude` harness is missing or disabled; the concierge only runs on it. Nothing was spent.");
     process.exit(2);

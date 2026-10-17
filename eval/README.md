@@ -4,6 +4,28 @@ Not run by `bun test` (the gate lane — deterministic, free, <2s per house
 rule). These make real `claude` calls, cost real money, and take real
 wall-clock time. Run explicitly before ship, and nightly.
 
+**Evals run under the server's harness pool.** Model precedence is
+`task.model ?? harness.model ?? manifest` (`src/core/model-resolution.ts`),
+so an executor, Orchestrator, pipeline context or app built with no
+harness runs the manifest model (claude-fable-5-1), not what production
+runs (the `claude` harness, pinned to claude-opus-5-5), and fails at $0
+with 429 `credits_required` on the private account. Use
+`eval/eval-harness.ts`: `evalHarnessPool()` for an Orchestrator
+(`harnesses`), a `PipelineRunnerContext` (`harnesses`) or `createApp`
+(`harnesses`), and `evalHarness(tool, agent.harnesses)` for a direct
+`executor.run(task, agent, run.harness)` (then `run.release()`). Both
+read the server's file (`WISSEL_HARNESSES_PATH`, else the main
+checkout's `harnesses.yaml`, so a run from a card's worktree still sees
+Manage harnesses decisions that aren't committed yet) through
+`HarnessPool.autoload`, which validates each entry like the server.
+Never `HarnessPool.load()`: it skips validation and picks the stale
+`claude-personal` entry, which fails "Not logged in". With no enabled
+claude-cli harness both throw before spending (a pool with none would
+hold every card and hang the eval); an eval that checks for its own
+harness and exits 2 calls `evalHarnessPool(null)`.
+`test/eval-harness-wiring.test.ts` fails any eval or live check that
+breaks this, outside its documented allowlist.
+
 | Eval | Command | What it proves |
 |---|---|---|
 | `eval/readonly.eval.ts` | `bun run eval:readonly` | ReadOnlyExecutor's plan-mode enforcement actually holds against a subprocess that tries to write. |

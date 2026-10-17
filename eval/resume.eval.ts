@@ -23,7 +23,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HarnessPool } from "../src/core/harness-pool.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 import type { AgentDef, TaskCard, TaskResult } from "../src/core/types.ts";
 import { runClaude, runViaBun } from "../src/executors/claude-cli.ts";
 
@@ -69,7 +69,7 @@ export function judge(fresh: TaskResult, resumed: TaskResult, fallback: TaskResu
 }
 
 if (import.meta.main) {
-  const pool = await HarnessPool.autoload(process.env.WISSEL_HARNESSES_PATH ?? "harnesses.yaml");
+  const pool = await evalHarnessPool(null);
   const harness = pool.acquire("claude-cli", undefined, ["claude"]);
   if (!harness) {
     console.error("SKIP: the private `claude` harness is missing or disabled. Nothing was spent.");

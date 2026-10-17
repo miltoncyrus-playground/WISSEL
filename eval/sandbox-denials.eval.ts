@@ -56,7 +56,7 @@ async function main(): Promise<number> {
   for (const f of FIXTURES) {
     const repo = await tinyBunRepo(`eval-sandbox-${f.name}`);
     const home = await mkdtemp(join(tmpdir(), "wissel-eval-sandbox-home-"));
-    const run = await evalHarness();
+    const run = await evalHarness("claude-cli", agent.harnesses);
     try {
       const result = await new WriteExecutor({ homeDir: home, sandbox: status }).run(
         { id: `eval-sandbox-${f.name}-${process.pid}`, title: f.title, body: f.body, labels: ["code"], repo, status: "dispatched" },

@@ -52,6 +52,7 @@ import { runViaBun } from "../src/executors/claude-cli.ts";
 import { createTaskWorktree } from "../src/services/worktree.ts";
 import { mergeTask } from "../src/services/board-actions.ts";
 import type { AgentDef } from "../src/core/types.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 
 /**
  * A synthetic stand-in for whatever agent "implemented" the original
@@ -115,7 +116,9 @@ async function main(): Promise<void> {
   const registry = Registry.from([...(await Registry.load()).all(), autoMergeAgent]);
   const router = new Router(registry);
   const executors = [new WriteExecutor({ runner: runViaBun, homeDir }), new ReadOnlyExecutor({ runner: runViaBun })];
-  const orchestrator = new Orchestrator(board, registry, router, executors, undefined, { executeWriteTier: true });
+  // The server's harness pool, so every card runs its model (eval/eval-harness.ts).
+  const harnesses = await evalHarnessPool();
+  const orchestrator = new Orchestrator(board, registry, router, executors, undefined, { executeWriteTier: true, harnesses });
 
   const repo = await realRepo();
   try {

@@ -25,7 +25,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HarnessPool } from "../src/core/harness-pool.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 import type { AgentDef, TaskCard, TaskResult } from "../src/core/types.ts";
 import { runClaude, runViaBun } from "../src/executors/claude-cli.ts";
 
@@ -86,7 +86,7 @@ export function judgeOff(off: Observed, sawControlLine: boolean): Step {
 }
 
 if (import.meta.main) {
-  const pool = await HarnessPool.autoload(process.env.WISSEL_HARNESSES_PATH ?? "harnesses.yaml");
+  const pool = await evalHarnessPool(null);
   const harnesses = pool.all().filter((h) => h.enabled && h.tool === "claude-cli");
   if (harnesses.length === 0) {
     console.error("SKIP: no enabled claude-cli harness. Nothing was spent.");

@@ -34,6 +34,7 @@ import { Registry } from "../src/core/registry.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import { finishResult } from "../src/core/orchestrator.ts";
 import type { TaskCard } from "../src/core/types.ts";
+import { evalHarness } from "./eval-harness.ts";
 
 interface Fixture {
   name: string;
@@ -67,6 +68,8 @@ async function main() {
   const registry = await Registry.load();
   const plannerAgent = registry.get("planner")!;
   const executor = new ReadOnlyExecutor();
+  // The server's harness, so the planner runs its model (eval/eval-harness.ts).
+  const run = await evalHarness("claude-cli", plannerAgent.harnesses);
 
   const outcomes: FixtureOutcome[] = [];
 
@@ -77,7 +80,7 @@ async function main() {
       const plannerTask = await board.create({ title: fixture.title, body: fixture.body, labels: ["planning"], repo: dir });
       const runTask: TaskCard = { ...plannerTask };
 
-      const result = await executor.run(runTask, plannerAgent);
+      const result = await executor.run(runTask, plannerAgent, run.harness);
       const cost = result.actualCost ?? 0;
 
       if (!result.ok) {
@@ -114,6 +117,7 @@ async function main() {
       await rm(dir, { recursive: true, force: true });
     }
   }
+  run.release();
 
   console.log("");
   for (const o of outcomes) {

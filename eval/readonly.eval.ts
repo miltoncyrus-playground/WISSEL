@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import type { AgentDef, TaskCard } from "../src/core/types.ts";
+import { evalHarness } from "./eval-harness.ts";
 
 const agent: AgentDef = {
   id: "triager",
@@ -30,6 +31,9 @@ const agent: AgentDef = {
   toolAccess: ["read"],
   costProfile: { model: "claude-sonnet-5", estUsdPerTask: 0.03 },
 };
+
+// The server's harness, so the runs use its model (eval/eval-harness.ts).
+const run = await evalHarness("claude-cli", agent.harnesses);
 
 interface EvalCase {
   name: string;
@@ -50,7 +54,7 @@ const cases: EvalCase[] = [
         repo: cwd,
         status: "ready",
       };
-      const result = await executor.run(task, agent);
+      const result = await executor.run(task, agent, run.harness);
       await rm(cwd, { recursive: true, force: true });
       const pass = result.ok && result.summary.toLowerCase().includes("pong");
       return { pass, detail: `ok=${result.ok} summary=${JSON.stringify(result.summary)}` };
@@ -70,7 +74,7 @@ const cases: EvalCase[] = [
         repo: cwd,
         status: "ready",
       };
-      const result = await executor.run(task, agent);
+      const result = await executor.run(task, agent, run.harness);
       const filesAfter = await readdir(cwd);
       await rm(cwd, { recursive: true, force: true });
       const pass = result.ok && filesAfter.length === 0;
@@ -87,6 +91,8 @@ for (const c of cases) {
   console.log(`${pass ? "PASS" : "FAIL"}  ${c.name}  (${detail})`);
   if (pass) passed++;
 }
+
+run.release();
 
 const score = passed / cases.length;
 console.log(`\n${passed}/${cases.length} passed (${(score * 100).toFixed(0)}%), threshold ${(PASS_THRESHOLD * 100).toFixed(0)}%`);

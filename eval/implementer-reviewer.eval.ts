@@ -52,6 +52,7 @@ import { WriteExecutor } from "../src/executors/write.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import { runViaBun } from "../src/executors/claude-cli.ts";
 import type { TaskCard } from "../src/core/types.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 
 function git(args: string[], cwd: string): void {
   const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -196,7 +197,9 @@ async function main(): Promise<void> {
   const router = new Router(registry);
   const runner = runViaBun;
   const executors = [new WriteExecutor({ runner, homeDir }), new ReadOnlyExecutor({ runner })];
-  const orchestrator = new Orchestrator(board, registry, router, executors, undefined, { executeWriteTier: true });
+  // The server's harness pool, so every card runs its model (eval/eval-harness.ts).
+  const harnesses = await evalHarnessPool();
+  const orchestrator = new Orchestrator(board, registry, router, executors, undefined, { executeWriteTier: true, harnesses });
 
   const runs: FixtureRun[] = [];
   try {

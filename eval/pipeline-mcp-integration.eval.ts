@@ -115,6 +115,7 @@ import {
   buildMcpIntegrationPipelineGraph,
 } from "../src/core/mcp-integration-pipeline.ts";
 import type { McpServer, TaskCard } from "../src/core/types.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 
 function git(args: string[], cwd: string): void {
   const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -173,7 +174,8 @@ async function main(): Promise<void> {
   const runner = runViaBun;
   const mcpServers = echoServerPool();
   const executors = [new WriteExecutor({ runner, homeDir, mcpServers }), new ReadOnlyExecutor({ runner, mcpServers })];
-  const ctx: PipelineRunnerContext = { executors, pipelines };
+  // The server's harness pool, so every step runs its model (eval/eval-harness.ts).
+  const ctx: PipelineRunnerContext = { executors, pipelines, harnesses: await evalHarnessPool() };
   const pipelineDef = await pipelines.create({
     name: MCP_INTEGRATION_PIPELINE_NAME,
     description: MCP_INTEGRATION_PIPELINE_DESCRIPTION,
