@@ -57,6 +57,7 @@ import {
 } from "../src/core/full-lifecycle-pipeline.ts";
 import { REVIEW_HANDOFF_PUSHBACK_LIMIT } from "../src/core/review-handoff-pipeline.ts";
 import type { TaskCard } from "../src/core/types.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 
 function git(args: string[], cwd: string): void {
   const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -128,7 +129,8 @@ async function main(): Promise<void> {
   const registry = await Registry.load();
   const runner = runViaBun;
   const executors = [new WriteExecutor({ runner, homeDir }), new ReadOnlyExecutor({ runner }), new ApiExecutor()];
-  const ctx: PipelineRunnerContext = { executors, pipelines };
+  // The server's harness pool, so every step runs its model (eval/eval-harness.ts).
+  const ctx: PipelineRunnerContext = { executors, pipelines, harnesses: await evalHarnessPool() };
   const pipelineDef = await pipelines.create({
     name: FULL_LIFECYCLE_PIPELINE_NAME,
     description: FULL_LIFECYCLE_PIPELINE_DESCRIPTION,

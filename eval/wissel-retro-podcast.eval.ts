@@ -39,6 +39,7 @@ import { TelemetryLog } from "../src/services/telemetry.ts";
 import { seedWisselRetroPipeline } from "../scripts/seed-ai-news-pipeline.ts";
 import { checkAudio, checkRetroRun, countWords, type AiNewsCheck } from "./ai-news-checks.ts";
 import { costFromTelemetry, snapshotBoard } from "../scripts/check-news-run.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 
 const RUNS = 3;
 const NEEDED = 2;
@@ -75,6 +76,8 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
         }),
       ],
       pipelines,
+      // The server's harness pool, so every step runs its model (eval/eval-harness.ts).
+      harnesses: await evalHarnessPool(),
       telemetry: new TelemetryLog(telemetryPath),
     };
 

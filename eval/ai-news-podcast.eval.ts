@@ -41,6 +41,7 @@ import { seedAiNewsPipeline, seedWorldNewsPipeline } from "../scripts/seed-ai-ne
 import { costFromTelemetry } from "../scripts/check-news-run.ts";
 import { TtsExecutor, audioFilePath } from "../src/executors/tts.ts";
 import { checkAiNewsRun, checkAudio, checkWorldNewsRun, countWords, type AiNewsCheck } from "./ai-news-checks.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 
 /** `--world` runs the "World news podcast" pipeline (SDD §3.8) with its
  *  own checks (2-day window, every region covered) instead of the AI one:
@@ -66,6 +67,8 @@ async function runOnce(n: number, outDir: string): Promise<boolean> {
         new TtsExecutor({ baseUrl: process.env.WISSEL_TTS_URL, voice: process.env.WISSEL_TTS_VOICE, audioDir }),
       ],
       pipelines,
+      // The server's harness pool, so every step runs its model (eval/eval-harness.ts).
+      harnesses: await evalHarnessPool(),
       telemetry: new TelemetryLog(telemetryPath),
     };
 

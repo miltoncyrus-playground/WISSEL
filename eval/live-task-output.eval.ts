@@ -47,6 +47,7 @@ import { Registry } from "../src/core/registry.ts";
 import { getTaskOutput } from "../src/services/task-output.ts";
 import { renderTaskOutputRows } from "../src/api/public/render-task-output.js";
 import type { TaskCard } from "../src/core/types.ts";
+import { evalHarnessPool } from "./eval-harness.ts";
 
 const PORT = 8791;
 const PASS_THRESHOLD = 1.0;
@@ -64,7 +65,8 @@ async function main(): Promise<Check[]> {
 
   const board = new SqliteBoard();
   const registry = await Registry.load();
-  const app = createApp(board, registry, undefined, { taskOutputDir });
+  // The server's harness pool, so the manual run uses its model (eval/eval-harness.ts).
+  const app = createApp(board, registry, undefined, { taskOutputDir, harnesses: await evalHarnessPool() });
   const server = Bun.serve({ port: PORT, fetch: app });
 
   try {

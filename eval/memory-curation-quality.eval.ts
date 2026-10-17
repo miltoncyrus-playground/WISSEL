@@ -50,6 +50,7 @@ import { join } from "node:path";
 import { Registry } from "../src/core/registry.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import type { TaskCard } from "../src/core/types.ts";
+import { evalHarness } from "./eval-harness.ts";
 
 interface SessionEntry {
   title: string;
@@ -192,7 +193,9 @@ async function main() {
     };
 
     const executor = new ReadOnlyExecutor({ memoryPath });
-    const result = await executor.run(task, curator);
+    // The server's harness, so the curator runs its model (eval/eval-harness.ts).
+    const run = await evalHarness("claude-cli", curator.harnesses);
+    const result = await executor.run(task, curator, run.harness).finally(run.release);
 
     if (!result.ok) {
       console.log(`FAIL  run did not complete ok (ok=false): ${result.summary.slice(0, 300)}`);
