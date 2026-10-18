@@ -5,8 +5,12 @@ news podcast" pipelines at 06:00 Europe/Madrid (same as Amsterdam)
 every day, through `scripts/run-pipelines.ts` against the live server.
 
 These units are being replaced by wissel's own schedules
-(`docs/SDD-schedules.md` §7). Until the switch-over below is finished
-the timer is what runs the podcasts.
+(`docs/SDD-schedules.md` §7).
+
+**Status 2026-10-18:** steps 1-3 below are done. The timer is disabled
+(its `~/.config/systemd/user` link is gone) and both wissel schedules
+are enabled, first fire 2026-10-19 06:00 Europe/Madrid. The podcasts
+now run only from wissel. Step 4 waits on the acceptance check.
 
 ## Switch-over to wissel schedules
 
