@@ -1,11 +1,23 @@
-import { existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { TaskCard } from "../core/types.ts";
 import type { TelemetryEvent } from "./telemetry.ts";
 import { withRepoLock } from "./repo-lock.ts";
-import { runMergeGate, type GateCommandRunner, type GateReport, type MergeGateConfig, type MergeGateResolver } from "./merge-gate.ts";
+import {
+  DEFAULT_GATE_TIMEOUT_MS,
+  GATE_OUTPUT_TAIL_LINES,
+  runGateCommand,
+  runMergeGate,
+  shellWords,
+  tailLines,
+  type GateCommandRunner,
+  type GateReport,
+  type GateRun,
+  type MergeGateConfig,
+  type MergeGateResolver,
+} from "./merge-gate.ts";
 
 export interface TaskWorktree {
   path: string;
@@ -16,7 +28,33 @@ export interface WorktreeOptions {
   runner: CommandRunner;
   /** Injectable so tests never touch the real filesystem or $HOME. */
   homeDir?: string;
+  /** The project's setup commands (Project.worktreeSetup), run once in
+   *  a new worktree. Undefined or empty means none: today's behaviour. */
+  setup?: WorktreeSetupConfig;
+  /** Runs each setup command; defaults to the merge gate's spawner. */
+  setupRunner?: GateCommandRunner;
 }
+
+/** A project's worktree setup: argv arrays run in order in a new
+ *  worktree, first failure stops. `timeoutMs` applies to each command;
+ *  default DEFAULT_GATE_TIMEOUT_MS (10 min), the merge gate's. */
+export interface WorktreeSetupConfig {
+  commands: string[][];
+  timeoutMs?: number;
+}
+
+/** Looks up the setup for a repo path (the project registered there);
+ *  undefined means none configured. */
+export type WorktreeSetupResolver = (repo: string) => Promise<WorktreeSetupConfig | undefined>;
+
+/** Written to the worktree's own git dir (`.git/worktrees/<name>/`,
+ *  never part of the checkout, so never tracked or merged) once setup
+ *  has passed. */
+export const SETUP_DONE_MARKER = ".wissel-setup-done";
+/** Written there right before setup starts and removed once it passes:
+ *  a reused worktree that still has it never finished setup (it failed,
+ *  or the server died mid-run), so setup runs again. */
+export const SETUP_PENDING_MARKER = ".wissel-setup-pending";
 
 function worktreesRoot(homeDir?: string): string {
   return join(homeDir ?? homedir(), ".wissel", "worktrees");
@@ -63,6 +101,11 @@ function branchName(worktreeKey: string): string {
  * worktree, when there is one — see `linkNodeModules` below for why:
  * without it, every implementer/reviewer/integrator pass on the same
  * subtask paid for its own `bun install` before it could run anything.
+ *
+ * Then runs the project's `opts.setup` commands (e.g. `uv sync
+ * --frozen`) in a new worktree, once: see runWorktreeSetup. A setup
+ * failure returns `{ error }` with the failing command's output tail,
+ * the same as a failed `git worktree add`.
  */
 export async function createTaskWorktree(repo: string, worktreeKey: string, opts: WorktreeOptions): Promise<TaskWorktree | { error: string }> {
   const root = worktreesRoot(opts.homeDir);
@@ -73,7 +116,11 @@ export async function createTaskWorktree(repo: string, worktreeKey: string, opts
   const existing = await opts.runner(["git", "worktree", "list", "--porcelain"], { cwd: repo });
   if (existing.exitCode === 0 && existing.stdout.includes(`worktree ${path}`)) {
     linkNodeModules(repo, path);
-    return { path, branch };
+    // Reviewer, fixer and integrator passes land here and pay nothing.
+    // Only a worktree whose own setup never finished runs it again.
+    if (!setupPending(path)) return { path, branch };
+    const setup = await runWorktreeSetup(path, opts.setup, opts.setupRunner);
+    return "error" in setup ? setup : { path, branch };
   }
 
   const result = await opts.runner(["git", "worktree", "add", "-b", branch, path, "HEAD"], { cwd: repo });
@@ -81,7 +128,102 @@ export async function createTaskWorktree(repo: string, worktreeKey: string, opts
     return { error: `failed to create worktree for ${worktreeKey}: ${(result.stderr || result.stdout).trim()}` };
   }
   linkNodeModules(repo, path);
-  return { path, branch };
+  const setup = await runWorktreeSetup(path, opts.setup, opts.setupRunner);
+  return "error" in setup ? setup : { path, branch };
+}
+
+/** What a setup call did, for the caller's log line. */
+export interface WorktreeSetupReport {
+  status: "none" | "skipped" | "passed";
+  runs: GateRun[];
+  durationMs: number;
+}
+
+/**
+ * Runs a project's worktree setup in `worktreePath`: each argv in
+ * order, first failure stops, each command under `setup.timeoutMs`
+ * (default 10 minutes, the merge gate's). Runs in wissel's own process
+ * (runGateCommand: no agent sandbox, WISSEL_* env stripped), so the
+ * commands come only from the trusted Project.worktreeSetup setting,
+ * never from card content.
+ *
+ * Once per worktree: skipped when SETUP_DONE_MARKER is in the
+ * worktree's git dir. SETUP_PENDING_MARKER is written before the first
+ * command and swapped for the done marker on success, so a failed or
+ * interrupted setup is retried by the next run on that worktree
+ * (createTaskWorktree's reuse path checks it). When the git dir can't
+ * be found (no `.git` in the worktree) setup still runs, unmarked.
+ *
+ * A failure is `{ error }` naming the command, its exit code or
+ * timeout, and the last GATE_OUTPUT_TAIL_LINES lines of its output: the
+ * card fails before the agent starts, with that text as its summary.
+ */
+export async function runWorktreeSetup(
+  worktreePath: string,
+  setup: WorktreeSetupConfig | undefined,
+  runner: GateCommandRunner = runGateCommand,
+): Promise<WorktreeSetupReport | { error: string }> {
+  if (!setup || setup.commands.length === 0) return { status: "none", runs: [], durationMs: 0 };
+  const gitDir = worktreeGitDir(worktreePath);
+  if (gitDir && existsSync(join(gitDir, SETUP_DONE_MARKER))) return { status: "skipped", runs: [], durationMs: 0 };
+  if (gitDir) writeMarker(join(gitDir, SETUP_PENDING_MARKER));
+
+  const timeoutMs = setup.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
+  const runs: GateRun[] = [];
+  const start = performance.now();
+  for (const argv of setup.commands) {
+    const t0 = performance.now();
+    const res = await runner(argv, { cwd: worktreePath, timeoutMs });
+    runs.push({ argv, exitCode: res.exitCode, durationMs: Math.round(performance.now() - t0), timedOut: res.timedOut });
+    if (res.timedOut || res.exitCode !== 0) {
+      const why = res.timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `exited ${res.exitCode}`;
+      console.warn(`worktree setup: ${worktreePath}: \`${shellWords(argv)}\` ${why}`);
+      return {
+        error:
+          `Worktree setup failed: \`${shellWords(argv)}\` ${why} in ${worktreePath}. ` +
+          `The agent did not run. Fix the project's worktreeSetup or the repo, then retry the card.\n\n` +
+          `Last ${GATE_OUTPUT_TAIL_LINES} lines of its output:\n\`\`\`\n${tailLines(res.output)}\n\`\`\``,
+      };
+    }
+  }
+  if (gitDir) {
+    writeMarker(join(gitDir, SETUP_DONE_MARKER));
+    rmSync(join(gitDir, SETUP_PENDING_MARKER), { force: true });
+  }
+  const durationMs = Math.round(performance.now() - start);
+  console.log(`worktree setup: ${worktreePath}: ${runs.length} command(s) passed in ${(durationMs / 1000).toFixed(1)}s`);
+  return { status: "passed", runs, durationMs };
+}
+
+/** True when a previous setup in this worktree started but never passed. */
+function setupPending(worktreePath: string): boolean {
+  const gitDir = worktreeGitDir(worktreePath);
+  return !!gitDir && existsSync(join(gitDir, SETUP_PENDING_MARKER)) && !existsSync(join(gitDir, SETUP_DONE_MARKER));
+}
+
+/**
+ * The worktree's own git dir, read from its `.git` file (`gitdir:
+ * <path>`, which `git worktree add` writes), so no subprocess is
+ * needed. A `.git` directory (a full checkout) is returned as is.
+ * Undefined when there's neither.
+ */
+export function worktreeGitDir(worktreePath: string): string | undefined {
+  const dotGit = join(worktreePath, ".git");
+  try {
+    if (statSync(dotGit).isDirectory()) return dotGit;
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGit, "utf8"));
+    return m ? resolve(worktreePath, m[1]!) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeMarker(path: string): void {
+  try {
+    writeFileSync(path, `${new Date().toISOString()}\n`);
+  } catch {
+    // Unwritable git dir: setup still runs, it just isn't remembered.
+  }
 }
 
 /**
