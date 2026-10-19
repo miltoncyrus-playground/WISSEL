@@ -18,6 +18,7 @@ import { Orchestrator, carriedCardSettings, grantAndRetry, finishResult, resolve
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts, reconcileLandedMerges } from "../core/crash-recovery.ts";
 import type { MergeContext } from "../services/worktree.ts";
 import { validateMergeGate } from "../services/merge-gate.ts";
+import { validateProjectSettings } from "../services/project-settings.ts";
 import { PipelineNotFoundError, PipelineRepoRequiredError, resumePipelineStep, runPipelineNow, type PipelineRunDeps } from "../core/pipeline-runner.ts";
 import { ScheduleRunner, type ScheduleRunnerOptions } from "../core/schedule-runner.ts";
 import { SqliteScheduleStore, type ScheduleStore } from "../services/schedules.ts";
@@ -1322,6 +1323,19 @@ export function createApp(
           const check = validateMergeGate(body.mergeGate, body.mergeGateTimeoutMs);
           if (!check.ok) return json({ error: check.error }, 400);
           return json(await projects.setMergeGate(project.id, check.gate.commands, check.gate.timeoutMs ?? null));
+        }
+
+        // Per-project execution settings (src/services/project-settings.ts):
+        // a partial body of sandboxAllowedDomains, verification,
+        // worktreeSetup, protectedPaths; an absent key is kept, null
+        // clears it. Stored only; nothing reads them yet.
+        if (parts.length === 3 && parts[2] === "settings" && req.method === "POST") {
+          const project = (await projects.list()).find((p) => p.id === parts[1]);
+          if (!project) return notFound();
+          const body = (await req.json().catch(() => undefined)) as unknown;
+          const check = validateProjectSettings(body);
+          if (!check.ok) return json({ error: check.error }, 400);
+          return json(await projects.setSettings(project.id, check.patch));
         }
       }
 

@@ -369,6 +369,20 @@ export interface Project {
   mergeGate?: string[][];
   /** Per-command gate timeout; default DEFAULT_GATE_TIMEOUT_MS (10 min). */
   mergeGateTimeoutMs?: number;
+  // Per-project execution settings (src/services/project-settings.ts,
+  // docs/SDD-project-settings.md), set with POST /projects/:id/settings.
+  // Undefined means today's Bun/TypeScript defaults; stored only, not
+  // yet read by any run.
+  /** Hosts added to SANDBOX_ALLOWED_DOMAINS for this repo's sandboxed
+   *  commands: bare hostnames, `*.` prefix allowed, at most 20. */
+  sandboxAllowedDomains?: string[];
+  /** The checks an implementer must run (argv arrays), and the
+   *  command-scoped Bash grants that let it (each passes grantError). */
+  verification?: { commands: string[][]; allowedTools: string[] };
+  /** Argv commands run once in a new worktree (e.g. `uv sync`). */
+  worktreeSetup?: string[][];
+  /** Repo-relative globs agents may not modify. */
+  protectedPaths?: string[];
 }
 
 export interface TaskCard {

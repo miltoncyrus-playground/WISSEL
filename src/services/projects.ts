@@ -6,6 +6,7 @@ import { basename, join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { Project } from "../core/types.ts";
 import { WISSEL_MERGE_GATE, type MergeGateConfig } from "./merge-gate.ts";
+import { PROJECT_SETTING_KEYS, type ProjectSettingsPatch } from "./project-settings.ts";
 
 /**
  * Registers a project/repo two ways: an existing local folder, or a
@@ -33,6 +34,10 @@ export interface ProjectStore {
   /** The gate for the project registered at `repo`, if it has one: the
    *  merge path's MergeGateResolver. */
   mergeGateFor(repo: string): Promise<MergeGateConfig | undefined>;
+  /** Applies a validated settings patch (validateProjectSettings in
+   *  src/services/project-settings.ts): absent keys are kept, null
+   *  clears. Throws on an unknown id. */
+  setSettings(id: string, patch: ProjectSettingsPatch): Promise<Project>;
 }
 
 interface ProjectRow {
@@ -46,7 +51,15 @@ interface ProjectRow {
   eli5UpdatedAt: string | null;
   mergeGate?: string | null;
   mergeGateTimeoutMs?: number | null;
+  sandboxAllowedDomains?: string | null;
+  verification?: string | null;
+  worktreeSetup?: string | null;
+  protectedPaths?: string | null;
 }
+
+/** The settings columns: each a nullable JSON TEXT column named after
+ *  its Project field. Fixed names, so safe to interpolate into DDL. */
+const SETTING_COLUMNS = PROJECT_SETTING_KEYS;
 
 function rowToProject(row: ProjectRow): Project {
   return {
@@ -60,6 +73,10 @@ function rowToProject(row: ProjectRow): Project {
     eli5UpdatedAt: row.eli5UpdatedAt ?? undefined,
     ...(row.mergeGate ? { mergeGate: JSON.parse(row.mergeGate) as string[][] } : {}),
     ...(row.mergeGateTimeoutMs ? { mergeGateTimeoutMs: row.mergeGateTimeoutMs } : {}),
+    ...(row.sandboxAllowedDomains ? { sandboxAllowedDomains: JSON.parse(row.sandboxAllowedDomains) as string[] } : {}),
+    ...(row.verification ? { verification: JSON.parse(row.verification) as NonNullable<Project["verification"]> } : {}),
+    ...(row.worktreeSetup ? { worktreeSetup: JSON.parse(row.worktreeSetup) as string[][] } : {}),
+    ...(row.protectedPaths ? { protectedPaths: JSON.parse(row.protectedPaths) as string[] } : {}),
   };
 }
 
@@ -164,6 +181,30 @@ export class SqliteProjectStore implements ProjectStore {
         if (seed) this.db.run("UPDATE projects SET mergeGate = ? WHERE id = ?", [JSON.stringify(seed), row.id]);
       }
     }
+    // Per-project execution settings (src/services/project-settings.ts).
+    // Nullable, no seed: an existing project reads back with none set.
+    for (const column of SETTING_COLUMNS) {
+      try {
+        this.db.run(`ALTER TABLE projects ADD COLUMN ${column} TEXT;`);
+      } catch {
+        // already has the column
+      }
+    }
+  }
+
+  async setSettings(id: string, patch: ProjectSettingsPatch): Promise<Project> {
+    const row = this.db.query("SELECT * FROM projects WHERE id = ?").get(id) as ProjectRow | null;
+    if (!row) throw new Error(`project not found: ${id}`);
+    const updated: ProjectRow = { ...row };
+    const columns = SETTING_COLUMNS.filter((c) => patch[c] !== undefined);
+    for (const c of columns) {
+      const value = patch[c];
+      updated[c] = value === null || value === undefined ? null : JSON.stringify(value);
+    }
+    if (columns.length > 0) {
+      this.db.run(`UPDATE projects SET ${columns.map((c) => `${c} = ?`).join(", ")} WHERE id = ?`, [...columns.map((c) => updated[c] ?? null), id]);
+    }
+    return rowToProject(updated);
   }
 
   async setMergeGate(id: string, mergeGate: string[][] | null, timeoutMs?: number | null): Promise<Project> {

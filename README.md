@@ -179,6 +179,15 @@ Recovery handles it on the next start, but the restart is avoidable.
    minutes per command). wissel's own checkout is seeded with
    typecheck + test. No gate means the merge lands as before, recorded
    as `gate: "none"` on the `merge` telemetry event.
+   A project can also carry execution settings for a non-Bun repo:
+   `POST /projects/:id/settings` with any of `sandboxAllowedDomains`
+   (extra sandbox hosts, e.g. `["pypi.org","*.pythonhosted.org"]`, at
+   most 20), `verification` (`{"commands": [["uv","run","pytest"]],
+   "allowedTools": ["Bash(uv run pytest:*)"]}`), `worktreeSetup`
+   (`[["uv","sync"]]`) and `protectedPaths` (repo-relative globs, no
+   `..`). An absent key is kept, `null` clears it, bad input is a 400
+   naming the field. `GET /projects` returns them. They are stored
+   only for now; see `docs/SDD-project-settings.md`.
    An implementer may run only `bun test` and `bun run typecheck`
    unless the card grants more: `extraAllowedTools` on `POST /tasks`, or
    `POST /tasks/:id/allowed-tools` (command-scoped Bash only, e.g.
