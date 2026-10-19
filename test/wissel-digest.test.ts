@@ -6,12 +6,27 @@ import { join } from "node:path";
 import type { TaskCard } from "../src/core/types.ts";
 import { runViaBun, type CommandRunner } from "../src/executors/claude-cli.ts";
 import { SqliteBoard } from "../src/services/board.ts";
-import { DIGEST_LIMITS, assertReadOnlyGit, buildWisselDigest, githubRepoUrl, parsePeriod, type DigestInputs } from "../src/services/wissel-digest.ts";
+import { DIGEST_LIMITS, assertReadOnlyGit, buildWisselDigest, githubRepoUrl, lineageRoot, parsePeriod, type DigestInputs } from "../src/services/wissel-digest.ts";
 
 // docs/SDD-wissel-retro-podcast.md §3.1, gate tests from §4: an in-memory
 // board, temp git repos and a telemetry fixture.
 
 const DAY = 24 * 60 * 60 * 1000;
+
+describe("lineageRoot", () => {
+  test("every conflict integrator card of a task folds under it, however many conflicts it had: the title is the same for each", async () => {
+    const board = new SqliteBoard();
+    const original = await board.create({ title: "Add the thing", body: "", labels: ["code"], repo: "/repo" });
+    const first = await board.create({ title: `Resolve merge conflict: ${original.id}`, body: `conflict-head: ${"a".repeat(40)}\n\nfirst`, labels: ["conflict"], repo: "/repo" });
+    const second = await board.create({ title: `Resolve merge conflict: ${original.id}`, body: `conflict-head: ${"b".repeat(40)}\n\nsecond`, labels: ["conflict"], repo: "/repo" });
+    const unrelated = await board.create({ title: `Resolve merge conflict: ${original.id}`, body: "", labels: ["code"], repo: "/repo" });
+    const all = await board.list();
+    const rootOf = lineageRoot(new Map(all.map((c) => [c.id, c])));
+    expect(rootOf(first)).toBe(original.id);
+    expect(rootOf(second)).toBe(original.id);
+    expect(rootOf(unrelated)).toBe(unrelated.id);
+  });
+});
 
 describe("parsePeriod", () => {
   const now = new Date("2026-10-10T12:00:00Z");

@@ -57,6 +57,9 @@ export type TelemetryEvent =
       /** The conflict integrator card whose resolution this attempt
        *  committed itself (worktree.ts finishResolvedMerge). */
       resolvedConflictBy?: string;
+      /** The repo HEAD the merge conflicted against (worktree.ts
+       *  MergeResult.conflictHead). Set only on `conflict`. */
+      conflictHead?: string;
       /** Why it didn't land; capped at 500 characters. */
       message?: string;
     }

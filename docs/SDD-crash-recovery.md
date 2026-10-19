@@ -184,7 +184,10 @@ scheduler isn't running, same "empty, not broken" contract `GET
 **`src/core/orchestrator.ts`**: `tryAutoMerge`'s existing `if
 (!merge.ok)` conflict path gains a new call — `maybeSpawnConflictIntegrator`
 (mirrors `maybeSpawnIntegrator`'s own shape: idempotent, checks no
-follow-up already exists for this task before creating one), creating an
+follow-up already exists for this conflict before creating one; since
+2026-10-19 keyed on the repo HEAD the merge conflicted against, so a
+later conflict against a moved HEAD gets its own card, at most 3 per
+card, see docs/SDD-worktree-isolation.md §7.9), creating an
 `integrator`-routed task whose body names the conflicting repo, the
 worktree branch, and the specific instruction from §3.3. The existing
 fallback (task lands on `review` for a human) is **unchanged** — this is

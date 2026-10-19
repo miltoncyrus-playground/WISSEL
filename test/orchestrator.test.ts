@@ -7,8 +7,10 @@ import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
 import {
   Orchestrator,
+  conflictIntegratorHead,
   conflictIntegratorState,
   finishResult,
+  MAX_CONFLICT_INTEGRATORS,
   maybeSpawnConflictIntegrator,
   resolveHandoffAllowlist,
   resolveLiveTip,
@@ -752,6 +754,95 @@ test("maybeSpawnConflictIntegrator grants the follow-up extraAllowedTools for gi
   expect(followUps).toHaveLength(1);
   expect(followUps[0]!.extraAllowedTools).toEqual(["Bash(git -C /wt/t status:*)", "Bash(git -C /wt/t diff:*)"]);
   expect(followUps[0]!.body).toContain("You cannot commit, and must not try");
+});
+
+const sha = (c: string) => c.repeat(40);
+
+test("maybeSpawnConflictIntegrator keys on the conflicting HEAD: the same HEAD never twice, a new HEAD a new card, at most three, then capped", async () => {
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  const task = await board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: "/repo" });
+  const worktree = { path: "/wt/t", branch: "wissel/t" };
+  const spawn = (head: string | undefined, msg = `CONFLICT (content): Merge conflict in ${head?.slice(0, 1) ?? "x"}.txt`) =>
+    maybeSpawnConflictIntegrator(board, registry, task, worktree, msg, head);
+  const cards = async () => (await board.list()).filter((t) => t.labels.includes("conflict"));
+
+  const first = await spawn(sha("a"));
+  expect(first).toMatchObject({ action: "spawned", attempt: 1 });
+  // Same HEAD again, in every status the card can be in: no duplicate.
+  const firstId = first.action === "spawned" ? first.cardId : "";
+  for (const status of ["inbox", "running", "review", "done"] as const) {
+    if (status !== "inbox") await board.move(firstId, status);
+    expect(await spawn(sha("a"))).toEqual({ action: "exists", cardId: firstId });
+  }
+  // An unknown HEAD can't be told apart from the existing conflict: blocked.
+  expect(await spawn(undefined)).toEqual({ action: "exists", cardId: firstId });
+  expect(await cards()).toHaveLength(1);
+  const firstCard = (await board.get(firstId))!;
+  expect(conflictIntegratorHead(firstCard)).toBe(sha("a"));
+  expect(firstCard.body.split("\n")[0]).toBe(`conflict-head: ${sha("a")}`);
+
+  // A new HEAD: a new card, body naming only the new conflict.
+  const second = await spawn(sha("b"));
+  expect(second).toMatchObject({ action: "spawned", attempt: 2 });
+  const secondCard = (await board.get(second.action === "spawned" ? second.cardId : ""))!;
+  expect(secondCard.title).toBe(firstCard.title);
+  expect(secondCard.labels).toEqual(["conflict"]);
+  expect(conflictIntegratorHead(secondCard)).toBe(sha("b"));
+  expect(secondCard.body).toContain("CONFLICT (content): Merge conflict in b.txt");
+  expect(secondCard.body).not.toContain("a.txt");
+  expect(secondCard.body).not.toContain(sha("a").slice(0, 12));
+  expect(secondCard.body).toContain(`conflict 2 of at most ${MAX_CONFLICT_INTEGRATORS}`);
+  expect(secondCard.body).toContain(`(${firstId})`);
+  expect(await board.get(firstId)).toEqual(firstCard);
+  await checkConflictFollowUp(secondCard, registry);
+
+  // Third: the cap. A fourth HEAD is refused as capped; the same HEADs still answer exists.
+  const third = await spawn(sha("c"));
+  expect(third).toMatchObject({ action: "spawned", attempt: 3 });
+  const thirdId = third.action === "spawned" ? third.cardId : "";
+  expect(MAX_CONFLICT_INTEGRATORS).toBe(3);
+  expect(await spawn(sha("d"))).toEqual({ action: "capped", cardIds: [firstId, secondCard.id, thirdId] });
+  expect(await spawn(sha("e"))).toEqual({ action: "capped", cardIds: [firstId, secondCard.id, thirdId] });
+  expect(await spawn(sha("b"))).toEqual({ action: "exists", cardId: secondCard.id });
+  expect(await cards()).toHaveLength(3);
+  expect((await cards()).map(conflictIntegratorHead)).toEqual([sha("a"), sha("b"), sha("c")]);
+});
+
+test("a conflict integrator card from before the HEAD was recorded blocks every HEAD, as it did then", async () => {
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  const task = await board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: "/repo" });
+  const legacy = await board.create({ title: `Resolve merge conflict: ${task.id}`, body: "Merging hit a conflict (no head line).", labels: ["conflict"], repo: "/repo" });
+  expect(conflictIntegratorHead(legacy)).toBeUndefined();
+
+  expect(await maybeSpawnConflictIntegrator(board, registry, task, { path: "/wt/t", branch: "wissel/t" }, "CONFLICT", sha("a"))).toEqual({ action: "exists", cardId: legacy.id });
+  expect(await conflictIntegratorState(board, task, sha("a"))).toEqual({ finished: false, reason: `the conflict integrator card ${legacy.id} is inbox, not finished (review or done)` });
+  await board.move(legacy.id, "done");
+  expect(await conflictIntegratorState(board, task, sha("b"))).toEqual({ finished: true, cardId: legacy.id });
+});
+
+test("conflictIntegratorState answers for one conflict: a finished card for another HEAD neither finishes nor blocks it", async () => {
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  const task = await board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: "/repo" });
+  const worktree = { path: "/wt/t", branch: "wissel/t" };
+  const a = await maybeSpawnConflictIntegrator(board, registry, task, worktree, "CONFLICT a", sha("a"));
+  const aId = a.action === "spawned" ? a.cardId : "";
+  await board.move(aId, "done");
+  const b = await maybeSpawnConflictIntegrator(board, registry, task, worktree, "CONFLICT b", sha("b"));
+  const bId = b.action === "spawned" ? b.cardId : "";
+
+  expect(await conflictIntegratorState(board, task, sha("a"))).toEqual({ finished: true, cardId: aId });
+  expect(await conflictIntegratorState(board, task, sha("b"))).toEqual({ finished: false, reason: `the conflict integrator card ${bId} is inbox, not finished (review or done)` });
+  expect(await conflictIntegratorState(board, task, sha("c"))).toEqual({
+    finished: false,
+    reason: `no conflict integrator card is for this conflict (HEAD ${"c".repeat(12)}); the earlier ones (${aId}, ${bId}) handled another HEAD`,
+  });
+  // Without a HEAD (a caller from before the key): any finished card counts, as before.
+  expect(await conflictIntegratorState(board, task)).toEqual({ finished: true, cardId: aId });
+  await board.move(bId, "review");
+  expect(await conflictIntegratorState(board, task, sha("b"))).toEqual({ finished: true, cardId: bId });
 });
 
 test("conflictIntegratorState: finished only on review or done, naming the card and its status otherwise", async () => {

@@ -11,7 +11,8 @@ import { runViaBun } from "../src/executors/claude-cli.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { mergeTask } from "../src/services/board-actions.ts";
 import { Registry } from "../src/core/registry.ts";
-import { finishResult, MAX_PUSHBACKS } from "../src/core/orchestrator.ts";
+import { conflictIntegratorHead, finishResult, MAX_CONFLICT_INTEGRATORS, MAX_PUSHBACKS } from "../src/core/orchestrator.ts";
+import { Router } from "../src/core/router.ts";
 import { reconcileLandedMerges } from "../src/core/crash-recovery.ts";
 import {
   createTaskWorktree,
@@ -400,7 +401,7 @@ test("markers left in a file: refused, naming the file and lines, nothing commit
   expect(out.ok).toBe(false);
   if (!out.ok) {
     expect(out.status).toBe(409);
-    expect(out.error).toContain(`${worktree.path} has an unfinished merge of ${repo}'s HEAD into ${worktree.branch}:`);
+    expect(out.error).toContain(`${worktree.path} has an unfinished merge of ${repo}'s HEAD (${headBefore.slice(0, 12)}) into ${worktree.branch}:`);
     expect(out.error).toContain("conflict markers are still in shared.txt:2,4,6");
   }
   expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
@@ -605,6 +606,200 @@ test("unresolvedFiles: markers in unmerged or changed files, binary only when un
   writeFileSync(join(dir, "logo.bin"), Buffer.from([0, 3]));
   expect(unresolvedFiles(dir, ["ok.txt", "pic.bin", "gone.txt"], ["sub/bad.txt", "logo.bin", "sub"])).toEqual(["pic.bin (binary, unmerged)", "sub/bad.txt:2"]);
   expect(unresolvedFiles(dir, [], ["ok.txt", "logo.bin"])).toEqual([]);
+});
+
+// ---------- 3c. another attempt when the repo moves again (§7.9) ----------
+
+const integratorsOf = async (taskId: string) => (await board.list()).filter((t) => t.title === `Resolve merge conflict: ${taskId}` && t.labels.includes("conflict"));
+
+/** What the integrator leaves: the file edited in the worktree, nothing
+ *  committed, its card finished. */
+async function integratorResolves(worktree: TaskWorktree, integrator: TaskCard, content: string): Promise<void> {
+  writeFileSync(join(worktree.path, "shared.txt"), content);
+  await board.move(integrator.id, "done");
+}
+
+/** Round `i` of main moving under the card: main rewrites line 2 (the
+ *  line every resolution so far also rewrote), so the next merge of
+ *  HEAD into the branch conflicts again on it. Returns the new HEAD. */
+const mainMovesAgain = (i: number) => commitOnMain("shared.txt", `line 1\nmain edit ${i}\nline 3\n`, `other card lands ${i}`);
+const resolvedWith = (i: number) => `line 1\nmain edit ${i} + branch edit\nline 3\n`;
+
+test("regression (card 42d2bbfb, 2026-10-19): the repo moves again after the first conflict is resolved; the second conflict gets its own integrator, keyed on the new HEAD, and the first card is untouched", async () => {
+  const registry = await Registry.load();
+  const c = ctx(PASS);
+  const { task, worktree, integrator: first } = await conflictedCard(c, Promise.resolve(registry));
+  const headA = git(["rev-parse", "HEAD"], repo);
+  expect(conflictIntegratorHead(first)).toBe(headA);
+  expect(first.body.startsWith(`conflict-head: ${headA}\n`)).toBe(true);
+  expect(first.body).toContain(`current HEAD (${headA.slice(0, 12)})`);
+  expect(first.body).not.toContain("conflict 1 of");
+  await integratorResolves(worktree, first, resolvedWith(1));
+  const firstAfter = (await board.get(first.id))!;
+  // Another card lands first: HEAD moves on, on the same line.
+  const headB = mainMovesAgain(2);
+
+  const out = await mergeTask(board, task.id, c, registry);
+
+  expect(out.ok).toBe(false);
+  if (!out.ok) expect(out.error).toContain(`conflict merging ${repo}'s HEAD (${headB.slice(0, 12)})`);
+  // The first resolution was committed (MERGE_HEAD is now the new one)
+  // and the new conflict sits in the worktree.
+  expect(git(["rev-parse", "MERGE_HEAD"], worktree.path)).toBe(headB);
+  expect(readFileSync(join(worktree.path, "shared.txt"), "utf8")).toContain("<<<<<<<");
+  expect(git(["rev-parse", "HEAD"], repo)).toBe(headB);
+
+  const integrators = await integratorsOf(task.id);
+  expect(integrators).toHaveLength(2);
+  const second = integrators.find((t) => t.id !== first.id)!;
+  expect(second.title).toBe(`Resolve merge conflict: ${task.id}`);
+  expect(second.labels).toEqual(["conflict"]);
+  expect(second.status).toBe("inbox");
+  expect(conflictIntegratorHead(second)).toBe(headB);
+  expect(second.body.startsWith(`conflict-head: ${headB}\n`)).toBe(true);
+  // Names the current conflict only: the new HEAD, this merge's output,
+  // the attempt number and the earlier card's id; never the old HEAD.
+  expect(second.body).toContain(`conflict 2 of at most ${MAX_CONFLICT_INTEGRATORS}`);
+  expect(second.body).toContain(`an earlier integrator card`);
+  expect(second.body).toContain(`(${first.id})`);
+  expect(second.body).toContain("Only the\nconflict described below is open");
+  expect(second.body).toContain("CONFLICT (content): Merge conflict in shared.txt");
+  expect(second.body).not.toContain(headA);
+  expect(second.body).not.toContain(headA.slice(0, 12));
+  expect(second.extraAllowedDirs).toEqual([worktree.path]);
+  expect(second.extraAllowedTools).toEqual([`Bash(git -C ${worktree.path} status:*)`, `Bash(git -C ${worktree.path} diff:*)`]);
+  // The first card is exactly as it was: not reopened, not rewritten.
+  expect(await board.get(first.id)).toEqual(firstAfter);
+  // The label routes the new card to the integrator, through the real
+  // Router (what `wissel why <id>` shows).
+  const decision = await new Router(registry).route(second);
+  expect(decision.selected).toBe("integrator");
+  expect(decision.confident).toBe(true);
+  // The trace: one event per attempt, each carrying the HEAD it conflicted
+  // against; the second also committed the first resolution.
+  const events = mergeEvents(c.events);
+  expect(events.map((e) => e.outcome)).toEqual(["conflict", "conflict"]);
+  expect(events[0]!.conflictHead).toBe(headA);
+  expect(events[1]!.conflictHead).toBe(headB);
+  expect(events[0]!.resolvedConflictBy).toBeUndefined();
+  expect(events[1]!.resolvedConflictBy).toBe(first.id);
+
+  // The second integrator resolves; Wissel commits and lands it.
+  await integratorResolves(worktree, second, resolvedWith(2));
+  const landed = await mergeTask(board, task.id, c, registry);
+  expect(landed.ok).toBe(true);
+  if (landed.ok) expect(landed.value.message).toContain(`finished the conflict merge resolved by card ${second.id}`);
+  expect(readFileSync(join(repo, "shared.txt"), "utf8")).toBe(resolvedWith(2));
+  expect((await board.get(task.id))!.status).toBe("done");
+  expect(await integratorsOf(task.id)).toHaveLength(2);
+});
+
+test("repeated Merge clicks on the same HEAD spawn nothing, whatever the integrator's status: one conflict, one card", async () => {
+  const registry = await Registry.load();
+  const c = ctx(PASS);
+  const { task, worktree, integrator } = await conflictedCard(c, Promise.resolve(registry));
+  const headA = git(["rev-parse", "HEAD"], repo);
+
+  for (const status of ["inbox", "running", "review"] as const) {
+    if (status !== "inbox") await board.move(integrator.id, status);
+    const out = await mergeTask(board, task.id, c, registry);
+    expect(out.ok).toBe(false);
+    expect(await integratorsOf(task.id)).toHaveLength(1);
+  }
+  // Finished with the markers still in: still the same conflict, still no second card.
+  await board.move(integrator.id, "done");
+  const out = await mergeTask(board, task.id, c, registry);
+  expect(out.ok).toBe(false);
+  if (!out.ok) expect(out.error).toContain("conflict markers are still in shared.txt");
+  expect(await integratorsOf(task.id)).toHaveLength(1);
+  expect((await board.get(task.id))!.status).not.toBe("escalated");
+  // Every attempt was against the one HEAD.
+  const events = mergeEvents(c.events);
+  expect(events).toHaveLength(5);
+  expect(events.every((e) => e.outcome === "conflict" && e.conflictHead === headA)).toBe(true);
+  // A fresh conflict's MergeResult carries the HEAD too.
+  expect((await mergeTaskWorktree(repo, worktree, task, c)).conflictHead).toBe(headA);
+});
+
+test("an integrator that finished an earlier conflict does not vouch for a later one: the refusal says no card is for this HEAD", async () => {
+  const c = ctx(PASS);
+  const { task, worktree, integrator: first } = await conflictedCard(c);
+  await integratorResolves(worktree, first, resolvedWith(1));
+  const headB = mainMovesAgain(2);
+  // No integrator agent registered for this attempt: the second conflict
+  // gets no card, as happened live before 2026-10-19.
+  expect((await mergeTask(board, task.id, c, Registry.from([]))).ok).toBe(false);
+  expect(await integratorsOf(task.id)).toHaveLength(1);
+  // A resolution appears in the worktree, with only the old card finished.
+  writeFileSync(join(worktree.path, "shared.txt"), resolvedWith(2));
+
+  const out = await mergeTask(board, task.id, c, Registry.from([]));
+
+  expect(out.ok).toBe(false);
+  if (!out.ok) {
+    expect(out.error).toContain(`no conflict integrator card is for this conflict (HEAD ${headB.slice(0, 12)}); the earlier one (${first.id}) handled another HEAD`);
+    expect(out.error).toContain("git add -A && git commit --no-edit");
+  }
+  expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
+  expect(git(["rev-parse", "HEAD"], repo)).toBe(headB);
+});
+
+test(`cap: ${MAX_CONFLICT_INTEGRATORS} conflicts get ${MAX_CONFLICT_INTEGRATORS} integrators; the next escalates the card to a human and spawns none; a manual resolve still lands`, async () => {
+  const registry = await Registry.load();
+  const c = ctx(PASS);
+  const { task, worktree, integrator: first } = await conflictedCard(c, Promise.resolve(registry));
+  const heads = [git(["rev-parse", "HEAD"], repo)];
+  let latest = first;
+  for (let i = 2; i <= MAX_CONFLICT_INTEGRATORS; i++) {
+    await integratorResolves(worktree, latest, resolvedWith(i - 1));
+    heads.push(mainMovesAgain(i));
+    expect((await mergeTask(board, task.id, c, registry)).ok).toBe(false);
+    const cards = await integratorsOf(task.id);
+    expect(cards).toHaveLength(i);
+    latest = cards[cards.length - 1]!;
+    expect(conflictIntegratorHead(latest)).toBe(heads[i - 1]!);
+    expect(latest.body).toContain(`conflict ${i} of at most ${MAX_CONFLICT_INTEGRATORS}`);
+  }
+  const cards = await integratorsOf(task.id);
+  expect(new Set(cards.map(conflictIntegratorHead))).toEqual(new Set(heads));
+
+  // One more: the fourth conflict.
+  await integratorResolves(worktree, latest, resolvedWith(MAX_CONFLICT_INTEGRATORS));
+  const headD = mainMovesAgain(MAX_CONFLICT_INTEGRATORS + 1);
+  const out = await mergeTask(board, task.id, c, registry);
+
+  expect(out.ok).toBe(false);
+  if (!out.ok) {
+    expect(out.status).toBe(409);
+    expect(out.error).toContain(`conflict merging ${repo}'s HEAD (${headD.slice(0, 12)})`);
+    expect(out.error).toContain(`Escalated: ${MAX_CONFLICT_INTEGRATORS} integrator cards have already been spawned for this card's conflicts`);
+  }
+  expect(await integratorsOf(task.id)).toHaveLength(MAX_CONFLICT_INTEGRATORS);
+  const escalated = (await board.get(task.id))!;
+  expect(escalated.status).toBe("escalated");
+  expect(escalated.escalationContext).toContain(`${MAX_CONFLICT_INTEGRATORS} conflict integrator cards (${cards.map((t) => t.id).join(", ")}) have already been spawned`);
+  expect(escalated.escalationContext).toContain(`A human must resolve this conflict in the worktree ${worktree.path}`);
+  expect(escalated.escalationContext).toContain("CONFLICT (content): Merge conflict in shared.txt");
+  expect(escalated.supersededBy).toBeUndefined();
+  expect(git(["rev-parse", "MERGE_HEAD"], worktree.path)).toBe(headD);
+  expect(git(["rev-parse", "HEAD"], repo)).toBe(headD);
+  // The earlier cards are as they were: three, all done, none reopened.
+  expect((await integratorsOf(task.id)).every((t) => t.status === "done")).toBe(true);
+  // Clicking Merge again on the same HEAD: no card, no change.
+  expect((await mergeTask(board, task.id, c, registry)).ok).toBe(false);
+  expect(await integratorsOf(task.id)).toHaveLength(MAX_CONFLICT_INTEGRATORS);
+  expect((await board.get(task.id))!.status).toBe("escalated");
+  const last = mergeEvents(c.events).at(-1)!;
+  expect(last).toMatchObject({ outcome: "conflict", conflictHead: headD });
+
+  // The human does what the context says.
+  writeFileSync(join(worktree.path, "shared.txt"), resolvedWith(MAX_CONFLICT_INTEGRATORS + 1));
+  git(["add", "-A"], worktree.path);
+  git(["commit", "-q", "--no-edit"], worktree.path);
+  const landed = await mergeTask(board, task.id, c, registry);
+  expect(landed.ok).toBe(true);
+  expect(readFileSync(join(repo, "shared.txt"), "utf8")).toBe(resolvedWith(MAX_CONFLICT_INTEGRATORS + 1));
+  expect((await board.get(task.id))!.status).toBe("done");
 });
 
 // ---------- 4/5. the user's own uncommitted edits ----------

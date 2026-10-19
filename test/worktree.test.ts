@@ -250,8 +250,9 @@ test("mergeTaskWorktree refuses a worktree with an unfinished merge whose file s
   try {
     writeFileSync(join(wt, "f.txt"), "a\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> abc\nz\n");
     const result = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, { runner: midMergeRunner(seen), conflictIntegrator: async () => ({ finished: true, cardId: "int-1" }) });
-    expect(result).toMatchObject({ ok: false, outcome: "conflict" });
-    expect(result.message).toContain(`${wt} has an unfinished merge of /repo's HEAD into wissel/t1: conflict markers are still in f.txt:2,4,6`);
+    // conflictHead is the worktree's MERGE_HEAD: the HEAD this conflict was against.
+    expect(result).toMatchObject({ ok: false, outcome: "conflict", conflictHead: "abc" });
+    expect(result.message).toContain(`${wt} has an unfinished merge of /repo's HEAD (abc) into wissel/t1: conflict markers are still in f.txt:2,4,6`);
     expect(seen).toEqual(["git rev-parse -q --verify MERGE_HEAD", "git ls-files -u -z", "git diff --name-only --no-renames -z HEAD"]);
   } finally {
     await rm(wt, { recursive: true, force: true });
@@ -263,11 +264,14 @@ test("mergeTaskWorktree refuses a resolved but unfinished merge when the integra
   try {
     writeFileSync(join(wt, "f.txt"), "a\nours\ntheirs\nz\n");
     const seenNotFinished: string[] = [];
+    const asked: [string, string][] = [];
     const notFinished = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, {
       runner: midMergeRunner(seenNotFinished),
-      conflictIntegrator: async () => ({ finished: false, reason: "the conflict integrator card int-1 is running, not finished (review or done)" }),
+      conflictIntegrator: async (t, head) => (asked.push([t.id, head]), { finished: false, reason: "the conflict integrator card int-1 is running, not finished (review or done)" }),
     });
-    expect(notFinished).toMatchObject({ ok: false, outcome: "conflict" });
+    // The board is asked about this conflict: the card and MERGE_HEAD.
+    expect(asked).toEqual([[task.id, "abc"]]);
+    expect(notFinished).toMatchObject({ ok: false, outcome: "conflict", conflictHead: "abc" });
     expect(notFinished.message).toContain("the conflict integrator card int-1 is running, not finished (review or done)");
     expect(notFinished.message).toContain("git add -A && git commit --no-edit");
     expect(seenNotFinished.some((c) => c.startsWith("git add") || c.startsWith("git commit"))).toBe(false);
