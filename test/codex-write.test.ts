@@ -299,3 +299,39 @@ test("injectMemory: true on the constructor folds the memoryPath's content into 
     await rm(memDir, { recursive: true, force: true });
   }
 });
+
+// --- per-project verification (docs/SDD-project-settings.md §7) --------
+// Codex has no --allowedTools, so only the prompt half applies here.
+
+test("settingsFor's verification renders the contract's tokens in the codex prompt; without it the bun defaults render", async () => {
+  const home = await fakeHome();
+  try {
+    const tokenAgent: AgentDef = { ...agent, verificationContract: "{{verification.run}}\n\nRun {{verification.commands}} as plain commands." };
+    const codexOk = { stdout: '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"shipped"}}', stderr: "", exitCode: 0 };
+    const asked: string[] = [];
+    const stdins: string[] = [];
+    const runner = async (cmd: string[], opts: { stdin?: string }) => {
+      if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+      stdins.push(opts.stdin ?? "");
+      return codexOk;
+    };
+    await new CodexWriteExecutor({
+      homeDir: home,
+      runner,
+      settingsFor: async (repo) => {
+        asked.push(repo);
+        return { verification: { commands: [["uv", "run", "pytest"]], allowedTools: ["Bash(uv run pytest:*)"] } };
+      },
+    }).run(task, tokenAgent);
+    await new CodexWriteExecutor({ homeDir: home, runner }).run(task, tokenAgent);
+
+    expect(asked).toEqual([task.repo!]);
+    expect(stdins[0]).toContain("  uv run pytest\n");
+    expect(stdins[0]).toContain("Run `uv run pytest` as plain commands.");
+    expect(stdins[0]).not.toContain("bun test");
+    expect(stdins[1]).toContain("  bun run typecheck\n  bun test test/\n");
+    expect(stdins[1]).toContain("Run `bun test` and\n`bun run typecheck` as plain commands.");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

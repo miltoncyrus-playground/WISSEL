@@ -1151,19 +1151,19 @@ agents:
     # verificationContract — see AgentDef.verificationContract and
     # WriteExecutor's matching --allowedTools grant
     # (src/executors/write.ts). Only takes effect together with that
-    # allowlist; the two are declared in separate files but must stay in
-    # sync (the allowlist is what makes running these two commands
+    # allowlist; the allowlist is what makes running the check commands
     # actually possible under acceptEdits, which otherwise gates Bash
-    # behind an approval prompt no headless run can answer).
+    # behind an approval prompt no headless run can answer. Both halves
+    # come from the same place: the project's `verification` setting
+    # (POST /projects/:id/settings, docs/SDD-project-settings.md §7).
+    # `{{verification.run}}` renders to "Before reporting done, run: ..."
+    # with the project's commands, and `{{verification.commands}}` to
+    # them as an inline list; a project with none set gets the Bun
+    # defaults, `bun run typecheck` and `bun test test/`, byte for byte
+    # as this contract read before the tokens (src/core/verification.ts,
+    # pinned in test/prompt.test.ts). Any other `{{...}}` fails the load.
     verificationContract: |
-      Before reporting done, run:
-        bun run typecheck
-        bun test test/
-      If either fails, fix it and re-run both — do not report done with
-      either one red. If a failure is pre-existing and clearly unrelated
-      to your change (confirm this by checking whether it also fails on
-      a clean checkout before your edits), say so explicitly in your
-      summary instead of silently leaving it broken.
+      {{verification.run}}
 
       Do not run `git add`, `git commit`, or `git push` — that is
       deliberately not available to you here, not a sandbox glitch to
@@ -1176,8 +1176,7 @@ agents:
       denial as a concern to flag or a blocker to work around.
 
       Tools: read and search with Read, Grep and Glob; change files with
-      Edit and Write, never sed -i or shell redirects. Run `bun test` and
-      `bun run typecheck` as plain commands: no pipes, no `time`, no
+      Edit and Write, never sed -i or shell redirects. Run {{verification.commands}} as plain commands: no pipes, no `time`, no
       redirects. Never run `bun -e` or `node -e`.
     # Declaring "reviewer" here (not implementer-specific — see the
     # comment on reviewer.outputContract above) is the whole trigger for
@@ -1198,11 +1197,12 @@ agents:
     trustLevel: high
     toolAccess: [read, write, bash]
     costProfile: { model: claude-fable-5-1, estUsdPerTask: 0.88 }
-    # Same tool steering as implementer's (docs/SDD-write-tier-sandbox.md).
+    # Same tool steering as implementer's (docs/SDD-write-tier-sandbox.md);
+    # {{verification.commands}} is the project's check commands, see the
+    # implementer's comment above.
     verificationContract: |
       Tools: read and search with Read, Grep and Glob; change files with
-      Edit and Write, never sed -i or shell redirects. Run `bun test` and
-      `bun run typecheck` as plain commands: no pipes, no `time`, no
+      Edit and Write, never sed -i or shell redirects. Run {{verification.commands}} as plain commands: no pipes, no `time`, no
       redirects. Never run `bun -e` or `node -e`.
 
   - id: integrator
@@ -1224,11 +1224,12 @@ agents:
     trustLevel: high
     toolAccess: [read, write, bash]
     costProfile: { model: claude-fable-5-1, estUsdPerTask: 0.63 }
-    # Same tool steering as implementer's (docs/SDD-write-tier-sandbox.md).
+    # Same tool steering as implementer's (docs/SDD-write-tier-sandbox.md);
+    # {{verification.commands}} is the project's check commands, see the
+    # implementer's comment above.
     verificationContract: |
       Tools: read and search with Read, Grep and Glob; change files with
-      Edit and Write, never sed -i or shell redirects. Run `bun test` and
-      `bun run typecheck` as plain commands: no pipes, no `time`, no
+      Edit and Write, never sed -i or shell redirects. Run {{verification.commands}} as plain commands: no pipes, no `time`, no
       redirects. Never run `bun -e` or `node -e`.
 
   # --- skills: narrower, more mechanical than a full agent. Same model
@@ -1304,9 +1305,10 @@ agents:
     trustLevel: medium
     toolAccess: [read, write, bash]
     costProfile: { model: claude-fable-5-1, estUsdPerTask: 0.25 }
-    # Same tool steering as implementer's (docs/SDD-write-tier-sandbox.md).
+    # Same tool steering as implementer's (docs/SDD-write-tier-sandbox.md);
+    # {{verification.commands}} is the project's check commands, see the
+    # implementer's comment above.
     verificationContract: |
       Tools: read and search with Read, Grep and Glob; change files with
-      Edit and Write, never sed -i or shell redirects. Run `bun test` and
-      `bun run typecheck` as plain commands: no pipes, no `time`, no
+      Edit and Write, never sed -i or shell redirects. Run {{verification.commands}} as plain commands: no pipes, no `time`, no
       redirects. Never run `bun -e` or `node -e`.

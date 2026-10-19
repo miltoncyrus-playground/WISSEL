@@ -4,7 +4,14 @@ import { resolveModel } from "../core/model-resolution.ts";
 import { runClaude, runViaBun, type CommandRunner } from "./claude-cli.ts";
 import { createTaskWorktree } from "../services/worktree.ts";
 import { readProjectAllowRules } from "../core/allowed-tools.ts";
+import { DEFAULT_VERIFICATION } from "../core/verification.ts";
+import type { ProjectSettings } from "../services/project-settings.ts";
 import { buildSandboxSettings, harnessConfigDirs, type SandboxStatus } from "./sandbox.ts";
+
+/** Looks up the execution settings of the project registered at `repo`
+ *  (ProjectStore.settingsFor, src/services/projects.ts). Undefined when
+ *  no project is registered there. */
+export type ProjectSettingsResolver = (repo: string) => Promise<ProjectSettings | undefined>;
 
 export interface WriteExecutorOptions {
   runner?: CommandRunner;
@@ -53,11 +60,22 @@ export interface WriteExecutorOptions {
    *  harness's CLAUDE_CONFIG_DIR / CODEX_HOME (harnessConfigDirs). The
    *  running harness's own is always added. */
   sandboxDenyRead?: string[];
+  /** The per-project execution settings (docs/SDD-project-settings.md),
+   *  looked up by `task.repo` at run time so an edit takes effect without
+   *  a restart. Wired to `projects.settingsFor` by src/api/server.ts.
+   *  Only `verification` is read here: its `allowedTools` replace
+   *  BASE_ALLOWED_TOOLS and its `commands` render the contract's tokens
+   *  (src/core/verification.ts). Undefined (tests, evals), or a repo with
+   *  no project or no `verification`, keeps the Bun defaults:
+   *  byte-identical argv and prompt. */
+  settingsFor?: ProjectSettingsResolver;
 }
 
-/** Always granted: the two commands every write-tier verificationContract
- *  runs. */
-export const BASE_ALLOWED_TOOLS = ["Bash(bun test:*)", "Bash(bun run typecheck:*)"] as const;
+/** Granted when the project sets no `verification`: the two commands the
+ *  default write-tier contract runs (DEFAULT_VERIFICATION.allowedTools).
+ *  A project's own `verification.allowedTools` replaces this list, it
+ *  never adds to it. */
+export const BASE_ALLOWED_TOOLS: readonly string[] = DEFAULT_VERIFICATION.allowedTools;
 
 /**
  * Opt-in local execution for write-tier work — headless `claude -p` with
@@ -102,6 +120,7 @@ export class WriteExecutor implements Executor {
   private onChunk?: (taskId: string, line: unknown) => void;
   private sandbox: SandboxStatus;
   private sandboxDenyRead: string[];
+  private settingsFor?: ProjectSettingsResolver;
 
   constructor(opts: WriteExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
@@ -114,6 +133,7 @@ export class WriteExecutor implements Executor {
     this.onChunk = opts.onChunk;
     this.sandbox = opts.sandbox ?? { state: "off", problems: [] };
     this.sandboxDenyRead = opts.sandboxDenyRead ?? [];
+    this.settingsFor = opts.settingsFor;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -140,6 +160,13 @@ export class WriteExecutor implements Executor {
     const project = await readProjectAllowRules(task.repo!);
     for (const r of project.refused) console.warn(`write: task ${task.id}: not passing project allow rule ${r.error}`);
 
+    // The project's own check commands and the grants that let them run
+    // (docs/SDD-project-settings.md §7), read from the board DB by the
+    // human-controlled `task.repo` path, never from a file in the
+    // worktree an agent could have edited. Undefined keeps the Bun
+    // defaults everywhere below.
+    const verification = (await this.settingsFor?.(task.repo!))?.verification;
+
     const sandboxOn = this.sandbox.state === "on";
     const settings = sandboxOn
       ? buildSandboxSettings({ repo: task.repo!, extraDenyRead: [...this.sandboxDenyRead, ...harnessConfigDirs([harness?.env])] })
@@ -152,22 +179,27 @@ export class WriteExecutor implements Executor {
       permissionMode: "acceptEdits",
       model: this.model ?? resolveModel(task, agent, harness),
       env: harness?.env,
-      // Guarantees the two commands verificationContract (see
+      // Guarantees the commands verificationContract (see
       // agents/manifest.yaml's implementer) tells the agent to run
       // actually run, every time — plain acceptEdits' own Bash gating
       // was found live to be inconsistent (see RunClaudeOptions.allowedTools'
       // own doc comment for the smoke-test evidence), so this doesn't
-      // widen access, it makes these two specific commands reliable.
-      // See docs/SDD-pipeline-automation.md §3.4. task.extraAllowedTools
-      // (see its own doc comment, TaskCard.extraAllowedTools) appends any
-      // task-specific grants beyond this fixed pair — undefined/empty for
-      // every task before that field existed, so this is byte-identical
-      // to the fixed two-entry array for every caller that doesn't set it.
+      // widen access, it makes those specific commands reliable.
+      // See docs/SDD-pipeline-automation.md §3.4. The base list is the
+      // project's own `verification.allowedTools` when it has one, else
+      // the fixed Bun pair (BASE_ALLOWED_TOOLS); the same setting's
+      // `commands` are what the prompt names, so the two can't drift.
+      // task.extraAllowedTools (see its own doc comment,
+      // TaskCard.extraAllowedTools) appends any task-specific grants
+      // beyond that base — undefined/empty for every task before that
+      // field existed, so this is byte-identical to the fixed two-entry
+      // array for every caller that sets neither.
       // With the sandbox on, sandboxed Bash is approved by the sandbox
       // itself (autoAllowBashIfSandboxed), so this list is no longer the
       // gate; it stays for the commands auto-allow still sends through
       // the permission flow (a leading VAR=value, for one).
-      allowedTools: dedupe([...BASE_ALLOWED_TOOLS, ...(task.extraAllowedTools ?? []), ...project.allowed]),
+      allowedTools: dedupe([...(verification?.allowedTools ?? BASE_ALLOWED_TOOLS), ...(task.extraAllowedTools ?? []), ...project.allowed]),
+      verification,
       settings,
       sandbox: this.sandbox.state,
       addDir: task.extraAllowedDirs,

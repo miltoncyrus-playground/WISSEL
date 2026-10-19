@@ -613,3 +613,108 @@ test("injectMemory: true on the constructor folds the memoryPath's content into 
     await rm(memDir, { recursive: true, force: true });
   }
 });
+
+// --- per-project verification (docs/SDD-project-settings.md §7) --------
+// `settingsFor` is the project store's lookup by repo path; its
+// `verification` replaces the fixed bun pair in --allowedTools and
+// renders the contract's tokens in the prompt.
+
+const FINN_VERIFICATION = {
+  commands: [
+    ["uv", "run", "pytest"],
+    ["uv", "run", "ruff", "check"],
+  ],
+  allowedTools: ["Bash(uv run pytest:*)", "Bash(uv run ruff check:*)"],
+};
+
+/** The implementer's contract shape, token-bearing like the real
+ *  manifest's (test/prompt.test.ts covers the real text). */
+const tokenAgent: AgentDef = { ...agent, verificationContract: "{{verification.run}}\n\nRun {{verification.commands}} as plain commands." };
+
+const ok = { stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok" }), stderr: "", exitCode: 0 };
+
+function capturingRunner(seen: { cmd: string[]; stdin: string }): CommandRunner {
+  return async (cmd, opts) => {
+    if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+    seen.cmd = cmd;
+    seen.stdin = opts.stdin ?? "";
+    return ok;
+  };
+}
+
+test("a project verification replaces the bun pair in --allowedTools (card grants still follow) and names its commands in the prompt", async () => {
+  const home = await fakeHome();
+  try {
+    const seen = { cmd: [] as string[], stdin: "" };
+    const executor = new WriteExecutor({ homeDir: home, runner: capturingRunner(seen), settingsFor: async () => ({ verification: FINN_VERIFICATION }) });
+    await executor.run({ ...task, extraAllowedTools: ["Bash(uv sync:*)"] }, tokenAgent);
+
+    const idx = seen.cmd.indexOf("--allowedTools");
+    expect(idx).toBeGreaterThan(-1);
+    expect(seen.cmd.slice(idx + 1)).toEqual(["Bash(uv run pytest:*)", "Bash(uv run ruff check:*)", "Bash(uv sync:*)"]);
+    expect(seen.cmd).not.toContain("Bash(bun test:*)");
+    expect(seen.cmd).not.toContain("Bash(bun run typecheck:*)");
+
+    expect(seen.stdin).toContain("Before reporting done, run each of these as a plain command (no\npipes, no redirects):\n  uv run pytest\n  uv run ruff check\n");
+    expect(seen.stdin).toContain("Run `uv run pytest` and `uv run ruff check` as plain commands.");
+    expect(seen.stdin).not.toContain("bun test");
+    expect(seen.stdin).not.toContain("{{");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("no settingsFor, a repo with no project, and a project with no verification all give identical argv and prompt: the bun defaults", async () => {
+  const home = await fakeHome();
+  try {
+    const runs: { cmd: string[]; stdin: string }[] = [];
+    for (const settingsFor of [undefined, async () => undefined, async () => ({})]) {
+      const seen = { cmd: [] as string[], stdin: "" };
+      await new WriteExecutor({ homeDir: home, runner: capturingRunner(seen), settingsFor }).run(task, tokenAgent);
+      runs.push(seen);
+    }
+    expect(runs[1]).toEqual(runs[0]!);
+    expect(runs[2]).toEqual(runs[0]!);
+    const idx = runs[0]!.cmd.indexOf("--allowedTools");
+    expect(runs[0]!.cmd.slice(idx + 1)).toEqual(["Bash(bun test:*)", "Bash(bun run typecheck:*)"]);
+    expect(runs[0]!.stdin).toContain("  bun run typecheck\n  bun test test/\n");
+    expect(runs[0]!.stdin).toContain("Run `bun test` and\n`bun run typecheck` as plain commands.");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("settingsFor is asked for task.repo, the human-controlled checkout, never the worktree path", async () => {
+  const home = await fakeHome();
+  try {
+    const asked: string[] = [];
+    const seen = { cmd: [] as string[], stdin: "" };
+    const executor = new WriteExecutor({
+      homeDir: home,
+      runner: capturingRunner(seen),
+      settingsFor: async (repo) => {
+        asked.push(repo);
+        return undefined;
+      },
+    });
+    await executor.run(task, agent);
+    expect(asked).toEqual([task.repo!]);
+    expect(asked[0]).not.toBe(join(home, ".wissel", "worktrees", "t1"));
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a verification with grants but no commands passes only those grants and tells the agent there are no check commands", async () => {
+  const home = await fakeHome();
+  try {
+    const seen = { cmd: [] as string[], stdin: "" };
+    const executor = new WriteExecutor({ homeDir: home, runner: capturingRunner(seen), settingsFor: async () => ({ verification: { commands: [], allowedTools: ["Bash(make check:*)"] } }) });
+    await executor.run(task, tokenAgent);
+    const idx = seen.cmd.indexOf("--allowedTools");
+    expect(seen.cmd.slice(idx + 1)).toEqual(["Bash(make check:*)"]);
+    expect(seen.stdin).toContain("This project has no verification commands configured.");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});

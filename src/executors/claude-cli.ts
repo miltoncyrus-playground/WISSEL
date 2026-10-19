@@ -1,6 +1,7 @@
 import type { AgentDef, McpApprovalRequest, PipelineHandoff, ReviewVerdict, RunUsage, SubtaskPlanItem, TaskCard, TaskResult } from "../core/types.ts";
 import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
+import type { Verification } from "../core/verification.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
 import { summarizeDenials } from "../core/permission-denials.ts";
@@ -396,6 +397,12 @@ export interface RunClaudeOptions {
   /** Recorded on the result (TaskResult.sandbox) for telemetry.
    *  Undefined reads as "off": no sandbox was asked for. */
   sandbox?: SandboxState;
+  /** The project's verification setting, passed straight through to
+   *  buildAgentPrompt's option of the same name (see its doc comment):
+   *  the commands a write-tier contract's tokens render. WriteExecutor
+   *  looks it up from `task.repo`; undefined (no setting, or a readonly
+   *  run) renders the Bun defaults, byte-identical to before. */
+  verification?: Pick<Verification, "commands">;
 }
 
 /**
@@ -423,6 +430,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     addDir,
     remoteControl,
     settings,
+    verification,
   } = opts;
   const sandbox: SandboxState = opts.sandbox ?? "off";
   const memory = injectMemory ? await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH) : undefined;
@@ -464,6 +472,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     : buildAgentPrompt(task, agent, memory, {
         planMode: permissionMode === "plan",
         pendingMcpApprovalTools: pendingMcpApprovalTools.length > 0 ? pendingMcpApprovalTools : undefined,
+        verification,
       });
 
   const mcpConfig = buildMcpConfigJson(auto);

@@ -138,18 +138,22 @@ export interface AgentDef {
    *  outputContract text still reaches the prompt, its content just
    *  isn't validated downstream. */
   outputContractFormat?: "review-verdict" | "subtask-plan" | "pipeline-handoff";
-  /** Agent-specific self-verification instructions, appended verbatim to
-   *  the prompt by buildAgentPrompt when present — same mechanism as
+  /** Agent-specific self-verification instructions, appended to the
+   *  prompt by buildAgentPrompt when present — same mechanism as
    *  outputContract, different purpose: tells the agent to actually run
    *  something (e.g. `bun run typecheck` && `bun test test/`) and fix
    *  failures before reporting done, instead of shipping unverified
-   *  code. Pair it with the matching Bash allowlist on whatever executor
-   *  runs this agent (see WriteExecutor's `allowedTools`) so the
-   *  commands it's told to run are guaranteed to actually run, rather
-   *  than depending on the permission mode's own (empirically
-   *  inconsistent — see allowedTools' doc comment) Bash gating.
-   *  Undefined means no self-verification instruction is added —
-   *  today's behavior. */
+   *  code. Verbatim, except for two tokens a write-tier contract may
+   *  carry, `{{verification.run}}` and `{{verification.commands}}`,
+   *  which render the project's own check commands
+   *  (Project.verification, src/core/verification.ts) or the Bun
+   *  defaults when it has none. Pair it with the matching Bash allowlist
+   *  on whatever executor runs this agent (see WriteExecutor's
+   *  `allowedTools`, the same setting's `allowedTools`) so the commands
+   *  it's told to run are guaranteed to actually run, rather than
+   *  depending on the permission mode's own (empirically inconsistent —
+   *  see allowedTools' doc comment) Bash gating. Undefined means no
+   *  self-verification instruction is added — today's behavior. */
   verificationContract?: string;
   /** Harness ids (from the HarnessPool) this agent may run on, in
    *  preference order: each run takes the first one that's enabled and
@@ -371,13 +375,17 @@ export interface Project {
   mergeGateTimeoutMs?: number;
   // Per-project execution settings (src/services/project-settings.ts,
   // docs/SDD-project-settings.md), set with POST /projects/:id/settings.
-  // Undefined means today's Bun/TypeScript defaults; stored only, not
-  // yet read by any run.
+  // Undefined means today's Bun/TypeScript defaults. `verification` is
+  // read per write-tier run (WriteExecutor/CodexWriteExecutor via
+  // ProjectStore.settingsFor); the other three are stored only so far.
   /** Hosts added to SANDBOX_ALLOWED_DOMAINS for this repo's sandboxed
    *  commands: bare hostnames, `*.` prefix allowed, at most 20. */
   sandboxAllowedDomains?: string[];
   /** The checks an implementer must run (argv arrays), and the
-   *  command-scoped Bash grants that let it (each passes grantError). */
+   *  command-scoped Bash grants that let it (each passes grantError).
+   *  When set, `allowedTools` replaces WriteExecutor's BASE_ALLOWED_TOOLS
+   *  and `commands` render the write-tier contract's tokens
+   *  (src/core/verification.ts). */
   verification?: { commands: string[][]; allowedTools: string[] };
   /** Argv commands run once in a new worktree (e.g. `uv sync`). */
   worktreeSetup?: string[][];

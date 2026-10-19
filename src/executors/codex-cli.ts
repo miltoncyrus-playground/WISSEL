@@ -1,6 +1,7 @@
 import type { AgentDef, TaskCard, TaskResult } from "../core/types.ts";
 import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
+import type { Verification } from "../core/verification.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import type { CommandResult, CommandRunner } from "./claude-cli.ts";
 import { resolveMcpGrants } from "./mcp-config.ts";
@@ -131,6 +132,9 @@ export interface RunCodexOptions {
   /** Where a repo-less task's scratch workspace lives — see
    *  RunClaudeOptions.homeDir's own doc comment, identical contract. */
   homeDir?: string;
+  /** The project's verification setting — see RunClaudeOptions
+   *  .verification's own doc comment, identical contract. */
+  verification?: Pick<Verification, "commands">;
 }
 
 /**
@@ -166,7 +170,7 @@ export interface RunCodexOptions {
  * concrete follow-up this leaves open.
  */
 export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
-  const { runner, task, agent, sandbox, model, env, memoryPath, injectMemory, onChunk, mcpAccess, mcpServers, homeDir } = opts;
+  const { runner, task, agent, sandbox, model, env, memoryPath, injectMemory, onChunk, mcpAccess, mcpServers, homeDir, verification } = opts;
 
   const grants = resolveMcpGrants(mcpAccess, mcpServers);
   if (grants.length > 0) {
@@ -194,7 +198,7 @@ export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
   // ~150KB prompt piped via stdin and no positional argument printed
   // "Reading prompt from stdin..." to stderr and completed successfully
   // end to end (exit 0, real model response).
-  const prompt = buildAgentPrompt(task, agent, memory);
+  const prompt = buildAgentPrompt(task, agent, memory, { verification });
 
   // Same fallback runClaude's own cwd resolution uses — see its doc
   // comment. CodexWriteExecutor always hands this function a task whose

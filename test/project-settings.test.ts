@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { domainError, MAX_SANDBOX_DOMAINS, protectedPathError, validateProjectSettings } from "../src/services/project-settings.ts";
+import { grantError, validateExtraAllowedTools } from "../src/core/allowed-tools.ts";
 import { SqliteProjectStore } from "../src/services/projects.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
@@ -190,4 +191,53 @@ test("POST /projects/:id/settings sets, validates and clears; GET /projects retu
   expect(await listed()).toEqual(project);
 
   expect((await fetchApp(new Request("http://x/projects/nope/settings", { method: "POST", body: "{}" }))).status).toBe(404);
+});
+
+// ---------- the write tier's lookup (§7) ----------
+
+test("settingsFor: the set keys of the project at that path, {} for a project with none, undefined for an unregistered path, trailing slash tolerated", async () => {
+  const store = new SqliteProjectStore(new Database(":memory:"));
+  const repo = join(dir, "finn-platform");
+  mkdirSync(repo);
+  const gitOk = async () => ({ stdout: "", stderr: "", exitCode: 0 });
+  const added = await store.addLocalProject(repo, {}, gitOk);
+  if ("error" in added) throw new Error(added.error);
+
+  expect(await store.settingsFor(repo)).toEqual({});
+  expect(await store.settingsFor(join(dir, "elsewhere"))).toBeUndefined();
+
+  await store.setSettings(added.project.id, { verification: FINN.verification });
+  expect(await store.settingsFor(repo)).toEqual({ verification: FINN.verification });
+  expect(await store.settingsFor(`${repo}/`)).toEqual({ verification: FINN.verification });
+  expect(await store.settingsFor(join(repo, "..", "finn-platform"))).toEqual({ verification: FINN.verification });
+
+  await store.setSettings(added.project.id, { protectedPaths: FINN.protectedPaths });
+  expect(await store.settingsFor(repo)).toEqual({ verification: FINN.verification, protectedPaths: FINN.protectedPaths });
+
+  await store.setSettings(added.project.id, { verification: null });
+  expect(await store.settingsFor(repo)).toEqual({ protectedPaths: FINN.protectedPaths });
+});
+
+test("a uv/ruff/pyright/pytest verification passes the same checks as a per-card grant: `uv run pytest` is accepted, `python` stays refused", () => {
+  const tools = ["Bash(uv run pytest:*)", "Bash(uv run ruff check:*)", "Bash(uv run ruff format --check:*)", "Bash(uv run pyright:*)"];
+  const commands = [
+    ["uv", "run", "pytest"],
+    ["uv", "run", "ruff", "check"],
+    ["uv", "run", "ruff", "format", "--check"],
+    ["uv", "run", "pyright"],
+  ];
+  // The project setting and a per-card grant agree on every entry.
+  expect(validateProjectSettings({ verification: { commands, allowedTools: tools } })).toEqual({ ok: true, patch: { verification: { commands, allowedTools: tools } } });
+  expect(validateExtraAllowedTools(tools)).toEqual({ ok: true, tools });
+  for (const t of tools) expect(grantError(t)).toBeUndefined();
+
+  // An interpreter is never granted, through either door.
+  for (const bad of ["Bash(python -m pytest:*)", "Bash(python3 -m pytest:*)", "Bash(python:*)"]) {
+    const direct = validateExtraAllowedTools([bad]);
+    expect(direct.ok).toBe(false);
+    if (!direct.ok) expect(direct.error).toContain("which is never granted per card");
+    const viaSettings = validateProjectSettings({ verification: { commands: [["uv", "run", "pytest"]], allowedTools: [bad] } });
+    expect(viaSettings.ok).toBe(false);
+    if (!viaSettings.ok) expect(viaSettings.error).toBe(`verification.allowedTools: ${(direct as { error: string }).error}`);
+  }
 });

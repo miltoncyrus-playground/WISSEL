@@ -219,11 +219,20 @@ set in runClaude's `runFacts`). Readonly runs report `off`.
 
 The four write-tier agents' `verificationContract` in
 agents/manifest.yaml now ends with: read and search with Read, Grep and
-Glob; edit with Edit and Write, never `sed -i` or redirects; run
-`bun test` / `bun run typecheck` plain (no pipes, `time`, redirects);
+Glob; edit with Edit and Write, never `sed -i` or redirects; run the
+project's verification commands plain (no pipes, `time`, redirects);
 never `bun -e` / `node -e`. With the sandbox on, pipes would run anyway;
 the steering is what keeps the allowlist fallback low too, and keeps
 edits in the tools acceptEdits approves.
+
+The commands named are the project's own (`Project.verification`, set
+with `POST /projects/:id/settings`), rendered into the contract's
+`{{verification.commands}}` token, and for the implementer the whole
+"Before reporting done, run: ..." paragraph into `{{verification.run}}`
+(`src/core/verification.ts`, docs/SDD-project-settings.md §7). The same
+setting's `allowedTools` replace the `Bash(bun test:*)` /
+`Bash(bun run typecheck:*)` base of `--allowedTools`. A project with no
+setting gets `bun test` / `bun run typecheck`, byte for byte as before.
 
 ## 7. Project allow rules in worktrees
 

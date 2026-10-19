@@ -1,8 +1,8 @@
 # SDD: Per-project execution settings
 
-Status: storage and API shipped (this card). Consumers: the next four
-cards (sandbox domains, verification contract, worktree setup,
-protected paths).
+Status: storage and API shipped. `verification` is consumed by the
+write tier (§7, shipped 2026-10-19). Remaining consumers: sandbox
+domains, worktree setup, protected paths (one card each).
 
 ## 1. Why
 
@@ -109,3 +109,104 @@ columns, serialisation of a project with none set, and the route
 
 No eval: this card is deterministic storage and validation with no LLM
 step.
+
+## 7. Write tier: verification contract and allowed tools
+
+The write-tier executors read `verification` per run and use it in two
+places that must agree: what the prompt tells the agent to run, and
+what `--allowedTools` lets it run.
+
+### 7.1 Lookup
+
+`ProjectStore.settingsFor(repo)` (`src/services/projects.ts`) returns
+the set settings of the project registered at `repo`, by resolved path
+like `mergeGateFor`: `{}` for a project with none set, undefined for an
+unregistered path. `WriteExecutor` and `CodexWriteExecutor` take it as
+`settingsFor` (wired by `createApp`, `src/api/server.ts`) and call it
+with `task.repo`, the human-controlled checkout, never the worktree, so
+an agent cannot grant its own next attempt anything by editing a file.
+Looked up per run, so an edit takes effect without a restart.
+
+### 7.2 Prompt
+
+The write-tier contracts in `agents/manifest.yaml` carry two tokens,
+rendered by `renderVerificationContract` (`src/core/verification.ts`)
+inside `buildAgentPrompt`:
+
+| Token | Where | Renders to |
+| --- | --- | --- |
+| `{{verification.run}}` | implementer | "Before reporting done, run each of these as a plain command (no pipes, no redirects):" then one command per line, then: fix and re-run all until every one is green, say so if a failure is pre-existing. |
+| `{{verification.commands}}` | implementer, fixer, integrator, lint-fixer | The commands as an inline list, `` `uv run pytest`, `uv run ruff check` and `uv run pyright` ``, inside the manifest's own "Run ... as plain commands: no pipes, no `time`, no redirects." |
+
+The git rule (never `git add`/`commit`/`push`) and the tool steering
+stay in the manifest, unchanged, around the tokens. A contract with no
+token (every readonly agent) is untouched whatever the project says.
+
+**No setting means today's bytes.** With no `verification`, each token
+renders to the literal text the manifest carried before the tokens
+existed (`DEFAULT_RUN_BLOCK`, `DEFAULT_COMMANDS_INLINE`), including the
+line wrap between "and" and `` `bun run typecheck` ``. The literal is
+pinned in `test/prompt.test.ts` against the real manifest. An explicit
+setting equal to the bun pair renders the generated wording, not the
+literal; only "unset" is byte-identical.
+
+An argv word with whitespace or shell characters is single-quoted
+(`pytest -k 'not slow'`). A `verification` with grants but no commands
+(allowed by §4) renders "This project has no verification commands
+configured. ..." and "the project's verification commands", never an
+empty list.
+
+Any other `{{...}}` in a `verificationContract` fails `Registry.from`
+at load, so a typo never reaches a paid prompt as literal braces.
+
+### 7.3 Allowed tools
+
+`BASE_ALLOWED_TOOLS` (`src/executors/write.ts`) is now
+`DEFAULT_VERIFICATION.allowedTools`, the bun pair. When the project has
+`verification`, its `allowedTools` are the base instead; the pair is not
+added. Card grants (`extraAllowedTools`) and the repo's own
+`.claude/settings.json` allow rules follow as before. Codex has no
+`--allowedTools`, so `CodexWriteExecutor` uses only the `commands` half.
+
+Example, finn-platform:
+
+```
+--allowedTools "Bash(uv run pytest:*)" "Bash(uv run ruff check:*)" "Bash(uv run pyright:*)"
+```
+
+and the implementer's prompt ends with the uv commands, the git rule,
+and "Run `uv run pytest`, `uv run ruff check` and `uv run pyright` as
+plain commands: no pipes, no `time`, no redirects."
+
+### 7.4 Where it breaks
+
+- `commands` and `allowedTools` are validated separately (§4). A command
+  the grants don't cover (`["uv","run","pytest"]` with only
+  `Bash(uv run ruff:*)`) is accepted and the agent is refused at run
+  time, exactly as a missing card grant is today: it shows up as a
+  denial, the reviewer can propose a grant. Nothing cross-checks the
+  two.
+- The default's byte-identity is pinned to the manifest text; editing
+  the implementer's git paragraph or the steering sentence is a
+  deliberate prompt change and updates the pinned literal in
+  `test/prompt.test.ts`.
+- The lookup is by registered project path. A card whose `repo` is a
+  path nobody registered as a project gets the bun defaults.
+
+### 7.5 Tests
+
+Gate, no network: `test/verification.test.ts` (rendering, formatting,
+unknown-token load failure, the real manifest's token placement),
+`test/prompt.test.ts` (byte-identity of the default for all four
+write-tier agents, rendering with a setting, readonly agents untouched,
+zero commands), `test/write-executor.test.ts` and
+`test/codex-write.test.ts` (`settingsFor` reaches `--allowedTools` and
+the prompt; no setting is identical argv; lookup by `task.repo`),
+`test/project-settings.test.ts` (`settingsFor` round trip; a
+uv/ruff/pyright/pytest setting passes the same checks as a per-card
+grant, `uv run pytest` accepted, `python` refused).
+
+No new eval: the periodic sandbox eval (`bun run eval:sandbox-denials`)
+runs the real implementer contract on a Bun fixture repo and so covers
+the default path; a Python fixture repo for the custom path is the
+natural follow-up once finn-platform exists to copy from.

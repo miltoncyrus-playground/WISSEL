@@ -186,9 +186,13 @@ Recovery handles it on the next start, but the restart is avoidable.
    "allowedTools": ["Bash(uv run pytest:*)"]}`), `worktreeSetup`
    (`[["uv","sync"]]`) and `protectedPaths` (repo-relative globs, no
    `..`). An absent key is kept, `null` clears it, bad input is a 400
-   naming the field. `GET /projects` returns them. They are stored
-   only for now; see `docs/SDD-project-settings.md`.
-   An implementer may run only `bun test` and `bun run typecheck`
+   naming the field. `GET /projects` returns them. `verification` is
+   live: a write-tier run in that repo is told to run those commands
+   and may run those grants instead of the Bun defaults
+   (`docs/SDD-project-settings.md` §7). The other three are stored only
+   for now.
+   An implementer may run only the project's verification commands
+   (`bun test` and `bun run typecheck` when the project sets none)
    unless the card grants more: `extraAllowedTools` on `POST /tasks`, or
    `POST /tasks/:id/allowed-tools` (command-scoped Bash only, e.g.
    `Bash(bun install:*)`; see `src/core/allowed-tools.ts`). A card that

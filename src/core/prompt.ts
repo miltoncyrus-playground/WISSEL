@@ -1,4 +1,5 @@
 import type { AgentDef, TaskCard } from "./types.ts";
+import { renderVerificationContract, type Verification } from "./verification.ts";
 
 /**
  * Shared framing for every headless `claude -p`/`codex exec` call,
@@ -44,6 +45,16 @@ export interface BuildAgentPromptOptions {
    *  since no real mcp-servers.yaml entry exists yet) means zero prompt
    *  change, byte-identical to before this option existed. */
   pendingMcpApprovalTools?: { server: string; tool: string }[];
+  /** The project's own verification setting (`Project.verification`,
+   *  docs/SDD-project-settings.md §7), looked up by WriteExecutor/
+   *  CodexWriteExecutor from `task.repo`. When set, the
+   *  `{{verification.run}}` and `{{verification.commands}}` tokens in
+   *  agent.verificationContract render its `commands` instead of the
+   *  Bun defaults (renderVerificationContract, src/core/verification.ts).
+   *  Undefined (every project with no settings, and every readonly run)
+   *  renders the defaults: byte-identical to before the tokens existed.
+   *  A contract without tokens is unaffected either way. */
+  verification?: Pick<Verification, "commands">;
 }
 
 export function buildAgentPrompt(task: TaskCard, agent: AgentDef, memory?: string, opts?: BuildAgentPromptOptions): string {
@@ -63,8 +74,10 @@ export function buildAgentPrompt(task: TaskCard, agent: AgentDef, memory?: strin
   if (agent.outputContract) {
     lines.push("", agent.outputContract);
   }
+  // Verbatim too, except for the two project-commands tokens a write-tier
+  // contract may carry — see renderVerificationContract.
   if (agent.verificationContract) {
-    lines.push("", agent.verificationContract);
+    lines.push("", renderVerificationContract(agent.verificationContract, opts?.verification));
   }
   if (opts?.pendingMcpApprovalTools && opts.pendingMcpApprovalTools.length > 0) {
     const names = opts.pendingMcpApprovalTools.map((t) => `${t.server}/${t.tool}`).join(", ");

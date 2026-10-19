@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import type { AgentDef } from "./types.ts";
+import { unknownVerificationTokens, VERIFICATION_TOKENS } from "./verification.ts";
 
 /** Why an agent's `persona` is malformed, or null when it is fine (or
  *  absent). `color` is `#RRGGBB`; `glyph` is one or two characters
@@ -60,6 +61,13 @@ export class Registry {
       }
       const personaError = validatePersona(agent.persona);
       if (personaError) throw new Error(`agent "${agent.id}": ${personaError}`);
+      // The project-commands tokens (src/core/verification.ts) are the
+      // only `{{...}}` a contract may carry; anything else would reach a
+      // paid prompt as literal braces, so the manifest fails to load.
+      const unknownTokens = unknownVerificationTokens(agent.verificationContract ?? "");
+      if (unknownTokens.length > 0) {
+        throw new Error(`agent "${agent.id}": verificationContract has unknown token(s) ${unknownTokens.join(", ")}; known: ${VERIFICATION_TOKENS.join(", ")}`);
+      }
       registry.agents.set(agent.id, agent);
     }
     return registry;

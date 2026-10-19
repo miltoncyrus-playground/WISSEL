@@ -4,6 +4,7 @@ import { resolveModel } from "../core/model-resolution.ts";
 import { runViaBun } from "./claude-cli.ts";
 import { runCodex, type CommandRunner } from "./codex-cli.ts";
 import { createTaskWorktree } from "../services/worktree.ts";
+import type { ProjectSettingsResolver } from "./write.ts";
 
 export interface CodexWriteExecutorOptions {
   runner?: CommandRunner;
@@ -33,6 +34,11 @@ export interface CodexWriteExecutorOptions {
    *  codex's stdout streams in — wired to appendTaskOutput(taskId, ...)
    *  by src/api/server.ts (see docs/SDD-live-task-output.md §3.2/§4). */
   onChunk?: (taskId: string, line: unknown) => void;
+  /** See WriteExecutorOptions.settingsFor, identical contract. Codex has
+   *  no `--allowedTools` (its sandbox is `workspace-write`), so only the
+   *  setting's `commands` are used here: they render the contract's
+   *  tokens in the prompt. */
+  settingsFor?: ProjectSettingsResolver;
 }
 
 /**
@@ -66,6 +72,7 @@ export class CodexWriteExecutor implements Executor {
   private injectMemory?: boolean;
   private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
+  private settingsFor?: ProjectSettingsResolver;
 
   constructor(opts: CodexWriteExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
@@ -75,6 +82,7 @@ export class CodexWriteExecutor implements Executor {
     this.injectMemory = opts.injectMemory;
     this.mcpServers = opts.mcpServers;
     this.onChunk = opts.onChunk;
+    this.settingsFor = opts.settingsFor;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -92,6 +100,10 @@ export class CodexWriteExecutor implements Executor {
     const worktree = await createTaskWorktree(task.repo!, worktreeKey, { runner: this.runner, homeDir: this.homeDir });
     if ("error" in worktree) return fail(task, agent, worktree.error);
 
+    // Same lookup as WriteExecutor's: by the human-controlled `task.repo`
+    // path, never a file in the worktree.
+    const verification = (await this.settingsFor?.(task.repo!))?.verification;
+
     const result = await runCodex({
       runner: this.runner,
       task: { ...task, repo: worktree.path },
@@ -104,6 +116,7 @@ export class CodexWriteExecutor implements Executor {
       mcpAccess: task.mcpAccessOverride ?? agent.mcpAccess,
       mcpServers: this.mcpServers,
       onChunk: this.onChunk ? (line: unknown) => this.onChunk!(task.id, line) : undefined,
+      verification,
     });
 
     const withHarness = harness ? { ...result, harnessId: harness.id } : result;

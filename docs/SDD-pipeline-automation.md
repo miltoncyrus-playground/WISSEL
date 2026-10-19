@@ -153,6 +153,15 @@ around it. This is the single highest-leverage fix in this doc: it collapses
 most pushback rounds into the same turn, and demotes my own independent
 worktree verification from a full re-run to a spot-check.
 
+**Per-project commands, revision 2026-10-19.** The pair is the default,
+not the rule. A project's `verification` setting
+(`POST /projects/:id/settings`, docs/SDD-project-settings.md §7) replaces
+both halves at once: its `allowedTools` become the base of
+`--allowedTools` instead of the bun pair, and its `commands` render the
+`{{verification.run}}` / `{{verification.commands}}` tokens the
+write-tier contracts in agents/manifest.yaml now carry. A project with no
+setting gets a prompt and argv byte-identical to before.
+
 **Per-card grants, revision 2026-10-10.** The fixed pair can't build or
 install anything, so a card that needs `bun install`, a build or
 Playwright (the "Wissel app" cards) was refused on every attempt and
