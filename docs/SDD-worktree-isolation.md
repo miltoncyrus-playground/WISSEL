@@ -319,4 +319,87 @@ after a start).
   conflict.
 - The gate runs in the server process's environment with the repo's own
   `node_modules`. A repo whose gate needs more setup than that (a
-  database, a build step) has to say so in its gate commands.
+  database, a build step) has to say so in its gate commands, or in the
+  project's worktree setup (§8), which runs before the agent and so
+  before the gate.
+
+## 8. Per-project worktree setup (2026-10-19)
+
+### 8.1 Why
+
+A new worktree gets the repo's `node_modules` symlinked
+(`linkNodeModules`) and nothing else. That is enough for a Bun repo. A
+Python repo (finn-platform: uv, FastAPI, pytest) has no `.venv` in a
+fresh checkout, so every implementer would spend its first turns on
+`uv sync`, or fail its verification contract without saying why.
+Outcome: a card on such a repo starts with its dependencies installed,
+and a broken install fails the card in seconds with the installer's own
+output instead of the agent burning turns on it.
+
+### 8.2 The flow
+
+`Project.worktreeSetup` (argv arrays, set with `POST
+/projects/:id/settings`, docs/SDD-project-settings.md) is looked up per
+run by `ProjectStore.worktreeSetupFor(repo)` (same path matching as
+`mergeGateFor`) and passed by WriteExecutor and CodexWriteExecutor to
+`createTaskWorktree` as `opts.setup`. After `git worktree add` and
+`linkNodeModules`, `runWorktreeSetup` (`src/services/worktree.ts`):
+
+1. Finds the worktree's own git dir from its `.git` file (`gitdir:
+   <repo>/.git/worktrees/<key>`). Never part of the checkout, so nothing
+   written there is tracked, diffed or merged.
+2. Skips if `.wissel-setup-done` is there.
+3. Writes `.wissel-setup-pending`, then runs each command in order in
+   the worktree with `runGateCommand` (the merge gate's spawner: own
+   process group, `WISSEL_*` env stripped, killed on timeout, tracked
+   for shutdown). Per-command timeout `DEFAULT_GATE_TIMEOUT_MS`, 10
+   minutes.
+4. First failure or timeout stops. The result is `{ error }`: the
+   command, its exit code or timeout, and the last 200 lines of its
+   output. The executor returns it as a failed result before the agent
+   starts, so it is the card's summary and the card goes to `failed`.
+5. All passed: writes `.wissel-setup-done`, removes the pending marker.
+
+### 8.3 Once per worktree
+
+Reviewer, fixer, integrator and retry runs reuse the worktree
+(`createTaskWorktree`'s early return) and pay nothing. The one
+exception: a reused worktree that still has `.wissel-setup-pending` and
+no done marker never finished setup (it failed, or the server died
+mid-command), so setup runs again there. Without that, retrying a card
+whose `uv sync` failed would start the agent with no `.venv`. A
+worktree created before setup was configured has neither marker and is
+left alone.
+
+### 8.4 Trust
+
+Setup runs in wissel's own process, outside the agent sandbox, with the
+server's network. It comes only from the project row in the board DB,
+which a human sets; no card field, card body or worktree file feeds it.
+
+### 8.5 Trace
+
+One log line per worktree: `worktree setup: <path>: N command(s)
+passed in Xs`, or `` `<cmd>` exited N `` / `timed out after Ns` on
+failure, plus the failure text on the card. No telemetry event yet.
+
+### 8.6 Known limits
+
+- Editing `worktreeSetup` doesn't re-run it in worktrees already marked
+  done; only new worktrees see the change.
+- A worktree whose `.git` can't be read gets setup on every run (no
+  marker to write). Every `git worktree add` writes one, so this only
+  happens to a hand-built directory.
+- Setup has no network allowlist of its own: it has whatever the server
+  has. The agent sandbox's domain list doesn't apply.
+
+### 8.7 Tests
+
+`test/worktree-setup.test.ts` (gate, no network): order and cwd,
+default and configured timeout, stop at first failure with the output
+tail, timeout text, skip on reuse, re-run after a failed setup then
+skip once done, skip when unset or empty, setup after `node_modules`
+linking, done-marker skip, `.git` file/dir parsing, a real-git run
+checking the marker stays out of `git status`, both executors, the
+error reaching the card through `finishResult`, and
+`ProjectStore.worktreeSetupFor`. No eval: no LLM step.

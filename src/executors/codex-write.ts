@@ -3,7 +3,8 @@ import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { resolveModel } from "../core/model-resolution.ts";
 import { runViaBun } from "./claude-cli.ts";
 import { runCodex, type CommandRunner } from "./codex-cli.ts";
-import { createTaskWorktree } from "../services/worktree.ts";
+import { createTaskWorktree, type WorktreeSetupResolver } from "../services/worktree.ts";
+import type { GateCommandRunner } from "../services/merge-gate.ts";
 
 export interface CodexWriteExecutorOptions {
   runner?: CommandRunner;
@@ -33,6 +34,10 @@ export interface CodexWriteExecutorOptions {
    *  codex's stdout streams in — wired to appendTaskOutput(taskId, ...)
    *  by src/api/server.ts (see docs/SDD-live-task-output.md §3.2/§4). */
   onChunk?: (taskId: string, line: unknown) => void;
+  /** Same as WriteExecutorOptions.worktreeSetupFor. */
+  worktreeSetupFor?: WorktreeSetupResolver;
+  /** Same as WriteExecutorOptions.setupRunner. */
+  setupRunner?: GateCommandRunner;
 }
 
 /**
@@ -66,8 +71,12 @@ export class CodexWriteExecutor implements Executor {
   private injectMemory?: boolean;
   private mcpServers?: McpServerPool;
   private onChunk?: (taskId: string, line: unknown) => void;
+  private worktreeSetupFor?: WorktreeSetupResolver;
+  private setupRunner?: GateCommandRunner;
 
   constructor(opts: CodexWriteExecutorOptions = {}) {
+    this.worktreeSetupFor = opts.worktreeSetupFor;
+    this.setupRunner = opts.setupRunner;
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
     this.homeDir = opts.homeDir;
@@ -89,7 +98,12 @@ export class CodexWriteExecutor implements Executor {
     // `repo` is mandatory for any write/bash-capable agent, enforced at
     // creation by POST /tasks (see TaskCard.repo's own doc comment) —
     // a write-tier task reaching this executor always has one.
-    const worktree = await createTaskWorktree(task.repo!, worktreeKey, { runner: this.runner, homeDir: this.homeDir });
+    const worktree = await createTaskWorktree(task.repo!, worktreeKey, {
+      runner: this.runner,
+      homeDir: this.homeDir,
+      setup: await this.worktreeSetupFor?.(task.repo!),
+      setupRunner: this.setupRunner,
+    });
     if ("error" in worktree) return fail(task, agent, worktree.error);
 
     const result = await runCodex({

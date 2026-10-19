@@ -2,7 +2,8 @@
 
 Status: storage and API shipped (this card). Consumers: the next four
 cards (sandbox domains, verification contract, worktree setup,
-protected paths).
+protected paths). Worktree setup is built: `worktreeSetup` runs once in
+each new worktree, see docs/SDD-worktree-isolation.md §8.
 
 ## 1. Why
 

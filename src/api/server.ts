@@ -376,6 +376,10 @@ export function createApp(
       runner: opts.commandRunner ?? runViaBun,
       agentModel: (id) => registry.get(id)?.costProfile.model,
     });
+  const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
+  // A new worktree runs its project's worktreeSetup (e.g. `uv sync`)
+  // before the agent starts; looked up per run, like the merge gate.
+  const worktreeSetupFor = (repo: string) => projects.worktreeSetupFor(repo);
   const writeSandbox: SandboxStatus = opts.writeSandbox ?? { state: "off", problems: [] };
   const writeExecutor = () =>
     new WriteExecutor({
@@ -386,7 +390,10 @@ export function createApp(
       remoteControl: opts.remoteControl,
       sandbox: writeSandbox,
       sandboxDenyRead: opts.writeSandboxDenyRead,
+      worktreeSetupFor,
     });
+  const codexWriteExecutor = () =>
+    new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, worktreeSetupFor });
   const autoExecutors: Executor[] = [
     new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
     new ApiExecutor(),
@@ -397,14 +404,14 @@ export function createApp(
   if (executeWriteTier)
     autoExecutors.push(
       writeExecutor(),
-      new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+      codexWriteExecutor(),
     );
   const manualExecutors: Executor[] = opts.manualExecutors ?? [
     new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
     new ApiExecutor(),
     new CodexReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
     writeExecutor(),
-    new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk }),
+    codexWriteExecutor(),
     ttsExecutor(),
     digestExecutor(),
   ];
@@ -455,7 +462,6 @@ export function createApp(
   const scheduleControl: ScheduleControlDeps = { schedules, runner: scheduleRunner, now: opts.scheduleClock?.now };
   const pipelineEditorDist = opts.pipelineEditorDist ?? DEFAULT_PIPELINE_EDITOR_DIST;
   const appDist = opts.appDist ?? DEFAULT_APP_DIST;
-  const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
   const commandRunner = opts.commandRunner ?? runViaBun;
   // The merge path's context (docs/SDD-worktree-isolation.md §7): the
   // one every merge goes through, the Merge button, Ask's
