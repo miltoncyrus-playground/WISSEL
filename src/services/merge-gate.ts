@@ -124,7 +124,8 @@ export function tailLines(text: string, lines = GATE_OUTPUT_TAIL_LINES): string 
   return all.slice(-lines).join("\n");
 }
 
-function shellWords(argv: string[]): string {
+/** An argv as a shell would show it, for feedback text. */
+export function shellWords(argv: string[]): string {
   return argv.map((a) => (/^[\w./:=@%+-]+$/.test(a) ? a : JSON.stringify(a))).join(" ");
 }
 

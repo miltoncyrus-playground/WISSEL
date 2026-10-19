@@ -377,7 +377,9 @@ export interface Project {
   // docs/SDD-project-settings.md), set with POST /projects/:id/settings.
   // Undefined means today's Bun/TypeScript defaults. `verification` is
   // read per write-tier run (WriteExecutor/CodexWriteExecutor via
-  // ProjectStore.settingsFor); the other three are stored only so far.
+  // ProjectStore.settingsFor) and `worktreeSetup` once per new worktree
+  // (runWorktreeSetup via ProjectStore.worktreeSetupFor); the other two
+  // are stored only so far.
   /** Hosts added to SANDBOX_ALLOWED_DOMAINS for this repo's sandboxed
    *  commands: bare hostnames, `*.` prefix allowed, at most 20. */
   sandboxAllowedDomains?: string[];
@@ -387,7 +389,8 @@ export interface Project {
    *  and `commands` render the write-tier contract's tokens
    *  (src/core/verification.ts). */
   verification?: { commands: string[][]; allowedTools: string[] };
-  /** Argv commands run once in a new worktree (e.g. `uv sync`). */
+  /** Argv commands run once in a new worktree (e.g. `uv sync`), before
+   *  the agent starts. Read: runWorktreeSetup (src/services/worktree.ts). */
   worktreeSetup?: string[][];
   /** Repo-relative globs agents may not modify. */
   protectedPaths?: string[];

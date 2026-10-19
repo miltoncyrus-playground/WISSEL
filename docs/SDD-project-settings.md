@@ -1,8 +1,9 @@
 # SDD: Per-project execution settings
 
 Status: storage and API shipped. `verification` is consumed by the
-write tier (§7, shipped 2026-10-19). Remaining consumers: sandbox
-domains, worktree setup, protected paths (one card each).
+write tier (§7, shipped 2026-10-19). `worktreeSetup` is built: it runs
+once in each new worktree, see docs/SDD-worktree-isolation.md §8.
+Remaining consumers: sandbox domains, protected paths (one card each).
 
 ## 1. Why
 

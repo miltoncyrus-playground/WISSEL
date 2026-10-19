@@ -186,10 +186,15 @@ Recovery handles it on the next start, but the restart is avoidable.
    "allowedTools": ["Bash(uv run pytest:*)"]}`), `worktreeSetup`
    (`[["uv","sync"]]`) and `protectedPaths` (repo-relative globs, no
    `..`). An absent key is kept, `null` clears it, bad input is a 400
-   naming the field. `GET /projects` returns them. `verification` is
-   live: a write-tier run in that repo is told to run those commands
-   and may run those grants instead of the Bun defaults
-   (`docs/SDD-project-settings.md` §7). The other three are stored only
+   naming the field. `GET /projects` returns them; see
+   `docs/SDD-project-settings.md`. `verification` is live: a write-tier
+   run in that repo is told to run those commands and may run those
+   grants instead of the Bun defaults (`docs/SDD-project-settings.md`
+   §7). `worktreeSetup` runs once in each new worktree, in order, before
+   the agent starts (10 minutes per command). A failure fails the card
+   with the command's last 200 output lines; reviewer, fixer and
+   integrator runs on the same worktree skip it
+   (`docs/SDD-worktree-isolation.md` §8). The other two are stored only
    for now.
    An implementer may run only the project's verification commands
    (`bun test` and `bun run typecheck` when the project sets none)

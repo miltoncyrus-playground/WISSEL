@@ -376,13 +376,16 @@ export function createApp(
       runner: opts.commandRunner ?? runViaBun,
       agentModel: (id) => registry.get(id)?.costProfile.model,
     });
-  const writeSandbox: SandboxStatus = opts.writeSandbox ?? { state: "off", problems: [] };
   // Registered projects, defined here (before the executors) because the
   // write-tier executors read a project's execution settings per run
   // (docs/SDD-project-settings.md §7); the routes further down use the
   // same store.
   const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
   const settingsFor = (repo: string) => projects.settingsFor(repo);
+  // A new worktree runs its project's worktreeSetup (e.g. `uv sync`)
+  // before the agent starts; looked up per run, like the merge gate.
+  const worktreeSetupFor = (repo: string) => projects.worktreeSetupFor(repo);
+  const writeSandbox: SandboxStatus = opts.writeSandbox ?? { state: "off", problems: [] };
   const writeExecutor = () =>
     new WriteExecutor({
       memoryPath: opts.memoryPath,
@@ -393,8 +396,10 @@ export function createApp(
       sandbox: writeSandbox,
       sandboxDenyRead: opts.writeSandboxDenyRead,
       settingsFor,
+      worktreeSetupFor,
     });
-  const codexWriteExecutor = () => new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, settingsFor });
+  const codexWriteExecutor = () =>
+    new CodexWriteExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, settingsFor, worktreeSetupFor });
   const autoExecutors: Executor[] = [
     new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
     new ApiExecutor(),
