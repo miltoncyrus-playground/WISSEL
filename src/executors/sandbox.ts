@@ -35,10 +35,21 @@ export interface SandboxStatus {
   problems: string[];
 }
 
-/** Hosts sandboxed commands may reach: the npm registry (bun and npm
- *  install from it) and github.com. Everything else is refused, not
- *  prompted for (`strictAllowlist`). */
+/** Hosts every sandboxed command may reach: the npm registry (bun and
+ *  npm install from it) and github.com. A project adds its own with
+ *  `Project.sandboxAllowedDomains` (mergeAllowedDomains). Everything
+ *  else is refused, not prompted for (`strictAllowlist`). */
 export const SANDBOX_ALLOWED_DOMAINS = ["registry.npmjs.org", "github.com"] as const;
+
+/** The network allowlist for one run: the fixed hosts, then the
+ *  project's own in their configured order, each host once. The
+ *  project's list is already validated (domainError,
+ *  src/services/project-settings.ts); this only merges. Undefined or
+ *  empty gives exactly the fixed list. */
+export function mergeAllowedDomains(projectDomains?: readonly string[]): string[] {
+  const all = [...SANDBOX_ALLOWED_DOMAINS, ...(projectDomains ?? [])];
+  return all.filter((d, i) => d && all.indexOf(d) === i);
+}
 
 /** Read-denied for sandboxed commands, `~/` resolved by Claude Code:
  *  keys, cloud and gh credentials, every Claude/Codex profile, and the
@@ -76,6 +87,11 @@ export interface SandboxSettingsInput {
   /** Extra read-denied paths: every configured harness's
    *  CLAUDE_CONFIG_DIR / CODEX_HOME, and the run's own. */
   extraDenyRead?: string[];
+  /** The project's `sandboxAllowedDomains` (Project in
+   *  src/core/types.ts, looked up by task.repo), appended to
+   *  SANDBOX_ALLOWED_DOMAINS. Undefined or empty: the fixed list alone,
+   *  today's output. */
+  allowedDomains?: readonly string[];
 }
 
 /** The `--settings` object for a sandboxed write-tier run. Writes stay
@@ -94,7 +110,7 @@ export function buildSandboxSettings(input: SandboxSettingsInput): Record<string
         denyWrite: [join(input.repo, ".git")],
       },
       network: {
-        allowedDomains: [...SANDBOX_ALLOWED_DOMAINS],
+        allowedDomains: mergeAllowedDomains(input.allowedDomains),
         strictAllowlist: true,
       },
     },

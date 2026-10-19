@@ -43,7 +43,7 @@ runs write-tier work locally in a worktree.
 | `bun run test:e2e` | Playwright tests against a live server. |
 | `bun run test:e2e:affected` | Only the e2e specs affected by your changes. |
 | `bun run live-check:shutdown` | Real server, real agent spawn, SIGTERM: asserts no agent process survives. |
-| `bun run live-check:sandbox` | Real `claude -p` write-tier run with the Bash sandbox on: piped Bash works; writes outside the worktree, `~/.ssh` reads, off-allowlist hosts and `git commit` don't. Skips when the sandbox can't start. |
+| `bun run live-check:sandbox` | Real `claude -p` write-tier run with the Bash sandbox on: piped Bash works; writes outside the worktree, `~/.ssh` reads, off-allowlist hosts and `git commit` don't; a host the project configured (`sandboxAllowedDomains`) is reachable and an unconfigured one is not. Skips when the sandbox can't start. |
 | `bun run denials:baseline` | Permission denials per implementer run (raw, old keys, new keys); `--telemetry` for the after numbers by sandbox state. |
 | `bun run seed:ai-news` | Create or upgrade the stored podcast pipelines (see Pipelines). |
 | `bun run seed:schedules` | Create the two morning podcast schedules, disabled (see Schedules). Idempotent. |
@@ -94,6 +94,15 @@ Then restart the server. Startup logs `write-tier sandbox: on`, and
 startup logs `write-tier sandbox: UNAVAILABLE` with the fix for each
 problem and write-tier Bash falls back to the allowlist (more permission
 denials, same boundary). `bun run live-check:sandbox` proves it end to end.
+
+Sandboxed Bash can reach `registry.npmjs.org` and `github.com`; every
+other host is refused. A project that needs more (a Python or Terraform
+repo) names its hosts once with `POST /projects/:id/settings
+{"sandboxAllowedDomains": ["pypi.org", "files.pythonhosted.org",
+"registry.terraform.io", "releases.hashicorp.com"]}`; they are appended
+to the fixed two for every write-tier run on that repo, read per run,
+no restart. Nothing is hardcoded per language. A project with no setting
+gets exactly the fixed two.
 
 The pipeline editor and the app are separate Vite bundles.
 `pipeline-editor/dist/` and `app/dist/` are gitignored; `bun run serve`
@@ -190,12 +199,14 @@ Recovery handles it on the next start, but the restart is avoidable.
    `docs/SDD-project-settings.md`. `verification` is live: a write-tier
    run in that repo is told to run those commands and may run those
    grants instead of the Bun defaults (`docs/SDD-project-settings.md`
-   §7). `worktreeSetup` runs once in each new worktree, in order, before
-   the agent starts (10 minutes per command). A failure fails the card
-   with the command's last 200 output lines; reviewer, fixer and
-   integrator runs on the same worktree skip it
-   (`docs/SDD-worktree-isolation.md` §8). The other two are stored only
-   for now.
+   §7). `sandboxAllowedDomains` is live: a write-tier run on that repo
+   gets those hosts added to the sandbox's network allowlist
+   (`docs/SDD-write-tier-sandbox.md` §11). `worktreeSetup` runs once in
+   each new worktree, in order, before the agent starts (10 minutes per
+   command). A failure fails the card with the command's last 200 output
+   lines; reviewer, fixer and integrator runs on the same worktree skip
+   it (`docs/SDD-worktree-isolation.md` §8). `protectedPaths` is stored
+   only for now.
    An implementer may run only the project's verification commands
    (`bun test` and `bun run typecheck` when the project sets none)
    unless the card grants more: `extraAllowedTools` on `POST /tasks`, or

@@ -375,13 +375,14 @@ export interface Project {
   mergeGateTimeoutMs?: number;
   // Per-project execution settings (src/services/project-settings.ts,
   // docs/SDD-project-settings.md), set with POST /projects/:id/settings.
-  // Undefined means today's Bun/TypeScript defaults. `verification` is
-  // read per write-tier run (WriteExecutor/CodexWriteExecutor via
-  // ProjectStore.settingsFor) and `worktreeSetup` once per new worktree
-  // (runWorktreeSetup via ProjectStore.worktreeSetupFor); the other two
-  // are stored only so far.
+  // Undefined means today's Bun/TypeScript defaults. Read per run by
+  // ProjectStore.settingsFor(task.repo) / worktreeSetupFor(task.repo):
+  // `verification` (WriteExecutor/CodexWriteExecutor), `sandboxAllowedDomains`
+  // (WriteExecutor) and `worktreeSetup` (worktree creation) are consumed so
+  // far; `protectedPaths` is stored only.
   /** Hosts added to SANDBOX_ALLOWED_DOMAINS for this repo's sandboxed
-   *  commands: bare hostnames, `*.` prefix allowed, at most 20. */
+   *  commands (mergeAllowedDomains, src/executors/sandbox.ts): bare
+   *  hostnames, `*.` prefix allowed, at most 20. */
   sandboxAllowedDomains?: string[];
   /** The checks an implementer must run (argv arrays), and the
    *  command-scoped Bash grants that let it (each passes grantError).

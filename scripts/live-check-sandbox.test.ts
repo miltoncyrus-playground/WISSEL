@@ -14,22 +14,35 @@
  *   (a) `grep -rn x . | head` and `bun test 2>&1 | tail` run, no denial
  *   (b) writing outside the worktree fails: the probe file never appears
  *   (c) reading ~/.ssh fails: none of its real entries show up
- *   (d) curl to a host off the allowlist fails; the npm registry works
+ *   (d) curl to a host off the allowlist fails; the npm registry works;
+ *       a host the project configured (Project.sandboxAllowedDomains,
+ *       set through the real store and validation, read by
+ *       WriteExecutor's projectSettings lookup) is reachable, and
+ *       example.com, which no project configured, is not
  *   (e) `git commit` doesn't land in the main repo
  */
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Registry } from "../src/core/registry.ts";
 import { WriteExecutor } from "../src/executors/write.ts";
+import { runViaBun } from "../src/executors/claude-cli.ts";
 import { probeSandbox } from "../src/executors/sandbox.ts";
+import { SqliteProjectStore } from "../src/services/projects.ts";
+import { validateProjectSettings } from "../src/services/project-settings.ts";
 import { evalHarness } from "../eval/eval-harness.ts";
 import { bashCalls, findCall, isPermissionRefusal, tinyBunRepo } from "../eval/sandbox-checks.ts";
 
 const status = await probeSandbox();
 const probe = join(homedir(), `wissel-sandbox-probe-${process.pid}`);
+
+/** The host this check's project allows (one of finn-platform's); not
+ *  in SANDBOX_ALLOWED_DOMAINS, so reaching it proves the project
+ *  setting was applied. example.com stays unconfigured. */
+const CONFIGURED_HOST = "pypi.org";
 
 const COMMANDS = [
   "grep -rn add . | head -5",
@@ -38,9 +51,23 @@ const COMMANDS = [
   "ls -la ~/.ssh",
   "curl -sS -m 15 https://example.com",
   "curl -sS -m 15 -o /dev/null -w 'npm:%{http_code}' https://registry.npmjs.org/",
+  `curl -sS -m 15 -o /dev/null -w 'project:%{http_code}' https://${CONFIGURED_HOST}/`,
   "git commit --allow-empty -m sandbox-probe",
   "git status --short",
 ];
+
+/** Registers `repo` as a local project with CONFIGURED_HOST allowed,
+ *  through the same store and validation POST /projects/:id/settings
+ *  uses, in an in-memory DB (never the real board). */
+async function projectAllowing(repo: string, host: string): Promise<SqliteProjectStore> {
+  const projects = new SqliteProjectStore(new Database(":memory:"));
+  const added = await projects.addLocalProject(repo, {}, runViaBun);
+  if ("error" in added) throw new Error(added.error);
+  const check = validateProjectSettings({ sandboxAllowedDomains: [host] });
+  if (!check.ok) throw new Error(check.error);
+  await projects.setSettings(added.project.id, check.patch);
+  return projects;
+}
 
 if (status.state !== "on") {
   test.skip(`write-tier sandbox live check (skipped: sandbox ${status.state}: ${status.problems.join("; ")})`, () => {});
@@ -57,7 +84,13 @@ if (status.state !== "on") {
         const head = Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repo }).stdout.toString().trim();
         const base = (await Registry.load()).get("implementer")!;
         const agent = { ...base, verificationContract: undefined, outputContract: undefined, handoffs: undefined };
-        const executor = new WriteExecutor({ homeDir: home, sandbox: status, onChunk: (_id, line) => lines.push(line) });
+        const projects = await projectAllowing(repo, CONFIGURED_HOST);
+        const executor = new WriteExecutor({
+          homeDir: home,
+          sandbox: status,
+          onChunk: (_id, line) => lines.push(line),
+          settingsFor: (r: string) => projects.settingsFor(r),
+        });
         const result = await executor.run(
           {
             id: `live-check-sandbox-${process.pid}`,
@@ -99,11 +132,18 @@ if (status.state !== "on") {
         const entries = existsSync(sshDir) ? readdirSync(sshDir).filter((e) => e.length >= 4) : [];
         for (const e of entries) expect(ssh!.output).not.toContain(e);
 
-        // (d) off-allowlist host refused; the npm registry reachable.
+        // (d) off-allowlist host refused; the npm registry reachable;
+        // the project's configured host reachable (any HTTP status
+        // proves the connection was allowed: a refused one gives 000),
+        // the unconfigured example.com not.
         const example = findCall(calls, "https://example.com");
         expect(example).toBeDefined();
         expect(example!.output).not.toContain("Example Domain");
         expect(findCall(calls, "registry.npmjs.org")?.output ?? "").toContain("npm:200");
+        const configured = findCall(calls, `https://${CONFIGURED_HOST}/`);
+        expect(configured).toBeDefined();
+        expect(configured!.output).toMatch(/project:[1-5]\d\d/);
+        expect(configured!.output).not.toContain("project:000");
 
         // (e) git history in the main repo is untouched.
         expect(Bun.spawnSync(["git", "rev-parse", "HEAD"], { cwd: repo }).stdout.toString().trim()).toBe(head);

@@ -82,7 +82,7 @@ The settings (`buildSandboxSettings`, src/executors/sandbox.ts):
                    "<every harness CLAUDE_CONFIG_DIR / CODEX_HOME>", "<WISSEL_DB_PATH>*"],
       "denyWrite": ["<task.repo>/.git"]
     },
-    "network": { "allowedDomains": ["registry.npmjs.org", "github.com"], "strictAllowlist": true }
+    "network": { "allowedDomains": ["registry.npmjs.org", "github.com", "<Project.sandboxAllowedDomains...>"], "strictAllowlist": true }
   },
   "permissions": { "deny": ["Bash(git add *)", "Bash(git commit *)", "Bash(git push *)", "..."] }
 }
@@ -115,16 +115,19 @@ Why each part:
   Deny rules still apply in auto-allow mode. Text rules are bypassable;
   the denyWrite above is what holds.
 - **Network**: strict allowlist, refused rather than prompted
-  (`strictAllowlist`, honoured from `--settings`). Only the npm registry
-  (bun and npm install from it) and github.com. Add a host only when a
-  test proves it is needed.
+  (`strictAllowlist`, honoured from `--settings`). The npm registry (bun
+  and npm install from it) and github.com for every repo, plus the
+  hosts the project registered at `task.repo` set in
+  `sandboxAllowedDomains` (§11). Nothing per language is hardcoded; a
+  project with no setting gets exactly the fixed two.
 
 Never used: `dangerouslyDisableSandbox`, `excludedCommands`,
 `enableWeakerNestedSandbox`, `allowAllUnixSockets`, `allowLocalBinding`,
 `filesystem.disabled`. A gate test asserts none appears.
 
 Scope: write tier only. `ReadOnlyExecutor` is unchanged (plan mode, no
-`--settings`). Codex write runs are unchanged.
+`--settings`). Codex write runs are unchanged (and have no per-host
+network setting to feed, §11).
 
 ## 3. Availability and fallback
 
@@ -260,7 +263,7 @@ next attempt anything.
 | writes outside the worktree, `$TMPDIR` and extraAllowedDirs | sandbox (OS) | the worktree is the unit of review |
 | writes to the main repo's `.git` (commit, stash, refs) | sandbox denyWrite + deny rules | landing is the merge path's job |
 | reads of credentials, Claude/Codex profiles, the board db | sandbox denyRead | nothing a code task needs |
-| network except registry.npmjs.org, github.com | sandbox strict allowlist | exfiltration |
+| network except registry.npmjs.org, github.com and the project's `sandboxAllowedDomains` | sandbox strict allowlist | exfiltration |
 | unsandboxed retries | `allowUnsandboxedCommands: false` | the sandbox is the boundary |
 | `bun -e`, `node -e` in fallback mode | allowlist | arbitrary code, steered away |
 | a leading `VAR=value`, `eval` | Claude Code sends these to the permission flow even in auto-allow | not on the allowlist |
@@ -281,11 +284,18 @@ are not sandboxed.
 ## 9. Tests and evals
 
 - Gate: test/write-sandbox.test.ts (settings, argv on/unavailable/off,
-  readonly untouched, project rules, preflight probes mocked, manifest
-  steering, telemetry), test/permission-denials.test.ts (tokenizer, the
-  16 fixtures of card 494f87d6, the multi-line fixtures of card 7821db37), test/denials-baseline.test.ts, test/sandbox-checks.test.ts.
+  readonly untouched, project rules, per-project domains: merge order,
+  de-dup, empty default identical to today, the flow from
+  `POST /projects/:id/settings` through `settingsFor` and WriteExecutor
+  into the `--settings` JSON, unregistered repo and sandbox-off paths;
+  preflight probes mocked, manifest steering, telemetry),
+  test/permission-denials.test.ts (tokenizer, the 16 fixtures of card
+  494f87d6, the multi-line fixtures of card 7821db37),
+  test/denials-baseline.test.ts, test/sandbox-checks.test.ts.
 - Live: `bun run live-check:sandbox`, one real run asserting on what
   happened (tool results, filesystem, git), not on what the agent says.
+  Includes a project with `pypi.org` configured: curl to it gets an
+  HTTP status, curl to the unconfigured example.com gets nothing.
 - Eval: `bun run eval:sandbox-denials`, two real implementer tasks,
   pass bar `denials <= 1` per run.
 
@@ -295,3 +305,87 @@ See README "One-time host setup". On this host (Ubuntu 24.04,
 `kernel.apparmor_restrict_unprivileged_userns=1`): install socat (bwrap
 is already there), add `/etc/apparmor.d/bwrap`, reload AppArmor,
 restart the server.
+
+## 11. Per-project allowed domains
+
+Status: built 2026-10-19. First consumer of the per-project settings
+(docs/SDD-project-settings.md).
+
+### 11.1 Problem
+
+The allowlist above was fixed to the two hosts a Bun/TypeScript repo
+needs. finn-platform (uv, FastAPI, pytest, Terraform) needs
+`pypi.org`, `files.pythonhosted.org`, `registry.terraform.io` and
+`releases.hashicorp.com`; without them `uv sync` and `terraform init`
+fail inside the sandbox, and the agent either gives up or burns turns.
+Hardcoding them would hand every repo on this server PyPI and
+HashiCorp access, and the next language would need a code change.
+
+Measurable outcome: a write-tier run on a project with the four hosts
+set reaches them (live check (d), `project:<HTTP status>`), while a
+project with nothing set still gets exactly the two fixed hosts (gate
+test, byte-identical `--settings`).
+
+### 11.2 Flow
+
+```
+POST /projects/:id/settings {"sandboxAllowedDomains": [...]}
+  -> validateProjectSettings (bare lowercase hostnames, `*.` allowed, <= 20, no `*`)
+  -> SqliteProjectStore.setSettings (JSON column on `projects`)
+
+WriteExecutor.run(task)                       sandbox state "on" only
+  -> projectSettings(task.repo)               = ProjectStore.settingsFor(repo), per run
+  -> buildSandboxSettings({ allowedDomains: settings?.sandboxAllowedDomains })
+  -> mergeAllowedDomains: [...SANDBOX_ALLOWED_DOMAINS, ...project], each host once, order kept
+  -> --settings '{"sandbox":{"network":{"allowedDomains":[...],"strictAllowlist":true}}}'
+```
+
+- `ProjectStore.settingsFor(repo)` (src/services/projects.ts) resolves
+  both paths like `mergeGateFor`, so a trailing slash or `..` still
+  matches. Undefined when the repo isn't a registered project; an
+  object with no keys when it is one with nothing set. It returns only
+  the four setting fields, never the whole `Project`.
+- `WriteExecutorOptions.projectSettings` is the lookup, wired by
+  src/api/server.ts as `(repo) => projects.settingsFor(repo)`. It is
+  called only when the sandbox is on, with `task.repo` (the
+  human-controlled main checkout), never the worktree path: an agent
+  editing files in its worktree has no route to the board DB and so
+  can't grant its own next attempt a host.
+- `mergeAllowedDomains` (src/executors/sandbox.ts): fixed hosts first,
+  the project's after in their configured order, duplicates dropped
+  (a project listing `github.com` adds nothing). `strictAllowlist`
+  stays `true`: the list grows, refusal-not-prompt doesn't change.
+- An edit takes effect on the next run; no restart, same as the merge
+  gate.
+
+### 11.3 Backward compatibility
+
+Undefined or empty `sandboxAllowedDomains`, an unregistered repo, or
+no `projectSettings` wired (tests, evals, the live check before this
+card) all produce the same `--settings` JSON as before, byte for byte.
+Sandbox `off` or `unavailable` never calls the lookup and passes no
+`--settings`, as before. Gate tests assert each of these.
+
+### 11.4 Codex write runs
+
+`CodexWriteExecutor` (src/executors/codex-write.ts) doesn't build a
+sandbox settings object: `codex exec -s workspace-write` uses Codex's
+own sandbox, and Codex has no per-host network setting (its
+`sandbox_workspace_write.network_access` in config.toml is a boolean).
+There is nothing to pass the project's hosts into, so codex write runs
+are unchanged by this card. If a codex-routed card needs PyPI, that is
+a Codex configuration question, not a wissel setting.
+
+### 11.5 Where it breaks
+
+- Validation is syntactic. `pypi.org` passing doesn't make it safe;
+  the human setting it decides. A wildcard like `*.hashicorp.com`
+  allows every subdomain, by design.
+- The `*` prefix form is Claude Code's own matcher; wissel passes it
+  through as validated. If a future Claude Code changes the wildcard
+  syntax, the live check's configured-host assertion fails first.
+- `settingsFor` lists every project and compares resolved paths, as
+  `mergeGateFor` does. Fine for tens of projects; an index would be
+  the fix if it ever showed in a run's wall-clock.
+- The lookup runs once per run. A setting changed mid-run applies to
+  the next run only.

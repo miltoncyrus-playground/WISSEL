@@ -64,11 +64,12 @@ export interface WriteExecutorOptions {
   /** The per-project execution settings (docs/SDD-project-settings.md),
    *  looked up by `task.repo` at run time so an edit takes effect without
    *  a restart. Wired to `projects.settingsFor` by src/api/server.ts.
-   *  Only `verification` is read here: its `allowedTools` replace
-   *  BASE_ALLOWED_TOOLS and its `commands` render the contract's tokens
-   *  (src/core/verification.ts). Undefined (tests, evals), or a repo with
-   *  no project or no `verification`, keeps the Bun defaults:
-   *  byte-identical argv and prompt. */
+   *  Read here: `verification` (its `allowedTools` replace
+   *  BASE_ALLOWED_TOOLS and its `commands` render the contract's tokens,
+   *  src/core/verification.ts) and, only when the sandbox is on,
+   *  `sandboxAllowedDomains` (buildSandboxSettings). Undefined (tests, evals), or a repo with
+   *  no project or none of those keys, keeps today's argv, prompt and
+   *  `--settings` byte-identical. */
   settingsFor?: ProjectSettingsResolver;
   /** The project's worktree setup for a repo (ProjectStore
    *  .worktreeSetupFor), looked up per run so an edit applies without a
@@ -95,7 +96,8 @@ export const BASE_ALLOWED_TOOLS: readonly string[] = DEFAULT_VERIFICATION.allowe
  * (`sandbox.state === "on"`), Bash instead runs inside it and is
  * approved by it: writes only to the worktree, the temp dir and
  * extraAllowedDirs, credential dirs unreadable, network limited to the
- * npm registry and github.com, no unsandboxed retry. See
+ * npm registry, github.com and the project's own `sandboxAllowedDomains`
+ * (WriteExecutorOptions.settingsFor), no unsandboxed retry. See
  * src/executors/sandbox.ts and docs/SDD-write-tier-sandbox.md.
  *
  * Runs inside an isolated git worktree, never task.repo's own working
@@ -183,11 +185,19 @@ export class WriteExecutor implements Executor {
     // human-controlled `task.repo` path, never from a file in the
     // worktree an agent could have edited. Undefined keeps the Bun
     // defaults everywhere below.
-    const verification = (await this.settingsFor?.(task.repo!))?.verification;
+    const projectSettings = await this.settingsFor?.(task.repo!);
+    const verification = projectSettings?.verification;
 
+    // The project's own sandbox hosts (docs/SDD-project-settings.md),
+    // read from the board DB by task.repo, so an agent can't grant its
+    // own next attempt a host by editing a file in the worktree.
     const sandboxOn = this.sandbox.state === "on";
     const settings = sandboxOn
-      ? buildSandboxSettings({ repo: task.repo!, extraDenyRead: [...this.sandboxDenyRead, ...harnessConfigDirs([harness?.env])] })
+      ? buildSandboxSettings({
+          repo: task.repo!,
+          extraDenyRead: [...this.sandboxDenyRead, ...harnessConfigDirs([harness?.env])],
+          allowedDomains: projectSettings?.sandboxAllowedDomains,
+        })
       : undefined;
 
     const result = await runClaude({

@@ -66,6 +66,12 @@ export interface CodexWriteExecutorOptions {
  * see docs/SDD-worktree-isolation.md. The worktree's changes only ever
  * reach task.repo through an explicit, human-triggered
  * `POST /tasks/:id/merge`.
+ *
+ * No network allowlist here: `workspace-write` is Codex's own sandbox,
+ * and it has no per-host setting (network is all-or-nothing in Codex's
+ * config.toml), so `Project.sandboxAllowedDomains` (read by
+ * WriteExecutor) has nothing to feed into. See
+ * docs/SDD-write-tier-sandbox.md §11.
  */
 export class CodexWriteExecutor implements Executor {
   readonly id = "codex-write";

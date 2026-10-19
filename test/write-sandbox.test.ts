@@ -5,12 +5,24 @@ import { join } from "node:path";
 import { WriteExecutor } from "../src/executors/write.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
-import { buildSandboxSettings, GIT_WRITE_DENY, harnessConfigDirs, probeSandbox, sandboxStartupLines, type SandboxProbes } from "../src/executors/sandbox.ts";
+import {
+  buildSandboxSettings,
+  GIT_WRITE_DENY,
+  harnessConfigDirs,
+  mergeAllowedDomains,
+  probeSandbox,
+  SANDBOX_ALLOWED_DOMAINS,
+  sandboxStartupLines,
+  type SandboxProbes,
+} from "../src/executors/sandbox.ts";
 import { grantError, readProjectAllowRules } from "../src/core/allowed-tools.ts";
 import { finishResult } from "../src/core/orchestrator.ts";
 import { Registry } from "../src/core/registry.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { TelemetryLog } from "../src/services/telemetry.ts";
+import { Database } from "bun:sqlite";
+import { SqliteProjectStore } from "../src/services/projects.ts";
+import { domainError, validateProjectSettings } from "../src/services/project-settings.ts";
 import type { AgentDef, Harness, TaskCard } from "../src/core/types.ts";
 
 // The write-tier Bash sandbox (docs/SDD-write-tier-sandbox.md): the
@@ -101,6 +113,168 @@ test("buildSandboxSettings: strict sandbox, exact deny/allow lists, git writes d
   for (const loose of ["excludedCommands", "dangerouslyDisableSandbox", "allowWrite", "enableWeakerNestedSandbox", "allowAllUnixSockets", "allowLocalBinding"]) {
     expect(json).not.toContain(loose);
   }
+});
+
+// ---------- per-project allowed domains (docs/SDD-write-tier-sandbox.md §11) ----------
+
+/** What finn-platform sets through POST /projects/:id/settings. */
+const FINN_DOMAINS = ["pypi.org", "files.pythonhosted.org", "registry.terraform.io", "releases.hashicorp.com"];
+
+test("mergeAllowedDomains: fixed hosts first, then the project's in order, each once; nothing given is today's list", () => {
+  expect(mergeAllowedDomains()).toEqual(["registry.npmjs.org", "github.com"]);
+  expect(mergeAllowedDomains([])).toEqual([...SANDBOX_ALLOWED_DOMAINS]);
+  expect(mergeAllowedDomains(FINN_DOMAINS)).toEqual(["registry.npmjs.org", "github.com", ...FINN_DOMAINS]);
+  // A project repeating a fixed host, or itself, adds nothing; the first
+  // occurrence keeps its place.
+  expect(mergeAllowedDomains(["github.com", "pypi.org", "pypi.org", "registry.npmjs.org", "*.hashicorp.com"])).toEqual([
+    "registry.npmjs.org",
+    "github.com",
+    "pypi.org",
+    "*.hashicorp.com",
+  ]);
+  expect(mergeAllowedDomains(["", "pypi.org"])).toEqual(["registry.npmjs.org", "github.com", "pypi.org"]);
+  // The input is not mutated and the fixed list is not shared.
+  const input = ["pypi.org"];
+  const merged = mergeAllowedDomains(input);
+  merged.push("evil.example");
+  expect(input).toEqual(["pypi.org"]);
+  expect(SANDBOX_ALLOWED_DOMAINS).toEqual(["registry.npmjs.org", "github.com"]);
+  // Every host finn needs passes the settings validation that guards the list.
+  for (const d of FINN_DOMAINS) expect(domainError(d)).toBeUndefined();
+});
+
+test("buildSandboxSettings: project domains land in network.allowedDomains, strict stays on; none given is byte-identical to today", () => {
+  const base = buildSandboxSettings({ repo: "/r/finn" });
+  expect(JSON.stringify(buildSandboxSettings({ repo: "/r/finn", allowedDomains: [] }))).toBe(JSON.stringify(base));
+  expect(JSON.stringify(buildSandboxSettings({ repo: "/r/finn", allowedDomains: undefined }))).toBe(JSON.stringify(base));
+
+  const withFinn = buildSandboxSettings({ repo: "/r/finn", allowedDomains: FINN_DOMAINS });
+  expect((withFinn.sandbox as { network: unknown }).network).toEqual({
+    allowedDomains: ["registry.npmjs.org", "github.com", ...FINN_DOMAINS],
+    strictAllowlist: true,
+  });
+  // Only the network block differs from today's settings.
+  const { sandbox: baseSandbox, ...baseRest } = base;
+  const { sandbox: finnSandbox, ...finnRest } = withFinn;
+  expect(finnRest).toEqual(baseRest);
+  const { network: _b, ...baseSandboxRest } = baseSandbox as Record<string, unknown>;
+  const { network: _f, ...finnSandboxRest } = finnSandbox as Record<string, unknown>;
+  expect(finnSandboxRest).toEqual(baseSandboxRest);
+});
+
+/** A registered local project at `repo` (an existing directory) with
+ *  the given settings body, in an in-memory store. */
+async function projectWith(repo: string, body: unknown): Promise<SqliteProjectStore> {
+  const store = new SqliteProjectStore(new Database(":memory:"));
+  const added = await store.addLocalProject(repo, {}, async () => ({ stdout: "true", stderr: "", exitCode: 0 }));
+  if ("error" in added) throw new Error(added.error);
+  const check = validateProjectSettings(body);
+  if (!check.ok) throw new Error(check.error);
+  await store.setSettings(added.project.id, check.patch);
+  return store;
+}
+
+test("settingsFor: by normalised path; undefined for an unregistered repo, no keys for a project with none set", async () => {
+  await withTmp(async (dir) => {
+    const repo = join(dir, "finn");
+    await mkdir(repo);
+    const store = await projectWith(repo, { sandboxAllowedDomains: FINN_DOMAINS, worktreeSetup: [["uv", "sync"]] });
+    expect(await store.settingsFor(repo)).toEqual({ sandboxAllowedDomains: FINN_DOMAINS, worktreeSetup: [["uv", "sync"]] });
+    expect(await store.settingsFor(`${repo}/`)).toEqual({ sandboxAllowedDomains: FINN_DOMAINS, worktreeSetup: [["uv", "sync"]] });
+    expect(await store.settingsFor(join(repo, "..", "finn"))).toEqual({ sandboxAllowedDomains: FINN_DOMAINS, worktreeSetup: [["uv", "sync"]] });
+    expect(await store.settingsFor(join(dir, "other"))).toBeUndefined();
+    // Never the whole Project: only the four setting fields.
+    const bare = new SqliteProjectStore(new Database(":memory:"));
+    const added = await bare.addLocalProject(repo, {}, async () => ({ stdout: "true", stderr: "", exitCode: 0 }));
+    if ("error" in added) throw new Error(added.error);
+    expect(await bare.settingsFor(repo)).toEqual({});
+  });
+});
+
+test("sandbox on: the project's sandboxAllowedDomains flow from POST /projects/:id/settings through WriteExecutor into --settings", async () => {
+  await withTmp(async (dir) => {
+    const repo = join(dir, "finn");
+    await mkdir(repo);
+    const home = join(dir, "home");
+    // github.com repeated on purpose: it must not appear twice.
+    const store = await projectWith(repo, { sandboxAllowedDomains: [...FINN_DOMAINS, "github.com"] });
+    const lookups: string[] = [];
+    const projectSettings = async (r: string) => {
+      lookups.push(r);
+      return store.settingsFor(r);
+    };
+
+    const { runner, seen } = capture();
+    const task: TaskCard = { id: "t1", title: "T", body: "B", labels: [], repo, status: "dispatched" };
+    const result = await new WriteExecutor({ homeDir: home, runner, sandbox: ON, settingsFor: projectSettings }).run(task, implementer);
+    expect(result.sandbox).toBe("on");
+    // Looked up by task.repo (the main checkout), not the worktree.
+    expect(lookups).toEqual([repo]);
+    const settings = JSON.parse(flagValues(seen.cmd, "--settings")[0]!);
+    expect(settings.sandbox.network).toEqual({
+      allowedDomains: ["registry.npmjs.org", "github.com", ...FINN_DOMAINS],
+      strictAllowlist: true,
+    });
+    expect(settings).toEqual(buildSandboxSettings({ repo, extraDenyRead: [], allowedDomains: FINN_DOMAINS }));
+
+    // A later edit takes effect on the next run, no restart.
+    const check = validateProjectSettings({ sandboxAllowedDomains: ["pypi.org"] });
+    if (!check.ok) throw new Error(check.error);
+    await store.setSettings((await store.list())[0]!.id, check.patch);
+    const second = capture();
+    await new WriteExecutor({ homeDir: home, runner: second.runner, sandbox: ON, settingsFor: projectSettings }).run(task, implementer);
+    expect(JSON.parse(flagValues(second.seen.cmd, "--settings")[0]!).sandbox.network.allowedDomains).toEqual(["registry.npmjs.org", "github.com", "pypi.org"]);
+
+    // Cleared: today's list.
+    await store.setSettings((await store.list())[0]!.id, { sandboxAllowedDomains: null });
+    const third = capture();
+    await new WriteExecutor({ homeDir: home, runner: third.runner, sandbox: ON, settingsFor: projectSettings }).run(task, implementer);
+    expect(JSON.parse(flagValues(third.seen.cmd, "--settings")[0]!).sandbox.network.allowedDomains).toEqual(["registry.npmjs.org", "github.com"]);
+  });
+});
+
+test("sandbox on, repo not a registered project or no lookup wired: today's --settings exactly", async () => {
+  await withTmp(async (dir) => {
+    const repo = join(dir, "finn");
+    await mkdir(repo);
+    const other = join(dir, "other");
+    await mkdir(other);
+    const home = join(dir, "home");
+    const store = await projectWith(repo, { sandboxAllowedDomains: FINN_DOMAINS });
+    const today = buildSandboxSettings({ repo: other, extraDenyRead: [] });
+
+    const unregistered = capture();
+    await new WriteExecutor({ homeDir: home, runner: unregistered.runner, sandbox: ON, settingsFor: (r) => store.settingsFor(r) }).run(
+      { id: "t1", title: "T", body: "B", labels: [], repo: other, status: "dispatched" },
+      implementer,
+    );
+    expect(JSON.parse(flagValues(unregistered.seen.cmd, "--settings")[0]!)).toEqual(today);
+
+    const unwired = capture();
+    await new WriteExecutor({ homeDir: home, runner: unwired.runner, sandbox: ON }).run({ id: "t1", title: "T", body: "B", labels: [], repo: other, status: "dispatched" }, implementer);
+    expect(JSON.parse(flagValues(unwired.seen.cmd, "--settings")[0]!)).toEqual(today);
+  });
+});
+
+test("sandbox off or unavailable: the project's sandbox hosts are never used and no --settings is passed", async () => {
+  await withTmp(async (dir) => {
+    const repo = join(dir, "finn");
+    await mkdir(repo);
+    const home = join(dir, "home");
+    let lookups = 0;
+    const projectSettings = async () => {
+      lookups++;
+      return { sandboxAllowedDomains: FINN_DOMAINS };
+    };
+    for (const sandbox of [undefined, { state: "off" as const, problems: [] }, { state: "unavailable" as const, problems: ["socat is not installed"] }]) {
+      const { runner, seen } = capture();
+      await new WriteExecutor({ homeDir: home, runner, sandbox, settingsFor: projectSettings }).run({ id: "t1", title: "T", body: "B", labels: [], repo, status: "dispatched" }, implementer);
+      expect(seen.cmd).not.toContain("--settings");
+      expect(seen.cmd.join(" ")).not.toContain("pypi.org");
+    }
+    // One lookup per run, for `verification`; the sandbox hosts in it are ignored.
+    expect(lookups).toBe(3);
+  });
 });
 
 test("harnessConfigDirs collects CLAUDE_CONFIG_DIR and CODEX_HOME once each", () => {
