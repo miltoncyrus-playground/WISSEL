@@ -26,15 +26,23 @@
  *
  * Since 2026-10-17 the conflict lives in the original card's worktree
  * (the merge path merges the repo's HEAD into the branch there, never in
- * `repo` itself), so that is where the integrator resolves it; the
- * original card then lands through a second Merge (board-actions
- * mergeTask), the way a human finishes it.
+ * `repo` itself), so that is where the integrator resolves it. Since
+ * 2026-10-19 the integrator only edits: its sandbox denies `git add` and
+ * `git commit` there (the repo's `.git`, write-denied, holds the
+ * worktree's gitdir), so the merge stays open until the original card
+ * is merged again (board-actions mergeTask, the Merge button) and
+ * Wissel's own process commits the resolution (worktree.ts
+ * finishResolvedMerge), runs the gate and lands it. No manual git
+ * anywhere in this path; this eval has none either.
  *
  * Pass bar: `repo` untouched by the conflict (clean, same HEAD); after
- * the real integrator run, the worktree has (a) no unresolved conflict
- * markers, (b) no unmerged paths and no merge in progress, (c) both the
- * implementer's line and the HEAD line present; and the second Merge
- * lands it in `repo` with exactly one `Merge wissel/<id>: ...` commit.
+ * the real integrator run, the worktree has (a) no conflict markers,
+ * (b) both the implementer's line and the HEAD line present, (c) the
+ * merge still open (the integrator did not and could not commit), and
+ * the integrator card finished on review; then the second Merge commits
+ * it with the prepared `Merge wissel/<id>: ...` message, passes a gate
+ * that checks the merged file, lands it in `repo` as exactly one such
+ * commit, and the `merge` telemetry event names the integrator card.
  * Any single miss fails the eval; this is a correctness bar, not a
  * partial-credit score.
  */
@@ -49,9 +57,10 @@ import { Orchestrator, finishResult } from "../src/core/orchestrator.ts";
 import { WriteExecutor } from "../src/executors/write.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import { runViaBun } from "../src/executors/claude-cli.ts";
-import { createTaskWorktree } from "../src/services/worktree.ts";
+import { createTaskWorktree, type MergeContext } from "../src/services/worktree.ts";
 import { mergeTask } from "../src/services/board-actions.ts";
 import type { AgentDef } from "../src/core/types.ts";
+import type { TelemetryEvent } from "../src/services/telemetry.ts";
 import { evalHarnessPool } from "./eval-harness.ts";
 
 /**
@@ -181,14 +190,24 @@ async function main(): Promise<void> {
     const result = await board.getResult(followUp.id);
     console.log(`Integrator run finished: routedTo=${routed?.routedTo} status=${routed?.status} ok=${result?.ok} summary=${result?.summary?.slice(0, 300)}`);
 
-    // The resolution, where the integrator made it: the worktree.
+    // The resolution, where the integrator made it: the worktree. The
+    // merge is still open: the integrator edits, it cannot commit.
     const wtStatus = Bun.spawnSync(["git", "status", "--porcelain"], { cwd: worktree.path, stdout: "pipe" }).stdout.toString("utf8");
     const wtMerging = Bun.spawnSync(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: worktree.path }).exitCode === 0;
     const wtContent = existsSync(join(worktree.path, FILE)) ? readFileSync(join(worktree.path, FILE), "utf8") : "";
+    const wtMarkers = /^(<<<<<<<|=======|>>>>>>>)( |$)/m.test(wtContent);
 
-    // Then the original card lands the way a human finishes it: Merge.
-    console.log("Merging the original card again (gate none, ff-only into repo)...");
-    const landed = await mergeTask(board, task.id, runViaBun, registry);
+    // Then the original card is merged again (the Merge button): Wissel
+    // commits the resolution, runs the gate on the merged tree, lands.
+    // The gate reads the merged file, so a wrong resolution fails here.
+    const events: TelemetryEvent[] = [];
+    const mergeContext: MergeContext = {
+      runner: runViaBun,
+      gateFor: async () => ({ commands: [["sh", "-c", `grep -q '"feature-a"' ${FILE} && grep -q '"feature-b"' ${FILE} && ! grep -q '^<<<<<<<' ${FILE}`]] }),
+      telemetry: { record: async (e) => void events.push(e) },
+    };
+    console.log("Merging the original card again (Wissel commits the resolution, gate checks the merged file, ff-only into repo)...");
+    const landed = await mergeTask(board, task.id, mergeContext, registry);
     console.log(`  -> ${landed.ok ? landed.value.message : landed.error}`);
     const fileContent = existsSync(join(repo, FILE)) ? readFileSync(join(repo, FILE), "utf8") : "";
     const log = Bun.spawnSync(["git", "log", "--oneline", "-n", "10"], { cwd: repo, stdout: "pipe" }).stdout.toString("utf8");
@@ -196,20 +215,30 @@ async function main(): Promise<void> {
       .stdout.toString("utf8")
       .split("\n")
       .filter((s) => s.startsWith(`Merge ${worktree.branch}:`));
+    const headMessage = Bun.spawnSync(["git", "log", "-1", "--format=%B"], { cwd: repo, stdout: "pipe" }).stdout.toString("utf8").trim();
+    const mergeEvent = events.find((e): e is Extract<TelemetryEvent, { type: "merge" }> => e.type === "merge");
 
     const checks = [
       { name: "repo untouched by the conflict (same HEAD, clean, no MERGE_HEAD)", pass: repoUntouched },
       { name: "routed to integrator", pass: routed?.routedTo === "integrator" },
-      { name: "worktree: no unmerged paths, merge finished", pass: !/^(U|AA|DD)/m.test(wtStatus) && wtStatus.trim() === "" && !wtMerging },
-      { name: "worktree: no leftover conflict markers", pass: !wtContent.includes("<<<<<<<") && !wtContent.includes(">>>>>>>") },
+      { name: "integrator card finished on review", pass: routed?.status === "review" },
+      { name: "worktree: no leftover conflict markers after the integrator", pass: !wtMarkers },
+      { name: "worktree: both features present after the integrator", pass: wtContent.includes('"feature-a"') && wtContent.includes('"feature-b"') },
+      { name: "worktree: merge still open after the integrator (it edits, Wissel commits)", pass: wtMerging && /^(UU|AA|DD|M )/m.test(wtStatus) },
+      { name: "second Merge: Wissel finished the resolved merge (message names the integrator card)", pass: landed.ok && landed.value.message.includes(`finished the conflict merge resolved by card ${followUp.id}`) },
+      { name: "second Merge: gate passed on the merged tree", pass: mergeEvent?.gate === "passed" },
+      { name: "telemetry merge event carries resolvedConflictBy = the integrator card", pass: mergeEvent?.resolvedConflictBy === followUp.id },
+      { name: "landing commit message is the prepared Merge wissel/<id>: ... (no Conflicts comment)", pass: headMessage === `Merge ${worktree.branch}: Add feature-a to FEATURES` },
       { name: "feature-a present after landing", pass: fileContent.includes('"feature-a"') },
       { name: "feature-b present after landing", pass: fileContent.includes('"feature-b"') },
       { name: "landed with exactly one Merge wissel/ commit", pass: landed.ok && landings.length === 1 },
+      { name: "repo clean after landing, worktree removed", pass: !existsSync(join(repo, ".git", "MERGE_HEAD")) && !existsSync(worktree.path) },
     ];
 
     console.log("");
     console.log(`Final ${FILE}:\n---\n${fileContent}---`);
-    console.log(`\nworktree git status --porcelain:\n${wtStatus || "(clean)"}`);
+    console.log(`\nworktree git status --porcelain after the integrator:\n${wtStatus || "(clean)"}`);
+    console.log(`worktree merge still open after the integrator: ${wtMerging}`);
     console.log(`\ngit log:\n${log}`);
     console.log("");
     for (const c of checks) console.log(`${c.pass ? "PASS" : "FAIL"}  ${c.name}`);

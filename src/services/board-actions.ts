@@ -19,7 +19,7 @@ import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import { validateNotBefore } from "../core/not-before.ts";
 import { mergeTaskWorktree, removeTaskWorktree, type MergeContext } from "./worktree.ts";
-import { afterMergeAttempt, MAX_PUSHBACKS } from "../core/orchestrator.ts";
+import { afterMergeAttempt, MAX_PUSHBACKS, withConflictIntegratorCheck } from "../core/orchestrator.ts";
 import { Registry } from "../core/registry.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import { ScheduleValidationError, type ScheduleInput, type SchedulePatch, type ScheduleStore } from "./schedules.ts";
@@ -76,7 +76,9 @@ export function notBeforeRefusal(task: Pick<TaskCard, "status" | "routedTo" | "a
  *  error says what happened:
  *  - gate failed: the card goes back as a pushback attempt (or
  *    escalates at the cap), same as a reviewer's changes_requested;
- *  - conflict: left in the worktree, one integrator card spawned;
+ *  - conflict: left in the worktree, one integrator card spawned. Once
+ *    that card has finished and no marker is left, the next merge
+ *    commits the resolution itself (worktree.ts finishResolvedMerge);
  *  - blocked by uncommitted local changes: lists the files; nothing
  *    touched, no integrator (it isn't a conflict);
  *  - HEAD moved twice while checking: merge again. */
@@ -95,7 +97,7 @@ export async function mergeTask(
   // `repo` at creation time (see POST /tasks) — never reachable for a
   // repo-less readonly task.
   const worktree = result!.worktree!;
-  const merge = await mergeTaskWorktree(task.repo!, worktree, task, runner, (sha) => board.recordMerge(task.id, sha));
+  const merge = await mergeTaskWorktree(task.repo!, worktree, task, withConflictIntegratorCheck(board, runner), (sha) => board.recordMerge(task.id, sha));
   if (!merge.ok) {
     const next = await afterMergeAttempt(board, registry ?? Registry.from([]), task, worktree, merge);
     // The gate's full output tail goes to the new attempt's body, not to

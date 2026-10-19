@@ -38,7 +38,7 @@ breaks this, outside its documented allowlist.
 | `eval/pipeline-full-lifecycle.eval.ts` | `bun run eval:pipeline-full-lifecycle` | The full task lifecycle `PipelineDef` (`src/core/full-lifecycle-pipeline.ts` — triager in front of the same review-handoff loop) actually converges end to end against real `triager`/`implementer`/`pipeline-reviewer` agents — see docs/SDD-pipelines.md §10. |
 | `eval/pipeline-mcp-integration.eval.ts` | `bun run eval:pipeline-mcp-integration` | A heterogeneous pipeline (a file-editing coding step bound to `implementer`, then an MCP-tool-calling step bound to `mcp-tool-caller`) actually composes end to end through `startPipelineRun` against a real, attached MCP server — see docs/SDD-mcp-orchestration.md §6 Subtask 7. |
 | `eval/live-task-output.eval.ts` | `bun run eval:live-task-output` | A real `claude -p` call's streamed stdout actually lands in the durable task-output store and is deliverable live over a real HTTP SSE connection, end to end — spawn -> stream -> store -> SSE -> render — see docs/SDD-live-task-output.md §6 Subtask 5. |
-| `eval/conflict-integrator.eval.ts` | `bun run eval:conflict-integrator` | The real `integrator` agent, pointed at a real two-branch git conflict shaped like this session's own two real ones (both additive, same file), actually resolves it correctly end to end — not just that a follow-up task got created. Since 2026-10-17 the conflict is in the card's worktree, never the repo: the eval also checks the repo stayed untouched and that a second Merge lands the resolution with one `Merge wissel/` commit. See docs/SDD-crash-recovery.md §6 Subtask 3. |
+| `eval/conflict-integrator.eval.ts` | `bun run eval:conflict-integrator` | The real `integrator` agent, pointed at a real two-branch git conflict shaped like this session's own two real ones (both additive, same file), actually resolves it correctly end to end — not just that a follow-up task got created. Since 2026-10-17 the conflict is in the card's worktree, never the repo: the eval also checks the repo stayed untouched. Since 2026-10-19 the integrator only edits (its sandbox can't commit) and the second Merge is what commits the resolution, gates it and lands it with one `Merge wissel/` commit; the eval asserts that whole path with no manual git. See docs/SDD-crash-recovery.md §6 Subtask 3, docs/SDD-worktree-isolation.md §7.8. |
 | `eval/merge-gate.eval.ts` | `bun run eval:merge-gate` | The merge gate (`mergeTaskWorktree`, docs/SDD-worktree-isolation.md §7) catches a broken attempt and its feedback is enough for the real implementer to fix it. A scratch repo with `slug()` and its tests, gate `bun test`. Attempt 1 is scripted (a realistic bug that drops a trim and breaks a test the card never mentions), so the eval measures the gate, not luck. The human Merge runs the gate, which must refuse it; the pushback attempt then runs on the real implementer and reviewer with only the gate output to go on; the second Merge must land through the gate. Pass: all 7 checks in 1 run (refused and nothing landed, pushbackCount 1, the gate output in the pushback body, landed with `gate: passed`, the repo's tests pass, `slug()` does both, no `MERGE_HEAD` ever in the repo). One implementer run plus one or two reviewer runs; under $1. |
 | `eval/memory-curation-quality.eval.ts` | `bun run eval:memory-curation-quality` | The real `memory-curator` agent, handed a realistic mixed batch of durable-lesson and noise session entries, actually applies the selectivity bar in its `outputContract` (`agents/manifest.yaml`) — keeps the durable ones, drops the noise. See docs/SDD-memory-curator.md §10. |
 | `eval/claude-cli-429-replay.eval.ts` | `bun run eval:claude-cli-429-replay` | Every real 429 failure ever recorded on the local board (`~/.wissel/board.sqlite`), replayed byte for byte through `runClaude`, is classified correctly: session-limit 429s with a stated reset time get `retryAfter` (auto-retry), rate-limit 429s with none fail plainly. Zero spend, no `claude` process; SKIPs on a board with no 429 history. |
@@ -393,9 +393,15 @@ integrator's own attempt.
 
 ### Pass bar
 
-After the real integrator run: no unresolved conflict markers, no
-unmerged paths in `git status`, both branches' content present in the
-file, and a real merge commit landed. Any single miss fails the eval.
+After the real integrator run: no conflict markers in the worktree's
+file, both branches' content present, the merge still open (the
+integrator edits; it cannot commit, see below) and the integrator card
+on `review`. Then a second Merge of the original card: Wissel commits
+the resolution itself with the prepared `Merge wissel/<id>: ...`
+message, a gate that greps the merged file passes, exactly one such
+commit lands in `repo`, the `merge` telemetry event names the integrator
+card in `resolvedConflictBy`, and the worktree is gone. No manual git
+anywhere. Any single miss fails the eval.
 
 ### A real design gap this eval's own first draft caught
 
@@ -468,6 +474,21 @@ both features' content with no leftover conflict markers. This directly
 refutes the earlier 3/3 failure above — the `extraAllowedTools` grant on
 `git -C <repo> status/diff/add/commit` closes the Bash-gating gap
 `extraAllowedDirs` alone left open.
+
+### 2026-10-19: the integrator edits, Wissel commits
+
+The `git add`/`git commit` grants above stopped working once the
+write-tier sandbox landed (docs/SDD-write-tier-sandbox.md): it denies
+every git write as a permission rule and write-denies the repo's `.git`,
+which holds the worktree's gitdir. Live, cards 32c60ba0 and 42d2bbfb
+both ended with the files resolved, the merge uncommitted, and the next
+Merge refused with "has an unfinished merge"; a human ran git by hand.
+The fix is in Wissel's process, not the prompt: `mergeTaskWorktree`
+commits the resolution itself when no file carries a marker and the
+integrator card has finished (docs/SDD-worktree-isolation.md §7.8). The
+integrator's grants are `status`/`diff` only and its body says to stop
+after editing. This eval's checks were rewritten to that path; the
+earlier PASS runs predate it and need a fresh run with a real `claude`.
 
 ### Scheduling
 

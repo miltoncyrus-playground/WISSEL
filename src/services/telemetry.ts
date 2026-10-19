@@ -54,6 +54,9 @@ export type TelemetryEvent =
       lockHoldMs: number;
       landedSha?: string;
       blockedFiles?: string[];
+      /** The conflict integrator card whose resolution this attempt
+       *  committed itself (worktree.ts finishResolvedMerge). */
+      resolvedConflictBy?: string;
       /** Why it didn't land; capped at 500 characters. */
       message?: string;
     }

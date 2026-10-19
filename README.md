@@ -177,7 +177,12 @@ Recovery handles it on the next start, but the restart is avoidable.
    - **Merge gate failed**: names the command; the card goes back as a
      pushback attempt with the output (same 5-round limit as review).
    - **Conflict**: left in the worktree, one integrator card resolves it
-     there; Merge again after.
+     there (edits only; its sandbox can't commit). Merge again after:
+     Wissel commits the resolution itself once no file has a conflict
+     marker and that integrator card has finished, then gates and lands
+     it. Otherwise the refusal names the file and line, or the card and
+     its status. Resolving by hand still works: `git commit --no-edit`
+     in the worktree, then Merge.
    - **Blocked by uncommitted local changes in: files**: commit or move
      those edits in your checkout, then Merge again. No integrator.
    - **HEAD moved twice**: someone kept committing; Merge again.

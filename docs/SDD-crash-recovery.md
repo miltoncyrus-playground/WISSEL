@@ -317,6 +317,20 @@ detection (§2) still watches the repos; wissel itself can no longer
 leave `MERGE_HEAD` in one. A conflict is also the only miss that spawns
 an integrator: `blocked-local-changes`, `head-moved` and errors never do.
 
+**Fourth revision (2026-10-19): the integrator edits, Wissel commits.**
+The third revision's `git add`/`git commit --no-edit` instruction and
+grants could never work: the write-tier sandbox denies git writes
+(`GIT_WRITE_DENY`) and write-denies the repo's `.git`, which holds the
+worktree's gitdir. Cards 32c60ba0 and 42d2bbfb both ended resolved but
+uncommitted, refused by the next Merge as "has an unfinished merge", and
+were finished by hand. The follow-up's body now says it cannot commit
+and must stop after editing, its grants are `git -C <worktree>
+status/diff` only, and `mergeTaskWorktree` commits the resolution itself
+once no file carries a marker and the follow-up card is on `review` or
+`done` (docs/SDD-worktree-isolation.md §7.8). The 2/2 PASS above
+predates this; the eval now asserts the whole path lands with no manual
+git (eval/README.md).
+
 ## 7. Sequencing
 
 1 and 2 are fully independent of each other and of 3 — all three can run
