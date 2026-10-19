@@ -372,8 +372,9 @@ export interface Project {
   // Per-project execution settings (src/services/project-settings.ts,
   // docs/SDD-project-settings.md), set with POST /projects/:id/settings.
   // Undefined means today's Bun/TypeScript defaults. Read per run by
-  // ProjectStore.settingsFor(task.repo); only sandboxAllowedDomains is
-  // consumed so far (WriteExecutor), the other three are stored only.
+  // ProjectStore.settingsFor(task.repo) / worktreeSetupFor(task.repo);
+  // sandboxAllowedDomains (WriteExecutor) and worktreeSetup (worktree
+  // creation) are consumed so far, the other two are stored only.
   /** Hosts added to SANDBOX_ALLOWED_DOMAINS for this repo's sandboxed
    *  commands (mergeAllowedDomains, src/executors/sandbox.ts): bare
    *  hostnames, `*.` prefix allowed, at most 20. */
@@ -381,7 +382,8 @@ export interface Project {
   /** The checks an implementer must run (argv arrays), and the
    *  command-scoped Bash grants that let it (each passes grantError). */
   verification?: { commands: string[][]; allowedTools: string[] };
-  /** Argv commands run once in a new worktree (e.g. `uv sync`). */
+  /** Argv commands run once in a new worktree (e.g. `uv sync`), before
+   *  the agent starts. Read: runWorktreeSetup (src/services/worktree.ts). */
   worktreeSetup?: string[][];
   /** Repo-relative globs agents may not modify. */
   protectedPaths?: string[];

@@ -7,6 +7,7 @@ import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { Project } from "../core/types.ts";
 import { WISSEL_MERGE_GATE, type MergeGateConfig } from "./merge-gate.ts";
 import { PROJECT_SETTING_KEYS, type ProjectSettings, type ProjectSettingsPatch } from "./project-settings.ts";
+import type { WorktreeSetupConfig } from "./worktree.ts";
 
 /**
  * Registers a project/repo two ways: an existing local folder, or a
@@ -34,6 +35,10 @@ export interface ProjectStore {
   /** The gate for the project registered at `repo`, if it has one: the
    *  merge path's MergeGateResolver. */
   mergeGateFor(repo: string): Promise<MergeGateConfig | undefined>;
+  /** The worktree setup (Project.worktreeSetup) for the project
+   *  registered at `repo`, if it has one: the write executors'
+   *  WorktreeSetupResolver. */
+  worktreeSetupFor(repo: string): Promise<WorktreeSetupConfig | undefined>;
   /** Applies a validated settings patch (validateProjectSettings in
    *  src/services/project-settings.ts): absent keys are kept, null
    *  clears. Throws on an unknown id. */
@@ -245,6 +250,11 @@ export class SqliteProjectStore implements ProjectStore {
   private async byPath(repo: string): Promise<Project | undefined> {
     const key = resolve(repo);
     return (await this.list()).find((p) => resolve(p.path) === key);
+  }
+
+  async worktreeSetupFor(repo: string): Promise<WorktreeSetupConfig | undefined> {
+    const project = await this.byPath(repo);
+    return project?.worktreeSetup?.length ? { commands: project.worktreeSetup } : undefined;
   }
 
   async addLocalProject(path: string, opts: { initGit?: boolean }, runner: CommandRunner): Promise<{ project: Project } | { error: string }> {

@@ -2,7 +2,8 @@ import type { AgentDef, Executor, Harness, TaskCard, TaskResult } from "../core/
 import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { resolveModel } from "../core/model-resolution.ts";
 import { runClaude, runViaBun, type CommandRunner } from "./claude-cli.ts";
-import { createTaskWorktree } from "../services/worktree.ts";
+import { createTaskWorktree, type WorktreeSetupResolver } from "../services/worktree.ts";
+import type { GateCommandRunner } from "../services/merge-gate.ts";
 import { readProjectAllowRules } from "../core/allowed-tools.ts";
 import { buildSandboxSettings, harnessConfigDirs, type SandboxStatus } from "./sandbox.ts";
 import type { ProjectSettings } from "../services/project-settings.ts";
@@ -63,6 +64,12 @@ export interface WriteExecutorOptions {
    *  evals, a repo that isn't a registered project) means no extra
    *  hosts: today's `--settings` exactly. */
   projectSettings?: (repo: string) => Promise<ProjectSettings | undefined>;
+  /** The project's worktree setup for a repo (ProjectStore
+   *  .worktreeSetupFor), looked up per run so an edit applies without a
+   *  restart. Undefined means none: today's behaviour. */
+  worktreeSetupFor?: WorktreeSetupResolver;
+  /** Runs each setup command; defaults to runGateCommand. Test seam. */
+  setupRunner?: GateCommandRunner;
 }
 
 /** Always granted: the two commands every write-tier verificationContract
@@ -114,8 +121,12 @@ export class WriteExecutor implements Executor {
   private sandbox: SandboxStatus;
   private sandboxDenyRead: string[];
   private projectSettings?: (repo: string) => Promise<ProjectSettings | undefined>;
+  private worktreeSetupFor?: WorktreeSetupResolver;
+  private setupRunner?: GateCommandRunner;
 
   constructor(opts: WriteExecutorOptions = {}) {
+    this.worktreeSetupFor = opts.worktreeSetupFor;
+    this.setupRunner = opts.setupRunner;
     this.runner = opts.runner ?? runViaBun;
     this.model = opts.model;
     this.homeDir = opts.homeDir;
@@ -144,7 +155,14 @@ export class WriteExecutor implements Executor {
     // `repo` is mandatory for any write/bash-capable agent, enforced at
     // creation by POST /tasks (see TaskCard.repo's own doc comment) —
     // a write-tier task reaching this executor always has one.
-    const worktree = await createTaskWorktree(task.repo!, worktreeKey, { runner: this.runner, homeDir: this.homeDir });
+    // The project's worktreeSetup runs here, in wissel's own process,
+    // before the agent starts; a failure fails the card with its output.
+    const worktree = await createTaskWorktree(task.repo!, worktreeKey, {
+      runner: this.runner,
+      homeDir: this.homeDir,
+      setup: await this.worktreeSetupFor?.(task.repo!),
+      setupRunner: this.setupRunner,
+    });
     if ("error" in worktree) return fail(task, agent, worktree.error);
 
     // The repo's own .claude/settings.json allow rules, which claude

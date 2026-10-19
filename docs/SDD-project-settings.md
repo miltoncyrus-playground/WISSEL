@@ -2,9 +2,10 @@
 
 Status: storage and API shipped 2026-10-19. Consumers:
 `sandboxAllowedDomains` is read by the write-tier sandbox
-(docs/SDD-write-tier-sandbox.md §11, via `ProjectStore.settingsFor`);
-the verification contract, worktree setup and protected paths cards
-are next.
+(docs/SDD-write-tier-sandbox.md §11, via `ProjectStore.settingsFor`).
+Worktree setup is built: `worktreeSetup` runs once in each new
+worktree, see docs/SDD-worktree-isolation.md §8. The verification
+contract and protected paths cards are next.
 
 ## 1. Why
 

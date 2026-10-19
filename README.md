@@ -195,11 +195,15 @@ Recovery handles it on the next start, but the restart is avoidable.
    "allowedTools": ["Bash(uv run pytest:*)"]}`), `worktreeSetup`
    (`[["uv","sync"]]`) and `protectedPaths` (repo-relative globs, no
    `..`). An absent key is kept, `null` clears it, bad input is a 400
-   naming the field. `GET /projects` returns them. `sandboxAllowedDomains`
-   is live: a write-tier run on that repo gets those hosts added to the
-   sandbox's network allowlist (`docs/SDD-write-tier-sandbox.md` §11).
-   The other three are stored only for now; see
-   `docs/SDD-project-settings.md`.
+   naming the field. `GET /projects` returns them; see
+   `docs/SDD-project-settings.md`. `sandboxAllowedDomains` is live: a
+   write-tier run on that repo gets those hosts added to the sandbox's
+   network allowlist (`docs/SDD-write-tier-sandbox.md` §11).
+   `worktreeSetup` runs once in each new worktree, in order, before the
+   agent starts (10 minutes per command). A failure fails the card with
+   the command's last 200 output lines; reviewer, fixer and integrator
+   runs on the same worktree skip it (`docs/SDD-worktree-isolation.md`
+   §8). The other two are stored only for now.
    An implementer may run only `bun test` and `bun run typecheck`
    unless the card grants more: `extraAllowedTools` on `POST /tasks`, or
    `POST /tasks/:id/allowed-tools` (command-scoped Bash only, e.g.
