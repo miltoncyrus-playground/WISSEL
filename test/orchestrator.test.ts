@@ -7,6 +7,7 @@ import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
 import {
   Orchestrator,
+  conflictIntegratorState,
   finishResult,
   maybeSpawnConflictIntegrator,
   resolveHandoffAllowlist,
@@ -666,16 +667,18 @@ test("autoMerge + trustLevel high, merge conflicts, integrator registered — au
     expect(followUp.repo).toBe(repo);
     // The conflict is in the card's worktree, so that is what's granted.
     expect(followUp.extraAllowedDirs).toEqual([wt.path]);
-    expect(followUp.extraAllowedTools).toEqual([
-      `Bash(git -C ${wt.path} status:*)`,
-      `Bash(git -C ${wt.path} diff:*)`,
-      `Bash(git -C ${wt.path} add:*)`,
-      `Bash(git -C ${wt.path} commit:*)`,
-    ]);
+    // Read-only git only: add/commit can't succeed in the sandbox (the
+    // repo's .git, write-denied, holds the worktree's gitdir), so the
+    // body says to stop after editing and Wissel commits the resolution.
+    expect(followUp.extraAllowedTools).toEqual([`Bash(git -C ${wt.path} status:*)`, `Bash(git -C ${wt.path} diff:*)`]);
     expect(followUp.body).toContain(task.id);
     expect(followUp.body).toContain(wt.branch);
     expect(followUp.body).toContain("CONFLICT (content): Merge conflict in f.txt");
-    expect(followUp.body).toContain("commit --no-edit");
+    expect(followUp.body).toContain("You cannot commit, and must not try");
+    expect(followUp.body).toContain("files edited and uncommitted, exactly as resolved");
+    expect(followUp.body).toContain("Wissel finishes the merge itself");
+    expect(followUp.body).not.toContain(`git -C ${wt.path} commit`);
+    expect(followUp.body).not.toContain(`git -C ${wt.path} add`);
     await checkConflictFollowUp(followUp, registry);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -730,11 +733,14 @@ test("maybeSpawnConflictIntegrator grants the follow-up task access to the confl
   expect(followUps[0]!.extraAllowedDirs).toEqual(["/wt/t"]);
 });
 
-test("maybeSpawnConflictIntegrator also grants the follow-up task extraAllowedTools for git -C <worktree> status/diff/add/commit — extraAllowedDirs alone doesn't make acceptEdits' Bash gating allow these commands", async () => {
+test("maybeSpawnConflictIntegrator grants the follow-up extraAllowedTools for git -C <worktree> status/diff only — never add/commit, which the sandbox denies", async () => {
   // Confirmed live: a real run with only extraAllowedDirs set hit
-  // repeated Bash permission denials on exactly these commands and
-  // never completed the merge (see TaskCard.extraAllowedTools' own doc
-  // comment). --add-dir and --allowedTools are separate gates.
+  // repeated Bash permission denials on these read commands (see
+  // TaskCard.extraAllowedTools' own doc comment). --add-dir and
+  // --allowedTools are separate gates. add/commit were granted too until
+  // 2026-10-19; they can never succeed (GIT_WRITE_DENY, and the repo's
+  // .git write-denied), so cards 32c60ba0 and 42d2bbfb ended with an
+  // uncommitted merge. Wissel commits the resolution itself now.
   const board = new SqliteBoard();
   const registry = await Registry.load();
   const task = await board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: "/repo" });
@@ -744,12 +750,29 @@ test("maybeSpawnConflictIntegrator also grants the follow-up task extraAllowedTo
 
   const followUps = (await board.list()).filter((t) => t.id !== task.id);
   expect(followUps).toHaveLength(1);
-  expect(followUps[0]!.extraAllowedTools).toEqual([
-    "Bash(git -C /wt/t status:*)",
-    "Bash(git -C /wt/t diff:*)",
-    "Bash(git -C /wt/t add:*)",
-    "Bash(git -C /wt/t commit:*)",
-  ]);
+  expect(followUps[0]!.extraAllowedTools).toEqual(["Bash(git -C /wt/t status:*)", "Bash(git -C /wt/t diff:*)"]);
+  expect(followUps[0]!.body).toContain("You cannot commit, and must not try");
+});
+
+test("conflictIntegratorState: finished only on review or done, naming the card and its status otherwise", async () => {
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  const task = await board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: "/repo" });
+  expect(await conflictIntegratorState(board, task)).toEqual({ finished: false, reason: `no conflict integrator card ("Resolve merge conflict: ${task.id}") exists for this task` });
+
+  await maybeSpawnConflictIntegrator(board, registry, task, { path: "/wt/t", branch: "wissel/t" }, "CONFLICT");
+  const card = (await board.list()).find((t) => t.labels.includes("conflict"))!;
+  expect(await conflictIntegratorState(board, task)).toEqual({ finished: false, reason: `the conflict integrator card ${card.id} is inbox, not finished (review or done)` });
+  await board.move(card.id, "running");
+  expect(await conflictIntegratorState(board, task)).toEqual({ finished: false, reason: `the conflict integrator card ${card.id} is running, not finished (review or done)` });
+  await board.move(card.id, "review");
+  expect(await conflictIntegratorState(board, task)).toEqual({ finished: true, cardId: card.id });
+  await board.move(card.id, "done");
+  expect(await conflictIntegratorState(board, task)).toEqual({ finished: true, cardId: card.id });
+  // A card with the title but not the label is someone else's.
+  const other = await board.create({ title: "Other", body: "", labels: ["code"], repo: "/repo" });
+  await board.create({ title: `Resolve merge conflict: ${other.id}`, body: "", labels: ["code"], repo: "/repo" });
+  expect((await conflictIntegratorState(board, other)).finished).toBe(false);
 });
 
 test("autoMerge alone, without trustLevel: high, does NOT skip review — both conditions required together", async () => {

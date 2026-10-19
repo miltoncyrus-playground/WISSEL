@@ -414,13 +414,9 @@ test("a fresh merge conflict on approve auto-spawns exactly one integrator-route
     // extraAllowedDirs alone only grants file-system access (--add-dir);
     // it does not make acceptEdits' own Bash gating allow the git
     // commands the body above instructs — extraAllowedTools is the
-    // separate grant for that (see TaskCard.extraAllowedTools).
-    expect(followUp.extraAllowedTools).toEqual([
-      `Bash(git -C ${worktreePath} status:*)`,
-      `Bash(git -C ${worktreePath} diff:*)`,
-      `Bash(git -C ${worktreePath} add:*)`,
-      `Bash(git -C ${worktreePath} commit:*)`,
-    ]);
+    // separate grant for that (see TaskCard.extraAllowedTools). Reads
+    // only: add/commit are sandbox-denied, Wissel commits the resolution.
+    expect(followUp.extraAllowedTools).toEqual([`Bash(git -C ${worktreePath} status:*)`, `Bash(git -C ${worktreePath} diff:*)`]);
 
     // Routed to "integrator" for real, through the orchestrator's own
     // sweep (not a Router.route() call made in isolation) — and its own
@@ -450,8 +446,6 @@ test("a fresh merge conflict on approve auto-spawns exactly one integrator-route
       "Bash(bun run typecheck:*)",
       `Bash(git -C ${worktreePath} status:*)`,
       `Bash(git -C ${worktreePath} diff:*)`,
-      `Bash(git -C ${worktreePath} add:*)`,
-      `Bash(git -C ${worktreePath} commit:*)`,
     ]);
   } finally {
     await cleanup(fixture);
@@ -484,18 +478,23 @@ test("a second conflict for the same task, driven through a second real approve-
     await fixture.orchestrator.sweep();
 
     expect((await fixture.board.get(task.id))!.status).toBe("review");
-    expect((await fixture.board.list()).filter((t) => t.labels.includes("conflict"))).toHaveLength(1);
+    const [integrator] = (await fixture.board.list()).filter((t) => t.labels.includes("conflict"));
+    expect(integrator).toBeDefined();
+    // The integrator attempt failed (the fake ran, left nothing useful).
+    // Its card not being finished is what keeps the second attempt a
+    // conflict: the re-run below rewrites feature.txt without markers,
+    // and with a finished integrator Wissel would commit that as the
+    // resolution and land it (the next test).
+    await fixture.board.move(integrator!.id, "failed");
 
     // Re-run the same implementer task for real (runNow bypasses the
     // sweep's "already routed" skip — same escape hatch "a human's
     // per-task decision overrides the blanket gate" in
     // test/orchestrator.test.ts exercises). Reuses the exact same
     // worktree/branch (createTaskWorktree's own idempotent reuse, keyed
-    // off task.id since this task was never pushed back) and feature.txt
-    // ends up with byte-identical content again, so there's nothing new
-    // to commit — the worktree branch and fixture.repo's own branch are
-    // exactly as diverged as they were a moment ago, and a second
-    // reviewer pass hits the exact same real conflict again.
+    // off task.id since this task was never pushed back), with the
+    // merge still open there, and a second reviewer pass hits the same
+    // unfinished merge again.
     await fixture.orchestrator.runNow(task.id, [new WriteExecutor({ runner: fixture.runner, homeDir: fixture.home }), new ReadOnlyExecutor({ runner: fixture.runner })]);
     await waitForStatus(fixture.board, task.id, "pending-review");
     await fixture.orchestrator.sweep();
@@ -503,6 +502,59 @@ test("a second conflict for the same task, driven through a second real approve-
     expect((await fixture.board.get(task.id))!.status).toBe("review");
     const followUps = (await fixture.board.list()).filter((t) => t.labels.includes("conflict"));
     expect(followUps).toHaveLength(1);
+    expect(followUps[0]!.id).toBe(integrator!.id);
+  } finally {
+    await cleanup(fixture);
+  }
+});
+
+test("a second approve-resume on a worktree whose conflict was resolved, with the integrator finished, commits the resolution and lands it (auto-merge path, real git)", async () => {
+  // The same shape as the previous test, but the integrator card stays
+  // finished (review, where the fake's run left it) and the re-run
+  // leaves feature.txt with no conflict marker. tryAutoMerge's
+  // mergeTaskWorktree then finishes the merge itself with the prepared
+  // message (docs/SDD-worktree-isolation.md §7.8) and lands it: the
+  // path cards 32c60ba0 and 42d2bbfb needed a human's git for.
+  const relPath = "feature.txt";
+  const fixture = await setupWritingFile(
+    [
+      { verdict: "approve", feedback: "ship it" },
+      { verdict: "approve", feedback: "ship it, second look" },
+    ],
+    relPath,
+    "line from implementer\n",
+  );
+  try {
+    const task = await fixture.board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: fixture.repo });
+
+    await fixture.orchestrator.sweep();
+    writeFileSync(join(fixture.repo, relPath), "line from repo HEAD\n");
+    git(["add", "-A"], fixture.repo);
+    git(["commit", "-q", "-m", "diverge on repo HEAD"], fixture.repo);
+    await fixture.orchestrator.sweep();
+    expect((await fixture.board.get(task.id))!.status).toBe("review");
+    const worktreePath = (await fixture.board.getResult(task.id))!.worktree!.path;
+    expect(Bun.spawnSync(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: worktreePath }).exitCode).toBe(0);
+    // Routes and runs the integrator card (the fake edits its own fresh
+    // worktree, never the conflicted one), which finishes on review.
+    await fixture.orchestrator.sweep();
+    const integrator = (await fixture.board.list()).find((t) => t.labels.includes("conflict"))!;
+    expect(integrator.status).toBe("review");
+    expect(Bun.spawnSync(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: worktreePath }).exitCode).toBe(0);
+
+    await fixture.orchestrator.runNow(task.id, [new WriteExecutor({ runner: fixture.runner, homeDir: fixture.home }), new ReadOnlyExecutor({ runner: fixture.runner })]);
+    await waitForStatus(fixture.board, task.id, "pending-review");
+    await fixture.orchestrator.sweep();
+
+    expect((await fixture.board.get(task.id))!.status).toBe("done");
+    const subject = Bun.spawnSync(["git", "log", "-1", "--format=%B"], { cwd: fixture.repo, stdout: "pipe" }).stdout.toString("utf8").trim();
+    expect(subject).toBe(`Merge wissel/${task.id}: Add a feature`);
+    expect(Bun.spawnSync(["git", "log", "-1", "--format=%P"], { cwd: fixture.repo, stdout: "pipe" }).stdout.toString("utf8").trim().split(" ")).toHaveLength(2);
+    expect(await Bun.file(join(fixture.repo, relPath)).text()).toBe("line from implementer\n");
+    expect(existsSync(join(fixture.repo, ".git", "MERGE_HEAD"))).toBe(false);
+    expect(existsSync(worktreePath)).toBe(false);
+    expect((await fixture.board.getResult(task.id))!.mergedSha).toBeString();
+    expect((await fixture.board.list()).filter((t) => t.labels.includes("conflict"))).toHaveLength(1);
   } finally {
     await cleanup(fixture);
   }

@@ -305,6 +305,10 @@ export interface MergeResult {
   /** Uncommitted files in `repo` that the landing would overwrite. Set
    *  only on blocked-local-changes. */
   blockedFiles?: string[];
+  /** The conflict integrator card whose resolution this attempt
+   *  committed (finishResolvedMerge). Set only when the worktree held
+   *  an unfinished merge that Wissel finished itself. */
+  resolvedConflictBy?: string;
   lockWaitMs: number;
   lockHoldMs: number;
 }
@@ -313,6 +317,11 @@ export interface MergeResult {
 export interface MergeTelemetry {
   record(event: TelemetryEvent): Promise<void>;
 }
+
+/** Whether a card's conflict integrator (the follow-up
+ *  maybeSpawnConflictIntegrator spawns, orchestrator.ts) has finished:
+ *  status `review` or `done`. `reason` says why not, for the refusal. */
+export type ConflictIntegratorState = { finished: true; cardId: string } | { finished: false; reason: string };
 
 /** Everything the merge path needs besides the task itself. Built once
  *  in createApp (src/api/server.ts) and handed to every caller: the
@@ -324,6 +333,13 @@ export interface MergeContext {
   gateFor?: MergeGateResolver;
   gateRunner?: GateCommandRunner;
   telemetry?: MergeTelemetry;
+  /** Answers whether this card's conflict integrator has finished, the
+   *  second condition for Wissel to commit a resolved conflict merge
+   *  itself (finishResolvedMerge, docs/SDD-worktree-isolation.md §7.8).
+   *  Every caller with a board sets it (withConflictIntegratorCheck,
+   *  orchestrator.ts). Absent: a worktree with an unfinished merge is
+   *  always refused, the pre-2026-10-19 behaviour. */
+  conflictIntegrator?: (task: TaskCard) => Promise<ConflictIntegratorState>;
   /** Test seam: runs after the gate passes, right before the HEAD
    *  check that guards landing. */
   beforeLand?: () => Promise<void>;
@@ -372,8 +388,14 @@ const NO_GATE: GateReport = { status: "none", runs: [], durationMs: 0 };
  * A conflict merging `repo`'s HEAD into the branch is left in the
  * worktree, on the branch, with the landing message waiting in
  * MERGE_MSG: resolving it and `git commit --no-edit` there produces the
- * landing commit itself, and the next merge lands it as is. A worktree
- * with an unfinished merge is refused rather than committed as-is.
+ * landing commit itself, and the next merge lands it as is. The
+ * integrator card can't run that commit (the sandbox write-denies the
+ * repo's `.git`, which holds the worktree's gitdir), so Wissel finishes
+ * the merge itself on the next attempt, but only once two checks pass
+ * (finishResolvedMerge): no conflict marker is left in any file and
+ * the card's conflict integrator has finished. Anything else, including
+ * a human's half-done manual resolve, is refused with the failing check
+ * named, never committed behind their back.
  *
  * Committing the worktree's uncommitted changes still happens here, not
  * right after the run, so `GET /tasks/:id/diff` keeps reading the
@@ -415,6 +437,7 @@ export async function mergeTaskWorktree(
       lockHoldMs: result.lockHoldMs,
       ...(result.mergedSha ? { landedSha: result.mergedSha } : {}),
       ...(result.blockedFiles ? { blockedFiles: result.blockedFiles } : {}),
+      ...(result.resolvedConflictBy ? { resolvedConflictBy: result.resolvedConflictBy } : {}),
       ...(result.ok ? {} : { message: result.message.slice(0, 500) }),
     })
     .catch((e) => console.error(`merge: telemetry write failed for ${task.id}: ${(e as Error).message}`));
@@ -445,15 +468,18 @@ async function mergeLocked(
     return fail("error", `the worktree ${worktree.path} is gone: this card was already merged or discarded`);
   }
 
-  // An unfinished merge in the worktree (a conflict from an earlier
-  // attempt, not yet resolved): committing it now would commit the
+  // An unfinished merge in the worktree: a conflict from an earlier
+  // attempt. Finished here when it is resolved and the integrator is
+  // done; refused otherwise, since committing it would commit the
   // conflict markers.
+  let resolvedConflictBy: string | undefined;
   if ((await git(worktree.path, ["rev-parse", "-q", "--verify", "MERGE_HEAD"])).ok) {
-    return fail(
-      "conflict",
-      `${worktree.path} has an unfinished merge of ${repo}'s HEAD into ${worktree.branch}. Resolve the conflicts there, then \`git commit --no-edit\`, then merge again.`,
-    );
+    const finished = await finishResolvedMerge(git, repo, worktree, task, ctx);
+    if (!finished.ok) return fail(finished.outcome, finished.message);
+    resolvedConflictBy = finished.cardId;
   }
+  const extra: Partial<Unlocked> = resolvedConflictBy ? { resolvedConflictBy } : {};
+  const landNote = resolvedConflictBy ? ` (finished the conflict merge resolved by card ${resolvedConflictBy})` : "";
 
   const status = await git(worktree.path, ["status", "--porcelain"]);
   if (status.stdout.trim()) {
@@ -481,7 +507,7 @@ async function mergeLocked(
 
     // Nothing on the branch that HEAD doesn't already have.
     if (await isAncestor(git, repo, tip, base)) {
-      return land(repo, worktree, ctx, base, { status: "skipped", runs: [], durationMs: 0 }, onLanded, `nothing to land: ${repo} already has everything on ${worktree.branch}`);
+      return land(repo, worktree, ctx, base, { status: "skipped", runs: [], durationMs: 0 }, onLanded, `nothing to land: ${repo} already has everything on ${worktree.branch}`, extra);
     }
 
     const plan = await buildLandingCommit(git, repo, worktree, base, tip, message);
@@ -510,7 +536,7 @@ async function mergeLocked(
         const back = await git(worktree.path, ["checkout", "-q", worktree.branch]);
         if (!back.ok) console.error(`merge: couldn't switch ${worktree.path} back to ${worktree.branch}: ${back.text}`);
       }
-      if (gate.status === "failed") return fail("gate-failed", gate.feedback ?? "merge gate failed", gate);
+      if (gate.status === "failed") return fail("gate-failed", gate.feedback ?? "merge gate failed", gate, extra);
     }
 
     await ctx.beforeLand?.();
@@ -546,7 +572,7 @@ async function mergeLocked(
       return fail("error", `fast-forward reported success but ${repo}'s HEAD is ${short(landedHead)}, not ${short(landing)}`, gate);
     }
     const gateNote = gate.status === "passed" ? ` (gate passed in ${Math.round(gate.durationMs / 1000)}s)` : gate.status === "none" ? " (no merge gate configured)" : "";
-    return land(repo, worktree, ctx, landing, gate, onLanded, `landed ${worktree.branch} on ${repo} at ${short(landing)}${gateNote}`);
+    return land(repo, worktree, ctx, landing, gate, onLanded, `landed ${worktree.branch} on ${repo} at ${short(landing)}${gateNote}${landNote}`, extra);
   }
   // Unreachable: every iteration returns or continues at most once.
   return fail("head-moved", `${repo}'s HEAD kept moving; nothing landed`);
@@ -560,6 +586,7 @@ async function land(
   gate: GateReport,
   onLanded: ((sha: string) => Promise<void>) | undefined,
   message: string,
+  extra: Partial<Unlocked> = {},
 ): Promise<Unlocked> {
   // Recorded before cleanup: a crash between the two leaves a card
   // crash recovery can prove merged from the sha alone.
@@ -569,7 +596,121 @@ async function land(
     console.error(`merge: landed ${short(sha)} but couldn't record it: ${(e as Error).message}`);
   }
   await removeTaskWorktree(repo, worktree, ctx.runner);
-  return { ok: true, outcome: "landed", message, mergedSha: sha, gate };
+  return { ok: true, outcome: "landed", message, mergedSha: sha, gate, ...extra };
+}
+
+type FinishOutcome = { ok: true; cardId: string } | { ok: false; outcome: "conflict" | "error"; message: string };
+
+/**
+ * Finishes the unfinished merge a conflict left in the worktree
+ * (buildLandingCommit's `git merge --no-ff -m <landing message> base`),
+ * the way the integrator can't: its sandbox write-denies the repo's
+ * `.git`, where the worktree's gitdir lives, so `git add`/`git commit`
+ * there can never succeed (cards 32c60ba0 and 42d2bbfb, 2026-10-19).
+ * Two checks, in order, each refusing with its own reason:
+ *
+ * 1. Nothing is still conflicted: no file among `git ls-files -u`'s
+ *    unmerged paths or `git diff --name-only HEAD`'s changed files has a
+ *    conflict marker line (findConflictMarkers), and no unmerged path is
+ *    binary (git leaves one side's bytes there, with no marker to tell a
+ *    resolution from the raw conflict). A changed file that is binary
+ *    but not unmerged came from the merge itself and is fine. A missing
+ *    file is a deletion `git add -A` stages.
+ * 2. The card's conflict integrator has finished (ctx.conflictIntegrator:
+ *    status review or done). A human mid-way through a manual resolve
+ *    has no finished integrator, so their worktree is never committed
+ *    behind their back; they finish with `git commit --no-edit` as
+ *    before.
+ *
+ * Then `git add -A` and `git commit --no-edit --cleanup=strip`: the
+ * prepared MERGE_MSG (`Merge <branch>: <title>`) becomes the commit's
+ * message, so the digest counts the landed card by it, and git's own
+ * `# Conflicts:` comment lines are dropped whatever the config says.
+ * The gate still runs on the result: a bad resolution fails there and
+ * goes back through pushback.
+ */
+async function finishResolvedMerge(git: Git, repo: string, worktree: TaskWorktree, task: TaskCard, ctx: MergeContext): Promise<FinishOutcome> {
+  const where = `${worktree.path} has an unfinished merge of ${repo}'s HEAD into ${worktree.branch}`;
+  const refuse = (outcome: "conflict" | "error", why: string): FinishOutcome => ({ ok: false, outcome, message: `${where}: ${why}` });
+
+  const unmergedRes = await git(worktree.path, ["ls-files", "-u", "-z"]);
+  if (!unmergedRes.ok) return refuse("error", `couldn't list its unmerged paths: ${unmergedRes.text}`);
+  const diffRes = await git(worktree.path, ["diff", "--name-only", "--no-renames", "-z", "HEAD"]);
+  if (!diffRes.ok) return refuse("error", `couldn't diff it against HEAD: ${diffRes.text}`);
+  const unmerged = parseUnmergedZ(unmergedRes.stdout);
+  const changed = diffRes.stdout.split("\0").filter(Boolean);
+  const unresolved = unresolvedFiles(worktree.path, unmerged, changed);
+  if (unresolved.length > 0) {
+    return refuse("conflict", `conflict markers are still in ${unresolved.join(", ")}. Resolve them there (then \`git commit --no-edit\`, or let the integrator finish), then merge again.`);
+  }
+
+  if (!ctx.conflictIntegrator) {
+    return refuse("conflict", "this merge path has no board to check the conflict integrator against, so it won't commit the resolution. Run `git add -A && git commit --no-edit` there, then merge again.");
+  }
+  const integrator = await ctx.conflictIntegrator(task);
+  if (!integrator.finished) {
+    return refuse("conflict", `${integrator.reason}. Wissel only commits a resolution its integrator card finished; a manual one is finished with \`git add -A && git commit --no-edit\` there, then merge again.`);
+  }
+
+  const add = await git(worktree.path, ["add", "-A"]);
+  if (!add.ok) return refuse("error", `\`git add -A\` failed while finishing the resolved merge: ${add.text}`);
+  const commit = await git(worktree.path, ["commit", "--no-edit", "--cleanup=strip"]);
+  if (!commit.ok) return refuse("error", `\`git commit --no-edit\` failed while finishing the resolved merge: ${commit.text}`);
+  return { ok: true, cardId: integrator.cardId };
+}
+
+/** Paths from `git ls-files -u -z` (`<mode> <sha> <stage>\t<path>`),
+ *  each once however many stages it has. */
+export function parseUnmergedZ(out: string): string[] {
+  const paths: string[] = [];
+  for (const entry of out.split("\0")) {
+    const tab = entry.indexOf("\t");
+    if (tab < 0) continue;
+    const path = entry.slice(tab + 1);
+    if (path && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
+
+/** 1-based lines holding a conflict marker: `<<<<<<< `, `||||||| `
+ *  (diff3), `=======` alone, `>>>>>>> `. A CR before the newline is
+ *  ignored so CRLF files read the same. `=======` alone is a marker
+ *  even where a file meant it as a Markdown underline: refusing names
+ *  the file and line, committing a real marker would land it. */
+export function findConflictMarkers(content: string): number[] {
+  const lines: number[] = [];
+  content.split("\n").forEach((raw, i) => {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (/^<<<<<<<( |$)/.test(line) || /^>>>>>>>( |$)/.test(line) || line === "=======" || /^\|\|\|\|\|\|\|( |$)/.test(line)) lines.push(i + 1);
+  });
+  return lines;
+}
+
+/** Git's own heuristic: a NUL byte in the first 8000 bytes. */
+export function looksBinary(bytes: Uint8Array): boolean {
+  const n = Math.min(bytes.length, 8000);
+  for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
+  return false;
+}
+
+/** The files finishResolvedMerge's check 1 refuses on, each as
+ *  `path:line` for a marker or `path (binary, unmerged)`, in path
+ *  order. Exported for the gate tests. */
+export function unresolvedFiles(root: string, unmerged: string[], changed: string[]): string[] {
+  const out: string[] = [];
+  const paths = [...new Set([...unmerged, ...changed])].sort();
+  for (const path of paths) {
+    const full = join(root, path);
+    if (!existsSync(full) || statSync(full).isDirectory()) continue;
+    const bytes = readFileSync(full);
+    if (looksBinary(bytes)) {
+      if (unmerged.includes(path)) out.push(`${path} (binary, unmerged)`);
+      continue;
+    }
+    const markers = findConflictMarkers(bytes.toString("utf8"));
+    if (markers.length > 0) out.push(`${path}:${markers.join(",")}`);
+  }
+  return out;
 }
 
 function blockedResult(repo: string, files: string[], gate: GateReport): Unlocked {
@@ -638,7 +779,8 @@ async function buildLandingCommit(git: Git, repo: string, worktree: TaskWorktree
         kind: "conflict",
         message:
           `conflict merging ${repo}'s HEAD (${short(base)}) into ${worktree.branch}. It is left in the worktree at ${worktree.path} ` +
-          `(never in ${repo}); resolve it there and \`git commit --no-edit\`, then merge again.\n${out}`,
+          `(never in ${repo}). An integrator card resolves it there and the next merge commits and lands it; ` +
+          `to resolve it yourself, edit it there and \`git commit --no-edit\`, then merge again.\n${out}`,
       };
     } else {
       return { kind: "error", message: `git merge-tree failed in ${repo}: ${mt.text}` };

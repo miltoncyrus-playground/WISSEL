@@ -231,20 +231,85 @@ test("mergeTaskWorktree turns a throwing runner into an error outcome, still rec
   }
 });
 
-test("mergeTaskWorktree refuses a worktree with an unfinished merge instead of committing its conflict markers", async () => {
-  const seen: string[] = [];
-  const runner = async (cmd: string[]) => {
-    seen.push(cmd.join(" "));
-    if (cmd.join(" ") === "git rev-parse -q --verify MERGE_HEAD") return { stdout: "abc\n", stderr: "", exitCode: 0 };
-    throw new Error(`unexpected command after the MERGE_HEAD check: ${cmd.join(" ")}`);
+/** A runner for a worktree mid-merge: MERGE_HEAD present, `f.txt`
+ *  unmerged and changed. Reads answer; any write throws. */
+function midMergeRunner(seen: string[]) {
+  return async (cmd: string[]) => {
+    const line = cmd.join(" ");
+    seen.push(line);
+    if (line === "git rev-parse -q --verify MERGE_HEAD") return { stdout: "abc\n", stderr: "", exitCode: 0 };
+    if (line === "git ls-files -u -z") return { stdout: ["100644 aaa 1\tf.txt", "100644 bbb 2\tf.txt", "100644 ccc 3\tf.txt", ""].join("\0"), stderr: "", exitCode: 0 };
+    if (line === "git diff --name-only --no-renames -z HEAD") return { stdout: "f.txt\0", stderr: "", exitCode: 0 };
+    throw new Error(`unexpected command while refusing an unfinished merge: ${line}`);
   };
+}
 
+test("mergeTaskWorktree refuses a worktree with an unfinished merge whose file still has conflict markers, naming the file and lines, and never runs git add/commit", async () => {
+  const seen: string[] = [];
   const wt = await fakeHome();
   try {
-    const result = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, runner);
+    writeFileSync(join(wt, "f.txt"), "a\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> abc\nz\n");
+    const result = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, { runner: midMergeRunner(seen), conflictIntegrator: async () => ({ finished: true, cardId: "int-1" }) });
     expect(result).toMatchObject({ ok: false, outcome: "conflict" });
-    expect(result.message).toContain("unfinished merge");
-    expect(seen).toEqual(["git rev-parse -q --verify MERGE_HEAD"]);
+    expect(result.message).toContain(`${wt} has an unfinished merge of /repo's HEAD into wissel/t1: conflict markers are still in f.txt:2,4,6`);
+    expect(seen).toEqual(["git rev-parse -q --verify MERGE_HEAD", "git ls-files -u -z", "git diff --name-only --no-renames -z HEAD"]);
+  } finally {
+    await rm(wt, { recursive: true, force: true });
+  }
+});
+
+test("mergeTaskWorktree refuses a resolved but unfinished merge when the integrator hasn't finished, or when there's no board to ask", async () => {
+  const wt = await fakeHome();
+  try {
+    writeFileSync(join(wt, "f.txt"), "a\nours\ntheirs\nz\n");
+    const seenNotFinished: string[] = [];
+    const notFinished = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, {
+      runner: midMergeRunner(seenNotFinished),
+      conflictIntegrator: async () => ({ finished: false, reason: "the conflict integrator card int-1 is running, not finished (review or done)" }),
+    });
+    expect(notFinished).toMatchObject({ ok: false, outcome: "conflict" });
+    expect(notFinished.message).toContain("the conflict integrator card int-1 is running, not finished (review or done)");
+    expect(notFinished.message).toContain("git add -A && git commit --no-edit");
+    expect(seenNotFinished.some((c) => c.startsWith("git add") || c.startsWith("git commit"))).toBe(false);
+
+    const seenBare: string[] = [];
+    const bare = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, midMergeRunner(seenBare));
+    expect(bare).toMatchObject({ ok: false, outcome: "conflict" });
+    expect(bare.message).toContain("no board to check the conflict integrator against");
+    expect(seenBare.some((c) => c.startsWith("git add") || c.startsWith("git commit"))).toBe(false);
+  } finally {
+    await rm(wt, { recursive: true, force: true });
+  }
+});
+
+test("mergeTaskWorktree finishes a resolved merge with a finished integrator: git add -A, then commit --no-edit --cleanup=strip, then the normal path", async () => {
+  const seen: string[] = [];
+  const runner = async (cmd: string[]) => {
+    const line = cmd.join(" ");
+    seen.push(line);
+    if (line === "git rev-parse -q --verify MERGE_HEAD") return { stdout: "abc\n", stderr: "", exitCode: 0 };
+    if (line === "git ls-files -u -z") return { stdout: "100644 aaa 2\tf.txt\0", stderr: "", exitCode: 0 };
+    if (line === "git diff --name-only --no-renames -z HEAD") return { stdout: "f.txt\0", stderr: "", exitCode: 0 };
+    if (line === "git add -A") return { stdout: "", stderr: "", exitCode: 0 };
+    if (line === "git commit --no-edit --cleanup=strip") return { stdout: "", stderr: "", exitCode: 0 };
+    if (line === "git status --porcelain") return { stdout: "", stderr: "", exitCode: 0 };
+    // The branch is gone from this fake repo: the normal path stops here
+    // with an error, after the finishing commit, which is what's under test.
+    return { stdout: "", stderr: "fatal: not a repo", exitCode: 128 };
+  };
+  const wt = await fakeHome();
+  try {
+    writeFileSync(join(wt, "f.txt"), "a\nours\ntheirs\nz\n");
+    const result = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, { runner, conflictIntegrator: async () => ({ finished: true, cardId: "int-1" }) });
+    expect(result.outcome).toBe("error");
+    expect(seen.slice(0, 6)).toEqual([
+      "git rev-parse -q --verify MERGE_HEAD",
+      "git ls-files -u -z",
+      "git diff --name-only --no-renames -z HEAD",
+      "git add -A",
+      "git commit --no-edit --cleanup=strip",
+      "git status --porcelain",
+    ]);
   } finally {
     await rm(wt, { recursive: true, force: true });
   }

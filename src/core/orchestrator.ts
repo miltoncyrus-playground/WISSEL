@@ -12,6 +12,7 @@ import {
   mergeTaskWorktree,
   removeTaskWorktree,
   toMergeContext,
+  type ConflictIntegratorState,
   type MergeContext,
   type MergeResult,
   type TaskWorktree,
@@ -763,8 +764,32 @@ async function tryAutoMerge(board: Board, registry: Registry, result: TaskResult
   // A worktree only ever exists for a write-tier run, which requires
   // `repo` at creation time (see POST /tasks' validation) — never
   // reachable for a repo-less readonly task.
-  const res = await mergeTaskWorktree(task.repo!, result.worktree, task, merge, (sha) => board.recordMerge(task.id, sha));
+  const res = await mergeTaskWorktree(task.repo!, result.worktree, task, withConflictIntegratorCheck(board, merge), (sha) => board.recordMerge(task.id, sha));
   return afterMergeAttempt(board, registry, task, result.worktree, res);
+}
+
+/** Whether `task`'s conflict integrator card (conflictIntegratorTitle,
+ *  CONFLICT_LABEL) has finished: `review` or `done`. The merge path's
+ *  second condition for committing a resolved conflict merge itself
+ *  (worktree.ts finishResolvedMerge). Several cards with the title
+ *  can't exist (maybeSpawnConflictIntegrator is idempotent), but a
+ *  finished one wins if they did. */
+export async function conflictIntegratorState(board: Board, task: Pick<TaskCard, "id">): Promise<ConflictIntegratorState> {
+  const title = conflictIntegratorTitle(task);
+  const cards = (await board.list()).filter((t) => t.title === title && t.labels.includes(CONFLICT_LABEL));
+  const finished = cards.find((t) => t.status === "review" || t.status === "done");
+  if (finished) return { finished: true, cardId: finished.id };
+  if (cards.length === 0) return { finished: false, reason: `no conflict integrator card ("${title}") exists for this task` };
+  return { finished: false, reason: `the conflict integrator card ${cards[0]!.id} is ${cards[0]!.status}, not finished (review or done)` };
+}
+
+/** The merge context every caller with a board hands mergeTaskWorktree:
+ *  `conflictIntegrator` answered from that board, unless the context
+ *  already carries one (a test's own). */
+export function withConflictIntegratorCheck(board: Board, context: CommandRunner | MergeContext): MergeContext {
+  const merge = toMergeContext(context);
+  if (merge.conflictIntegrator) return merge;
+  return { ...merge, conflictIntegrator: (task) => conflictIntegratorState(board, task) };
 }
 
 /** What every merge caller does with a failed MergeResult: a gate
@@ -797,7 +822,7 @@ const CONFLICT_LABEL = "conflict";
  *  Integrator` searches for (see below), so it's built from `task.id`
  *  rather than `task.title`, which could in principle collide across
  *  two different tasks or change after the follow-up was created. */
-function conflictIntegratorTitle(originalTask: TaskCard): string {
+function conflictIntegratorTitle(originalTask: Pick<TaskCard, "id">): string {
   return `Resolve merge conflict: ${originalTask.id}`;
 }
 
@@ -872,16 +897,25 @@ function conflictIntegratorTitle(originalTask: TaskCard): string {
  * can't do the one thing it was spawned to do.
  *
  * Also sets `extraAllowedTools` granting the exact `git -C
- * <worktree.path> status/diff/add/commit` invocations
- * `buildConflictIntegratorBody` below instructs the agent to run —
- * `extraAllowedDirs` alone only grants file-system access to the path
- * (`--add-dir`), it does NOT make `acceptEdits`' own Bash gating
- * reliably allow those specific commands (confirmed live: a real run
- * with only `extraAllowedDirs` set hit repeated Bash permission denials
- * on exactly these commands and never completed the merge — see
- * TaskCard.extraAllowedTools' own doc comment). Without this, the
- * follow-up could read/inspect the conflict but could never actually
- * finish it.
+ * <worktree.path> status/diff` invocations `buildConflictIntegratorBody`
+ * below instructs the agent to run — `extraAllowedDirs` alone only
+ * grants file-system access to the path (`--add-dir`), it does NOT make
+ * `acceptEdits`' own Bash gating reliably allow those specific commands
+ * (confirmed live: a real run with only `extraAllowedDirs` set hit
+ * repeated Bash permission denials on exactly these commands — see
+ * TaskCard.extraAllowedTools' own doc comment).
+ *
+ * Deliberately no `git add` / `git commit` grant, and the body tells the
+ * agent not to try. Until 2026-10-19 both were granted and the body
+ * said to `commit --no-edit`; neither could ever succeed. The sandbox
+ * denies every git write as a permission rule (GIT_WRITE_DENY,
+ * src/executors/sandbox.ts) and, the real boundary, write-denies the
+ * repo's `.git`, which holds the worktree's gitdir
+ * (`.git/worktrees/<key>`). Cards 32c60ba0 and 42d2bbfb both ended
+ * with resolved files, an uncommitted merge, and a Merge refused as
+ * "has an unfinished merge". Wissel's own process commits the
+ * resolution now, on the next merge attempt, once the files carry no
+ * marker and this card has finished (worktree.ts finishResolvedMerge).
  */
 export async function maybeSpawnConflictIntegrator(
   board: Board,
@@ -907,12 +941,7 @@ export async function maybeSpawnConflictIntegrator(
     labels: [CONFLICT_LABEL],
     repo: originalTask.repo,
     extraAllowedDirs: [where],
-    extraAllowedTools: [
-      `Bash(git -C ${where} status:*)`,
-      `Bash(git -C ${where} diff:*)`,
-      `Bash(git -C ${where} add:*)`,
-      `Bash(git -C ${where} commit:*)`,
-    ],
+    extraAllowedTools: [`Bash(git -C ${where} status:*)`, `Bash(git -C ${where} diff:*)`],
   });
 }
 
@@ -941,9 +970,14 @@ function buildConflictIntegratorBody(originalTask: TaskCard, worktree: TaskWorkt
     "The common case for a conflict here is two features additively touching the same section or file — both",
     "sides added real content, nothing contradictory. If that's what this is, resolve it directly in",
     `${where} by combining both sides faithfully: keep everything either side added, drop nothing from either,`,
-    "then `git -C " + where + " add` the files and `git -C " + where + " commit --no-edit` to finish the merge.",
-    "Keep `--no-edit`: the merge message git prepared is the one the board counts the landed card by. Nothing",
-    `lands in ${originalTask.repo} until someone merges task ${originalTask.id} again; that runs its merge gate.`,
+    "and remove every conflict marker line (`<<<<<<<`, `=======`, `>>>>>>>`) from every file. Then stop.",
+    "",
+    "You cannot commit, and must not try: `git add` and `git commit` are denied in your sandbox (the repo's",
+    "`.git`, which holds that worktree's git state, is read-only to you), so they would only fail. Leave the",
+    "files edited and uncommitted, exactly as resolved. Wissel finishes the merge itself once this card is done:",
+    "it checks every file for leftover markers, commits with the merge message git already prepared (the one",
+    `the board counts the landed card by), runs the merge gate, and lands it in ${originalTask.repo} when task`,
+    `${originalTask.id} is merged again. A marker you leave behind makes it refuse, naming the file.`,
     "",
     "But if this looks like a genuine semantic contradiction instead — not just two additions near each other,",
     "but two changes that actually disagree about what the code should do — stop. Leave the conflict exactly as",

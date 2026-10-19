@@ -13,7 +13,17 @@ import { mergeTask } from "../src/services/board-actions.ts";
 import { Registry } from "../src/core/registry.ts";
 import { finishResult, MAX_PUSHBACKS } from "../src/core/orchestrator.ts";
 import { reconcileLandedMerges } from "../src/core/crash-recovery.ts";
-import { createTaskWorktree, determineWorktreeMergeState, mergeTaskWorktree, type MergeContext, type TaskWorktree } from "../src/services/worktree.ts";
+import {
+  createTaskWorktree,
+  determineWorktreeMergeState,
+  findConflictMarkers,
+  looksBinary,
+  mergeTaskWorktree,
+  parseUnmergedZ,
+  unresolvedFiles,
+  type MergeContext,
+  type TaskWorktree,
+} from "../src/services/worktree.ts";
 import type { TelemetryEvent } from "../src/services/telemetry.ts";
 import type { AgentDef, TaskCard } from "../src/core/types.ts";
 
@@ -270,7 +280,13 @@ test("conflict with main: merged in the worktree only, the user's checkout untou
   expect(integrators).toHaveLength(1);
   expect(integrators[0]!.title).toBe(`Resolve merge conflict: ${task.id}`);
   expect(integrators[0]!.extraAllowedDirs).toEqual([worktree.path]);
-  expect(integrators[0]!.extraAllowedTools).toContain(`Bash(git -C ${worktree.path} commit:*)`);
+  // Read-only git grants: the sandbox denies add/commit in the worktree
+  // (the repo's .git holds its gitdir), so Wissel commits the resolution.
+  expect(integrators[0]!.extraAllowedTools).toEqual([`Bash(git -C ${worktree.path} status:*)`, `Bash(git -C ${worktree.path} diff:*)`]);
+  expect(integrators[0]!.body).toContain("You cannot commit");
+  expect(integrators[0]!.body).toContain("Wissel finishes the merge itself");
+  expect(integrators[0]!.body).not.toContain(`git -C ${worktree.path} commit`);
+  expect(integrators[0]!.body).not.toContain(`git -C ${worktree.path} add`);
   expect(integrators[0]!.body).toContain(worktree.path);
   expect(mergeEvents(c.events).map((e) => e.outcome)).toEqual(["conflict", "conflict"]);
 });
@@ -291,6 +307,304 @@ test("a conflict resolved in the worktree with --no-edit lands as exactly one la
   expect(readFileSync(join(repo, "shared.txt"), "utf8")).toBe("line 1\nmain edit\nbranch edit\nline 3\n");
   const landings = git(["log", "--merges", "--format=%s"], repo).split("\n").filter((s) => s.startsWith(`Merge ${worktree.branch}:`));
   expect(landings).toHaveLength(1);
+});
+
+// ---------- 3b. Wissel finishes a resolved conflict merge ----------
+
+const RESOLVED = "line 1\nmain edit\nbranch edit\nline 3\n";
+
+/** A card whose merge conflicted with main, its integrator card spawned
+ *  (real registry), the conflict left in the worktree as git made it. */
+async function conflictedCard(c: MergeContext, registry = Registry.load()): Promise<{ task: TaskCard; worktree: TaskWorktree; integrator: TaskCard }> {
+  const { task, worktree } = await cardWithWork({ "shared.txt": "line 1\nbranch edit\nline 3\n" });
+  commitOnMain("shared.txt", "line 1\nmain edit\nline 3\n");
+  const first = await mergeTask(board, task.id, c, await registry);
+  expect(first.ok).toBe(false);
+  expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
+  const integrator = (await board.list()).find((t) => t.title === `Resolve merge conflict: ${task.id}`)!;
+  expect(integrator).toBeDefined();
+  return { task, worktree, integrator };
+}
+
+const landingSubject = (branch: string) => git(["log", "--merges", "--format=%s"], repo).split("\n").filter((s) => s.startsWith(`Merge ${branch}:`));
+
+test("resolved, uncommitted merge with a finished integrator: Wissel commits it with the prepared message, gates it, and lands it", async () => {
+  const c = ctx(PASS);
+  const { task, worktree, integrator } = await conflictedCard(c);
+  const headBefore = git(["rev-parse", "HEAD"], repo);
+  // What the integrator can do in its sandbox: edit the file. No git add, no commit.
+  writeFileSync(join(worktree.path, "shared.txt"), RESOLVED);
+  await board.move(integrator.id, "review");
+
+  const out = await mergeTask(board, task.id, c);
+
+  expect(out.ok).toBe(true);
+  if (out.ok) {
+    expect(out.value.message).toContain(`finished the conflict merge resolved by card ${integrator.id}`);
+    expect(out.value.message).toContain("gate passed");
+  }
+  expect(readFileSync(join(repo, "shared.txt"), "utf8")).toBe(RESOLVED);
+  // The commit git prepared in the worktree: parents are the branch tip
+  // and the repo's old HEAD (in that order, as `git merge` in the
+  // worktree makes them; the same shape a human's --no-edit produces).
+  const parents = git(["log", "-1", "--format=%P", "HEAD"], repo).split(" ");
+  expect(parents).toHaveLength(2);
+  expect(parents).toContain(headBefore);
+  // The prepared MERGE_MSG is the landing message, free of git's
+  // "# Conflicts:" comment lines, and it landed exactly once.
+  expect(git(["log", "-1", "--format=%B", "HEAD"], repo)).toBe(`Merge ${worktree.branch}: Do the thing`);
+  expect(landingSubject(worktree.branch)).toHaveLength(1);
+  expect(existsSync(join(repo, ".git", "MERGE_HEAD"))).toBe(false);
+  expect((await board.get(task.id))!.status).toBe("done");
+  expect((await board.getResult(task.id))!.mergedSha).toBe(git(["rev-parse", "HEAD"], repo));
+  expect(existsSync(worktree.path)).toBe(false);
+  // One merge event per attempt, the second carrying the trace.
+  const events = mergeEvents(c.events);
+  expect(events.map((e) => e.outcome)).toEqual(["conflict", "landed"]);
+  expect(events[1]!.resolvedConflictBy).toBe(integrator.id);
+  expect(events[1]!.gate).toBe("passed");
+  expect(events[0]!.resolvedConflictBy).toBeUndefined();
+});
+
+test("regression (card 32c60ba0, 2026-10-19): the resolved worktree is no longer refused with 'has an unfinished merge ... git commit --no-edit'", async () => {
+  // Card 32c60ba0: the integrator resolved shared.txt in the worktree,
+  // could not commit (sandbox), finished on done; Merge then answered
+  // the message below and a human had to run git by hand.
+  const c = ctx(undefined);
+  const { task, worktree, integrator } = await conflictedCard(c);
+  writeFileSync(join(worktree.path, "shared.txt"), RESOLVED);
+  await board.move(integrator.id, "done");
+  const oldRefusal = `${worktree.path} has an unfinished merge of ${repo}'s HEAD into ${worktree.branch}. Resolve the conflicts there, then \`git commit --no-edit\`, then merge again.`;
+
+  const out = await mergeTask(board, task.id, c);
+
+  expect(out.ok).toBe(true);
+  if (!out.ok) expect(out.error).not.toBe(oldRefusal);
+  expect(readFileSync(join(repo, "shared.txt"), "utf8")).toBe(RESOLVED);
+  expect(landingSubject(worktree.branch)).toHaveLength(1);
+  expect(mergeEvents(c.events).map((e) => e.outcome)).toEqual(["conflict", "landed"]);
+});
+
+test("markers left in a file: refused, naming the file and lines, nothing committed, no duplicate integrator", async () => {
+  const registry = await Registry.load();
+  const c = ctx(PASS);
+  const { task, worktree, integrator } = await conflictedCard(c, Promise.resolve(registry));
+  const headBefore = git(["rev-parse", "HEAD"], repo);
+  const branchBefore = git(["rev-parse", worktree.branch], repo);
+  // The integrator "finished" but left the file exactly as git made it.
+  await board.move(integrator.id, "review");
+  expect(readFileSync(join(worktree.path, "shared.txt"), "utf8")).toContain("<<<<<<<");
+
+  const out = await mergeTask(board, task.id, c, registry);
+
+  expect(out.ok).toBe(false);
+  if (!out.ok) {
+    expect(out.status).toBe(409);
+    expect(out.error).toContain(`${worktree.path} has an unfinished merge of ${repo}'s HEAD into ${worktree.branch}:`);
+    expect(out.error).toContain("conflict markers are still in shared.txt:2,4,6");
+  }
+  expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
+  expect(git(["rev-parse", worktree.branch], repo)).toBe(branchBefore);
+  expect(git(["rev-parse", "HEAD"], repo)).toBe(headBefore);
+  expect((await board.list()).filter((t) => t.labels.includes("conflict"))).toHaveLength(1);
+  expect(mergeEvents(c.events).map((e) => e.outcome)).toEqual(["conflict", "conflict"]);
+  expect(mergeEvents(c.events)[1]!.message).toContain("shared.txt:2,4,6");
+});
+
+test("a partial resolve (one marker line left) is refused the same way", async () => {
+  const c = ctx(PASS);
+  const { task, worktree, integrator } = await conflictedCard(c);
+  writeFileSync(join(worktree.path, "shared.txt"), "line 1\nmain edit\n=======\nbranch edit\nline 3\n");
+  await board.move(integrator.id, "done");
+
+  const out = await mergeTask(board, task.id, c);
+
+  expect(out.ok).toBe(false);
+  if (!out.ok) expect(out.error).toContain("shared.txt:3");
+  expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
+});
+
+test("no finished integrator: refused, saying which card and status, even with every marker gone", async () => {
+  const c = ctx(PASS);
+  const { task, worktree, integrator } = await conflictedCard(c);
+  writeFileSync(join(worktree.path, "shared.txt"), RESOLVED);
+  // Still inbox: a human may be mid-resolve in that worktree.
+  expect(integrator.status).toBe("inbox");
+
+  const out = await mergeTask(board, task.id, c);
+
+  expect(out.ok).toBe(false);
+  if (!out.ok) {
+    expect(out.error).toContain(`the conflict integrator card ${integrator.id} is inbox, not finished (review or done)`);
+    expect(out.error).toContain("git add -A && git commit --no-edit");
+  }
+  expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
+  expect(readFileSync(join(worktree.path, "shared.txt"), "utf8")).toBe(RESOLVED);
+  expect(mergeEvents(c.events).map((e) => e.outcome)).toEqual(["conflict", "conflict"]);
+
+  // The old way still works: a human finishes it by hand.
+  git(["add", "-A"], worktree.path);
+  git(["commit", "-q", "--no-edit"], worktree.path);
+  const again = await mergeTask(board, task.id, c);
+  expect(again.ok).toBe(true);
+  expect(landingSubject(worktree.branch)).toHaveLength(1);
+});
+
+test("no integrator card at all (none registered): refused, saying so", async () => {
+  const noIntegrator = Registry.from([]);
+  const c = ctx(PASS);
+  const { task, worktree } = await cardWithWork({ "shared.txt": "line 1\nbranch edit\nline 3\n" });
+  commitOnMain("shared.txt", "line 1\nmain edit\nline 3\n");
+  expect((await mergeTask(board, task.id, c, noIntegrator)).ok).toBe(false);
+  expect((await board.list()).filter((t) => t.labels.includes("conflict"))).toHaveLength(0);
+  writeFileSync(join(worktree.path, "shared.txt"), RESOLVED);
+
+  const out = await mergeTask(board, task.id, c, noIntegrator);
+
+  expect(out.ok).toBe(false);
+  if (!out.ok) expect(out.error).toContain(`no conflict integrator card ("Resolve merge conflict: ${task.id}") exists for this task`);
+  expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
+});
+
+test("a bare CommandRunner (no board) never commits an unfinished merge", async () => {
+  const { task, worktree, integrator } = await conflictedCard(ctx(PASS));
+  writeFileSync(join(worktree.path, "shared.txt"), RESOLVED);
+  await board.move(integrator.id, "done");
+
+  const res = await mergeTaskWorktree(repo, worktree, task, runViaBun);
+
+  expect(res.outcome).toBe("conflict");
+  expect(res.message).toContain("no board to check the conflict integrator against");
+  expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
+});
+
+test("a finished resolution that fails the gate goes back through pushback; the resolution commit stays on the branch", async () => {
+  const c = ctx(failGate("RESOLUTION-BROKE-IT"));
+  const { task, worktree, integrator } = await conflictedCard(c);
+  writeFileSync(join(worktree.path, "shared.txt"), RESOLVED);
+  await board.move(integrator.id, "review");
+  const headBefore = git(["rev-parse", "HEAD"], repo);
+
+  const out = await mergeTask(board, task.id, c);
+
+  expect(out.ok).toBe(false);
+  if (!out.ok) expect(out.error).toContain("Merge gate failed");
+  expect(git(["rev-parse", "HEAD"], repo)).toBe(headBefore);
+  // Committed in the worktree (no merge in progress), not landed.
+  expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(false);
+  expect(git(["log", "-1", "--format=%s", worktree.branch], repo)).toBe(`Merge ${worktree.branch}: Do the thing`);
+  const next = (await board.get((await board.get(task.id))!.supersededBy!))!;
+  expect(next.pushbackCount).toBe(1);
+  expect(next.body).toContain("RESOLUTION-BROKE-IT");
+  const [, second] = mergeEvents(c.events);
+  expect(second).toMatchObject({ outcome: "gate-failed", resolvedConflictBy: integrator.id });
+});
+
+test("a binary file still unmerged is refused: nothing in it says whether it was resolved", async () => {
+  const c = ctx(PASS);
+  const { task, worktree } = await cardWithWork({});
+  writeFileSync(join(worktree.path, "blob.bin"), Buffer.from([0x89, 0x50, 0x00, 0x01, 0x02]));
+  writeFileSync(join(repo, "blob.bin"), Buffer.from([0x89, 0x50, 0x00, 0x09, 0x08]));
+  git(["add", "blob.bin"], repo);
+  git(["commit", "-q", "-m", "blob on main"], repo);
+  expect((await mergeTask(board, task.id, c, await Registry.load())).ok).toBe(false);
+  const integrator = (await board.list()).find((t) => t.labels.includes("conflict"))!;
+  await board.move(integrator.id, "done");
+
+  const out = await mergeTask(board, task.id, c);
+
+  expect(out.ok).toBe(false);
+  if (!out.ok) expect(out.error).toContain("blob.bin (binary, unmerged)");
+  expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
+});
+
+test("a binary file the merge brought in cleanly is not a reason to refuse", async () => {
+  const c = ctx(PASS);
+  const { task, worktree, integrator } = await conflictedCard(c);
+  // Main also added a binary; it reached the worktree staged, unconflicted.
+  expect(readFileSync(join(worktree.path, "shared.txt"), "utf8")).toContain("<<<<<<<");
+  writeFileSync(join(worktree.path, "shared.txt"), RESOLVED);
+  writeFileSync(join(worktree.path, "icon.bin"), Buffer.from([0x00, 0x01]));
+  git(["add", "icon.bin"], worktree.path);
+  await board.move(integrator.id, "done");
+
+  const out = await mergeTask(board, task.id, c);
+
+  expect(out.ok).toBe(true);
+  expect(existsSync(join(repo, "icon.bin"))).toBe(true);
+});
+
+test("a modify/delete conflict resolved by deleting the file is committed as the deletion", async () => {
+  const registry = await Registry.load();
+  const c = ctx(PASS);
+  const { task, worktree } = await cardWithWork({});
+  rmSync(join(worktree.path, "shared.txt"));
+  commitOnMain("shared.txt", "line 1\nmain edit\nline 3\n");
+  expect((await mergeTask(board, task.id, c, registry)).ok).toBe(false);
+  // git leaves main's version in the worktree for a modify/delete; the
+  // integrator decides the deletion stands and removes it.
+  expect(existsSync(join(worktree.path, "shared.txt"))).toBe(true);
+  rmSync(join(worktree.path, "shared.txt"));
+  const integrator = (await board.list()).find((t) => t.labels.includes("conflict"))!;
+  await board.move(integrator.id, "review");
+
+  const out = await mergeTask(board, task.id, c, registry);
+
+  expect(out.ok).toBe(true);
+  expect(existsSync(join(repo, "shared.txt"))).toBe(false);
+  expect(landingSubject(worktree.branch)).toHaveLength(1);
+});
+
+test("a clean worktree lands exactly as before: no conflict finishing, no trace of it", async () => {
+  const { task } = await cardWithWork({ "feature.txt": "f\n" });
+  const c = ctx(PASS);
+  let asked = 0;
+  c.conflictIntegrator = async () => (asked++, { finished: false, reason: "never asked" });
+
+  const out = await mergeTask(board, task.id, c);
+
+  expect(out.ok).toBe(true);
+  if (out.ok) expect(out.value.message).not.toContain("conflict");
+  expect(asked).toBe(0);
+  const [ev] = mergeEvents(c.events);
+  expect(ev!.outcome).toBe("landed");
+  expect(ev!.resolvedConflictBy).toBeUndefined();
+  expect(mergeEvents(c.events)).toHaveLength(1);
+});
+
+test("findConflictMarkers: the three git markers and diff3's, by line, CRLF included; look-alikes are not markers", () => {
+  const text = ["a", "<<<<<<< HEAD", "ours", "||||||| base", "orig", "=======", "theirs", ">>>>>>> abc123 (main)", "z"].join("\n");
+  expect(findConflictMarkers(text)).toEqual([2, 4, 6, 8]);
+  expect(findConflictMarkers("a\r\n=======\r\nb\r\n")).toEqual([2]);
+  expect(findConflictMarkers("<<<<<<<\n>>>>>>>\n")).toEqual([1, 2]);
+  expect(findConflictMarkers("Title\n========\n")).toEqual([]);
+  expect(findConflictMarkers("======= not alone\n<<<<<<<< eight\n >>>>>>> indented\nconst s = '<<<<<<< x';\n")).toEqual([]);
+  expect(findConflictMarkers("")).toEqual([]);
+});
+
+test("parseUnmergedZ and looksBinary", () => {
+  const z = ["100644 aaaa 1\tshared.txt", "100644 bbbb 2\tshared.txt", "100644 cccc 3\tshared.txt", "100644 dddd 2\tdir/with space.txt", ""].join("\0");
+  expect(parseUnmergedZ(z)).toEqual(["shared.txt", "dir/with space.txt"]);
+  expect(parseUnmergedZ("")).toEqual([]);
+  expect(looksBinary(new Uint8Array([0x89, 0x50, 0x4e]))).toBe(false);
+  expect(looksBinary(new Uint8Array([0x41, 0x00]))).toBe(true);
+  expect(looksBinary(new Uint8Array(0))).toBe(false);
+  // A NUL past the first 8000 bytes doesn't count, as in git.
+  const late = new Uint8Array(8001);
+  late.fill(0x41);
+  late[8000] = 0;
+  expect(looksBinary(late)).toBe(false);
+});
+
+test("unresolvedFiles: markers in unmerged or changed files, binary only when unmerged, missing files skipped", () => {
+  const dir = join(root, "scan");
+  mkdirSync(join(dir, "sub"), { recursive: true });
+  writeFileSync(join(dir, "ok.txt"), "fine\n");
+  writeFileSync(join(dir, "sub", "bad.txt"), "x\n<<<<<<< HEAD\ny\n");
+  writeFileSync(join(dir, "pic.bin"), Buffer.from([0, 1, 2]));
+  writeFileSync(join(dir, "logo.bin"), Buffer.from([0, 3]));
+  expect(unresolvedFiles(dir, ["ok.txt", "pic.bin", "gone.txt"], ["sub/bad.txt", "logo.bin", "sub"])).toEqual(["pic.bin (binary, unmerged)", "sub/bad.txt:2"]);
+  expect(unresolvedFiles(dir, [], ["ok.txt", "logo.bin"])).toEqual([]);
 });
 
 // ---------- 4/5. the user's own uncommitted edits ----------

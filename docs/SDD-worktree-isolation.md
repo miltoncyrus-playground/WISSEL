@@ -205,8 +205,10 @@ Merge button (`board-actions.ts` `mergeTask`), Ask's merge
 (`concierge-control.ts`), the auto-merge (`orchestrator.ts`
 `tryAutoMerge`). All of it under the repo's lock (§7.4).
 
-1. Refuse a worktree with an unfinished merge (`MERGE_HEAD` in the
-   worktree): committing it would commit conflict markers.
+1. A worktree with an unfinished merge (`MERGE_HEAD` in the worktree):
+   finish it when it is resolved and the card's conflict integrator has
+   finished (§7.8), else refuse, naming the check that failed.
+   Committing it blind would commit conflict markers.
 2. Commit the worktree's uncommitted changes, as before.
 3. `base` = the repo's HEAD, `tip` = the branch.
    - `tip` already in `base`: nothing to land. Recorded as landed at
@@ -216,8 +218,10 @@ Merge button (`board-actions.ts` `mergeTask`), Ask's merge
      object store, no working tree touched. A conflict there is redone as
      a real `git merge --no-ff -m "Merge <branch>: <title>" base` in the
      worktree, on the branch, and the result is `conflict`: the integrator
-     (or a human) resolves it there and runs `git commit --no-edit`, which
-     makes that commit the landing commit; the next Merge lands it as is.
+     resolves it there (edits only; §7.8 says why it can't commit) and the
+     next Merge commits it with the prepared message, which makes that
+     commit the landing commit, and lands it. A human resolving by hand
+     still runs `git commit --no-edit` there and merges again.
 4. The landing commit: `git commit-tree <tree> -p base -p tip -m
    "Merge <branch>: <title>"`. Same parents, same order, same subject as
    the old `git merge --no-ff` in the repo made, so `git log
@@ -298,7 +302,9 @@ code). Startup reconciliation `reconcileLandedMerges`
 One `merge` telemetry event per attempt: `taskId`, `repo`, `branch`,
 `outcome`, `gate` (`none|passed|failed|skipped`), `gateRuns` (argv, exit
 code, duration, timedOut), `gateMs`, `lockWaitMs`, `lockHoldMs`,
-`landedSha`, `blockedFiles`, `message` (misses only, 500 chars). The
+`landedSha`, `blockedFiles`, `resolvedConflictBy` (the integrator card
+whose resolution this attempt committed, §7.8), `message` (misses only,
+500 chars). The
 digest counts them as `stats.mergeAttempts` by outcome. What to watch:
 `gateFailed / total` (the gate's catch rate), `conflict` that wasn't a
 real conflict (should be 0; an index.lock collision can no longer be
@@ -309,10 +315,17 @@ after a start).
 
 - After an integrator resolves a conflict in the worktree, the original
   card still needs a Merge (button or Ask). Nothing re-merges it
-  automatically.
+  automatically; that Merge is what commits the resolution (§7.8).
 - If a resolved conflict sits while HEAD moves again, the next landing
   wraps it in a second `Merge wissel/<id>` commit; the digest counts that
   card twice. Rare (a conflict, then more commits before the re-merge).
+- A conflict landing's parents are [branch tip, repo HEAD], the order
+  `git merge` in the worktree gives them, not the [repo HEAD, branch tip]
+  of step 4. `git log --first-parent` in the repo follows the branch
+  side for that one commit. Counting by subject is unaffected.
+- `=======` alone on a line is read as a marker even where a Markdown
+  file meant it as a heading underline of exactly seven characters. The
+  refusal names the file and line; a human finishes that one by hand.
 - The lock is in-process. A second wissel server on the same repo, or a
   human's own `git` at the same moment, can still race the fast-forward;
   that shows as `head-moved` (retried once) or `error`, never as a
@@ -322,6 +335,78 @@ after a start).
   database, a build step) has to say so in its gate commands, or in the
   project's worktree setup (§8), which runs before the agent and so
   before the gate.
+
+### 7.8 Finishing a resolved conflict (2026-10-19)
+
+**What was wrong.** Landing the Finn cards 32c60ba0 and 42d2bbfb, both
+conflicts went the same way: the integrator card resolved the files in
+the worktree correctly, finished, and the next Merge answered
+`<worktree> has an unfinished merge of <repo>'s HEAD into <branch>.
+Resolve the conflicts there, then git commit --no-edit, then merge
+again.` A human ran git by hand both times. The integrator's body told
+it to `git -C <worktree> add` and `commit --no-edit`, and the card was
+granted those Bash rules, but neither could ever succeed: the write-tier
+sandbox denies every git write as a permission rule (`GIT_WRITE_DENY`,
+`src/executors/sandbox.ts`) and, the real boundary, write-denies the
+repo's `.git`, which holds the worktree's gitdir
+(`.git/worktrees/<key>`). The agent was asked to do something the
+sandbox exists to stop.
+
+**The fix is deterministic and in Wissel's own process**, not the
+agent's (`finishResolvedMerge`, `src/services/worktree.ts`). When
+`mergeTaskWorktree` finds `MERGE_HEAD` in the worktree it finishes the
+merge only if both checks hold, in this order, else refuses with the
+failing check named:
+
+1. **Nothing is still conflicted.** The files `git ls-files -u` lists as
+   unmerged, plus every file in `git diff --name-only HEAD`, are read
+   from disk. A line that is `<<<<<<< `, `||||||| `, `=======` alone or
+   `>>>>>>> ` (`findConflictMarkers`, CRLF tolerated) makes the file
+   unresolved; the refusal lists `path:lines`. An unmerged path that is
+   binary (a NUL in its first 8000 bytes, git's own heuristic) is
+   unresolved too: git leaves one side's bytes there and nothing in them
+   says whether anyone chose. A binary file the merge brought in cleanly
+   is not checked. A missing file is a deletion `git add -A` stages.
+2. **The card's conflict integrator has finished.** `MergeContext.
+   conflictIntegrator` (filled from the board by every caller:
+   `withConflictIntegratorCheck` in the orchestrator's auto-merge and
+   the Merge button's `mergeTask`) finds the card titled `Resolve merge
+   conflict: <task id>` with the `conflict` label; `review` or `done`
+   counts. So a human mid-way through a manual resolve, with no
+   integrator card or a running one, is never committed behind their
+   back: the refusal says which card and status, and `git commit
+   --no-edit` by hand still works as before. A bare `CommandRunner` has
+   no board and always refuses.
+
+Then `git add -A` and `git commit --no-edit --cleanup=strip` in the
+worktree: the prepared `MERGE_MSG` (`Merge <branch>: <title>`) is the
+commit's message, so the digest counts the landed card by it, and git's
+`# Conflicts:` comment lines are stripped whatever `commit.cleanup`
+says. From there the normal path continues: the branch tip is now a
+landing commit (step 3's "lands as is"), the gate runs on it, and a bad
+resolution fails the gate and goes back through pushback like any other
+attempt. The landing message and the `merge` telemetry event carry
+`resolvedConflictBy: <integrator card id>`; a normal landing has
+neither.
+
+The integrator's body now says the opposite of before: it cannot
+commit and must not try, leave the files edited and stop, Wissel
+finishes the merge. Its `extraAllowedTools` are `git -C <worktree>
+status` and `diff` only.
+
+Gate tests: `test/merge-path.test.ts` §3b (finished and landed, with
+the prepared message and one landing commit; the card 32c60ba0 message
+no longer returned; markers left, named by file and line; one marker
+left; integrator not finished, by card and status; no integrator card;
+bare runner; gate failure after finishing goes to pushback; binary
+unmerged refused, binary brought in cleanly fine; modify/delete resolved
+as deletion; a clean worktree never asks about the integrator and has no
+trace; the marker scanner on CRLF, diff3 and look-alikes).
+`test/orchestrator.test.ts` covers `conflictIntegratorState` by status
+and the follow-up's grants and body. The paid eval `bun run
+eval:conflict-integrator` drives the whole path with the real
+integrator: conflict, integrator edits, Wissel commits, gate on the
+merged file, landed, no manual git.
 
 ## 8. Per-project worktree setup (2026-10-19)
 
