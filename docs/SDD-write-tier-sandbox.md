@@ -389,3 +389,30 @@ a Codex configuration question, not a wissel setting.
   the fix if it ever showed in a run's wall-clock.
 - The lookup runs once per run. A setting changed mid-run applies to
   the next run only.
+
+## 12. What a sandboxed command can host: loopback servers
+
+Spiked 2026-10-19 for finn-platform's PostgreSQL tests
+(docs/SDD-sandboxed-postgres.md). Facts about this sandbox that other
+cards will need:
+
+- Each Bash call is its own pid and network namespace, with `lo` up.
+  A command can start a server on 127.0.0.1 and talk to it; the next
+  Bash call sees neither the process nor the port. A test run must
+  start what it needs itself.
+- `strictAllowlist` governs the proxy; a direct loopback connection
+  never reaches the proxy, so no `allowedDomains` entry is needed for
+  a server the command started.
+- AF_UNIX sockets are refused (`EPERM`, the seccomp filter): docker's
+  socket, and Postgres's default socket. `socketpair` works. On Linux
+  `allowUnixSockets` (per path) is ignored; only `allowAllUnixSockets`
+  exists, and it is not used (§2).
+- `/tmp` is read-only; `$TMPDIR` is the writable scratch. `/dev/shm`
+  is a writable tmpfs. System V and POSIX shared memory work.
+- `~/.cache/uv` is read-only like `~/.bun/install/cache` (§8):
+  `uv --cache-dir "$TMPDIR/..."` or `UV_CACHE_DIR` in the run's env.
+- A real PostgreSQL 18 ran inside it, TCP-only
+  (`unix_socket_directories=''`), with row-level security, FORCE RLS
+  and transaction-local `set_config` behaving as on a host.
+  `bun run live-check:sandbox-postgres` reruns that under this
+  executor's exact `--settings`.
