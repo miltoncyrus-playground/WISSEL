@@ -182,8 +182,14 @@ Recovery handles it on the next start, but the restart is avoidable.
      Wissel commits the resolution itself once no file has a conflict
      marker and that integrator card has finished, then gates and lands
      it. Otherwise the refusal names the file and line, or the card and
-     its status. Resolving by hand still works: `git commit --no-edit`
-     in the worktree, then Merge.
+     its status. If the repo's HEAD moved again meanwhile and the merge
+     conflicts once more, that is a new conflict and gets a new
+     integrator card (one per conflicting HEAD, the sha on the card's
+     first line; clicking Merge twice on the same conflict spawns
+     nothing). After 3 integrator cards the card escalates instead, and
+     its escalation context says a human must resolve it. Resolving by
+     hand always works: `git commit --no-edit` in the worktree, then
+     Merge.
    - **Blocked by uncommitted local changes in: files**: commit or move
      those edits in your checkout, then Merge again. No integrator.
    - **HEAD moved twice**: someone kept committing; Merge again.

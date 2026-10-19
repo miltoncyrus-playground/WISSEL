@@ -292,7 +292,9 @@ export async function finishResult(
       return;
     }
     // A gate failure already went back as a pushback (or escalated):
-    // the card is superseded, so it leaves "running" for review.
+    // the card is superseded, so it leaves "running" for review. A
+    // conflict past the integrator cap escalated the card itself
+    // (afterMergeAttempt); it stays escalated, not review.
     if (outcome === "escalated") return;
   }
 
@@ -768,19 +770,50 @@ async function tryAutoMerge(board: Board, registry: Registry, result: TaskResult
   return afterMergeAttempt(board, registry, task, result.worktree, res);
 }
 
-/** Whether `task`'s conflict integrator card (conflictIntegratorTitle,
- *  CONFLICT_LABEL) has finished: `review` or `done`. The merge path's
- *  second condition for committing a resolved conflict merge itself
- *  (worktree.ts finishResolvedMerge). Several cards with the title
- *  can't exist (maybeSpawnConflictIntegrator is idempotent), but a
- *  finished one wins if they did. */
-export async function conflictIntegratorState(board: Board, task: Pick<TaskCard, "id">): Promise<ConflictIntegratorState> {
+/** Every conflict integrator card spawned for `task`
+ *  (conflictIntegratorTitle + CONFLICT_LABEL), oldest first, whatever
+ *  its status. One per conflict, so usually one; several once the repo
+ *  moved again between conflicts (maybeSpawnConflictIntegrator). */
+async function conflictIntegratorCards(board: Board, task: Pick<TaskCard, "id">): Promise<TaskCard[]> {
   const title = conflictIntegratorTitle(task);
-  const cards = (await board.list()).filter((t) => t.title === title && t.labels.includes(CONFLICT_LABEL));
+  return (await board.list()).filter((t) => t.title === title && t.labels.includes(CONFLICT_LABEL));
+}
+
+/** Whether `card`, a conflict integrator card, is for the conflict
+ *  against `conflictHead`: its body's `conflict-head:` line names that
+ *  sha. A card without the line (spawned before 2026-10-19, when the
+ *  conflict wasn't recorded) matches every head: that is the old
+ *  one-per-card rule, kept for those cards so one of them can never be
+ *  spawned twice over. An unknown head (undefined) matches every card
+ *  for the same reason. */
+function forConflict(card: Pick<TaskCard, "body">, conflictHead: string | undefined): boolean {
+  const recorded = conflictIntegratorHead(card);
+  return recorded === undefined || conflictHead === undefined || recorded === conflictHead;
+}
+
+/** Whether `task`'s conflict integrator card for the conflict against
+ *  `conflictHead` (the worktree's MERGE_HEAD) has finished: `review` or
+ *  `done`. The merge path's second condition for committing a resolved
+ *  conflict merge itself (worktree.ts finishResolvedMerge). An
+ *  integrator for an earlier conflict of the same card, against another
+ *  HEAD, is not this conflict's: it neither finishes nor blocks it, and
+ *  the reason says so. Without a head (a caller from before the key
+ *  existed), every card of the task counts, as before. */
+export async function conflictIntegratorState(board: Board, task: Pick<TaskCard, "id">, conflictHead?: string): Promise<ConflictIntegratorState> {
+  const all = await conflictIntegratorCards(board, task);
+  if (all.length === 0) return { finished: false, reason: `no conflict integrator card ("${conflictIntegratorTitle(task)}") exists for this task` };
+  const cards = all.filter((t) => forConflict(t, conflictHead));
   const finished = cards.find((t) => t.status === "review" || t.status === "done");
   if (finished) return { finished: true, cardId: finished.id };
-  if (cards.length === 0) return { finished: false, reason: `no conflict integrator card ("${title}") exists for this task` };
-  return { finished: false, reason: `the conflict integrator card ${cards[0]!.id} is ${cards[0]!.status}, not finished (review or done)` };
+  if (cards.length === 0) {
+    const earlier = all.map((t) => t.id).join(", ");
+    return {
+      finished: false,
+      reason: `no conflict integrator card is for this conflict (HEAD ${shortSha(conflictHead!)}); the earlier ${all.length === 1 ? "one" : "ones"} (${earlier}) handled another HEAD`,
+    };
+  }
+  const latest = cards[cards.length - 1]!;
+  return { finished: false, reason: `the conflict integrator card ${latest.id} is ${latest.status}, not finished (review or done)` };
 }
 
 /** The merge context every caller with a board hands mergeTaskWorktree:
@@ -789,24 +822,48 @@ export async function conflictIntegratorState(board: Board, task: Pick<TaskCard,
 export function withConflictIntegratorCheck(board: Board, context: CommandRunner | MergeContext): MergeContext {
   const merge = toMergeContext(context);
   if (merge.conflictIntegrator) return merge;
-  return { ...merge, conflictIntegrator: (task) => conflictIntegratorState(board, task) };
+  return { ...merge, conflictIntegrator: (task, conflictHead) => conflictIntegratorState(board, task, conflictHead) };
 }
 
 /** What every merge caller does with a failed MergeResult: a gate
- *  failure goes back through the pushback loop, a conflict gets its one
- *  integrator. Shared by the auto-merge path and the board's Merge
- *  button (board-actions.ts mergeTask), so the two can't drift. */
+ *  failure goes back through the pushback loop, a conflict gets its
+ *  integrator (one per conflicting HEAD, MAX_CONFLICT_INTEGRATORS per
+ *  card), and a conflict past that cap escalates the card to a human.
+ *  Shared by the auto-merge path and the board's Merge button
+ *  (board-actions.ts mergeTask), so the two can't drift. */
 export async function afterMergeAttempt(board: Board, registry: Registry, task: TaskCard, worktree: TaskWorktree, res: MergeResult): Promise<AutoMergeOutcome> {
   if (res.ok) return "landed";
   if (res.outcome === "gate-failed") return pushBackGateFailure(board, task, res.message);
   if (res.outcome === "conflict") {
     try {
-      await maybeSpawnConflictIntegrator(board, registry, task, worktree, res.message);
+      const spawn = await maybeSpawnConflictIntegrator(board, registry, task, worktree, res.message, res.conflictHead);
+      if (spawn.action === "capped") {
+        await escalateConflictCap(board, task, worktree, res.message, spawn.cardIds);
+        return "escalated";
+      }
     } catch (e) {
       console.error(`orchestrator: failed to check/spawn conflict integrator for ${task.id}: ${(e as Error).message}`);
     }
   }
   return "review";
+}
+
+/** The conflict cap's escalation: the card moves to `escalated` with an
+ *  escalationContext saying a human must resolve this conflict in the
+ *  worktree, after the lineage's reviewer history (as pushBackGateFailure
+ *  does), so the board's escalation panel reads the same way. The Merge
+ *  button still works on the card: a human resolves in the worktree,
+ *  `git commit --no-edit`, Merge. */
+async function escalateConflictCap(board: Board, task: TaskCard, worktree: TaskWorktree, conflictMessage: string, cardIds: string[]): Promise<void> {
+  const history = await buildEscalationContext(board, task.reviewLineageId ?? task.id);
+  const note = [
+    `${MAX_CONFLICT_INTEGRATORS} conflict integrator cards (${cardIds.join(", ")}) have already been spawned for this card, one per conflict, and the repo's HEAD moved again: ` +
+      `this merge conflicted once more and no further integrator is spawned. A human must resolve this conflict in the worktree ${worktree.path} ` +
+      `(edit the files, \`git add -A && git commit --no-edit\` there), then Merge again.`,
+    "",
+    conflictMessage,
+  ].join("\n");
+  await board.escalate(task.id, history ? `${history}\n\n${note}` : note);
 }
 
 /** Tag the auto-spawned conflict follow-up carries — the exact string
@@ -818,17 +875,59 @@ export async function afterMergeAttempt(board: Board, registry: Registry, task: 
 const CONFLICT_LABEL = "conflict";
 
 /** Deterministic title for the conflict follow-up spawned under
- *  `originalTask` — doubles as the idempotency key `maybeSpawnConflict
- *  Integrator` searches for (see below), so it's built from `task.id`
- *  rather than `task.title`, which could in principle collide across
- *  two different tasks or change after the follow-up was created. */
+ *  `originalTask` — with CONFLICT_LABEL, how `maybeSpawnConflict
+ *  Integrator` and conflictIntegratorState find the card's integrators
+ *  (see below), so it's built from `task.id` rather than `task.title`,
+ *  which could in principle collide across two different tasks or
+ *  change after the follow-up was created. Deliberately the same for
+ *  every attempt on one card: the digest's lineage folding
+ *  (wissel-digest.ts CONFLICT_TITLE) reads the task id off it, and the
+ *  per-conflict key is the body's `conflict-head:` line, not the title. */
 function conflictIntegratorTitle(originalTask: Pick<TaskCard, "id">): string {
   return `Resolve merge conflict: ${originalTask.id}`;
 }
 
+/** The one machine-readable line in a conflict integrator's body: the
+ *  repo HEAD sha the merge conflicted against (MergeResult.conflictHead),
+ *  which is the worktree's MERGE_HEAD while the conflict is unfinished.
+ *  First line of the body, so a human sees it too. */
+const CONFLICT_HEAD_LINE = /^conflict-head: ([0-9a-f]{40,64})$/m;
+
+function conflictHeadLine(sha: string): string {
+  return `conflict-head: ${sha}`;
+}
+
+/** The HEAD sha a conflict integrator card was spawned for, from its
+ *  body's `conflict-head:` line; undefined for a card from before the
+ *  line existed (2026-10-19). */
+export function conflictIntegratorHead(card: Pick<TaskCard, "body">): string | undefined {
+  return CONFLICT_HEAD_LINE.exec(card.body)?.[1];
+}
+
+/** Most conflict integrator cards one card gets, one per conflicting
+ *  HEAD. A card whose merge conflicts against a fourth HEAD escalates
+ *  instead (afterMergeAttempt): three conflicts in a row means the repo
+ *  is moving under the card faster than integrators land it, and a human
+ *  should look at the card rather than a fourth agent at the files. */
+export const MAX_CONFLICT_INTEGRATORS = 3;
+
+/** What maybeSpawnConflictIntegrator did. `exists`: a card for this
+ *  same conflict (same HEAD, or an unknown one) is already there, any
+ *  status. `capped`: MAX_CONFLICT_INTEGRATORS cards exist, none for this
+ *  HEAD, so no card is created and the caller escalates. */
+export type ConflictIntegratorSpawn =
+  | { action: "spawned"; cardId: string; attempt: number }
+  | { action: "exists"; cardId: string }
+  | { action: "capped"; cardIds: string[] }
+  | { action: "no-integrator-agent" };
+
+function shortSha(sha: string): string {
+  return sha.slice(0, 12);
+}
+
 /**
- * Auto-creates a single `integrator`-routed follow-up the moment
- * `tryAutoMerge` detects a *fresh* merge conflict — see
+ * Auto-creates an `integrator`-routed follow-up, one per conflict, the
+ * moment the merge path detects a *fresh* merge conflict — see
  * docs/SDD-crash-recovery.md §3.3 for why this specific moment (and
  * only this moment) is safe to auto-resolve in: nothing else has had a
  * chance to touch a conflict that didn't exist an instant ago, so
@@ -855,11 +954,30 @@ function conflictIntegratorTitle(originalTask: Pick<TaskCard, "id">): string {
  * conflictIntegratorTitle) built from `originalTask.id`, plus the id
  * spelled out again in the body for a human reading the card.
  *
- * Idempotent: a second conflict for a task that already has a
- * follow-up (e.g. a retried merge attempt hitting the same conflict
- * twice) creates no duplicate — mirrors maybeSpawnIntegrator's own
- * "check before create" discipline, just keyed by title instead of
- * parentTaskId+label for the reason above.
+ * Keyed on the conflict, not the card (2026-10-19, card 42d2bbfb): the
+ * repo HEAD sha the merge conflicted against (`conflictHead`,
+ * MergeResult.conflictHead) is recorded as the body's first line
+ * (`conflict-head: <sha>`, conflictIntegratorHead) and compared against
+ * every earlier integrator card of this task (same title, same label):
+ *
+ * - A card for the same HEAD exists, whatever its status (inbox,
+ *   running, review, done): no duplicate. A retried Merge hitting the
+ *   same conflict, or a Merge clicked twice, spawns nothing; mirrors
+ *   maybeSpawnIntegrator's own "check before create" discipline.
+ * - Every earlier card handled another HEAD: a new conflict, a new
+ *   card. Before this, any card with the title blocked, even a finished
+ *   one, so the second conflict of card 42d2bbfb (its first integrator
+ *   bce0fbe9 already done, the repo moved to a18c3f9 under it) got no
+ *   integrator at all and six files were resolved by hand.
+ * - MAX_CONFLICT_INTEGRATORS cards exist already and none is for this
+ *   HEAD: `capped`, nothing is created, and afterMergeAttempt escalates
+ *   the card with an escalationContext saying a human must resolve it.
+ * - No `conflictHead` (a caller that doesn't know it): the old rule, any
+ *   earlier card blocks, so an unknown conflict is never spawned twice.
+ *
+ * The new card's body names the current conflict only (this merge's
+ * output and HEAD) plus the attempt number and the earlier cards' ids;
+ * the earlier cards themselves are never touched or reopened.
  *
  * Deliberately does NOT add `handoffs: [reviewer]` to `integrator`'s
  * own manifest entry (agents/manifest.yaml) to put this follow-up's own
@@ -923,36 +1041,60 @@ export async function maybeSpawnConflictIntegrator(
   originalTask: TaskCard,
   worktree: TaskWorktree,
   conflictMessage: string,
-): Promise<void> {
+  conflictHead?: string,
+): Promise<ConflictIntegratorSpawn> {
   const integratorAgent = registry.get("integrator");
-  if (!integratorAgent) return; // no integrator agent registered — nothing to route this to
+  if (!integratorAgent) return { action: "no-integrator-agent" }; // no integrator agent registered — nothing to route this to
 
-  const title = conflictIntegratorTitle(originalTask);
-  const existing = (await board.list()).some((t) => t.title === title && t.labels.includes(CONFLICT_LABEL));
-  if (existing) return;
+  const earlier = await conflictIntegratorCards(board, originalTask);
+  const same = earlier.find((t) => forConflict(t, conflictHead));
+  if (same) return { action: "exists", cardId: same.id };
+  if (earlier.length >= MAX_CONFLICT_INTEGRATORS) return { action: "capped", cardIds: earlier.map((t) => t.id) };
 
   // The conflict lives in the original card's worktree (the merge path
   // merges the repo's HEAD into the branch there, never in task.repo),
   // so that is the one path this follow-up is granted.
   const where = worktree.path;
-  await board.create({
-    title,
-    body: buildConflictIntegratorBody(originalTask, worktree, conflictMessage),
+  const attempt = earlier.length + 1;
+  const card = await board.create({
+    title: conflictIntegratorTitle(originalTask),
+    body: buildConflictIntegratorBody(originalTask, worktree, conflictMessage, conflictHead, attempt, earlier.map((t) => t.id)),
     labels: [CONFLICT_LABEL],
     repo: originalTask.repo,
     extraAllowedDirs: [where],
     extraAllowedTools: [`Bash(git -C ${where} status:*)`, `Bash(git -C ${where} diff:*)`],
   });
+  return { action: "spawned", cardId: card.id, attempt };
 }
 
-function buildConflictIntegratorBody(originalTask: TaskCard, worktree: TaskWorktree, conflictMessage: string): string {
+function buildConflictIntegratorBody(
+  originalTask: TaskCard,
+  worktree: TaskWorktree,
+  conflictMessage: string,
+  conflictHead: string | undefined,
+  attempt: number,
+  earlierCardIds: string[],
+): string {
   const where = worktree.path;
+  const head = conflictHead ? ` (${shortSha(conflictHead)})` : "";
+  const again =
+    attempt > 1
+      ? [
+          `This is conflict ${attempt} of at most ${MAX_CONFLICT_INTEGRATORS} for this card: ${earlierCardIds.length === 1 ? "an earlier integrator card" : "earlier integrator cards"}`,
+          `(${earlierCardIds.join(", ")}) resolved ${earlierCardIds.length === 1 ? "an earlier conflict" : "earlier conflicts"} of the same branch, and that work is committed and no`,
+          "longer in the worktree. Then the repo's HEAD moved again and this merge conflicted once more. Only the",
+          "conflict described below is open; it is the only one to resolve.",
+          "",
+        ]
+      : [];
   return [
+    ...(conflictHead ? [conflictHeadLine(conflictHead), ""] : []),
     `Merging "${originalTask.title}" (task ${originalTask.id}) hit a conflict merging \`${originalTask.repo}\`'s`,
-    `current HEAD into its branch \`${worktree.branch}\`. The merge ran in that card's own worktree, ${where},`,
+    `current HEAD${head} into its branch \`${worktree.branch}\`. The merge ran in that card's own worktree, ${where},`,
     `and the conflict is sitting there right now, left exactly as git produced it. ${originalTask.repo} itself`,
     "was never touched: nothing has been committed, aborted, or otherwise cleaned up.",
     "",
+    ...again,
     "IMPORTANT — your own working directory for this task is a fresh, separate git worktree checked out clean",
     `from the current HEAD of ${originalTask.repo}. It does NOT contain the conflict — your own files will look`,
     "untouched and your own `git status` will come back clean. The actual conflict markers live only at",

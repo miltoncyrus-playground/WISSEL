@@ -309,6 +309,14 @@ export interface MergeResult {
    *  committed (finishResolvedMerge). Set only when the worktree held
    *  an unfinished merge that Wissel finished itself. */
   resolvedConflictBy?: string;
+  /** The commit of `repo`'s HEAD the merge conflicted against: the
+   *  `base` a fresh conflict was redone against in the worktree, or the
+   *  worktree's MERGE_HEAD when an earlier conflict there is still
+   *  unfinished. Set only on `conflict`. The orchestrator keys the
+   *  conflict integrator on it (maybeSpawnConflictIntegrator): a new
+   *  HEAD is a new conflict and gets its own card, the same HEAD never
+   *  spawns twice. */
+  conflictHead?: string;
   lockWaitMs: number;
   lockHoldMs: number;
 }
@@ -318,9 +326,10 @@ export interface MergeTelemetry {
   record(event: TelemetryEvent): Promise<void>;
 }
 
-/** Whether a card's conflict integrator (the follow-up
- *  maybeSpawnConflictIntegrator spawns, orchestrator.ts) has finished:
- *  status `review` or `done`. `reason` says why not, for the refusal. */
+/** Whether a card's conflict integrator for one conflict (the follow-up
+ *  maybeSpawnConflictIntegrator spawns, orchestrator.ts, keyed on the
+ *  repo HEAD the merge conflicted against) has finished: status
+ *  `review` or `done`. `reason` says why not, for the refusal. */
 export type ConflictIntegratorState = { finished: true; cardId: string } | { finished: false; reason: string };
 
 /** Everything the merge path needs besides the task itself. Built once
@@ -333,13 +342,17 @@ export interface MergeContext {
   gateFor?: MergeGateResolver;
   gateRunner?: GateCommandRunner;
   telemetry?: MergeTelemetry;
-  /** Answers whether this card's conflict integrator has finished, the
-   *  second condition for Wissel to commit a resolved conflict merge
-   *  itself (finishResolvedMerge, docs/SDD-worktree-isolation.md §7.8).
-   *  Every caller with a board sets it (withConflictIntegratorCheck,
-   *  orchestrator.ts). Absent: a worktree with an unfinished merge is
-   *  always refused, the pre-2026-10-19 behaviour. */
-  conflictIntegrator?: (task: TaskCard) => Promise<ConflictIntegratorState>;
+  /** Answers whether this card's conflict integrator for the conflict
+   *  against `conflictHead` (the worktree's MERGE_HEAD, the repo HEAD
+   *  that merge conflicted against) has finished, the second condition
+   *  for Wissel to commit a resolved conflict merge itself
+   *  (finishResolvedMerge, docs/SDD-worktree-isolation.md §7.8). An
+   *  integrator that finished an earlier conflict against another HEAD
+   *  does not count (§7.9). Every caller with a board sets it
+   *  (withConflictIntegratorCheck, orchestrator.ts). Absent: a worktree
+   *  with an unfinished merge is always refused, the pre-2026-10-19
+   *  behaviour. */
+  conflictIntegrator?: (task: TaskCard, conflictHead: string) => Promise<ConflictIntegratorState>;
   /** Test seam: runs after the gate passes, right before the HEAD
    *  check that guards landing. */
   beforeLand?: () => Promise<void>;
@@ -438,6 +451,7 @@ export async function mergeTaskWorktree(
       ...(result.mergedSha ? { landedSha: result.mergedSha } : {}),
       ...(result.blockedFiles ? { blockedFiles: result.blockedFiles } : {}),
       ...(result.resolvedConflictBy ? { resolvedConflictBy: result.resolvedConflictBy } : {}),
+      ...(result.conflictHead ? { conflictHead: result.conflictHead } : {}),
       ...(result.ok ? {} : { message: result.message.slice(0, 500) }),
     })
     .catch((e) => console.error(`merge: telemetry write failed for ${task.id}: ${(e as Error).message}`));
@@ -473,9 +487,13 @@ async function mergeLocked(
   // done; refused otherwise, since committing it would commit the
   // conflict markers.
   let resolvedConflictBy: string | undefined;
-  if ((await git(worktree.path, ["rev-parse", "-q", "--verify", "MERGE_HEAD"])).ok) {
-    const finished = await finishResolvedMerge(git, repo, worktree, task, ctx);
-    if (!finished.ok) return fail(finished.outcome, finished.message);
+  const mergeHead = await git(worktree.path, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+  if (mergeHead.ok) {
+    // MERGE_HEAD is the repo HEAD that conflict was against: the key the
+    // integrator card for it carries, and the one a refusal reports.
+    const conflictHead = mergeHead.stdout.trim();
+    const finished = await finishResolvedMerge(git, repo, worktree, task, ctx, conflictHead);
+    if (!finished.ok) return fail(finished.outcome, finished.message, NO_GATE, finished.outcome === "conflict" ? { conflictHead } : {});
     resolvedConflictBy = finished.cardId;
   }
   const extra: Partial<Unlocked> = resolvedConflictBy ? { resolvedConflictBy } : {};
@@ -512,7 +530,10 @@ async function mergeLocked(
 
     const plan = await buildLandingCommit(git, repo, worktree, base, tip, message);
     if (plan.kind === "error") return fail("error", plan.message);
-    if (plan.kind === "conflict") return fail("conflict", plan.message);
+    // `extra` too: this attempt may have committed an earlier conflict's
+    // resolution (resolvedConflictBy) before conflicting against the HEAD
+    // that moved since; the trace says so.
+    if (plan.kind === "conflict") return fail("conflict", plan.message, NO_GATE, { ...extra, conflictHead: plan.head });
     if (plan.kind === "resolved") {
       // The conflict merge resolved on its own after all; the branch tip
       // is now the landing commit.
@@ -616,11 +637,14 @@ type FinishOutcome = { ok: true; cardId: string } | { ok: false; outcome: "confl
  *    resolution from the raw conflict). A changed file that is binary
  *    but not unmerged came from the merge itself and is fine. A missing
  *    file is a deletion `git add -A` stages.
- * 2. The card's conflict integrator has finished (ctx.conflictIntegrator:
- *    status review or done). A human mid-way through a manual resolve
- *    has no finished integrator, so their worktree is never committed
- *    behind their back; they finish with `git commit --no-edit` as
- *    before.
+ * 2. The card's conflict integrator for this conflict has finished
+ *    (ctx.conflictIntegrator, asked with `conflictHead`, the worktree's
+ *    MERGE_HEAD: status review or done). A human mid-way through a
+ *    manual resolve has no finished integrator, so their worktree is
+ *    never committed behind their back; they finish with `git commit
+ *    --no-edit` as before. An integrator that finished an earlier
+ *    conflict of the same card, against another HEAD, is not this
+ *    conflict's and does not count either.
  *
  * Then `git add -A` and `git commit --no-edit --cleanup=strip`: the
  * prepared MERGE_MSG (`Merge <branch>: <title>`) becomes the commit's
@@ -629,8 +653,8 @@ type FinishOutcome = { ok: true; cardId: string } | { ok: false; outcome: "confl
  * The gate still runs on the result: a bad resolution fails there and
  * goes back through pushback.
  */
-async function finishResolvedMerge(git: Git, repo: string, worktree: TaskWorktree, task: TaskCard, ctx: MergeContext): Promise<FinishOutcome> {
-  const where = `${worktree.path} has an unfinished merge of ${repo}'s HEAD into ${worktree.branch}`;
+async function finishResolvedMerge(git: Git, repo: string, worktree: TaskWorktree, task: TaskCard, ctx: MergeContext, conflictHead: string): Promise<FinishOutcome> {
+  const where = `${worktree.path} has an unfinished merge of ${repo}'s HEAD (${short(conflictHead)}) into ${worktree.branch}`;
   const refuse = (outcome: "conflict" | "error", why: string): FinishOutcome => ({ ok: false, outcome, message: `${where}: ${why}` });
 
   const unmergedRes = await git(worktree.path, ["ls-files", "-u", "-z"]);
@@ -647,7 +671,7 @@ async function finishResolvedMerge(git: Git, repo: string, worktree: TaskWorktre
   if (!ctx.conflictIntegrator) {
     return refuse("conflict", "this merge path has no board to check the conflict integrator against, so it won't commit the resolution. Run `git add -A && git commit --no-edit` there, then merge again.");
   }
-  const integrator = await ctx.conflictIntegrator(task);
+  const integrator = await ctx.conflictIntegrator(task, conflictHead);
   if (!integrator.finished) {
     return refuse("conflict", `${integrator.reason}. Wissel only commits a resolution its integrator card finished; a manual one is finished with \`git add -A && git commit --no-edit\` there, then merge again.`);
   }
@@ -740,7 +764,12 @@ async function isAncestor(git: Git, repo: string, a: string, b: string): Promise
   return (await git(repo, ["merge-base", "--is-ancestor", a, b])).ok;
 }
 
-type LandingPlan = { kind: "commit"; sha: string } | { kind: "conflict"; message: string } | { kind: "resolved"; tip: string } | { kind: "error"; message: string };
+type LandingPlan =
+  | { kind: "commit"; sha: string }
+  /** `head` is `base`, the repo HEAD the merge conflicted against. */
+  | { kind: "conflict"; message: string; head: string }
+  | { kind: "resolved"; tip: string }
+  | { kind: "error"; message: string };
 
 /**
  * The commit that will land: parents [base, tip], so `repo`'s
@@ -777,6 +806,7 @@ async function buildLandingCommit(git: Git, repo: string, worktree: TaskWorktree
       const out = merge.stdout.trim() || merge.text;
       return {
         kind: "conflict",
+        head: base,
         message:
           `conflict merging ${repo}'s HEAD (${short(base)}) into ${worktree.branch}. It is left in the worktree at ${worktree.path} ` +
           `(never in ${repo}). An integrator card resolves it there and the next merge commits and lands it; ` +

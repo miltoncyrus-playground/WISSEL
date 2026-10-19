@@ -253,7 +253,7 @@ Never anywhere: `merge --abort`, `reset`, `checkout -f`, `stash`.
 |---|---|---|---|
 | `landed` | fast-forwarded | `done` | no |
 | `gate-failed` | no | pushback attempt, or `escalated` at the cap | no |
-| `conflict` | no (conflict in the worktree) | `review` | one, idempotent |
+| `conflict` | no (conflict in the worktree) | `review`, or `escalated` past the cap | one per conflicting HEAD, at most 3 per card (§7.9) |
 | `blocked-local-changes` | no | `review` | no |
 | `head-moved` | no | `review` | no |
 | `error` | no | `review` | no |
@@ -319,6 +319,12 @@ after a start).
 - If a resolved conflict sits while HEAD moves again, the next landing
   wraps it in a second `Merge wissel/<id>` commit; the digest counts that
   card twice. Rare (a conflict, then more commits before the re-merge).
+  When that next merge conflicts too, it gets its own integrator (§7.9),
+  and each resolved conflict is its own `Merge wissel/<id>` commit on the
+  branch, so a card that conflicted n times counts n times.
+- A conflict integrator card from before 2026-10-19 has no
+  `conflict-head:` line, so it still blocks every later conflict of its
+  card, the old rule (§7.9). Only cards spawned since carry the key.
 - A conflict landing's parents are [branch tip, repo HEAD], the order
   `git merge` in the worktree gives them, not the [repo HEAD, branch tip]
   of step 4. `git log --first-parent` in the repo follows the branch
@@ -367,16 +373,21 @@ failing check named:
    unresolved too: git leaves one side's bytes there and nothing in them
    says whether anyone chose. A binary file the merge brought in cleanly
    is not checked. A missing file is a deletion `git add -A` stages.
-2. **The card's conflict integrator has finished.** `MergeContext.
-   conflictIntegrator` (filled from the board by every caller:
-   `withConflictIntegratorCheck` in the orchestrator's auto-merge and
-   the Merge button's `mergeTask`) finds the card titled `Resolve merge
-   conflict: <task id>` with the `conflict` label; `review` or `done`
-   counts. So a human mid-way through a manual resolve, with no
-   integrator card or a running one, is never committed behind their
-   back: the refusal says which card and status, and `git commit
-   --no-edit` by hand still works as before. A bare `CommandRunner` has
-   no board and always refuses.
+2. **The card's conflict integrator for this conflict has finished.**
+   `MergeContext.conflictIntegrator` (filled from the board by every
+   caller: `withConflictIntegratorCheck` in the orchestrator's auto-merge
+   and the Merge button's `mergeTask`) is asked with the worktree's
+   `MERGE_HEAD`, the repo HEAD that conflict was against, and finds the
+   card titled `Resolve merge conflict: <task id>` with the `conflict`
+   label whose body's `conflict-head:` line names that sha (§7.9);
+   `review` or `done` counts. So a human mid-way through a manual
+   resolve, with no integrator card or a running one, is never committed
+   behind their back: the refusal says which card and status, and `git
+   commit --no-edit` by hand still works as before. An integrator that
+   finished an earlier conflict of the same card, against another HEAD,
+   does not vouch for this one: the refusal says no card is for this
+   HEAD and names the earlier ones. A bare `CommandRunner` has no board
+   and always refuses.
 
 Then `git add -A` and `git commit --no-edit --cleanup=strip` in the
 worktree: the prepared `MERGE_MSG` (`Merge <branch>: <title>`) is the
@@ -407,6 +418,71 @@ and the follow-up's grants and body. The paid eval `bun run
 eval:conflict-integrator` drives the whole path with the real
 integrator: conflict, integrator edits, Wissel commits, gate on the
 merged file, landed, no manual git.
+
+### 7.9 Another attempt when the repo moves again (2026-10-19)
+
+**What was wrong.** `maybeSpawnConflictIntegrator` created at most one
+integrator per card: any card with the title `Resolve merge conflict:
+<task id>` and the `conflict` label blocked a new one, in every status,
+a finished one included. Card 42d2bbfb: its first conflict got
+integrator bce0fbe9, which resolved it and finished. Before the next
+Merge, another card landed and the repo's HEAD moved to a18c3f9. That
+Merge committed the first resolution (§7.8), then conflicted again
+against the new HEAD, and no integrator was spawned: the card sat in
+`review` with a conflict nobody was resolving, and six files were
+resolved by hand.
+
+**The guard is keyed on the conflict, not the card.** The merge path
+reports which commit the merge conflicted against:
+`MergeResult.conflictHead`, the `base` a fresh conflict was redone
+against in the worktree, or the worktree's `MERGE_HEAD` when an earlier
+conflict there is still unfinished (a refusal from §7.8). It is on the
+`merge` telemetry event as `conflictHead`. The integrator card records
+it as the first line of its body, the one machine-readable line:
+`conflict-head: <sha>` (`conflictIntegratorHead`, `orchestrator.ts`).
+The title and label stay exactly as they were: `conflict` is the
+integrator's routing tag, and the digest reads the task id off the
+title (`wissel-digest.ts` `CONFLICT_TITLE`), so every attempt of one
+card has the same title and folds under the same story. On a
+`conflict`, `maybeSpawnConflictIntegrator` lists the card's integrator
+cards and:
+
+- **A card for the same HEAD exists**, whatever its status (inbox,
+  running, review, done): nothing is spawned. A Merge clicked twice, or
+  a resolution refused for a leftover marker, is the same conflict and
+  gets the same one card.
+- **Every earlier card handled another HEAD**: a new card, with the
+  current conflict only (this merge's HEAD and git output), the attempt
+  number (`conflict 2 of at most 3`) and the earlier cards' ids. The
+  earlier cards are never touched or reopened.
+- **`MAX_CONFLICT_INTEGRATORS` (3) cards exist and none is for this
+  HEAD**: nothing is spawned, and `afterMergeAttempt` escalates the card
+  (`board.escalate`): status `escalated`, `escalationContext` saying
+  three integrators were spawned, the repo moved again, and a human must
+  resolve this conflict in the worktree (`git add -A && git commit
+  --no-edit` there, then Merge). The Merge button answers the conflict
+  message plus `Escalated: 3 integrator cards have already been spawned
+  for this card's conflicts`. Merge keeps working on the escalated card:
+  a manual resolution lands as before and moves it to `done`.
+- **No `conflictHead`** (a caller that doesn't know it), or an
+  integrator card from before the line existed: the old rule, any
+  earlier card blocks, so one conflict is never spawned twice over.
+
+Gate tests: `test/merge-path.test.ts` §3c, against real git (the card
+42d2bbfb regression: a second conflict against a new HEAD spawns a
+second card keyed on it, with the first card byte-for-byte untouched,
+and the second resolution lands; repeated Merge clicks on one HEAD in
+every integrator status spawn nothing; a finished integrator for
+another HEAD does not vouch for the current conflict; three conflicts,
+three cards, the fourth escalates with the context above and a manual
+resolve still lands). `test/orchestrator.test.ts` covers the spawn
+decision by HEAD (same, new, cap, unknown, a pre-key card), the second
+card's body, routing of the second card to `integrator` through the
+real Router (what `wissel why <id>` shows), and
+`conflictIntegratorState` by HEAD. `test/wissel-digest.test.ts` checks
+two conflict cards fold under their task. The fix is deterministic end
+to end, so the paid eval `bun run eval:conflict-integrator` is
+unchanged.
 
 ## 8. Per-project worktree setup (2026-10-19)
 

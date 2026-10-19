@@ -19,7 +19,7 @@ import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import { validateNotBefore } from "../core/not-before.ts";
 import { mergeTaskWorktree, removeTaskWorktree, type MergeContext } from "./worktree.ts";
-import { afterMergeAttempt, MAX_PUSHBACKS, withConflictIntegratorCheck } from "../core/orchestrator.ts";
+import { afterMergeAttempt, MAX_CONFLICT_INTEGRATORS, MAX_PUSHBACKS, withConflictIntegratorCheck } from "../core/orchestrator.ts";
 import { Registry } from "../core/registry.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import { ScheduleValidationError, type ScheduleInput, type SchedulePatch, type ScheduleStore } from "./schedules.ts";
@@ -76,9 +76,11 @@ export function notBeforeRefusal(task: Pick<TaskCard, "status" | "routedTo" | "a
  *  error says what happened:
  *  - gate failed: the card goes back as a pushback attempt (or
  *    escalates at the cap), same as a reviewer's changes_requested;
- *  - conflict: left in the worktree, one integrator card spawned. Once
- *    that card has finished and no marker is left, the next merge
- *    commits the resolution itself (worktree.ts finishResolvedMerge);
+ *  - conflict: left in the worktree, one integrator card spawned per
+ *    conflicting HEAD (at most MAX_CONFLICT_INTEGRATORS per card, then
+ *    the card escalates to a human). Once that card has finished and no
+ *    marker is left, the next merge commits the resolution itself
+ *    (worktree.ts finishResolvedMerge);
  *  - blocked by uncommitted local changes: lists the files; nothing
  *    touched, no integrator (it isn't a conflict);
  *  - HEAD moved twice while checking: merge again. */
@@ -109,6 +111,9 @@ export async function mergeTask(
     if (next === "pushback") {
       const attempt = (await board.get(task.id))?.supersededBy;
       return no(409, `${gateLine} Sent back for re-attempt ${(task.pushbackCount ?? 0) + 1} of ${MAX_PUSHBACKS}${attempt ? ` (card ${attempt})` : ""}, with the output.`);
+    }
+    if (next === "escalated" && merge.outcome === "conflict") {
+      return no(409, `${merge.message}\nEscalated: ${MAX_CONFLICT_INTEGRATORS} integrator cards have already been spawned for this card's conflicts. Resolve this one in the worktree yourself, \`git commit --no-edit\` there, then merge again.`);
     }
     if (next === "escalated") return no(409, `${gateLine} Escalated: the pushback limit is reached.`);
     return no(409, merge.message);
