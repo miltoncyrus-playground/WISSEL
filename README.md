@@ -44,6 +44,7 @@ runs write-tier work locally in a worktree.
 | `bun run test:e2e:affected` | Only the e2e specs affected by your changes. |
 | `bun run live-check:shutdown` | Real server, real agent spawn, SIGTERM: asserts no agent process survives. |
 | `bun run live-check:sandbox` | Real `claude -p` write-tier run with the Bash sandbox on: piped Bash works; writes outside the worktree, `~/.ssh` reads, off-allowlist hosts and `git commit` don't; a host the project configured (`sandboxAllowedDomains`) is reachable and an unconfigured one is not. Skips when the sandbox can't start. |
+| `bun run live-check:sandbox-postgres` | Real `claude -p` write-tier run that starts a vendored PostgreSQL 18 inside the Bash sandbox: `docker ps` and unix sockets fail, the stock config fails, a TCP-only server on 127.0.0.1 starts and passes row-level-security checks (FORCE RLS, transaction-local `set_config`), and is gone in the next Bash call. Downloads the binaries from the npm registry once (60 MB, cached in the OS temp dir). Skips when the sandbox can't start. See `docs/SDD-sandboxed-postgres.md`. |
 | `bun run denials:baseline` | Permission denials per implementer run (raw, old keys, new keys); `--telemetry` for the after numbers by sandbox state. |
 | `bun run seed:ai-news` | Create or upgrade the stored podcast pipelines (see Pipelines). |
 | `bun run seed:schedules` | Create the two morning podcast schedules, disabled (see Schedules). Idempotent. |

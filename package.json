@@ -19,6 +19,7 @@
     "test:e2e": "playwright test",
     "live-check:shutdown": "bun test scripts/live-check-shutdown.test.ts",
     "live-check:sandbox": "bun test scripts/live-check-sandbox.test.ts",
+    "live-check:sandbox-postgres": "bun test scripts/live-check-sandbox-postgres.test.ts",
     "denials:baseline": "bun run scripts/denials-baseline.ts",
     "eval:sandbox-denials": "bun run eval/sandbox-denials.eval.ts",
     "test:e2e:affected": "bun run scripts/e2e-affected.ts --run",
