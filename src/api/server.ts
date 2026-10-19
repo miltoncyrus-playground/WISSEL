@@ -376,6 +376,7 @@ export function createApp(
       runner: opts.commandRunner ?? runViaBun,
       agentModel: (id) => registry.get(id)?.costProfile.model,
     });
+  const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
   const writeSandbox: SandboxStatus = opts.writeSandbox ?? { state: "off", problems: [] };
   const writeExecutor = () =>
     new WriteExecutor({
@@ -386,6 +387,10 @@ export function createApp(
       remoteControl: opts.remoteControl,
       sandbox: writeSandbox,
       sandboxDenyRead: opts.writeSandboxDenyRead,
+      // The project's sandboxAllowedDomains (docs/SDD-project-settings.md),
+      // looked up per run like the merge gate below, so a POST
+      // /projects/:id/settings takes effect on the next run.
+      projectSettings: (repo) => projects.settingsFor(repo),
     });
   const autoExecutors: Executor[] = [
     new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
@@ -455,7 +460,6 @@ export function createApp(
   const scheduleControl: ScheduleControlDeps = { schedules, runner: scheduleRunner, now: opts.scheduleClock?.now };
   const pipelineEditorDist = opts.pipelineEditorDist ?? DEFAULT_PIPELINE_EDITOR_DIST;
   const appDist = opts.appDist ?? DEFAULT_APP_DIST;
-  const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
   const commandRunner = opts.commandRunner ?? runViaBun;
   // The merge path's context (docs/SDD-worktree-isolation.md §7): the
   // one every merge goes through, the Merge button, Ask's

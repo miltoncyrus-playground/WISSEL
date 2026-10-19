@@ -371,10 +371,12 @@ export interface Project {
   mergeGateTimeoutMs?: number;
   // Per-project execution settings (src/services/project-settings.ts,
   // docs/SDD-project-settings.md), set with POST /projects/:id/settings.
-  // Undefined means today's Bun/TypeScript defaults; stored only, not
-  // yet read by any run.
+  // Undefined means today's Bun/TypeScript defaults. Read per run by
+  // ProjectStore.settingsFor(task.repo); only sandboxAllowedDomains is
+  // consumed so far (WriteExecutor), the other three are stored only.
   /** Hosts added to SANDBOX_ALLOWED_DOMAINS for this repo's sandboxed
-   *  commands: bare hostnames, `*.` prefix allowed, at most 20. */
+   *  commands (mergeAllowedDomains, src/executors/sandbox.ts): bare
+   *  hostnames, `*.` prefix allowed, at most 20. */
   sandboxAllowedDomains?: string[];
   /** The checks an implementer must run (argv arrays), and the
    *  command-scoped Bash grants that let it (each passes grantError). */

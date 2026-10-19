@@ -1,8 +1,10 @@
 # SDD: Per-project execution settings
 
-Status: storage and API shipped (this card). Consumers: the next four
-cards (sandbox domains, verification contract, worktree setup,
-protected paths).
+Status: storage and API shipped 2026-10-19. Consumers:
+`sandboxAllowedDomains` is read by the write-tier sandbox
+(docs/SDD-write-tier-sandbox.md §11, via `ProjectStore.settingsFor`);
+the verification contract, worktree setup and protected paths cards
+are next.
 
 ## 1. Why
 
@@ -28,7 +30,7 @@ Optional fields on `Project` (`src/core/types.ts`):
 
 | Field | Type | Meaning (for the consuming card) |
 | --- | --- | --- |
-| `sandboxAllowedDomains` | `string[]` | Added to `SANDBOX_ALLOWED_DOMAINS` |
+| `sandboxAllowedDomains` | `string[]` | Added to `SANDBOX_ALLOWED_DOMAINS` (live: `mergeAllowedDomains`, SDD-write-tier-sandbox §11) |
 | `verification` | `{ commands: string[][]; allowedTools: string[] }` | Argv the implementer must run, and the command-scoped Bash grants that let it |
 | `worktreeSetup` | `string[][]` | Argv run once in a new worktree |
 | `protectedPaths` | `string[]` | Repo-relative globs agents may not modify |
@@ -47,6 +49,11 @@ seed: an existing project opens with none set. An empty list, or a
 
 `ProjectStore.setSettings(id, patch)` writes only the keys in the patch;
 `null` clears. Throws on an unknown id.
+
+`ProjectStore.settingsFor(repo)` is the read side for a run: the four
+fields of the project registered at `repo` (paths resolved, like
+`mergeGateFor`), undefined when none is. Consumers call it per run with
+`task.repo`, so an edit applies to the next run without a restart.
 
 ## 4. API
 
@@ -79,7 +86,7 @@ Example (finn-platform):
 
 ```json
 {
-  "sandboxAllowedDomains": ["pypi.org", "files.pythonhosted.org", "*.hashicorp.com"],
+  "sandboxAllowedDomains": ["pypi.org", "files.pythonhosted.org", "registry.terraform.io", "releases.hashicorp.com"],
   "verification": {
     "commands": [["uv", "run", "pytest"], ["uv", "run", "ruff", "check"], ["terraform", "validate"]],
     "allowedTools": ["Bash(uv run pytest:*)", "Bash(uv run ruff:*)", "Bash(terraform validate)"]
@@ -93,7 +100,8 @@ Example (finn-platform):
 
 - The settings are read from the board DB, which a human controls;
   agents have no route to them. A consuming card must read them from
-  `ProjectStore`, never from a file in the worktree.
+  `ProjectStore.settingsFor(task.repo)`, never from a file in the
+  worktree (the sandbox-domains consumer does exactly that).
 - Validation is syntactic. `pypi.org` passing doesn't mean the host is
   safe to allow; `allowedTools` passing `grantError` is the same bar a
   per-card grant meets, no higher.

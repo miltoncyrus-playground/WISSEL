@@ -6,7 +6,7 @@ import { basename, join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { Project } from "../core/types.ts";
 import { WISSEL_MERGE_GATE, type MergeGateConfig } from "./merge-gate.ts";
-import { PROJECT_SETTING_KEYS, type ProjectSettingsPatch } from "./project-settings.ts";
+import { PROJECT_SETTING_KEYS, type ProjectSettings, type ProjectSettingsPatch } from "./project-settings.ts";
 
 /**
  * Registers a project/repo two ways: an existing local folder, or a
@@ -38,6 +38,13 @@ export interface ProjectStore {
    *  src/services/project-settings.ts): absent keys are kept, null
    *  clears. Throws on an unknown id. */
   setSettings(id: string, patch: ProjectSettingsPatch): Promise<Project>;
+  /** The execution settings of the project registered at `repo`
+   *  (path-normalised like mergeGateFor): what a write-tier run reads
+   *  per run, so an edit takes effect without a restart. Undefined when
+   *  no project is registered there; a registered project with none set
+   *  gives an object with no keys. Only the four setting fields, never
+   *  the whole Project. */
+  settingsFor(repo: string): Promise<ProjectSettings | undefined>;
 }
 
 interface ProjectRow {
@@ -217,10 +224,27 @@ export class SqliteProjectStore implements ProjectStore {
   }
 
   async mergeGateFor(repo: string): Promise<MergeGateConfig | undefined> {
-    const key = resolve(repo);
-    const project = (await this.list()).find((p) => resolve(p.path) === key);
+    const project = await this.byPath(repo);
     if (!project?.mergeGate?.length) return undefined;
     return { commands: project.mergeGate, ...(project.mergeGateTimeoutMs ? { timeoutMs: project.mergeGateTimeoutMs } : {}) };
+  }
+
+  async settingsFor(repo: string): Promise<ProjectSettings | undefined> {
+    const project = await this.byPath(repo);
+    if (!project) return undefined;
+    const settings: ProjectSettings = {};
+    for (const key of PROJECT_SETTING_KEYS) {
+      const value = project[key];
+      if (value !== undefined) (settings as Record<string, unknown>)[key] = value;
+    }
+    return settings;
+  }
+
+  /** The project registered at `repo`, with `resolve` on both sides so
+   *  a trailing slash or `..` segment still matches. */
+  private async byPath(repo: string): Promise<Project | undefined> {
+    const key = resolve(repo);
+    return (await this.list()).find((p) => resolve(p.path) === key);
   }
 
   async addLocalProject(path: string, opts: { initGit?: boolean }, runner: CommandRunner): Promise<{ project: Project } | { error: string }> {

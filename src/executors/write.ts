@@ -5,6 +5,7 @@ import { runClaude, runViaBun, type CommandRunner } from "./claude-cli.ts";
 import { createTaskWorktree } from "../services/worktree.ts";
 import { readProjectAllowRules } from "../core/allowed-tools.ts";
 import { buildSandboxSettings, harnessConfigDirs, type SandboxStatus } from "./sandbox.ts";
+import type { ProjectSettings } from "../services/project-settings.ts";
 
 export interface WriteExecutorOptions {
   runner?: CommandRunner;
@@ -53,6 +54,15 @@ export interface WriteExecutorOptions {
    *  harness's CLAUDE_CONFIG_DIR / CODEX_HOME (harnessConfigDirs). The
    *  running harness's own is always added. */
   sandboxDenyRead?: string[];
+  /** The per-project execution settings of the repo a task is for
+   *  (`ProjectStore.settingsFor`, wired by src/api/server.ts as
+   *  `(repo) => projects.settingsFor(repo)`). Read per run, by
+   *  `task.repo` (the human-controlled main checkout, never the
+   *  worktree), only when the sandbox is on: today it supplies
+   *  `sandboxAllowedDomains` to buildSandboxSettings. Undefined (tests,
+   *  evals, a repo that isn't a registered project) means no extra
+   *  hosts: today's `--settings` exactly. */
+  projectSettings?: (repo: string) => Promise<ProjectSettings | undefined>;
 }
 
 /** Always granted: the two commands every write-tier verificationContract
@@ -70,7 +80,8 @@ export const BASE_ALLOWED_TOOLS = ["Bash(bun test:*)", "Bash(bun run typecheck:*
  * (`sandbox.state === "on"`), Bash instead runs inside it and is
  * approved by it: writes only to the worktree, the temp dir and
  * extraAllowedDirs, credential dirs unreadable, network limited to the
- * npm registry and github.com, no unsandboxed retry. See
+ * npm registry, github.com and the project's own `sandboxAllowedDomains`
+ * (WriteExecutorOptions.projectSettings), no unsandboxed retry. See
  * src/executors/sandbox.ts and docs/SDD-write-tier-sandbox.md.
  *
  * Runs inside an isolated git worktree, never task.repo's own working
@@ -102,6 +113,7 @@ export class WriteExecutor implements Executor {
   private onChunk?: (taskId: string, line: unknown) => void;
   private sandbox: SandboxStatus;
   private sandboxDenyRead: string[];
+  private projectSettings?: (repo: string) => Promise<ProjectSettings | undefined>;
 
   constructor(opts: WriteExecutorOptions = {}) {
     this.runner = opts.runner ?? runViaBun;
@@ -114,6 +126,7 @@ export class WriteExecutor implements Executor {
     this.onChunk = opts.onChunk;
     this.sandbox = opts.sandbox ?? { state: "off", problems: [] };
     this.sandboxDenyRead = opts.sandboxDenyRead ?? [];
+    this.projectSettings = opts.projectSettings;
   }
 
   canHandle(agent: AgentDef): boolean {
@@ -140,9 +153,17 @@ export class WriteExecutor implements Executor {
     const project = await readProjectAllowRules(task.repo!);
     for (const r of project.refused) console.warn(`write: task ${task.id}: not passing project allow rule ${r.error}`);
 
+    // The project's own sandbox hosts (docs/SDD-project-settings.md),
+    // read from the board DB by task.repo, so an agent can't grant its
+    // own next attempt a host by editing a file in the worktree.
     const sandboxOn = this.sandbox.state === "on";
+    const projectSettings = sandboxOn && this.projectSettings ? await this.projectSettings(task.repo!) : undefined;
     const settings = sandboxOn
-      ? buildSandboxSettings({ repo: task.repo!, extraDenyRead: [...this.sandboxDenyRead, ...harnessConfigDirs([harness?.env])] })
+      ? buildSandboxSettings({
+          repo: task.repo!,
+          extraDenyRead: [...this.sandboxDenyRead, ...harnessConfigDirs([harness?.env])],
+          allowedDomains: projectSettings?.sandboxAllowedDomains,
+        })
       : undefined;
 
     const result = await runClaude({
