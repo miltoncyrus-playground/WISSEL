@@ -9,11 +9,16 @@ import {
   controlCases,
   controlVerdict,
   INJECTION_TITLE,
+  NEEDS_YOU_PASS_CORRECT,
+  NEEDS_YOU_REASON,
+  needsYouCases,
   PASS_CORRECT,
   runCase,
   runControlCase,
+  runNeedsYouCase,
   seed,
   seedControl,
+  seedNeedsYou,
   selectCases,
   selectSuites,
   type ControlCategory,
@@ -139,10 +144,62 @@ test("--case picks named cases for a spot check and refuses unknown ones", () =>
   expect(selectCases(["--case"], cases)).toBe("--case needs a case name");
 });
 
-test("--suite picks basic or control, both by default", () => {
-  expect(selectSuites([])).toEqual(["basic", "control"]);
+test("--suite picks basic, control or needs-you, all three by default", () => {
+  expect(selectSuites([])).toEqual(["basic", "control", "needs-you"]);
   expect(selectSuites(["--suite", "control"])).toEqual(["control"]);
-  expect(selectSuites(["--suite", "nope"])).toBe("--suite must be basic or control");
+  expect(selectSuites(["--suite", "needs-you"])).toEqual(["needs-you"]);
+  expect(selectSuites(["--suite", "nope"])).toBe("--suite must be basic, control or needs-you");
+});
+
+// ===================== needs-you suite =====================
+
+const NEEDS_YOU_RIGHT: Record<string, (prompt: string) => string> = {
+  "what does the escalated card want": () => block(`It was escalated: "${NEEDS_YOU_REASON}". Fix the migration and tap Retry.`),
+  "what needs me names both cards and their actions": () =>
+    block("Two cards: Drop unused indexes from the users table is escalated (tap Retry), and the weekly Slack summary wants slack · post_message (tap Approve)."),
+};
+
+const NEEDS_YOU_WRONG: Record<string, (prompt: string) => string> = {
+  "what does the escalated card want": () => block("It is escalated. Tap Retry."),
+  "what needs me names both cards and their actions": () => block("The users index card is escalated; tap Retry."),
+};
+
+describe("eval:concierge's needs-you suite", () => {
+  test("two cases, both must pass, a right and a wrong answer for each", () => {
+    expect(needsYouCases.map((c) => c.name)).toEqual(Object.keys(NEEDS_YOU_RIGHT));
+    expect(Object.keys(NEEDS_YOU_WRONG)).toEqual(Object.keys(NEEDS_YOU_RIGHT));
+    expect(NEEDS_YOU_PASS_CORRECT).toBe(needsYouCases.length);
+  });
+
+  for (const c of needsYouCases) {
+    test(`"${c.name}": a right answer passes, a wrong one fails`, async () => {
+      const right = await runNeedsYouCase(c, await seedNeedsYou(pool(), home, projectPath, scriptedFor(NEEDS_YOU_RIGHT[c.name]!)));
+      expect(right.why).toBeNull();
+      const wrong = await runNeedsYouCase(c, await seedNeedsYou(pool(), home, projectPath, scriptedFor(NEEDS_YOU_WRONG[c.name]!)));
+      expect(wrong.why).not.toBeNull();
+    });
+  }
+
+  test("a control action on a question fails the case, even with the right words", async () => {
+    const c = needsYouCases[0]!;
+    const s = await seedNeedsYou(pool(), home, projectPath, scriptedFor(() => block(`${NEEDS_YOU_REASON}. Tap Retry. Approved the Slack post too.`, [{ type: "approve_mcp_request", card: "weekly Slack summary" }])));
+    const out = await runNeedsYouCase(c, s);
+    expect(out.why).toStartWith("changed the board");
+  });
+
+  // End to end through POST /ask on the real board: the concierge's
+  // prompt carries needsYou for both cards, with the reason and buttons.
+  test("the prompt the concierge reads carries needsYou for both needs-me cards", async () => {
+    let prompt = "";
+    const s = await seedNeedsYou(pool(), home, projectPath, scriptedFor((p) => ((prompt = p), block("ok"))));
+    await runNeedsYouCase(needsYouCases[0]!, s);
+    const fence = /```untrusted-[0-9a-f]+\n([\s\S]*?)\n```/.exec(prompt)![1]!;
+    const data = JSON.parse(fence) as { openCards: { id8: string; needsYou?: Record<string, unknown> }[] };
+    const byId8 = (id: string) => data.openCards.find((c) => c.id8 === id.slice(0, 8));
+    expect(byId8(s.ids.escalated)!.needsYou).toEqual({ value: "escalated", line: `Escalated after 1 round: ${NEEDS_YOU_REASON}`, reason: NEEDS_YOU_REASON, rounds: 1, button: "Retry" });
+    expect(byId8(s.ids.slack)!.needsYou).toEqual({ value: "mcp-approval", line: "Wants to call slack · post_message", button: "Approve" });
+    expect(byId8(s.ids.running)!.needsYou).toBeUndefined();
+  });
 });
 
 // ===================== control suite (§3.7) =====================

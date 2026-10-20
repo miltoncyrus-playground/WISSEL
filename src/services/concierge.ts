@@ -35,6 +35,7 @@ import { executeControl, pendingLines, type ControlDeps } from "./concierge-cont
 import { pendingView, REFUSAL_TEXT, type SqlitePendingActionStore } from "./pending-actions.ts";
 import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { listSchedules } from "./board-actions.ts";
+import { needsYouFor } from "./needs-you.ts";
 import type { ChatMessage, ControlExecuted, Conversation, ExecutedAction, PendingView, SqliteConversationStore } from "./conversations.ts";
 
 export const CONCIERGE_AGENT_ID = "concierge";
@@ -126,11 +127,26 @@ export function createConcierge(deps: ConciergeDeps) {
   const labelKey = (labels: string[]) => JSON.stringify([...new Set(labels.map((l) => l.trim()))].sort());
 
   /** Cards whose latest result has a worktree. Only a card in review can
-   *  be merged or discarded, so only those are read. */
-  async function worktreeIdsOf(tasks: TaskCard[]): Promise<string[]> {
+   *  be merged or discarded, so only those are read. `getResult` defaults
+   *  to the board's; think passes a per-turn cache shared with needsYouFor. */
+  async function worktreeIdsOf(tasks: TaskCard[], getResult: Board["getResult"] = (id) => deps.board.getResult(id)): Promise<string[]> {
     const review = tasks.filter((t) => t.status === "review" && !t.archivedAt);
-    const results = await Promise.all(review.map(async (t) => ((await deps.board.getResult(t.id))?.worktree ? t.id : undefined)));
+    const results = await Promise.all(review.map(async (t) => ((await getResult(t.id))?.worktree ? t.id : undefined)));
     return results.filter((id): id is string => id !== undefined);
+  }
+
+  /** needsYou for every card and the worktree ids, reading each card's
+   *  latest result once between them. */
+  async function needsYouAndWorktrees(tasks: TaskCard[]) {
+    const cache = new Map<string, ReturnType<Board["getResult"]>>();
+    const getResult: Board["getResult"] = (id) => {
+      let r = cache.get(id);
+      if (!r) cache.set(id, (r = deps.board.getResult(id)));
+      return r;
+    };
+    const needsYou = await needsYouFor({ getResult, getLineage: (id) => deps.board.getLineage(id) }, tasks);
+    const worktreeIds = await worktreeIdsOf(tasks, getResult);
+    return { needsYou, worktreeIds };
   }
 
   async function actionContext(proposed: unknown[], tasks: TaskCard[], pipelines: PipelineDef[], agentList: AgentDef[], worktreeIds?: string[]): Promise<ActionContext> {
@@ -267,7 +283,7 @@ export function createConcierge(deps: ConciergeDeps) {
     if (!agent) return { reply: "Ask is not set up: there is no concierge agent in agents/manifest.yaml.", proposed: [] as unknown[] };
 
     const [tasks, pipelines, projects] = await Promise.all([deps.board.list(), deps.pipelines.list(), deps.projects.list()]);
-    const worktreeIds = await worktreeIdsOf(tasks);
+    const { needsYou, worktreeIds } = await needsYouAndWorktrees(tasks);
     const controls = deps.controls;
     const nonce = randomUUID().slice(0, 8);
     const body = buildConciergeContext({
@@ -284,6 +300,7 @@ export function createConcierge(deps: ConciergeDeps) {
       nonce,
       now: now().toISOString(),
       worktreeIds,
+      needsYou,
       ...(controls
         ? {
             harnesses: controls.harness.harnesses.all().map((h) => ({ id: h.id, label: h.label, enabled: h.enabled, ...(h.model ? { model: h.model } : {}) })),
