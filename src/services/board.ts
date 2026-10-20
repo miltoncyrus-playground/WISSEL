@@ -5,6 +5,10 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { McpApprovalRequest, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
+/** What `escalate` stores when a caller passes an empty or whitespace-only
+ *  reason, so an escalated card never shows a blank escalation panel. */
+export const ESCALATED_WITHOUT_REASON = "Escalated with no reason recorded";
+
 /**
  * The board is the single source of truth. Everything else is a client
  * of this, including the frontend. Nothing talks to tmux directly.
@@ -44,7 +48,8 @@ export interface Board {
    *  there's no valid intermediate state where a task is `escalated`
    *  without an `escalationContext`, so this never exists as two calls
    *  the way `move` + a hypothetical `setEscalationContext` would. See
-   *  TaskCard.escalationContext. */
+   *  TaskCard.escalationContext. An empty or whitespace-only context is
+   *  stored as ESCALATED_WITHOUT_REASON, with a console.warn. */
   escalate(id: string, escalationContext: string, suggestedGrants?: string[]): Promise<TaskCard>;
   /** Moves a task to `review` and records the one blocked MCP tool call
    *  its agent described wanting to make — the human queue's entry
@@ -633,6 +638,12 @@ export class SqliteBoard implements Board {
   async escalate(id: string, escalationContext: string, suggestedGrants?: string[]): Promise<TaskCard> {
     const existing = await this.get(id);
     if (!existing) throw new Error(`task not found: ${id}`);
+    // An escalated card always says why: a caller that built no reason
+    // gets a placeholder and a warning, never a silent empty panel.
+    if (!escalationContext.trim()) {
+      console.warn(`[board] escalate(${id}) called with no reason; storing a placeholder`);
+      escalationContext = ESCALATED_WITHOUT_REASON;
+    }
     const grants = suggestedGrants?.length ? suggestedGrants : undefined;
     this.db.run("UPDATE tasks SET status = ?, escalationContext = ?, suggestedGrants = ? WHERE id = ?", ["escalated", escalationContext, grants ? JSON.stringify(grants) : null, id]);
     const updated: TaskCard = { ...existing, status: "escalated", escalationContext, suggestedGrants: grants };
