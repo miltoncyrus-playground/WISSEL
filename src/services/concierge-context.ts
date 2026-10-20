@@ -6,7 +6,7 @@
 // (src/core/pipeline-runner.ts) fences a pipeline handoff. Only Milton's
 // new message is outside the fence.
 
-import type { AgentDef, ScheduleDef, TaskCard } from "../core/types.ts";
+import type { AgentDef, NeedsYou, ScheduleDef, TaskCard } from "../core/types.ts";
 import { DEFAULT_SCHEDULE_TIMEZONE, describeCadence } from "../core/schedule-time.ts";
 
 /** Open cards the context lists at most, newest first. */
@@ -53,6 +53,8 @@ export interface ConciergeContextInput {
   mcpServers?: { id: string; label: string; enabled: boolean; tools: { name: string; trust: string }[] }[];
   /** Cards whose latest result has a worktree: Merge and Discard. */
   worktreeIds?: string[];
+  /** What each needs-me card wants, keyed by card id (needsYouFor). */
+  needsYou?: ReadonlyMap<string, NeedsYou>;
   /** Every schedule (docs/SDD-schedules.md §3.9). */
   schedules?: Pick<ScheduleDef, "id" | "name" | "kind" | "pipelineId" | "taskTemplate" | "input" | "cron" | "timezone" | "enabled" | "nextRunAt">[];
 }
@@ -87,10 +89,15 @@ function isStepCard(t: TaskCard): boolean {
   return t.pipelineRunId !== undefined;
 }
 
+/** An escalation reason is cut to this many characters. */
+export const NEEDS_YOU_REASON_LIMIT = 600;
+
 /** One card as the concierge sees it. The flags say which board buttons
  *  apply (§3.7): an MCP call waiting, suggested grants, a worktree to
- *  merge, a harness asked for. */
-function cardLine(t: TaskCard, worktrees: ReadonlySet<string> = new Set()) {
+ *  merge, a harness asked for. `needsYou` (src/services/needs-you.ts)
+ *  says what a needs-me card wants and the button that resolves it. */
+function cardLine(t: TaskCard, worktrees: ReadonlySet<string> = new Set(), needsYou?: ReadonlyMap<string, NeedsYou>) {
+  const ny = needsYou?.get(t.id);
   return {
     id8: t.id.slice(0, 8),
     title: t.title,
@@ -102,6 +109,18 @@ function cardLine(t: TaskCard, worktrees: ReadonlySet<string> = new Set()) {
     ...(worktrees.has(t.id) ? { worktree: true } : {}),
     ...(t.harnessOverride ? { harness: t.harnessOverride } : {}),
     ...(t.dependsOn?.length ? { waitsFor: t.dependsOn.map((id) => id.slice(0, 8)) } : {}),
+    ...(ny
+      ? {
+          needsYou: {
+            value: ny.value,
+            line: ny.line,
+            ...(ny.reason ? { reason: clip(ny.reason, NEEDS_YOU_REASON_LIMIT) } : {}),
+            ...(ny.rounds ? { rounds: ny.rounds } : {}),
+            ...(ny.grants?.length ? { grants: ny.grants } : {}),
+            button: ny.action.label,
+          },
+        }
+      : {}),
   };
 }
 
@@ -155,7 +174,7 @@ export function conciergeData(input: ConciergeContextInput) {
     openCards: open
       .slice(-MAX_OPEN_CARDS)
       .reverse()
-      .map((t) => cardLine(t, worktrees)),
+      .map((t) => cardLine(t, worktrees, input.needsYou)),
     openCardsNotShown: Math.max(0, open.length - MAX_OPEN_CARDS),
     landed: landed.map((t) => ({ ...cardLine(t), ...(t.doneAt ? { doneAt: t.doneAt } : {}) })),
     archived: archived.map((t) => cardLine(t)),
