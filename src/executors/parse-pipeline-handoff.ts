@@ -1,13 +1,5 @@
 import type { PipelineHandoff } from "../core/types.ts";
-
-/** Matches a fenced ```pipeline-handoff block anywhere in the text — same
- *  reasoning as VERDICT_BLOCK in parse-review-verdict.ts: the contract
- *  requires the final message to *end with* one, but the raw text here
- *  is whatever claude printed, prose and all, so this has to find the
- *  block rather than assume the whole string is JSON. `g` + taking the
- *  last match handles a model that "thinks out loud" with an earlier
- *  example block before the real one. */
-const HANDOFF_BLOCK = /```pipeline-handoff\s*\n([\s\S]*?)```/g;
+import { lastFencedBlock } from "./fenced-block.ts";
 
 /**
  * The only code allowed to turn raw claude output into a PipelineHandoff.
@@ -24,10 +16,10 @@ const HANDOFF_BLOCK = /```pipeline-handoff\s*\n([\s\S]*?)```/g;
  * has a field of the wrong type.
  */
 export function parsePipelineHandoff(rawOutput: string): PipelineHandoff | null {
-  const matches = [...rawOutput.matchAll(HANDOFF_BLOCK)];
-  if (matches.length === 0) return null;
-
-  const body = matches[matches.length - 1]![1]!.trim();
+  // Last block, last closing fence: handoff data can hold markdown with
+  // its own fences. See lastFencedBlock.
+  const body = lastFencedBlock(rawOutput, "pipeline-handoff")?.trim();
+  if (body === undefined) return null;
 
   let candidate: unknown;
   try {

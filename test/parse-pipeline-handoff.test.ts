@@ -90,3 +90,9 @@ test("parses correctly even with prose before and after the block", () => {
   ].join("\n");
   expect(parsePipelineHandoff(raw)).toEqual({ next: "reviewer", note: "all green" });
 });
+
+test("handoff data that holds a fenced code sample still parses", () => {
+  const data = { script: "Say this:\n```\nhello\n```\nthen stop." };
+  const raw = ["Done.", "", "```pipeline-handoff", JSON.stringify({ data }), "```"].join("\n");
+  expect(parsePipelineHandoff(raw)).toEqual({ data });
+});

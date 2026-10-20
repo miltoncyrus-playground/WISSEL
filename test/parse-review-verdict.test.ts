@@ -101,3 +101,9 @@ test("takes the last review-verdict block when more than one is present", () => 
     feedback: "real verdict",
   });
 });
+
+test("feedback that quotes a fence still parses (reviewer 093d0f69, 2026-10-20)", () => {
+  const feedback = "Approve. Tests cover a dependency title with newlines and ``` still leaving exactly one closing fence.";
+  const raw = ["I recommend approving.", "", "```review-verdict", JSON.stringify({ verdict: "approve", feedback }), "```"].join("\n");
+  expect(parseReviewVerdict(raw)).toEqual({ verdict: "approve", feedback });
+});

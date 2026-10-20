@@ -1,18 +1,10 @@
 import type { McpApprovalRequest } from "../core/types.ts";
-
-/** Matches a fenced ```mcp-approval-request block anywhere in the text —
- *  same reasoning as HANDOFF_BLOCK in parse-pipeline-handoff.ts: the
- *  contract asks for the final message to *end with* one, but the raw
- *  text here is whatever claude printed, prose and all, so this has to
- *  find the block rather than assume the whole string is JSON. `g` +
- *  taking the last match handles a model that "thinks out loud" with an
- *  earlier example block before the real one. */
-const APPROVAL_REQUEST_BLOCK = /```mcp-approval-request\s*\n([\s\S]*?)```/g;
+import { lastFencedBlock } from "./fenced-block.ts";
 
 /** Deliberately separate, non-global pattern used only to answer "did
  *  the model attempt this block at all" — see
  *  mcpApprovalRequestBlockPresent's own doc comment for why this can't
- *  just reuse APPROVAL_REQUEST_BLOCK.test(). */
+ *  reuse the block parser. */
 const APPROVAL_REQUEST_FENCE = /```mcp-approval-request\s*\n/;
 
 /**
@@ -32,12 +24,10 @@ const APPROVAL_REQUEST_FENCE = /```mcp-approval-request\s*\n/;
  *   a real contract violation, which runClaude fails closed on exactly
  *   like every other output contract in this codebase.
  *
- * Intentionally NOT implemented by calling `.test()` on
- * APPROVAL_REQUEST_BLOCK directly: that regex carries the `g` flag, and
- * `RegExp.prototype.test` mutates a global regex's own `lastIndex`
- * across calls — a second call against different input could silently
- * start mid-string. A fresh, non-global pattern has no such state to
- * corrupt.
+ * Intentionally NOT implemented with the block parser
+ * (lastFencedBlock): a block with an opening fence but no closing one
+ * is still an attempt, and must still count as present. A non-global
+ * pattern also has no `lastIndex` state to carry between calls.
  */
 export function mcpApprovalRequestBlockPresent(rawOutput: string): boolean {
   return APPROVAL_REQUEST_FENCE.test(rawOutput);
@@ -59,10 +49,10 @@ export function mcpApprovalRequestBlockPresent(rawOutput: string): boolean {
  * string. See docs/SDD-mcp-orchestration.md §3.5.
  */
 export function parseMcpApprovalRequest(rawOutput: string): McpApprovalRequest | null {
-  const matches = [...rawOutput.matchAll(APPROVAL_REQUEST_BLOCK)];
-  if (matches.length === 0) return null;
-
-  const body = matches[matches.length - 1]![1]!.trim();
+  // Last block, last closing fence: a reason or args may quote fences of
+  // their own. See lastFencedBlock.
+  const body = lastFencedBlock(rawOutput, "mcp-approval-request")?.trim();
+  if (body === undefined) return null;
 
   let candidate: unknown;
   try {

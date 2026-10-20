@@ -1,14 +1,7 @@
 import type { ReviewVerdict } from "../core/types.ts";
+import { lastFencedBlock } from "./fenced-block.ts";
 
 const VALID_VERDICTS = new Set<ReviewVerdict["verdict"]>(["approve", "changes_requested"]);
-
-/** Matches a fenced ```review-verdict block anywhere in the text — the
- *  contract requires the final message to *end with* one, but the raw
- *  text passed in here is whatever claude printed, prose and all, so
- *  this has to find the block rather than assume the whole string is
- *  JSON. `g` + taking the last match handles a model that "thinks out
- *  loud" with an earlier example block before the real one. */
-const VERDICT_BLOCK = /```review-verdict\s*\n([\s\S]*?)```/g;
 
 /**
  * The only code allowed to turn raw claude output into a ReviewVerdict.
@@ -17,10 +10,11 @@ const VERDICT_BLOCK = /```review-verdict\s*\n([\s\S]*?)```/g;
  * silently-approved review is worse than a loudly-failed one.
  */
 export function parseReviewVerdict(rawOutput: string): ReviewVerdict | null {
-  const matches = [...rawOutput.matchAll(VERDICT_BLOCK)];
-  if (matches.length === 0) return null;
-
-  const body = matches[matches.length - 1]![1]!.trim();
+  // The contract requires the final message to *end with* the block, but
+  // the raw text is whatever claude printed, prose and all; and feedback
+  // may quote fences of its own. See lastFencedBlock.
+  const body = lastFencedBlock(rawOutput, "review-verdict")?.trim();
+  if (body === undefined) return null;
 
   let candidate: unknown;
   try {

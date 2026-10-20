@@ -123,3 +123,9 @@ test("mcpApprovalRequestBlockPresent is stateless across repeated calls — no s
   expect(mcpApprovalRequestBlockPresent(raw)).toBe(true);
   expect(mcpApprovalRequestBlockPresent(raw)).toBe(true);
 });
+
+test("a reason that quotes a fence still parses", () => {
+  const req = { server: "github", tool: "create_issue", args: { body: "```\nlog\n```" }, reason: "File the ``` log as an issue" };
+  const raw = ["Blocked.", "", "```mcp-approval-request", JSON.stringify(req), "```"].join("\n");
+  expect(parseMcpApprovalRequest(raw)).toEqual(req);
+});

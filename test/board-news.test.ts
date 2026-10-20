@@ -393,6 +393,9 @@ test("parseHandoffData gives the same data as parsePipelineHandoff for every inp
     "```pipeline-handoff\n{\"note\": \"only a note\"}\n```",
     "```pipeline-handoff   \n  {\"data\": {\"a\": 1}}  \n```",
     "```pipeline-handoff\n{broken\n```",
+    "```pipeline-handoff\n{\"data\": {\"s\": \"quotes ``` inline\"}}\n```",
+    "```pipeline-handoff\n{\"data\": {\"a\": 1}}",
+    "```pipeline-handoffs\n{\"data\": {\"a\": 1}}\n```",
   ];
   for (const input of inputs) {
     expect(parseHandoffData(input), input).toEqual(parsePipelineHandoff(input)?.data ?? null);

@@ -17,7 +17,25 @@ var NEWS_FLAG_UNCHECKED = "source not checked: the gather step's output is unava
 var NEWS_FLAG_NOT_A_LINK = "source is not a web link";
 var NEWS_FLAG_MISSING = "no source given";
 
-var NEWS_HANDOFF_BLOCK = /```pipeline-handoff\s*\n([\s\S]*?)```/g;
+var NEWS_HANDOFF_MARKER = "```pipeline-handoff";
+
+// The last ```pipeline-handoff block's body, closed by the LAST fence
+// after it, or null. Mirrors lastFencedBlock
+// (src/executors/fenced-block.ts): a story's text can quote fences of
+// its own, so the nearest closing fence is not the block's end.
+function newsLastHandoffBody(text) {
+  var openIdx = text.lastIndexOf(NEWS_HANDOFF_MARKER);
+  while (openIdx !== -1) {
+    var lineEnd = text.indexOf("\n", openIdx + NEWS_HANDOFF_MARKER.length);
+    if (lineEnd !== -1 && text.slice(openIdx + NEWS_HANDOFF_MARKER.length, lineEnd).trim() === "") {
+      var rest = text.slice(lineEnd + 1);
+      var closeIdx = rest.lastIndexOf("```");
+      return closeIdx === -1 ? null : rest.slice(0, closeIdx);
+    }
+    openIdx = openIdx === 0 ? -1 : text.lastIndexOf(NEWS_HANDOFF_MARKER, openIdx - 1);
+  }
+  return null;
+}
 
 function newsIsRecord(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -28,11 +46,9 @@ function newsIsRecord(v) {
 // no `data`. Last block wins, like parsePipelineHandoff.
 function parseHandoffData(text) {
   if (typeof text !== "string") return null;
-  var body = null;
-  var m;
-  NEWS_HANDOFF_BLOCK.lastIndex = 0;
-  while ((m = NEWS_HANDOFF_BLOCK.exec(text)) !== null) body = m[1].trim();
+  var body = newsLastHandoffBody(text);
   if (body === null) return null;
+  body = body.trim();
   var parsed;
   try { parsed = JSON.parse(body); } catch (e) { return null; }
   if (!newsIsRecord(parsed)) return null;
