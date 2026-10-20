@@ -68,6 +68,18 @@ test("app/src/types.ts's Ask types match the server's (card 4)", async () => {
   expect(appAudio).toBe(serverAudio);
 });
 
+test("app/src/types.ts NeedsYou and NeedsYouKind match src/core/types.ts", async () => {
+  const app = await read("app/src/types.ts");
+  const server = await read("src/core/types.ts");
+  expect(fieldsOf(app, "NeedsYou")).toEqual(fieldsOf(server, "NeedsYou"));
+  const union = (src: string) => {
+    const at = src.indexOf("export type NeedsYouKind =");
+    expect(at).toBeGreaterThan(-1);
+    return [...src.slice(at, src.indexOf(";", at)).matchAll(/"([^"]+)"/g)].map((m) => m[1]!).sort();
+  };
+  expect(union(app)).toEqual(union(server));
+});
+
 test("app/src/types.ts Wrapped and WrappedStreak match src/services/wrapped.ts and streaks.ts (card 6)", async () => {
   const app = await read("app/src/types.ts");
   expect(fieldsOf(app, "Wrapped")).toEqual(fieldsOf(await read("src/services/wrapped.ts"), "Wrapped"));

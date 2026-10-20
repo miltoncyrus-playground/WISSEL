@@ -190,6 +190,22 @@ kbd {
 .task-title { font-weight: 700; overflow-wrap: anywhere; }
 .task-sub { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 
+/* A Needs you row's reason, blocker and one button, under the link
+   and indented to the title (8px dot + 10px gap). */
+.task-item.has-needs .task-row { border-bottom: 0; padding-bottom: 4px; }
+.task-needs {
+  display: grid; gap: 6px; justify-items: start;
+  padding: 0 0 12px 18px; border-bottom: 1px solid var(--line); min-width: 0;
+}
+.task-needs p { margin: 0; }
+.task-reason { white-space: pre-wrap; }
+.task-reason.is-clipped { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+.link-btn {
+  padding: 0; border: 0; background: none; color: var(--text);
+  font: inherit; font-size: 13px; text-decoration: underline; cursor: pointer;
+}
+.task-action { display: grid; gap: 4px; justify-items: start; }
+
 /* The Scheduled section (docs/SDD-schedules.md §3.8): a task row with
    the toggle and Run now on its right. */
 .lane-scheduled { margin-top: 14px; }

@@ -85,7 +85,7 @@ export function App() {
 
   let screen;
   if (route.screen === "board") {
-    screen = route.taskId ? <CardDetail taskId={route.taskId} tasks={data.tasks} loaded={data.loaded} /> : <BoardScreen lanes={lanes} loaded={data.loaded} error={data.error} />;
+    screen = route.taskId ? <CardDetail taskId={route.taskId} tasks={data.tasks} loaded={data.loaded} /> : <BoardScreen lanes={lanes} loaded={data.loaded} error={data.error} reload={data.reload} />;
   } else if (route.screen === "feed") {
     screen = <FeedScreen now={now} />;
   } else if (route.screen === "listen") {
@@ -106,7 +106,7 @@ export function App() {
           <main className="content" id="main" data-screen={route.screen}>
             {screen}
           </main>
-          {desktop && <LivePanel lanes={lanes} connection={data.connection} player={<MiniPlayer variant="panel" />} />}
+          {desktop && <LivePanel lanes={lanes} connection={data.connection} reload={data.reload} player={<MiniPlayer variant="panel" />} />}
           {!desktop && <MiniPlayer variant="bar" />}
           {!desktop && <TabBar current={route.screen} />}
           <p className="notice" role="status" aria-live="polite">

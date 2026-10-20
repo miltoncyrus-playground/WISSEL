@@ -41,6 +41,31 @@ export interface TaskCard {
   notBefore?: string;
   /** The schedule that made it, when one did. */
   scheduleId?: string;
+  /** What the card wants from Milton and its one button. Derived by the
+   *  server on GET /tasks; absent from older servers. */
+  needsYou?: NeedsYou;
+}
+
+/** Mirrors src/core/types.ts NeedsYouKind; test/app-shell.test.ts
+ *  checks it matches. */
+export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "failed" | "no-match";
+
+/** Mirrors src/core/types.ts NeedsYou (src/services/needs-you.ts
+ *  derives it). */
+export interface NeedsYou {
+  kind: NeedsYouKind;
+  value: string;
+  /** One human line for the Needs you row. */
+  line: string;
+  /** escalated/grant-tools: the full reason text. */
+  reason?: string;
+  reasonSource?: "escalation" | "reviewer" | "implementer" | "none";
+  /** escalated/grant-tools: reviewer rounds so far. */
+  rounds?: number;
+  /** grant-tools: the tools it asks for. */
+  grants?: string[];
+  blocker?: { id: string; id8: string; status: TaskStatus | "missing" };
+  action: { label: string; href: string; method: "GET" | "POST" };
 }
 
 /** GET /schedules (docs/SDD-schedules.md §3.5). Mirrors

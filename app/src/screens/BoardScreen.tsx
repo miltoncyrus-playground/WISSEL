@@ -15,7 +15,7 @@ const EMPTY: Record<string, string> = {
 
 /** The Board tab: a compact read of /tasks by lane, and the way to the
  *  full board. */
-export function BoardScreen({ lanes, loaded, error }: { lanes: Lanes; loaded: boolean; error: string | null }) {
+export function BoardScreen({ lanes, loaded, error, reload }: { lanes: Lanes; loaded: boolean; error: string | null; reload?: () => Promise<void> }) {
   return (
     <div className="screen board-screen">
       <div className="screen-head">
@@ -43,7 +43,7 @@ export function BoardScreen({ lanes, loaded, error }: { lanes: Lanes; loaded: bo
               ) : (
                 <ul className="task-list">
                   {lanes[l.id].map((t) => (
-                    <TaskRow key={t.id} task={t} lane={l.id} />
+                    <TaskRow key={t.id} task={t} lane={l.id} onChanged={reload} />
                   ))}
                 </ul>
               )}

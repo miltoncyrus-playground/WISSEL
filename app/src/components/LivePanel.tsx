@@ -16,7 +16,7 @@ const PER_SECTION = 6;
 /** Desktop only: the right-hand "Live" panel (agents at work, running,
  *  needs you, landed today), kept current by the shared /events stream.
  *  The mini-player (SDD §3.3) sits at its top. */
-export function LivePanel({ lanes, connection, player }: { lanes: Lanes; connection: ConnectionState; player?: ReactNode }) {
+export function LivePanel({ lanes, connection, player, reload }: { lanes: Lanes; connection: ConnectionState; player?: ReactNode; reload?: () => Promise<void> }) {
   return (
     <aside className="live" aria-labelledby="live-title">
       <div className="live-head">
@@ -37,7 +37,7 @@ export function LivePanel({ lanes, connection, player }: { lanes: Lanes; connect
             ) : (
               <ul className="task-list">
                 {items.slice(0, PER_SECTION).map((t) => (
-                  <TaskRow key={t.id} task={t} lane={s.lane} />
+                  <TaskRow key={t.id} task={t} lane={s.lane} onChanged={reload} />
                 ))}
               </ul>
             )}
