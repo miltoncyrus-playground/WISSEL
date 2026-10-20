@@ -83,7 +83,8 @@ import { SqliteConversationStore } from "../services/conversations.ts";
 import { DEFAULT_STT_MODEL, DEFAULT_STT_URL, SttClient, SttError, transcribeVoiceRequest } from "../services/stt.ts";
 import { createReplyAudio, ReplyAudioError } from "../services/reply-audio.ts";
 import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
-import type { Executor, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
+import { needsYouFor, needsYouLogLine } from "../services/needs-you.ts";
+import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
 // src/api/server.ts -> ../../pipeline-editor/dist/ = <repo root>/pipeline-editor/dist/
@@ -1355,7 +1356,12 @@ export function createApp(
             ...(status ? { status } : {}),
             ...(repo ? { repo } : {}),
           });
-          return json(tasks);
+          // Dependencies can sit outside a filtered list, so derive
+          // against the whole board when a filter is set.
+          const all = status || repo ? await board.list() : tasks;
+          const needs = await needsYouFor(board, all);
+          console.log(needsYouLogLine(needs));
+          return json(tasks.map((t) => withNeedsYou(t, needs)));
         }
 
         if (parts.length === 1 && req.method === "POST") {
@@ -1371,7 +1377,10 @@ export function createApp(
 
         if (parts.length === 2 && req.method === "GET") {
           const task = await board.get(parts[1]!);
-          return task ? json(task) : notFound();
+          if (!task) return notFound();
+          const deps = await Promise.all((task.dependsOn ?? []).map((id) => board.get(id)));
+          const needs = await needsYouFor(board, [task, ...deps.filter((d): d is TaskCard => d !== undefined)]);
+          return json(withNeedsYou(task, needs));
         }
 
         if (parts.length === 3 && parts[2] === "move" && req.method === "POST") {
@@ -1691,6 +1700,12 @@ function json(value: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+/** The card with its derived TaskCard.needsYou attached, when it has one. */
+function withNeedsYou(task: TaskCard, needs: ReadonlyMap<string, NeedsYou>): TaskCard {
+  const ny = needs.get(task.id);
+  return ny ? { ...task, needsYou: ny } : task;
 }
 
 function notFound(): Response {
