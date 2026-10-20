@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -483,6 +483,29 @@ test("round-trips review lineage fields and the escalated status", async () => {
   expect(fetched!.pushbackCount).toBe(3);
   expect(fetched!.reviewLineageId).toBe("lineage-1");
   expect(fetched!.escalationContext).toBe("same feedback twice in a row, kicked to a human");
+});
+
+// Regression, card adf63608: a caller passed "" and the card escalated
+// with a blank reason. escalate never stores an empty reason now.
+test("escalate stores a placeholder reason and warns when given an empty or whitespace-only context", async () => {
+  const board = new SqliteBoard();
+  const warn = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    for (const context of ["  ", "", "\n\t"]) {
+      const task = await board.create({ title: "t", body: "b", labels: [], repo: "r" });
+      const escalated = await board.escalate(task.id, context);
+      expect(escalated.escalationContext).toBe("Escalated with no reason recorded");
+      expect((await board.get(task.id))!.escalationContext).toBe("Escalated with no reason recorded");
+      expect(warn).toHaveBeenLastCalledWith(expect.stringContaining(task.id));
+    }
+    expect(warn).toHaveBeenCalledTimes(3);
+
+    const real = await board.create({ title: "t", body: "b", labels: [], repo: "r" });
+    expect((await board.escalate(real.id, "reviewer cap reached")).escalationContext).toBe("reviewer cap reached");
+    expect(warn).toHaveBeenCalledTimes(3);
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 test("create round-trips supersededBy, and leaves review lineage fields undefined when omitted", async () => {

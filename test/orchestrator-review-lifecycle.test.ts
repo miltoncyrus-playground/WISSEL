@@ -6,12 +6,12 @@ import { expect, test } from "bun:test";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
-import { Orchestrator } from "../src/core/orchestrator.ts";
+import { MAX_PUSHBACKS, Orchestrator, resumeAfterReviewVerdict } from "../src/core/orchestrator.ts";
 import { WriteExecutor } from "../src/executors/write.ts";
 import { ReadOnlyExecutor } from "../src/executors/readonly.ts";
 import { runViaBun } from "../src/executors/claude-cli.ts";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
-import type { AgentDef, ReviewVerdict, TaskCard } from "../src/core/types.ts";
+import type { AgentDef, ReviewVerdict, TaskCard, TaskResult } from "../src/core/types.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import { formatMcpTranscript } from "../src/services/mcp-transcript.ts";
 
@@ -725,11 +725,12 @@ test("6 consecutive rejections escalate instead of spawning a 7th implementer ta
     expect(escalated.status).toBe("escalated");
     expect(escalated.escalationContext).toBeDefined();
 
-    const entries = escalated.escalationContext!.split("\n\n");
-    expect(entries).toHaveLength(6);
-    for (let i = 0; i < 6; i++) {
-      expect(entries[i]).toBe(`Attempt ${i + 1}: round ${i + 1}: still not right`);
-    }
+    // History first, then the note naming the cap and the reviewer's
+    // last summary (which carries its own blank lines, so no split).
+    const history = Array.from({ length: 6 }, (_, i) => `Attempt ${i + 1}: round ${i + 1}: still not right`).join("\n\n");
+    expect(escalated.escalationContext!).toStartWith(
+      `${history}\n\nEscalated: the reviewer requested changes 6 times (cap MAX_PUSHBACKS=5) without the work landing.\nLast reviewer verdict: Reviewed the diff.`,
+    );
 
     // No 7th implementer task exists anywhere on the board.
     expect((await fixture.board.list()).filter((t) => !t.labels.includes("review") && t.title === original.title)).toHaveLength(6);
@@ -743,6 +744,71 @@ test("6 consecutive rejections escalate instead of spawning a 7th implementer ta
   } finally {
     await cleanup(fixture);
   }
+});
+
+/** Builds a lineage at the cap whose reviewer results carry no
+ *  reviewFeedback (so buildEscalationContext returns ""), then runs the
+ *  6th changes_requested through resumeAfterReviewVerdict. */
+async function escalateAtCapWithoutFeedback(reviewerSummary: string, implementerSummary?: string): Promise<TaskCard> {
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  const noRunner: CommandRunner = async () => {
+    throw new Error("no command should run on the escalate path");
+  };
+  const original = await board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: "/tmp/repo", dependsOn: [] });
+  let implementer = original;
+  for (let round = 0; round <= MAX_PUSHBACKS; round++) {
+    if (round > 0) {
+      implementer = await board.create({
+        title: original.title,
+        body: original.body,
+        labels: ["code"],
+        repo: "/tmp/repo",
+        dependsOn: [],
+        reviewLineageId: original.id,
+        pushbackCount: round,
+      });
+    }
+    await board.move(implementer.id, "pending-review");
+    if (implementerSummary !== undefined) {
+      await board.recordResult({ taskId: implementer.id, agentId: "implementer", ok: true, summary: implementerSummary });
+    }
+    const reviewer = await board.create({
+      title: `Review: ${original.title}`,
+      body: "review",
+      labels: ["review"],
+      repo: "/tmp/repo",
+      dependsOn: [],
+      parentTaskId: implementer.id,
+      reviewLineageId: original.id,
+      routedTo: "reviewer",
+    });
+    await board.move(reviewer.id, "done");
+    const result: TaskResult = { taskId: reviewer.id, agentId: "reviewer", ok: true, summary: reviewerSummary, verdict: "changes_requested" };
+    await board.recordResult(result);
+    if (round < MAX_PUSHBACKS) continue;
+    expect(await resumeAfterReviewVerdict(board, registry, (await board.get(reviewer.id))!, result, noRunner)).toBe("escalated");
+  }
+  return (await board.get(implementer.id))!;
+}
+
+// Regression, card adf63608: reviewers left no reviewFeedback, so the
+// pushback-cap escalation recorded an empty escalationContext.
+test("the pushback-cap escalation names the cap and the reviewer's summary even when no reviewer left feedback", async () => {
+  const escalated = await escalateAtCapWithoutFeedback("tests still fail on the empty-input path");
+  expect(escalated.status).toBe("escalated");
+  expect(escalated.escalationContext).toBe(
+    `Escalated: the reviewer requested changes 6 times (cap MAX_PUSHBACKS=${MAX_PUSHBACKS}) without the work landing.\nLast reviewer verdict: tests still fail on the empty-input path`,
+  );
+});
+
+test("the pushback-cap escalation falls back to the implementer's last summary, then to the cap note alone", async () => {
+  const withImplementer = await escalateAtCapWithoutFeedback("  ", "added the parser, tests pending");
+  expect(withImplementer.escalationContext).toBe(
+    `Escalated: the reviewer requested changes 6 times (cap MAX_PUSHBACKS=${MAX_PUSHBACKS}) without the work landing.\nLast implementer result: added the parser, tests pending`,
+  );
+  const bare = await escalateAtCapWithoutFeedback("");
+  expect(bare.escalationContext).toBe(`Escalated: the reviewer requested changes 6 times (cap MAX_PUSHBACKS=${MAX_PUSHBACKS}) without the work landing.`);
 });
 
 test("a dependent task's dependsOn follows a pushback's supersededBy chain to the live re-attempt, not the permanently-stuck original", async () => {

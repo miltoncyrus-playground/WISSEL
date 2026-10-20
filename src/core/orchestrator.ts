@@ -477,8 +477,12 @@ export async function resumeAfterReviewVerdict(
   const pushbackCount = implementerTask.pushbackCount ?? 0;
   if (pushbackCount >= MAX_PUSHBACKS) {
     const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
-    const escalationContext = await buildEscalationContext(board, lineageId);
-    await board.escalate(implementerTask.id, escalationContext);
+    const history = await buildEscalationContext(board, lineageId);
+    // The history is empty when no reviewer in the lineage left
+    // reviewFeedback (card adf63608 escalated with no reason), so the
+    // note always says why it stopped.
+    const note = await pushbackCapNote(board, implementerTask, result);
+    await board.escalate(implementerTask.id, history ? `${history}\n\n${note}` : note);
     return "escalated";
   }
 
@@ -492,6 +496,18 @@ export async function resumeAfterReviewVerdict(
 /** The pushback cap: a lineage gets this many re-attempts, whether a
  *  reviewer or the merge gate sent them back, then escalates. */
 export const MAX_PUSHBACKS = 5;
+
+/** Why a reviewer pushback-cap escalation stopped, plus the last thing
+ *  the run said: the reviewer's own summary, else the implementer's last
+ *  result summary. Never empty. */
+async function pushbackCapNote(board: Board, implementerTask: TaskCard, reviewerResult: TaskResult): Promise<string> {
+  const rounds = (implementerTask.pushbackCount ?? 0) + 1;
+  const reason = `Escalated: the reviewer requested changes ${rounds} times (cap MAX_PUSHBACKS=${MAX_PUSHBACKS}) without the work landing.`;
+  if (reviewerResult.summary.trim()) return `${reason}\nLast reviewer verdict: ${reviewerResult.summary.trim()}`;
+  const implementerSummary = (await board.getResult(implementerTask.id))?.summary.trim();
+  if (implementerSummary) return `${reason}\nLast implementer result: ${implementerSummary}`;
+  return reason;
+}
 
 /**
  * A merge-gate failure (mergeTaskWorktree's `gate-failed`) goes back
