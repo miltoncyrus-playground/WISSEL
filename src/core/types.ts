@@ -397,6 +397,32 @@ export interface Project {
   protectedPaths?: string[];
 }
 
+/** Which needs-me state a card is in. See NeedsYou. */
+export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "failed" | "no-match";
+
+/** What a card that needs Milton wants, and the one button that resolves
+ *  it. Derived on read by deriveNeedsYou (src/services/needs-you.ts),
+ *  never stored. */
+export interface NeedsYou {
+  kind: NeedsYouKind;
+  /** Machine form: "merge", "merge-after:1a2b3c4d", "escalated",
+   *  "mcp-approval", "grant-tools", "blocked-on:1a2b3c4d escalated",
+   *  "review", "failed", "no-match". */
+  value: string;
+  /** One human line for the Needs me row. */
+  line: string;
+  /** escalated/grant-tools: the full reason text. */
+  reason?: string;
+  reasonSource?: "escalation" | "reviewer" | "implementer" | "none";
+  /** escalated/grant-tools: (pushbackCount ?? 0) + 1, the reviewer
+   *  rejections so far (same rule as board-lanes.js needsYouReason). */
+  rounds?: number;
+  /** grant-tools: task.suggestedGrants. */
+  grants?: string[];
+  blocker?: { id: string; id8: string; status: TaskCard["status"] | "missing" };
+  action: { label: string; href: string; method: "GET" | "POST" };
+}
+
 export interface TaskCard {
   id: string;
   title: string;
@@ -628,6 +654,11 @@ export interface TaskCard {
    *  (every task before this field existed) adds nothing to
    *  `allowedTools` — byte-identical argv to today. */
   extraAllowedTools?: string[];
+  /** What this card wants from Milton, when it needs him. Derived on
+   *  read (GET /tasks, GET /tasks/:id) by needsYouFor
+   *  (src/services/needs-you.ts) and never stored: Board never writes
+   *  it, and a card read straight from Board never carries it. */
+  needsYou?: NeedsYou;
 }
 
 /** A named execution backend wissel can run work under — a tool (which

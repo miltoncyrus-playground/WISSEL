@@ -877,6 +877,45 @@ test("GET /tasks?status=escalated finds an escalated task — the human queue fo
   expect(tasks.some((t) => t.id === other.id)).toBe(false);
 });
 
+test("GET /tasks and GET /tasks/:id attach needsYou: merge for a review card with a worktree, nothing for an inbox card", async () => {
+  const board = new SqliteBoard();
+  const app = await makeApp(board);
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const ready = await board.create({ title: "ready to land", body: "", labels: [], repo: "r" });
+    await board.move(ready.id, "review");
+    await board.recordResult({ taskId: ready.id, agentId: "impl", ok: true, summary: "done", worktree: { path: "/wt/x", branch: "wissel/x" } });
+    const idle = await board.create({ title: "idle", body: "", labels: [], repo: "r" });
+    // Its dep is outside the ?status=inbox filter, and still counts.
+    const blocked = await board.create({ title: "blocked", body: "", labels: [], repo: "r", dependsOn: [ready.id] });
+
+    const tasks = (await (await app(req("/tasks"))).json()) as TaskCard[];
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    expect(byId.get(ready.id)!.needsYou).toEqual({
+      kind: "merge",
+      value: "merge",
+      line: "Ready to merge",
+      action: { label: "Merge", href: `/tasks/${ready.id}/merge`, method: "POST" },
+    });
+    expect(byId.get(idle.id)!.needsYou).toBeUndefined();
+    expect(byId.get(blocked.id)!.needsYou!.value).toBe(`blocked-on:${ready.id.slice(0, 8)} review`);
+    expect(log).toHaveBeenCalledWith("needs-you: blocked-on=1 merge=1");
+
+    const inbox = (await (await app(req("/tasks?status=inbox"))).json()) as TaskCard[];
+    expect(inbox.find((t) => t.id === blocked.id)!.needsYou!.kind).toBe("blocked-on");
+
+    const one = (await (await app(req(`/tasks/${ready.id}`))).json()) as TaskCard;
+    expect(one.needsYou!.value).toBe("merge");
+    const dependent = (await (await app(req(`/tasks/${blocked.id}`))).json()) as TaskCard;
+    expect(dependent.needsYou!.value).toBe(`blocked-on:${ready.id.slice(0, 8)} review`);
+
+    // Derived on read, never stored.
+    expect((await board.get(ready.id))!.needsYou).toBeUndefined();
+  } finally {
+    log.mockRestore();
+  }
+});
+
 test("GET /tasks/:id 404s for unknown id", async () => {
   const app = await makeApp();
   const res = await app(req("/tasks/nope"));
