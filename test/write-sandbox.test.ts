@@ -418,7 +418,9 @@ test("preflight: bwrap + socat + a working namespace is on, and runs bwrap for r
   expect(p.ran).toEqual([
     ["/usr/bin/bwrap", "--ro-bind", "/", "/", "--unshare-user", "--unshare-net", "true"],
     // ...and once more one level down: bwrap inside bwrap.
-    ["/usr/bin/bwrap", "--ro-bind", "/", "/", "--unshare-user", "--unshare-net", "/usr/bin/bwrap", "--ro-bind", "/", "/", "--unshare-user", "true"],
+    // The outer level gets a fresh /proc: under a read-only host /proc
+    // the inner bwrap can't write its uid map on any host (2026-10-23).
+    ["/usr/bin/bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-user", "--unshare-pid", "--unshare-net", "/usr/bin/bwrap", "--ro-bind", "/", "/", "--unshare-user", "true"],
   ]);
 });
 

@@ -167,6 +167,9 @@ const APPARMOR_SYSCTL = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 /** Ubuntu 24.04+ ships this profile: it lets bwrap create a namespace but
  *  strips capabilities from everything bwrap launches. */
 const APPARMOR_STOCK_BWRAP_PROFILE = "/etc/apparmor.d/bwrap-userns-restrict";
+/** The nested check's outer bwrap: a fresh /proc so the inner one can
+ *  write its uid map. See probeSandbox. */
+const NESTED_OUTER_ARGS = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--unshare-user", "--unshare-pid", "--unshare-net"];
 
 /**
  * Can Claude Code's Bash sandbox start on this host? Checked once at
@@ -188,6 +191,14 @@ const APPARMOR_STOCK_BWRAP_PROFILE = "/etc/apparmor.d/bwrap-userns-restrict";
  * startup, so the verdict is "unavailable" and the allowlist fallback
  * (the project's verification commands) takes over, instead of an
  * "on" that can't run a single command. docs/SDD-write-tier-sandbox.md.
+ *
+ * The outer level mounts a fresh /proc (and /dev, with its own pid
+ * namespace), as Claude Code's sandbox does. Without it /proc is the
+ * host's, read-only under `--ro-bind / /`, and the inner bwrap fails
+ * writing its uid map ("setting up uid map: Read-only file system") on
+ * every host, including ones where the real sandbox runs fine (caught
+ * 2026-10-23 on a host with the unconfined /etc/apparmor.d/bwrap
+ * profile, where the live check had passed).
  *
  * `disabled` (WISSEL_WRITE_SANDBOX=off) skips the probes: state "off".
  */
@@ -212,7 +223,7 @@ export async function probeSandbox(probes: SandboxProbes = realProbes, disabled 
     }
   }
   if (bwrap && problems.length === 0) {
-    const nested = await probes.run([bwrap, "--ro-bind", "/", "/", "--unshare-user", "--unshare-net", bwrap, "--ro-bind", "/", "/", "--unshare-user", "true"]);
+    const nested = await probes.run([bwrap, ...NESTED_OUTER_ARGS, bwrap, "--ro-bind", "/", "/", "--unshare-user", "true"]);
     if (nested !== 0) {
       const stock = (await probes.readFile(APPARMOR_STOCK_BWRAP_PROFILE)) !== null;
       problems.push(
