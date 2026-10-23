@@ -619,7 +619,7 @@ test("injectMemory: true on the constructor folds the memoryPath's content into 
 // `verification` replaces the fixed bun pair in --allowedTools and
 // renders the contract's tokens in the prompt.
 
-const FINN_VERIFICATION = {
+const ACME_VERIFICATION = {
   commands: [
     ["uv", "run", "pytest"],
     ["uv", "run", "ruff", "check"],
@@ -646,7 +646,7 @@ test("a project verification replaces the bun pair in --allowedTools (card grant
   const home = await fakeHome();
   try {
     const seen = { cmd: [] as string[], stdin: "" };
-    const executor = new WriteExecutor({ homeDir: home, runner: capturingRunner(seen), settingsFor: async () => ({ verification: FINN_VERIFICATION }) });
+    const executor = new WriteExecutor({ homeDir: home, runner: capturingRunner(seen), settingsFor: async () => ({ verification: ACME_VERIFICATION }) });
     await executor.run({ ...task, extraAllowedTools: ["Bash(uv sync:*)"] }, tokenAgent);
 
     const idx = seen.cmd.indexOf("--allowedTools");

@@ -18,9 +18,9 @@ export const MAX_SETTING_COMMANDS = 20;
 export const MAX_PROTECTED_PATHS = 50;
 
 /** The four settings, as stored on Project. */
-export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths">;
+export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness">;
 export type ProjectSettingKey = keyof Required<ProjectSettings>;
-export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths"];
+export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness"];
 
 /** A partial update: a key that's absent is left alone, `null` clears
  *  it. An empty list (or a verification with no commands and no tools)
@@ -150,6 +150,14 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
       const paths = dedupe(v as string[]);
       patch.protectedPaths = paths.length > 0 ? paths : null;
     }
+  }
+
+  if ("harness" in raw) {
+    const v = raw.harness;
+    if (v === null) patch.harness = null;
+    else if (typeof v !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(v)) {
+      return { ok: false, error: "harness must be a harness id (letters, digits, . _ -), or null to clear it" };
+    } else patch.harness = v;
   }
 
   return { ok: true, patch };

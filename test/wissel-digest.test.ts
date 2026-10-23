@@ -219,7 +219,7 @@ beforeAll(async () => {
       ev({ type: "result", taskId: s1.id, agentId: "implementer", actualCost: 0.3, harnessId: "claude", at: ago(3) }),
       ev({ type: "result", taskId: cards.integ!.id, agentId: "integrator", actualCost: 0.05, harnessId: "claude", at: ago(3) }),
       ev({ type: "result", taskId: f.id, agentId: "implementer", retryAfter: ago(0), at: ago(1) }),
-      ev({ type: "result", taskId: f.id, agentId: "implementer", actualCost: 0.4, harnessId: "adevinta", at: ago(1) }),
+      ev({ type: "result", taskId: f.id, agentId: "implementer", actualCost: 0.4, harnessId: "work", at: ago(1) }),
       ev({ type: "result", taskId: e.id, agentId: "implementer", actualCost: 0.6, harnessId: "claude", at: ago(1) }),
       ev({ type: "result", taskId: cards.old!.id, agentId: "implementer", actualCost: 9, harnessId: "claude", at: ago(30) }),
       ev({ type: "result", taskId: cards.old!.id, agentId: "implementer", retryAfter: ago(29), at: ago(30) }),
@@ -315,7 +315,7 @@ describe("buildWisselDigest", () => {
     const d = await buildWisselDigest(world.inputs());
     expect(d.stats.spendUsd).toBe(5.23);
     expect(d.stats.byAgent).toEqual({ implementer: 3.8, reviewer: 0.75, integrator: 0.15, planner: 0.2, "podcast-scriptwriter": 0.33, "wissel-digest": 0 });
-    expect(d.stats.byHarness).toEqual({ claude: 4.5, adevinta: 0.4, none: 0.33 });
+    expect(d.stats.byHarness).toEqual({ claude: 4.5, work: 0.4, none: 0.33 });
     expect(d.stats.byModel).toEqual({ "claude-opus-5-5": 2.5, "claude-sonnet-5-5": 0.33, unknown: 2.4 });
     expect(d.stats.retries429).toBe(1);
     expect(d.stats.pipelineRuns).toEqual({ "AI news podcast": { runs: 1, failed: 0, costUsd: 0.33 } });

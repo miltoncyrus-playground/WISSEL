@@ -92,8 +92,8 @@ test("GET /harnesses defaults to empty, and returns configured harnesses with a 
 
 test("GET /status/accounts: one row per enabled harness with live load and each running task's resolved model", async () => {
   const harnesses = HarnessPool.from([
-    { id: "claude", tool: "claude-cli", label: "Claude — milton.cyrus@gmail.com", enabled: true, maxConcurrent: 2 },
-    { id: "claude-adevinta", tool: "claude-cli", label: "Claude — corporate", enabled: false },
+    { id: "claude", tool: "claude-cli", label: "Claude — user@gmail.com", enabled: true, maxConcurrent: 2 },
+    { id: "claude-work", tool: "claude-cli", label: "Claude — corporate", enabled: false },
     { id: "api", tool: "anthropic-api", label: "Anthropic API", enabled: true, model: "claude-sonnet-5-5" },
   ]);
   const board = new SqliteBoard();
@@ -102,7 +102,7 @@ test("GET /status/accounts: one row per enabled harness with live load and each 
 
   const idle = (await (await app(req("/status/accounts"))).json()) as unknown[];
   expect(idle).toEqual([
-    { id: "claude", label: "Claude — milton.cyrus@gmail.com", tool: "claude-cli", activeCount: 0, maxConcurrent: 2, running: [] },
+    { id: "claude", label: "Claude — user@gmail.com", tool: "claude-cli", activeCount: 0, maxConcurrent: 2, running: [] },
     { id: "api", label: "Anthropic API", tool: "anthropic-api", activeCount: 0, defaultModel: "claude-sonnet-5-5", running: [] },
   ]);
 

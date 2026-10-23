@@ -306,6 +306,16 @@
   .run-bar .run-seg { flex: 1; min-width: 4px; border-radius: 2px; background: var(--line); }
   .swimlane-head .run-progress { margin: 0; font-weight: 400; }
   .swimlane-head .run-bar { width: 120px; margin: 0; flex: none; }
+  .sl-subagents { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .sa-chip { font-size: 9.5px; padding: 1px 6px; border-radius: 999px; background: var(--page); border: 1px solid var(--border); color: var(--ink-muted); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .sa-chip.running { border-color: var(--accent); color: var(--ink); }
+  .sa-chip.running::before { content: "● "; color: var(--accent); }
+  .sa-chip.done::before { content: "✓ "; }
+  .sa-chip.failed { border-color: var(--danger, #c0392b); color: var(--danger, #c0392b); }
+  .sa-chip.failed::before { content: "✗ "; }
+  .sa-list { display: flex; flex-direction: column; gap: 4px; }
+  .sa-row { font-size: 12px; display: flex; gap: 8px; align-items: baseline; }
+  .sa-row .sa-meta { color: var(--ink-muted); font-size: 11px; }
   .kcard .sl-tag { font-size: 9.5px; padding: 1px 5px; border-radius: 999px; background: var(--page); border: 1px solid var(--border); color: var(--ink-muted); white-space: nowrap; }
 
   /* --- Swimlanes -------------------------------------------------- */
@@ -1284,6 +1294,11 @@
       <div id="tdDecision" class="muted">loading…</div>
     </section>
 
+    <section class="drawer-section" id="tdSubagentsSection" hidden>
+      <p class="eyebrow">Sub-agents</p>
+      <div id="tdSubagents" class="sa-list"></div>
+    </section>
+
     <section class="drawer-section" id="tdResultSection" hidden>
       <p class="eyebrow">Result</p>
       <div id="tdResult"></div>
@@ -2203,6 +2218,68 @@
   // called eagerly, without a result, when the drawer first opens, and
   // again here so Merge/Discard can replace Mark done/failed for a
   // worktree-run task. See docs/SDD-worktree-isolation.md.
+  // Sub-agents spawned by a run: cached per task, refreshed while a card
+  // runs, painted in place on its board card and in the drawer.
+  var subagentCache = {};
+  function fillSubagentChips(container, info, limit) {
+    container.textContent = "";
+    if (!info || !info.runs || !info.runs.length) return;
+    info.runs.slice(0, limit).forEach(function (r) {
+      var chip = document.createElement("span");
+      chip.className = "sa-chip " + r.status;
+      chip.textContent = r.type + ": " + r.description;
+      chip.title = r.type + " (" + r.status + (r.toolCalls ? ", " + r.toolCalls + " tool calls" : "") + ")" + (r.background ? " in background" : "") + "\n" + r.description;
+      container.appendChild(chip);
+    });
+    if (info.runs.length > limit) {
+      var more = document.createElement("span"); more.className = "sa-chip"; more.textContent = "+" + (info.runs.length - limit);
+      container.appendChild(more);
+    }
+  }
+  function paintSubagents(taskId) {
+    var info = subagentCache[taskId];
+    document.querySelectorAll('[data-subagents-for="' + taskId + '"]').forEach(function (el) { fillSubagentChips(el, info, 4); });
+    if (drawerTaskId === taskId) {
+      var sec = document.getElementById("tdSubagentsSection");
+      var list = document.getElementById("tdSubagents");
+      list.textContent = "";
+      sec.hidden = !(info && info.runs && info.runs.length);
+      if (!sec.hidden) info.runs.forEach(function (r) {
+        var row = document.createElement("div"); row.className = "sa-row";
+        var chip = document.createElement("span"); chip.className = "sa-chip " + r.status; chip.textContent = r.type;
+        var text = document.createElement("span"); text.textContent = r.description;
+        var meta = document.createElement("span"); meta.className = "sa-meta";
+        meta.textContent = r.status + (r.toolCalls ? " · " + r.toolCalls + " tool calls" : "") + (r.background ? " · background" : "");
+        row.appendChild(chip); row.appendChild(text); row.appendChild(meta);
+        list.appendChild(row);
+      });
+    }
+  }
+  function refreshSubagents(taskId) {
+    return fetch("/tasks/" + taskId + "/subagents").then(function (r) { return r.ok ? r.json() : null; }).then(function (info) {
+      if (!info) return;
+      subagentCache[taskId] = info;
+      paintSubagents(taskId);
+    }).catch(function () { /* the next tick tries again */ });
+  }
+  // One tick: every running card, every card whose sub-agents were still
+  // marked running last time (one final read closes them), the open drawer.
+  function pollSubagents() {
+    if (document.hidden) return;
+    var ids = {};
+    var lists = [tasks, allTasks];
+    lists.forEach(function (list) {
+      list.forEach(function (t) {
+        var live = t.status === "running" || t.status === "dispatched";
+        var cached = subagentCache[t.id];
+        if (live || (cached && cached.running > 0)) ids[t.id] = true;
+      });
+    });
+    if (drawerTaskId) ids[drawerTaskId] = true;
+    Object.keys(ids).forEach(function (id) { refreshSubagents(id); });
+  }
+  setInterval(pollSubagents, 4000);
+
   function loadDrawerResult(taskId) {
     var section = document.getElementById("tdResultSection");
     var body = document.getElementById("tdResult");
@@ -2390,6 +2467,7 @@
   // the task drawer and an expanded step in the run drawer.
   function loadTaskDetail(task) {
     drawerTaskId = task.id;
+    paintSubagents(task.id); refreshSubagents(task.id);
     drawerLastResult = null; // genuinely unknown until loadDrawerResult resolves for this task
     closeRetryForm(); // a different task's drawer must never open mid-draft from the last one
     renderDrawerHeader(task);
@@ -4211,6 +4289,11 @@
       relations.appendChild(depTag);
     });
     if (relations.childNodes.length) card.appendChild(relations);
+
+    // Sub-agents this card's run spawned, one chip each (docs/SDD-subagent-board.md).
+    var subRow = document.createElement("div"); subRow.className = "sl-subagents"; subRow.setAttribute("data-subagents-for", t.id);
+    card.appendChild(subRow);
+    fillSubagentChips(subRow, subagentCache[t.id], 4);
 
     // "Live output" — same visibility rule as the kanban card's own
     // (taskOutputIsLive), independent of opts.cardAction (Unarchive on

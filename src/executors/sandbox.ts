@@ -62,7 +62,6 @@ export const SANDBOX_DENY_READ = [
   "~/.config/gh",
   "~/.claude",
   "~/.claude.json",
-  "~/.claude-adevinta",
   "~/.codex",
   "~/.wissel/board.sqlite*",
 ] as const;
@@ -165,6 +164,9 @@ export const realProbes: SandboxProbes = {
 };
 
 const APPARMOR_SYSCTL = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns";
+/** Ubuntu 24.04+ ships this profile: it lets bwrap create a namespace but
+ *  strips capabilities from everything bwrap launches. */
+const APPARMOR_STOCK_BWRAP_PROFILE = "/etc/apparmor.d/bwrap-userns-restrict";
 
 /**
  * Can Claude Code's Bash sandbox start on this host? Checked once at
@@ -175,6 +177,17 @@ const APPARMOR_SYSCTL = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
  * runs bwrap for real (`bwrap --ro-bind / / --unshare-user
  * --unshare-net true`), since a profile file that exists but isn't
  * loaded passes every static check and still fails.
+ *
+ * Then it runs the same thing one level down: bwrap inside bwrap.
+ * Claude Code's own seccomp helper creates a namespace inside the
+ * sandbox, and on Ubuntu 24.04+ the stock profile
+ * (/etc/apparmor.d/bwrap-userns-restrict) strips the capability that
+ * needs from bwrap's children. The one-level check passes there and
+ * every sandboxed Bash call then dies with `apply-seccomp: ... nested
+ * userns is capability-restricted`. The nested check catches it at
+ * startup, so the verdict is "unavailable" and the allowlist fallback
+ * (the project's verification commands) takes over, instead of an
+ * "on" that can't run a single command. docs/SDD-write-tier-sandbox.md.
  *
  * `disabled` (WISSEL_WRITE_SANDBOX=off) skips the probes: state "off".
  */
@@ -195,6 +208,18 @@ export async function probeSandbox(probes: SandboxProbes = realProbes, disabled 
         restricted
           ? "bwrap can't create user namespaces: kernel.apparmor_restrict_unprivileged_userns=1 and no AppArmor profile lets bwrap (add /etc/apparmor.d/bwrap, then sudo systemctl reload apparmor)"
           : `bwrap can't create a sandbox here (exit ${code})`,
+      );
+    }
+  }
+  if (bwrap && problems.length === 0) {
+    const nested = await probes.run([bwrap, "--ro-bind", "/", "/", "--unshare-user", "--unshare-net", bwrap, "--ro-bind", "/", "/", "--unshare-user", "true"]);
+    if (nested !== 0) {
+      const stock = (await probes.readFile(APPARMOR_STOCK_BWRAP_PROFILE)) !== null;
+      problems.push(
+        `bwrap works one level deep but not nested (exit ${nested}), and Claude Code's sandbox needs a namespace inside the sandbox, so every sandboxed Bash call would fail` +
+          (stock
+            ? `: ${APPARMOR_STOCK_BWRAP_PROFILE} removes the capabilities bwrap's children need. Write-tier Bash uses the allowlist (the project's verification commands) until that profile is changed, or set WISSEL_WRITE_SANDBOX=off to say so explicitly`
+            : `. Write-tier Bash uses the allowlist (the project's verification commands) until the host allows nested user namespaces, or set WISSEL_WRITE_SANDBOX=off to say so explicitly`),
       );
     }
   }

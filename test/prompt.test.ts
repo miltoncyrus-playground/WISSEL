@@ -151,7 +151,7 @@ test("the mcp-approval-request instruction comes after the output contract but b
 // tokens existed: a project with no settings must get a byte-identical
 // prompt.
 
-const FINN_VERIFICATION = {
+const ACME_VERIFICATION = {
   commands: [
     ["uv", "run", "pytest"],
     ["uv", "run", "ruff", "check"],
@@ -214,7 +214,7 @@ test("fixer, integrator and lint-fixer, no project verification: the steering se
 
 test("implementer with a project verification: the contract names those commands, keeps the git and pre-existing-failure rules, and never the bun pair", async () => {
   const implementer = (await Registry.load()).get("implementer")!;
-  const prompt = buildAgentPrompt(writeTask, implementer, undefined, { verification: FINN_VERIFICATION });
+  const prompt = buildAgentPrompt(writeTask, implementer, undefined, { verification: ACME_VERIFICATION });
   expect(prompt).toContain("Before reporting done, run each of these as a plain command (no\npipes, no redirects):\n  uv run pytest\n  uv run ruff check\n  uv run pyright\n");
   expect(prompt).toContain("re-run all of them until every one is\ngreen. Do not report done with any of them red.");
   expect(prompt).toContain("If a failure is\npre-existing and clearly unrelated to your change");
@@ -233,7 +233,7 @@ test("implementer with a project verification: the contract names those commands
 test("fixer, integrator and lint-fixer with a project verification: the steering sentence names the project's commands", async () => {
   const registry = await Registry.load();
   for (const id of ["fixer", "integrator", "lint-fixer"]) {
-    const prompt = buildAgentPrompt(writeTask, registry.get(id)!, undefined, { verification: FINN_VERIFICATION });
+    const prompt = buildAgentPrompt(writeTask, registry.get(id)!, undefined, { verification: ACME_VERIFICATION });
     expect({ id, ok: prompt.includes("Run `uv run pytest`, `uv run ruff check` and `uv run pyright` as plain commands") }).toEqual({ id, ok: true });
     expect({ id, bun: prompt.includes("bun test") }).toEqual({ id, bun: false });
   }
@@ -243,7 +243,7 @@ test("a contract without tokens (every readonly agent) is untouched by a project
   const registry = await Registry.load();
   for (const a of registry.all().filter((a) => a.tier !== "write" && a.verificationContract)) {
     const plain = buildAgentPrompt(task, a, undefined, { planMode: true });
-    const withVerification = buildAgentPrompt(task, a, undefined, { planMode: true, verification: FINN_VERIFICATION });
+    const withVerification = buildAgentPrompt(task, a, undefined, { planMode: true, verification: ACME_VERIFICATION });
     expect({ id: a.id, same: withVerification === plain }).toEqual({ id: a.id, same: true });
   }
 });

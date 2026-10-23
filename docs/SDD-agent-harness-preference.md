@@ -11,7 +11,7 @@ Which account or tool runs an agent is chosen automatically today:
 `HarnessPool.acquire(tool)` (`src/core/harness-pool.ts:127`) takes the
 least-loaded enabled harness for the executor's tool. The only control
 is per card (`TaskCard.harnessOverride`). An agent can't say "run me on
-the Adevinta account" or "keep me off the personal account", so all
+the work account" or "keep me off the personal account", so all
 Claude Code work lands on whichever account is least busy. That's how
 the `claude` account's session limit got hit on 2026-10-04 while other
 accounts sat idle or disabled.
@@ -41,7 +41,7 @@ behavior).
 ```yaml
 - id: implementer
   ...
-  harnesses: [claude-adevinta, claude]
+  harnesses: [claude-work, claude]
 ```
 
 ### 3.2 Validation: fail loud at startup
@@ -89,7 +89,7 @@ the same selection rules as §3.4 without incrementing anything. The
 mid-dispatch race guard (reset to inbox when `acquire()` returns
 undefined) stays as it is.
 
-The log line names why: `waiting: none of [claude-adevinta, claude]
+The log line names why: `waiting: none of [claude-work, claude]
 enabled and under capacity` versus `waiting: no enabled claude-cli
 harness`.
 

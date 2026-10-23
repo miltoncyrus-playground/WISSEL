@@ -67,7 +67,7 @@ function describeAgentHarnesses(agent, harnesses) {
 // Labels past this length get cut to the part after the dash.
 var ACCOUNT_LABEL_MAX = 20;
 
-// "Claude — milton.cyrus@gmail.com" -> "Claude (gmail)": a long label is
+// "Claude — user@gmail.com" -> "Claude (gmail)": a long label is
 // cut to the part after its dash, and an email there to its provider.
 // Short labels ("codex", "Claude — personal") are kept whole.
 function shortAccountLabel(label) {

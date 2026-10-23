@@ -4,7 +4,7 @@
  * session (RunClaudeOptions.remoteControl): real `claude -p` calls
  * through runClaude and runViaBun, in a scratch directory, on every
  * enabled claude-cli harness (the private `claude` one and, when it is
- * on, `claude-adevinta`, whose org policy could refuse Remote Control).
+ * on, `claude-work`, whose org policy could refuse Remote Control).
  *
  * Per harness:
  *   1. A run with Remote Control on. Must answer, hand back a

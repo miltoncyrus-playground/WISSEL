@@ -37,7 +37,7 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const UV_SYNC = ["uv", "sync", "--frozen"];
-const finn: WorktreeSetupConfig = { commands: [UV_SYNC, ["uv", "run", "pre-commit", "install"]] };
+const acme: WorktreeSetupConfig = { commands: [UV_SYNC, ["uv", "run", "pre-commit", "install"]] };
 
 function wtPath(key = "t1"): string {
   return join(home, ".wissel", "worktrees", key);
@@ -87,7 +87,7 @@ const gitDirOf = (key = "t1") => join(gitDirs, key);
 
 test("a new worktree runs the setup commands in order, in the worktree, under the merge gate's default timeout", async () => {
   const setupRunner = fakeSetup();
-  const result = await createTaskWorktree("/repo", "t1", { runner: fakeGit(), homeDir: home, setup: finn, setupRunner });
+  const result = await createTaskWorktree("/repo", "t1", { runner: fakeGit(), homeDir: home, setup: acme, setupRunner });
 
   expect(result).toEqual({ path: wtPath(), branch: "wissel/t1" });
   expect(setupRunner.calls).toEqual([
@@ -103,14 +103,14 @@ test("a new worktree runs the setup commands in order, in the worktree, under th
 
 test("a configured timeoutMs is passed to every command", async () => {
   const setupRunner = fakeSetup();
-  await createTaskWorktree("/repo", "t1", { runner: fakeGit(), homeDir: home, setup: { ...finn, timeoutMs: 5_000 }, setupRunner });
+  await createTaskWorktree("/repo", "t1", { runner: fakeGit(), homeDir: home, setup: { ...acme, timeoutMs: 5_000 }, setupRunner });
   expect(setupRunner.calls.map((c) => c.timeoutMs)).toEqual([5_000, 5_000]);
 });
 
 test("setup stops at the first failing command and returns its output tail as the error", async () => {
   const output = [...Array.from({ length: 250 }, (_, i) => `line ${i}`), "error: lockfile out of date"].join("\n");
   const setupRunner = fakeSetup({ "uv sync --frozen": { exitCode: 2, output } });
-  const result = await createTaskWorktree("/repo", "t1", { runner: fakeGit(), homeDir: home, setup: finn, setupRunner });
+  const result = await createTaskWorktree("/repo", "t1", { runner: fakeGit(), homeDir: home, setup: acme, setupRunner });
 
   expect(setupRunner.calls.map((c) => c.argv)).toEqual([UV_SYNC]);
   if (!("error" in result)) throw new Error("expected an error");
@@ -125,18 +125,18 @@ test("setup stops at the first failing command and returns its output tail as th
 
 test("a timed-out command fails setup and says so", async () => {
   const setupRunner = fakeSetup({ "uv sync --frozen": { exitCode: null, timedOut: true, output: "Resolving..." } });
-  const result = await createTaskWorktree("/repo", "t1", { runner: fakeGit(), homeDir: home, setup: { ...finn, timeoutMs: 3_000 }, setupRunner });
+  const result = await createTaskWorktree("/repo", "t1", { runner: fakeGit(), homeDir: home, setup: { ...acme, timeoutMs: 3_000 }, setupRunner });
   expect(result).toEqual({ error: expect.stringContaining("`uv sync --frozen` timed out after 3s") });
 });
 
 test("a reused worktree (reviewer, fixer, integrator, retry) never runs setup again", async () => {
   const git = fakeGit();
   const setupRunner = fakeSetup();
-  await createTaskWorktree("/repo", "t1", { runner: git, homeDir: home, setup: finn, setupRunner });
+  await createTaskWorktree("/repo", "t1", { runner: git, homeDir: home, setup: acme, setupRunner });
   expect(setupRunner.calls).toHaveLength(2);
 
   for (let i = 0; i < 3; i++) {
-    const again = await createTaskWorktree("/repo", "t1", { runner: git, homeDir: home, setup: finn, setupRunner });
+    const again = await createTaskWorktree("/repo", "t1", { runner: git, homeDir: home, setup: acme, setupRunner });
     expect(again).toEqual({ path: wtPath(), branch: "wissel/t1" });
   }
   expect(git.adds).toBe(1);
@@ -146,7 +146,7 @@ test("a reused worktree (reviewer, fixer, integrator, retry) never runs setup ag
 test("a worktree that existed before setup was configured is reused as is, setup skipped", async () => {
   mkdirSync(wtPath(), { recursive: true });
   const setupRunner = fakeSetup();
-  const result = await createTaskWorktree("/repo", "t1", { runner: fakeGit([wtPath()]), homeDir: home, setup: finn, setupRunner });
+  const result = await createTaskWorktree("/repo", "t1", { runner: fakeGit([wtPath()]), homeDir: home, setup: acme, setupRunner });
   expect(result).toEqual({ path: wtPath(), branch: "wissel/t1" });
   expect(setupRunner.calls).toHaveLength(0);
 });
@@ -160,10 +160,10 @@ test("after a failed setup, the next run on that worktree runs setup again, and 
     return failing ? { exitCode: 1, output: "network down", timedOut: false } : { exitCode: 0, output: "", timedOut: false };
   };
 
-  expect(await createTaskWorktree("/repo", "t1", { runner: git, homeDir: home, setup: finn, setupRunner })).toEqual({ error: expect.stringContaining("network down") });
+  expect(await createTaskWorktree("/repo", "t1", { runner: git, homeDir: home, setup: acme, setupRunner })).toEqual({ error: expect.stringContaining("network down") });
   failing = false;
-  expect(await createTaskWorktree("/repo", "t1", { runner: git, homeDir: home, setup: finn, setupRunner })).toEqual({ path: wtPath(), branch: "wissel/t1" });
-  expect(await createTaskWorktree("/repo", "t1", { runner: git, homeDir: home, setup: finn, setupRunner })).toEqual({ path: wtPath(), branch: "wissel/t1" });
+  expect(await createTaskWorktree("/repo", "t1", { runner: git, homeDir: home, setup: acme, setupRunner })).toEqual({ path: wtPath(), branch: "wissel/t1" });
+  expect(await createTaskWorktree("/repo", "t1", { runner: git, homeDir: home, setup: acme, setupRunner })).toEqual({ path: wtPath(), branch: "wissel/t1" });
 
   expect(git.adds).toBe(1);
   expect(calls).toEqual([UV_SYNC, UV_SYNC, ["uv", "run", "pre-commit", "install"]]);
@@ -205,7 +205,7 @@ test("runWorktreeSetup skips when the done marker is already in the git dir", as
   writeFileSync(join(gitDir, SETUP_DONE_MARKER), "2026-10-19\n");
   const setupRunner = fakeSetup();
 
-  expect(await runWorktreeSetup(wt, finn, setupRunner)).toEqual({ status: "skipped", runs: [], durationMs: 0 });
+  expect(await runWorktreeSetup(wt, acme, setupRunner)).toEqual({ status: "skipped", runs: [], durationMs: 0 });
   expect(setupRunner.calls).toHaveLength(0);
 });
 
@@ -271,7 +271,7 @@ const implementer: AgentDef = {
 test("WriteExecutor: a failed setup fails the card with the output, before claude ever runs, and the summary lands on the card", async () => {
   const board = new SqliteBoard();
   const registry = Registry.from([implementer]);
-  const card = await board.create({ title: "build", body: "", labels: ["code"], repo: "/finn" });
+  const card = await board.create({ title: "build", body: "", labels: ["code"], repo: "/acme" });
   const task: TaskCard = { ...card, status: "dispatched" };
 
   const git = fakeGit();
@@ -293,7 +293,7 @@ test("WriteExecutor: a failed setup fails the card with the output, before claud
   });
 
   const result = await executor.run(task, implementer);
-  expect(looked).toEqual(["/finn"]);
+  expect(looked).toEqual(["/acme"]);
   expect(agentCalls).toBe(0);
   expect(result.ok).toBe(false);
   expect(result.summary).toContain("`uv sync --frozen` exited 1");
@@ -326,7 +326,7 @@ test("CodexWriteExecutor runs the project's setup too", async () => {
 
 test("ProjectStore.worktreeSetupFor returns the project's setup, matching paths like mergeGateFor, and undefined when unset", async () => {
   const store = new SqliteProjectStore(new Database(":memory:"));
-  const repo = join(dir, "finn");
+  const repo = join(dir, "acme");
   mkdirSync(repo);
   await runViaBun(["git", "init", "-q"], { cwd: repo });
   const added = await store.addLocalProject(repo, {}, runViaBun);

@@ -203,11 +203,11 @@ test("GET /feed pages with limit and next, and refuses a bad limit or before", a
 
 test("a card pinned to a disabled harness shows as held", async () => {
   const board = new SqliteBoard();
-  const harness: Harness = { id: "claude-adevinta", tool: "claude-cli", label: "Corporate", enabled: false };
-  const t = await board.create(card({ title: "Pinned", harnessOverride: "claude-adevinta" }));
+  const harness: Harness = { id: "claude-work", tool: "claude-cli", label: "Corporate", enabled: false };
+  const t = await board.create(card({ title: "Pinned", harnessOverride: "claude-work" }));
   const app = createApp(board, registry, undefined, { harnesses: HarnessPool.from([harness]) });
   const page = (await (await app(new Request("http://localhost/feed"))).json()) as FeedPage;
-  expect(page.items.find((i) => i.taskId === t.id)?.detail).toBe("Held: claude-adevinta is switched off");
+  expect(page.items.find((i) => i.taskId === t.id)?.detail).toBe("Held: claude-work is switched off");
 });
 
 test("the feed source checks a settled podcast run once, then serves it from cache", async () => {

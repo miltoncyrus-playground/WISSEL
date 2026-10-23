@@ -10,9 +10,9 @@
  *   bun run scripts/verify-claude-models.ts --harness <id>
  *   bun run scripts/verify-claude-models.ts --models claude-haiku-5-5,claude-opus-5-5
  *
- * claude-adevinta is the corporate account. The script refuses to touch
- * it (by id, or by a harness whose CLAUDE_CONFIG_DIR is .claude-adevinta)
- * unless `--harness claude-adevinta` is passed explicitly.
+ * claude-work is the corporate account. The script refuses to touch
+ * it (by id, or by a harness whose CLAUDE_CONFIG_DIR is .claude-work)
+ * unless `--harness claude-work` is passed explicitly.
  *
  * Exits 1 when any model fails. WISSEL_HARNESSES_PATH as for the server.
  */
@@ -24,7 +24,7 @@ import type { Harness } from "../src/core/types.ts";
 import { runViaBun, type CommandRunner } from "../src/executors/claude-cli.ts";
 
 export const DEFAULT_HARNESS = "claude";
-export const CORPORATE_HARNESS = "claude-adevinta";
+export const CORPORATE_HARNESS = process.env.WISSEL_CORPORATE_HARNESS || "claude-work";
 export const PROMPT = "reply ok";
 
 export interface VerifyArgs {
@@ -63,7 +63,7 @@ export function isCorporate(harness: Pick<Harness, "id" | "env">): boolean {
 }
 
 /** Why `harness` can't be verified, or undefined when it can. The
- *  corporate account needs the exact `--harness claude-adevinta`. */
+ *  corporate account needs the exact `--harness claude-work`. */
 export function refusal(harness: Harness | undefined, args: VerifyArgs): string | undefined {
   if (!harness) return `no harness "${args.harness}" (run \`bun run models:refresh\` to list the harnesses on this machine)`;
   if (harness.tool !== "claude-cli") return `harness "${harness.id}" is ${harness.tool}, not claude-cli`;

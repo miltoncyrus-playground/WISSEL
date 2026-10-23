@@ -8,7 +8,8 @@
 // (concierge-actions.ts) runs them up front to say why, and the
 // functions here run them again on the board as it is when they act.
 
-import type { Board } from "./board.ts";
+import { EDITABLE_CARD_FIELDS, type Board, type CardEdit } from "./board.ts";
+import { validateNewTask, type NewTask, type NewTaskDeps } from "./task-input.ts";
 import type { HarnessPool } from "../core/harness-pool.ts";
 import type { McpServerPool, CheckMcpServerReachableOptions } from "../core/mcp-server-pool.ts";
 import { checkMcpServerReachable } from "../core/mcp-server-pool.ts";
@@ -203,6 +204,70 @@ export async function setTaskNotBefore(board: Board, task: TaskCard, notBefore: 
   const check = validateNotBefore(notBefore, now);
   if (!check.ok) return no(400, check.error);
   return ok(await board.setNotBefore(task.id, check.notBefore));
+}
+
+/** A card can be edited only before anything has happened to it: queued
+ *  (inbox or ready), not routed to an agent, not archived, not replaced
+ *  by a later attempt. Once it has run, the card is a record. */
+export function editRefusal(task: Pick<TaskCard, "status" | "routedTo" | "archivedAt" | "supersededBy">): string | undefined {
+  if (task.archivedAt) return "task is archived; it can't be edited";
+  if (task.supersededBy) return "task was replaced by a later attempt; edit that one";
+  if (task.status !== "inbox" && task.status !== "ready") return `task is ${task.status}; only a queued card can be edited`;
+  if (task.routedTo) return `task is already routed to ${task.routedTo}; only an unrouted card can be edited`;
+  return undefined;
+}
+
+/** `PATCH /tasks/:id` (docs/SDD-card-edit.md): changes title, body,
+ *  labels, repo, model, harnessOverride, mergeTarget, extraAllowedTools or
+ *  extraAllowedDirs on a card that hasn't started. The result is checked
+ *  by the very rules a new card meets (validateNewTask), so an edit can't
+ *  make a card that creation would have refused. A key set to null
+ *  clears it. Anything else in the body is refused by name. */
+export async function editTask(board: Board, task: TaskCard, patch: unknown, deps: NewTaskDeps): Promise<Outcome<TaskCard>> {
+  const refused = editRefusal(task);
+  if (refused) return no(409, refused);
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) return no(400, "body must be a JSON object of the fields to change");
+  const given = patch as Record<string, unknown>;
+  const keys = Object.keys(given);
+  if (keys.length === 0) return no(400, `body names no field to change (editable: ${EDITABLE_CARD_FIELDS.join(", ")})`);
+  const unknown = keys.filter((k) => !(EDITABLE_CARD_FIELDS as readonly string[]).includes(k));
+  if (unknown.length > 0) return no(400, `can't edit ${unknown.join(", ")} (editable: ${EDITABLE_CARD_FIELDS.join(", ")})`);
+  const typeError = editTypeError(given);
+  if (typeError) return no(400, typeError);
+
+  // The card as it would be, run through creation's checks. `notBefore`
+  // is left out: it isn't editable here, and a start time that has
+  // since passed would otherwise fail a check it already met.
+  const candidate: NewTask = {
+    title: task.title,
+    body: task.body,
+    labels: task.labels,
+    repo: task.repo,
+    model: task.model,
+    harnessOverride: task.harnessOverride,
+    mergeTarget: task.mergeTarget,
+    extraAllowedTools: task.extraAllowedTools,
+    extraAllowedDirs: task.extraAllowedDirs,
+    ...Object.fromEntries(keys.map((k) => [k, given[k] === null ? undefined : given[k]])),
+  };
+  const check = await validateNewTask(candidate, deps);
+  if (!check.ok) return no(400, check.error);
+  const fields: CardEdit = {};
+  for (const k of keys) (fields as Record<string, unknown>)[k] = (check.task as Record<string, unknown>)[k];
+  return ok(await board.updateFields(task.id, fields));
+}
+
+function editTypeError(given: Record<string, unknown>): string | undefined {
+  for (const k of ["title", "body", "repo", "model", "harnessOverride", "mergeTarget"]) {
+    const v = given[k];
+    if (k in given && v !== null && typeof v !== "string") return `${k} must be a string (or null to clear it)`;
+  }
+  if ((given.title === null || given.title === "") && "title" in given) return "title can't be empty";
+  for (const k of ["labels", "extraAllowedTools", "extraAllowedDirs"]) {
+    const v = given[k];
+    if (k in given && v !== null && !(Array.isArray(v) && v.every((x) => typeof x === "string"))) return `${k} must be a list of strings (or null to clear it)`;
+  }
+  return undefined;
 }
 
 // ---------- harnesses ----------

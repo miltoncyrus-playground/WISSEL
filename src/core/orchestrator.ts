@@ -285,7 +285,7 @@ export async function finishResult(
     return;
   }
 
-  if (agent.autoMerge && agent.trustLevel === "high") {
+  if (autoMergeAllowed(agent)) {
     const outcome = await tryAutoMerge(board, registry, result, runner);
     if (outcome === "landed") {
       await board.move(result.taskId, "done");
@@ -359,6 +359,10 @@ async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result
     parentTaskId: implementerTask.id,
     reviewLineageId,
     pushbackCount: 0,
+    // A review stays on the account and branch of the card it reviews:
+    // before this, a review card was created unpinned and could run on
+    // any enabled account.
+    ...inheritedPlacement(implementerTask),
   });
 }
 
@@ -399,6 +403,7 @@ async function spawnSubtasksFromPlan(board: Board, plannerTask: TaskCard, plan: 
       repo: plannerTask.repo,
       parentTaskId: plannerTask.id,
       dependsOn,
+      ...inheritedPlacement(plannerTask),
     });
     createdIds.push(created.id);
   }
@@ -576,7 +581,7 @@ export async function resumeAfterApproval(
   const agent = implementerTask.routedTo ? registry.get(implementerTask.routedTo) : undefined;
   const originalResult = await board.getResult(implementerTask.id);
 
-  if (agent?.autoMerge && agent.trustLevel === "high" && originalResult?.worktree) {
+  if (autoMergeAllowed(agent) && originalResult?.worktree) {
     const mergeState = await determineWorktreeMergeState(implementerTask.repo!, originalResult.worktree, implementerTask, merge.runner, originalResult.mergedSha);
     if (mergeState === "unknown") return "unresolved";
     if (mergeState === "merged") {
@@ -586,7 +591,7 @@ export async function resumeAfterApproval(
     }
   }
 
-  if (agent?.autoMerge && agent.trustLevel === "high" && originalResult) {
+  if (autoMergeAllowed(agent) && originalResult) {
     const outcome = await tryAutoMerge(board, registry, originalResult, merge);
     if (outcome === "landed") {
       await board.move(implementerTask.id, "done");
@@ -661,6 +666,41 @@ export async function grantAndRetry(board: Board, task: TaskCard, tools?: string
   });
 }
 
+/** A card the auto-chain may run: it belongs to a review lineage, so a
+ *  human already started the work it follows (the first attempt) and what
+ *  is queued is its review or the rework a reviewer asked for. */
+export function isChainCard(task: Pick<TaskCard, "reviewLineageId" | "pipelineId">): boolean {
+  return task.reviewLineageId !== undefined && task.pipelineId === undefined;
+}
+
+/** Where a derived card (a review, a planner subtask, an integrator) runs
+ *  and lands: the account and branch its parent asked for. A card created
+ *  by Wissel itself never went through POST /tasks, so without this it
+ *  came back unpinned and on the repo's checked-out branch. */
+export function inheritedPlacement(parent: Pick<TaskCard, "harnessOverride" | "mergeTarget">): Pick<TaskCard, "harnessOverride" | "mergeTarget"> {
+  return {
+    ...(parent.harnessOverride ? { harnessOverride: parent.harnessOverride } : {}),
+    ...(parent.mergeTarget ? { mergeTarget: parent.mergeTarget } : {}),
+  };
+}
+
+/**
+ * Whether an approved review may land its card without a human click:
+ * the agent declares `autoMerge: true` with `trustLevel: "high"`, AND the
+ * global switch is on. `WISSEL_AUTO_MERGE=0` (or off/false/no) turns the
+ * fast path off for every agent, so an approved card stops in `review`
+ * for a human Merge. Unset keeps today's behaviour.
+ * docs/SDD-merge-target.md.
+ */
+export function autoMergeSwitchOn(env: Record<string, string | undefined> = process.env): boolean {
+  const v = (env.WISSEL_AUTO_MERGE ?? "").trim().toLowerCase();
+  return !(v === "0" || v === "off" || v === "false" || v === "no");
+}
+
+export function autoMergeAllowed(agent: Pick<AgentDef, "autoMerge" | "trustLevel"> | undefined, env?: Record<string, string | undefined>): boolean {
+  return agent?.autoMerge === true && agent.trustLevel === "high" && autoMergeSwitchOn(env);
+}
+
 /**
  * The settings a card's re-attempt keeps: tool and directory grants, a
  * model or harness choice, an MCP override. Used by a review pushback
@@ -674,6 +714,7 @@ export function carriedCardSettings(task: TaskCard): Partial<Omit<TaskCard, "id"
     ...(task.extraAllowedDirs?.length ? { extraAllowedDirs: task.extraAllowedDirs } : {}),
     ...(task.model ? { model: task.model } : {}),
     ...(task.harnessOverride ? { harnessOverride: task.harnessOverride } : {}),
+    ...(task.mergeTarget ? { mergeTarget: task.mergeTarget } : {}),
     ...(task.mcpAccessOverride ? { mcpAccessOverride: task.mcpAccessOverride } : {}),
   };
 }
@@ -1077,6 +1118,7 @@ export async function maybeSpawnConflictIntegrator(
     body: buildConflictIntegratorBody(originalTask, worktree, conflictMessage, conflictHead, attempt, earlier.map((t) => t.id)),
     labels: [CONFLICT_LABEL],
     repo: originalTask.repo,
+    ...inheritedPlacement(originalTask),
     extraAllowedDirs: [where],
     extraAllowedTools: [`Bash(git -C ${where} status:*)`, `Bash(git -C ${where} diff:*)`],
   });
@@ -1278,6 +1320,7 @@ async function maybeSpawnIntegrator(board: Board, registry: Registry, task: Task
     labels: [INTEGRATOR_LABEL],
     repo: parent.repo,
     parentTaskId: parentId,
+    ...inheritedPlacement(parent),
   });
 }
 
@@ -1338,6 +1381,12 @@ export interface OrchestratorOptions {
    *  known until they finish). Requires `telemetry` to be set — a no-op
    *  otherwise. */
   spendCeilingUsd?: number;
+  /** Chain-only sweeps (WISSEL_AUTO_CHAIN=1, docs/SDD-auto-chain.md):
+   *  only a card that belongs to a review lineage (`reviewLineageId` set:
+   *  a review, or a rework after changes were requested) is routed and
+   *  run by the sweep. A fresh card waits for a human Run, as it does
+   *  with the orchestrator off. */
+  chainOnly?: boolean;
   /** Passed straight through to every internal `finishResult` call's own
    *  `memoryPath` param — see its doc comment. Undefined defaults to the
    *  real repo-root memory/lessons.md, same as finishResult's own
@@ -1489,6 +1538,8 @@ export class Orchestrator {
       if (this.inFlight.has(task.id)) continue;
       if (task.routedTo) continue; // already routed — a human or a prior run owns it now
       if (task.status !== "inbox" && task.status !== "ready") continue;
+      // Chain-only: the review/rework loop runs on its own, nothing else.
+      if (this.opts.chainOnly && !isChainCard(task)) continue;
       // pipeline-runner.ts owns every card in a run (root and steps) and
       // picks each step's agent from the definition, never the Router.
       // Without this, the board event from creating a card triggered a

@@ -107,7 +107,7 @@ No new `Harness` field required.
     tool: codex-cli
     label: "Codex — personal"
     enabled: true
-    env: { CODEX_HOME: "/home/mcyrus/.codex" }  # absolute — env vars don't get tilde-expanded
+    env: { CODEX_HOME: "/home/user/.codex" }  # absolute — env vars don't get tilde-expanded
 ```
 
 Auto-detected the same way `claude-personal` is — see §5 — so this entry

@@ -78,7 +78,7 @@ The settings (`buildSandboxSettings`, src/executors/sandbox.ts):
     "autoAllowBashIfSandboxed": true,
     "filesystem": {
       "denyRead": ["~/.ssh", "~/.aws", "~/.gnupg", "~/.config/gh", "~/.claude", "~/.claude.json",
-                   "~/.claude-adevinta", "~/.codex", "~/.wissel/board.sqlite*",
+                   "~/.codex", "~/.wissel/board.sqlite*",
                    "<every harness CLAUDE_CONFIG_DIR / CODEX_HOME>", "<WISSEL_DB_PATH>*"],
       "denyWrite": ["<task.repo>/.git"]
     },
@@ -141,6 +141,18 @@ network setting to feed, §11).
    problem names the AppArmor profile. A real run is the only reliable
    check: a profile file that exists but isn't loaded passes every
    static test and still fails.
+4. Linux, nested: the same command one level down, `bwrap ... bwrap
+   ... --unshare-user true`. Claude Code's own seccomp helper creates a
+   namespace inside the sandbox, and on Ubuntu 24.04+ the stock
+   `/etc/apparmor.d/bwrap-userns-restrict` profile strips the capability
+   that needs from everything bwrap launches. Step 3 passes there, and
+   every sandboxed Bash call then dies with `apply-seccomp: write
+   /proc/self/setgroups (nested userns is capability-restricted ...)`.
+   Seen on Ubuntu 26.04: write-tier cards ran for a whole day with the
+   startup line saying `on`, unable to run `make fast` or `ls`. A failing
+   nested check makes the verdict `unavailable` with the cause named, so
+   the allowlist mode (with the project's verification commands) is used
+   from the first run.
 
 `unavailable` is logged loudly at startup (`!!! write-tier sandbox:
 UNAVAILABLE ...`, one line per problem with its fix) and shown on
@@ -152,7 +164,8 @@ What can still go wrong:
 
 - The preflight passes but claude's own check fails (for example a
   missing optional seccomp helper treated as required in a future
-  version): with `failIfUnavailable` the run fails with claude's error,
+  version; the nested-namespace case above used to be one, and is now
+  probed): with `failIfUnavailable` the run fails with claude's error,
   visibly, and never runs unsandboxed. Fix the host or set
   `WISSEL_WRITE_SANDBOX=off`.
 - The host changes after startup (package removed): same as above until
@@ -314,7 +327,7 @@ Status: built 2026-10-19. First consumer of the per-project settings
 ### 11.1 Problem
 
 The allowlist above was fixed to the two hosts a Bun/TypeScript repo
-needs. finn-platform (uv, FastAPI, pytest, Terraform) needs
+needs. acme-platform (uv, FastAPI, pytest, Terraform) needs
 `pypi.org`, `files.pythonhosted.org`, `registry.terraform.io` and
 `releases.hashicorp.com`; without them `uv sync` and `terraform init`
 fail inside the sandbox, and the agent either gives up or burns turns.
@@ -392,7 +405,7 @@ a Codex configuration question, not a wissel setting.
 
 ## 12. What a sandboxed command can host: loopback servers
 
-Spiked 2026-10-19 for finn-platform's PostgreSQL tests
+Spiked 2026-10-19 for acme-platform's PostgreSQL tests
 (docs/SDD-sandboxed-postgres.md). Facts about this sandbox that other
 cards will need:
 

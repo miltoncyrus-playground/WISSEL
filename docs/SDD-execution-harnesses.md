@@ -213,7 +213,7 @@ clean, cheap, scriptable per-harness **health/identity check** — confirms
 a given `CLAUDE_CONFIG_DIR` is actually logged in, and which
 email/org/plan it resolves to, before wissel ever spawns work under it.
 Concretely useful on this very machine: this session's own
-`configDirectory` is `/Users/milton.cyrus/.claude-personal` — i.e.
+`configDirectory` is `/Users/user/.claude-personal` — i.e.
 `claude-personal` in the harness examples above isn't a hypothetical
 label, it's this machine's real, already-authenticated config dir.
 Worth folding a `harness-health` check built on `claude auth status
@@ -351,7 +351,7 @@ required contract): discovery alone is a complete, valid starting point.
 `claude-personal` still detected, no manual entry needed. Then ran it
 with the manifest's override in place — the pinned label
 (`"Claude — personal"`) won over what auto-generation would have
-produced (`"Claude — milton.cyrus@gmail.com"`), confirming the
+produced (`"Claude — user@gmail.com"`), confirming the
 precedence rule, not just that both paths independently work.
 
 **Known limitation, not addressed here**: discovery runs once at

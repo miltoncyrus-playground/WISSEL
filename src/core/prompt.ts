@@ -29,7 +29,7 @@ export interface BuildAgentPromptOptions {
    *  parseSubtaskPlan then correctly (but expensively — this is a real
    *  paid run) fails closed on. Confirmed live 2026-09-24/25: same
    *  signature on the same reviewer task, twice, under two different
-   *  harnesses (claude-adevinta then claude) — not harness-specific,
+   *  harnesses (claude-work then claude) — not harness-specific,
    *  intermittent under plan mode generally. This note is the fix: tell
    *  the model directly that no such tool or approval step exists here. */
   planMode?: boolean;
@@ -55,7 +55,27 @@ export interface BuildAgentPromptOptions {
    *  renders the defaults: byte-identical to before the tokens existed.
    *  A contract without tokens is unaffected either way. */
   verification?: Pick<Verification, "commands">;
+  /** Appends the parallel-work hint (PARALLEL_HINT). Set by the claude-cli
+   *  executor from `WISSEL_PARALLEL_HINT` (parallelHintOn): only that
+   *  harness has the Agent tool and parallel tool calls the hint talks
+   *  about. Undefined or false is zero prompt change. docs/SDD-parallel-hint.md. */
+  parallelHint?: boolean;
 }
+
+/** Whether `WISSEL_PARALLEL_HINT` asks for the hint: off unless `1`/`true`/`on`. */
+export function parallelHintOn(env: Record<string, string | undefined> = process.env): boolean {
+  return ["1", "true", "on"].includes((env.WISSEL_PARALLEL_HINT ?? "").trim().toLowerCase());
+}
+
+/** Measured on 58 runs: 53 to 78 `Read` calls and up to 40 `Bash` calls,
+ *  one per turn, and almost no fan-out. The hint asks for fewer turns, not
+ *  less checking. */
+export const PARALLEL_HINT =
+  "Work in as few turns as you can. When several reads, greps or checks do not depend on each other, " +
+  "issue them together in one turn instead of one per turn, and read the files a step needs in one batch. " +
+  "For read-only investigation that splits into independent parts (surveying several directories, checking several " +
+  "criteria, reading several specs), start the sub-agents together in one turn so they run in parallel; keep " +
+  "every file write, every edit and the final answer yourself. Do not skip a check to save time.";
 
 export function buildAgentPrompt(task: TaskCard, agent: AgentDef, memory?: string, opts?: BuildAgentPromptOptions): string {
   const lines = [
@@ -101,5 +121,6 @@ export function buildAgentPrompt(task: TaskCard, agent: AgentDef, memory?: strin
         "When your investigation is complete, just end your final message normally, per the output contract above.",
     );
   }
+  if (opts?.parallelHint) lines.push("", PARALLEL_HINT);
   return lines.join("\n");
 }

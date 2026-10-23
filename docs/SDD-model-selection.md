@@ -248,9 +248,9 @@ A modelUsage key matches only the exact requested id, optionally with a
 
 It spends real tokens (one short prompt per model), so it is not a gate
 test; its unit tests (`test/verify-claude-models-script.test.ts`) run on
-an injected runner. It refuses the corporate account (`claude-adevinta`,
-by id or by a `.claude-adevinta` config dir) unless
-`--harness claude-adevinta` is passed explicitly. A FAIL with "out of
+an injected runner. It refuses the corporate account (`claude-work`,
+by id or by a `.claude-work` config dir) unless
+`--harness claude-work` is passed explicitly. A FAIL with "out of
 usage credits" is the account, not the id.
 
 When a new Claude model ships: add its id to `CLAUDE_CLI_STATIC_MODELS`

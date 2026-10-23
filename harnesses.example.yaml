@@ -1,0 +1,46 @@
+# Execution harnesses wissel can run work under: a tool (which CLI) plus
+# an account (which authenticated identity), distinct from
+# agents/manifest.yaml's fleet (what kind of work gets done). `env` is a
+# pointer to an already-authenticated local profile, never a secret
+# value itself; see docs/SDD-execution-harnesses.md §2.
+#
+# Copy this file to harnesses.yaml (git-ignored: it holds your own
+# accounts and paths) and edit it. You don't need to list every account:
+# wissel auto-detects every already-authenticated `.claude*` profile under
+# $HOME at startup (src/core/harness-discovery.ts) and layers
+# harnesses.yaml on top. An entry whose id matches a detected account
+# overrides it (rename its label, disable it, repoint its env); an entry
+# with no matching detected account is kept as a manual-only harness.
+# Delete harnesses.yaml entirely and detected accounts still show up,
+# labelled with their account email.
+#
+# Optional `maxConcurrent: N` (positive integer) caps how many tasks run
+# on a harness at once; at the cap it counts as busy and isn't picked.
+# Unset means unlimited. To cap an auto-detected account, add a full
+# entry for it here (an entry replaces the detected one, it doesn't merge).
+#
+# Agents choose harnesses by id: an agent's `harnesses: [id, ...]` list in
+# agents/manifest.yaml is an ordered preference. When none of its
+# harnesses is enabled and under maxConcurrent, its tasks wait; they never
+# run on an unlisted harness. An id there that doesn't exist here, or has
+# the wrong tool, stops startup. See docs/SDD-agent-harness-preference.md.
+harnesses:
+  - id: claude
+    tool: claude-cli
+    label: "Claude — personal"
+    enabled: true
+    env:
+      # Absolute: env vars passed to a spawned process never get shell
+      # tilde-expansion, so a literal "~" doesn't resolve.
+      CLAUDE_CONFIG_DIR: /home/you/.claude
+  - id: codex
+    tool: codex-cli
+    label: "Codex — personal"
+    enabled: false
+    env:
+      CODEX_HOME: /home/you/.codex
+  - id: anthropic-api
+    tool: anthropic-api
+    label: Anthropic API
+    enabled: false
+    apiKeyEnv: ANTHROPIC_API_KEY

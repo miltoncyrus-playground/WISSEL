@@ -77,15 +77,15 @@ harnesses:
     enabled: true
 `);
   try {
-    const discovered: Harness = { id: "codex-adevinta", tool: "codex-cli", label: "Codex — adevinta", enabled: true, env: { CODEX_HOME: "/home/x/.codex-adevinta" } };
+    const discovered: Harness = { id: "codex-work", tool: "codex-cli", label: "Codex — work", enabled: true, env: { CODEX_HOME: "/home/x/.codex-work" } };
     await setHarnessEnabled(path, discovered, false);
     const out = await readFile(path, "utf8");
 
     expect(out).toContain("# header");
     const parsed = parse(out) as { harnesses: Harness[] };
     expect(parsed.harnesses).toHaveLength(2);
-    const promoted = parsed.harnesses.find((h) => h.id === "codex-adevinta")!;
-    expect(promoted).toEqual({ id: "codex-adevinta", tool: "codex-cli", label: "Codex — adevinta", enabled: false, env: { CODEX_HOME: "/home/x/.codex-adevinta" } });
+    const promoted = parsed.harnesses.find((h) => h.id === "codex-work")!;
+    expect(promoted).toEqual({ id: "codex-work", tool: "codex-cli", label: "Codex — work", enabled: false, env: { CODEX_HOME: "/home/x/.codex-work" } });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -200,20 +200,20 @@ harnesses:
     enabled: true
 `);
   try {
-    const discovered: Harness = { id: "codex-adevinta", tool: "codex-cli", label: "Codex — adevinta", enabled: true, env: { CODEX_HOME: "/home/x/.codex-adevinta" } };
+    const discovered: Harness = { id: "codex-work", tool: "codex-cli", label: "Codex — work", enabled: true, env: { CODEX_HOME: "/home/x/.codex-work" } };
     await setHarnessModel(path, discovered, "gpt-5-codex");
     const out = await readFile(path, "utf8");
 
     expect(out).toContain("# header");
     const parsed = parse(out) as { harnesses: Harness[] };
     expect(parsed.harnesses).toHaveLength(2);
-    const promoted = parsed.harnesses.find((h) => h.id === "codex-adevinta")!;
+    const promoted = parsed.harnesses.find((h) => h.id === "codex-work")!;
     expect(promoted).toEqual({
-      id: "codex-adevinta",
+      id: "codex-work",
       tool: "codex-cli",
-      label: "Codex — adevinta",
+      label: "Codex — work",
       enabled: true,
-      env: { CODEX_HOME: "/home/x/.codex-adevinta" },
+      env: { CODEX_HOME: "/home/x/.codex-work" },
       model: "gpt-5-codex",
     });
   } finally {

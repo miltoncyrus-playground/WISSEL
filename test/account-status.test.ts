@@ -43,7 +43,7 @@ const noLoad = () => 0;
 
 test("disabled harnesses are left out; enabled ones keep pool order", () => {
   const rows = buildAccountStatus({
-    harnesses: [harness({ id: "claude" }), harness({ id: "claude-adevinta", enabled: false }), harness({ id: "codex", tool: "codex-cli" })],
+    harnesses: [harness({ id: "claude" }), harness({ id: "claude-work", enabled: false }), harness({ id: "codex", tool: "codex-cli" })],
     tasks: [],
     agents: registry,
     activeCount: noLoad,
@@ -153,7 +153,7 @@ test("a pipeline step card (no routedTo) takes its agent from the stored pipelin
 test("shortAccountLabel keeps short labels, cuts long ones to after the dash, emails to their provider", () => {
   expect(shortAccountLabel("codex")).toBe("codex");
   expect(shortAccountLabel("Claude — personal")).toBe("Claude — personal");
-  expect(shortAccountLabel("Claude — milton.cyrus@gmail.com")).toBe("Claude (gmail)");
+  expect(shortAccountLabel("Claude — user@gmail.com")).toBe("Claude (gmail)");
   expect(shortAccountLabel("Some very long account name - work laptop")).toBe("work laptop");
   expect(shortAccountLabel("averyveryverylonglabelwithnodash")).toBe("averyveryverylonglabelwithnodash");
 });
@@ -185,7 +185,7 @@ test("describeAccountChip: idle chip shows its pinned defaultModel or no model a
 test("describeAccountChip: busy chip lists running models, and its title lists each task with agent and model", () => {
   const chip = describeAccountChip({
     id: "claude",
-    label: "Claude — milton.cyrus@gmail.com",
+    label: "Claude — user@gmail.com",
     tool: "claude-cli",
     activeCount: 2,
     running: [
@@ -194,7 +194,7 @@ test("describeAccountChip: busy chip lists running models, and its title lists e
     ],
   });
   expect(chip).toMatchObject({ label: "Claude (gmail)", load: "2 active", models: "opus-5-5, sonnet-5-5", busy: true });
-  expect(chip.title).toContain("Claude — milton.cyrus@gmail.com (claude-cli)");
+  expect(chip.title).toContain("Claude — user@gmail.com (claude-cli)");
   expect(chip.title).toContain("• Fix login · implementer · claude-opus-5-5");
   expect(chip.title).toContain("• Review it · reviewer · claude-sonnet-5-5");
 });

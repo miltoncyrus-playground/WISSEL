@@ -1,6 +1,6 @@
 import type { AgentDef, McpApprovalRequest, PipelineHandoff, ReviewVerdict, RunUsage, SubtaskPlanItem, TaskCard, TaskResult } from "../core/types.ts";
 import type { McpServerPool } from "../core/mcp-server-pool.ts";
-import { buildAgentPrompt } from "../core/prompt.ts";
+import { buildAgentPrompt, parallelHintOn } from "../core/prompt.ts";
 import type { Verification } from "../core/verification.ts";
 import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
@@ -473,6 +473,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
         planMode: permissionMode === "plan",
         pendingMcpApprovalTools: pendingMcpApprovalTools.length > 0 ? pendingMcpApprovalTools : undefined,
         verification,
+        parallelHint: parallelHintOn(),
       });
 
   const mcpConfig = buildMcpConfigJson(auto);

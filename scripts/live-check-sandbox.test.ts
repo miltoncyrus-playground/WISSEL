@@ -39,7 +39,7 @@ import { bashCalls, findCall, isPermissionRefusal, tinyBunRepo } from "../eval/s
 const status = await probeSandbox();
 const probe = join(homedir(), `wissel-sandbox-probe-${process.pid}`);
 
-/** The host this check's project allows (one of finn-platform's); not
+/** The host this check's project allows (one of acme-platform's); not
  *  in SANDBOX_ALLOWED_DOMAINS, so reaching it proves the project
  *  setting was applied. example.com stays unconfigured. */
 const CONFIGURED_HOST = "pypi.org";

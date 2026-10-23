@@ -28,6 +28,11 @@ export interface Board {
    *  setTaskHarnessOverride (src/services/board-actions.ts), which
    *  `POST /tasks/:id/harness` and Ask's `set_task_harness` both call. */
   setHarnessOverride(id: string, harnessId: string | undefined): Promise<TaskCard>;
+  /** Changes the editable fields of a card that hasn't been routed
+   *  (docs/SDD-card-edit.md). Only the keys present in `fields` change;
+   *  a key set to undefined clears it. Already validated by editTask
+   *  (src/services/board-actions.ts), which `PATCH /tasks/:id` calls. */
+  updateFields(id: string, fields: CardEdit): Promise<TaskCard>;
   /** Marks `id` as replaced by `supersededByTaskId` — set on the
    *  superseded (old) card of a review-pushback pair, never touching its
    *  `status`. See TaskCard.supersededBy. */
@@ -140,8 +145,13 @@ export interface ResultMeta {
   finishedAt?: string;
 }
 
+/** What `PATCH /tasks/:id` may change on a card that hasn't started. */
+export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs"] as const;
+export type CardEdit = Partial<Pick<TaskCard, (typeof EDITABLE_CARD_FIELDS)[number]>>;
+
 export type BoardEvent =
   | { type: "task.created"; task: TaskCard }
+  | { type: "task.updated"; task: TaskCard }
   | { type: "task.moved"; task: TaskCard }
   | { type: "task.dependencies"; task: TaskCard }
   | { type: "task.harness"; task: TaskCard }
@@ -178,6 +188,7 @@ interface TaskRow {
   retryAfter: string | null;
   notBefore: string | null;
   scheduleId: string | null;
+  mergeTarget: string | null;
   resumeSessionId: string | null;
   suggestedGrants: string | null;
   doneAt: string | null;
@@ -218,6 +229,7 @@ function rowToCard(row: TaskRow): TaskCard {
     retryAfter: row.retryAfter ?? undefined,
     notBefore: row.notBefore ?? undefined,
     scheduleId: row.scheduleId ?? undefined,
+    mergeTarget: row.mergeTarget ?? undefined,
     resumeSessionId: row.resumeSessionId ?? undefined,
     suggestedGrants: row.suggestedGrants ? (JSON.parse(row.suggestedGrants) as string[]) : undefined,
     doneAt: row.doneAt ?? undefined,
@@ -285,7 +297,8 @@ export class SqliteBoard implements Board {
         extraAllowedDirs TEXT,
         extraAllowedTools TEXT,
         notBefore TEXT,
-        scheduleId TEXT
+        scheduleId TEXT,
+        mergeTarget TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -323,6 +336,8 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN notBefore TEXT;",
       // docs/SDD-schedules.md §3.2.
       "ALTER TABLE tasks ADD COLUMN scheduleId TEXT;",
+      // docs/SDD-merge-target.md: the branch this card lands on.
+      "ALTER TABLE tasks ADD COLUMN mergeTarget TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -533,7 +548,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -559,6 +574,7 @@ export class SqliteBoard implements Board {
         full.extraAllowedTools ? JSON.stringify(full.extraAllowedTools) : null,
         full.notBefore ?? null,
         full.scheduleId ?? null,
+        full.mergeTarget ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
@@ -605,6 +621,32 @@ export class SqliteBoard implements Board {
     this.db.run("UPDATE tasks SET harnessOverride = ? WHERE id = ?", [harnessId ?? null, id]);
     const updated: TaskCard = { ...existing, harnessOverride: harnessId };
     this.events.emit("event", { type: "task.harness-override", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async updateFields(id: string, fields: CardEdit): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    const sets: string[] = [];
+    const params: (string | null)[] = [];
+    const set = (column: string, value: string | null) => {
+      sets.push(`${column} = ?`);
+      params.push(value);
+    };
+    if ("title" in fields) set("title", fields.title ?? existing.title);
+    if ("body" in fields) set("body", fields.body ?? existing.body);
+    if ("labels" in fields) set("labels", JSON.stringify(fields.labels ?? []));
+    // `repo` is NOT NULL in the schema: a cleared repo is stored as "".
+    if ("repo" in fields) set("repo", fields.repo ?? "");
+    if ("model" in fields) set("model", fields.model ?? null);
+    if ("harnessOverride" in fields) set("harnessOverride", fields.harnessOverride ?? null);
+    if ("mergeTarget" in fields) set("mergeTarget", fields.mergeTarget ?? null);
+    if ("extraAllowedTools" in fields) set("extraAllowedTools", fields.extraAllowedTools?.length ? JSON.stringify(fields.extraAllowedTools) : null);
+    if ("extraAllowedDirs" in fields) set("extraAllowedDirs", fields.extraAllowedDirs?.length ? JSON.stringify(fields.extraAllowedDirs) : null);
+    if (sets.length === 0) return existing;
+    this.db.run(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`, [...params, id]);
+    const updated = (await this.get(id))!;
+    this.events.emit("event", { type: "task.updated", task: updated } satisfies BoardEvent);
     return updated;
   }
 

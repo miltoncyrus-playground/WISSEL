@@ -19,7 +19,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const FINN = {
+const ACME = {
   sandboxAllowedDomains: ["pypi.org", "files.pythonhosted.org", "*.hashicorp.com"],
   verification: {
     commands: [["uv", "run", "pytest"], ["uv", "run", "ruff", "check"], ["terraform", "validate"]],
@@ -35,14 +35,14 @@ function legacyDb(): Database {
   db.run(
     "CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE, source TEXT NOT NULL, sourceUrl TEXT, createdAt TEXT NOT NULL, eli5 TEXT, eli5UpdatedAt TEXT, mergeGate TEXT, mergeGateTimeoutMs INTEGER)",
   );
-  db.run("INSERT INTO projects VALUES ('p', 'finn', '/r/finn', 'local', NULL, '2026-01-01', NULL, NULL, NULL, NULL)");
+  db.run("INSERT INTO projects VALUES ('p', 'acme', '/r/acme', 'local', NULL, '2026-01-01', NULL, NULL, NULL, NULL)");
   return db;
 }
 
 // ---------- validation ----------
 
-test("validateProjectSettings accepts a full finn-platform body and an empty one", () => {
-  expect(validateProjectSettings(FINN)).toEqual({ ok: true, patch: FINN });
+test("validateProjectSettings accepts a full acme-platform body and an empty one", () => {
+  expect(validateProjectSettings(ACME)).toEqual({ ok: true, patch: ACME });
   expect(validateProjectSettings({})).toEqual({ ok: true, patch: {} });
 });
 
@@ -114,20 +114,20 @@ test("validateProjectSettings refuses bad input with a message naming the field"
 
 test("setSettings stores, reads back, patches one field and clears with null; unknown id throws", async () => {
   const store = new SqliteProjectStore(legacyDb());
-  const set = await store.setSettings("p", FINN);
-  expect(set).toMatchObject(FINN);
-  expect((await store.list())[0]).toMatchObject(FINN);
+  const set = await store.setSettings("p", ACME);
+  expect(set).toMatchObject(ACME);
+  expect((await store.list())[0]).toMatchObject(ACME);
 
   // Absent keys are kept.
   const patched = await store.setSettings("p", { worktreeSetup: [["uv", "sync", "--frozen"]] });
-  expect(patched).toMatchObject({ ...FINN, worktreeSetup: [["uv", "sync", "--frozen"]] });
+  expect(patched).toMatchObject({ ...ACME, worktreeSetup: [["uv", "sync", "--frozen"]] });
 
   const cleared = await store.setSettings("p", { protectedPaths: null, sandboxAllowedDomains: null });
   expect(cleared.protectedPaths).toBeUndefined();
   expect(cleared.sandboxAllowedDomains).toBeUndefined();
   const [listed] = await store.list();
   expect(listed!.protectedPaths).toBeUndefined();
-  expect(listed!.verification).toEqual(FINN.verification);
+  expect(listed!.verification).toEqual(ACME.verification);
 
   // An empty patch changes nothing.
   expect(await store.setSettings("p", {})).toEqual(listed!);
@@ -150,9 +150,9 @@ test("migration: an existing DB without the columns gains them, reads as none se
 test("a project with none of the settings serialises exactly as before", async () => {
   const store = new SqliteProjectStore(legacyDb());
   const [p] = await store.list();
-  expect(JSON.parse(JSON.stringify(p))).toEqual({ id: "p", name: "finn", path: "/r/finn", source: "local", createdAt: "2026-01-01" });
+  expect(JSON.parse(JSON.stringify(p))).toEqual({ id: "p", name: "acme", path: "/r/acme", source: "local", createdAt: "2026-01-01" });
   // Set then cleared reads back the same.
-  await store.setSettings("p", FINN);
+  await store.setSettings("p", ACME);
   await store.setSettings("p", { sandboxAllowedDomains: null, verification: null, worktreeSetup: null, protectedPaths: null });
   expect((await store.list())[0]).toEqual(p!);
 });
@@ -162,7 +162,7 @@ test("a project with none of the settings serialises exactly as before", async (
 test("POST /projects/:id/settings sets, validates and clears; GET /projects returns the fields", async () => {
   const board = new SqliteBoard();
   const fetchApp = createApp(board, await Registry.load(), undefined, {});
-  const repo = join(dir, "finn-platform");
+  const repo = join(dir, "acme-platform");
   mkdirSync(repo);
   Bun.spawnSync(["git", "init", "-q"], { cwd: repo });
   const created = await fetchApp(new Request("http://x/projects/local", { method: "POST", body: JSON.stringify({ path: repo }) }));
@@ -173,10 +173,10 @@ test("POST /projects/:id/settings sets, validates and clears; GET /projects retu
   // Untouched: GET /projects is as before.
   expect(await listed()).toEqual(project);
 
-  const set = await post(JSON.stringify(FINN));
+  const set = await post(JSON.stringify(ACME));
   expect(set.status).toBe(200);
-  expect(await set.json()).toMatchObject(FINN);
-  expect(await listed()).toMatchObject(FINN);
+  expect(await set.json()).toMatchObject(ACME);
+  expect(await listed()).toMatchObject(ACME);
 
   for (const bad of [JSON.stringify({ sandboxAllowedDomains: ["*"] }), JSON.stringify({ protectedPaths: ["../x"] }), JSON.stringify({ nope: 1 }), "not json"]) {
     const res = await post(bad);
@@ -184,7 +184,7 @@ test("POST /projects/:id/settings sets, validates and clears; GET /projects retu
     expect(((await res.json()) as { error: string }).error.length).toBeGreaterThan(0);
   }
   // A refused body changes nothing.
-  expect(await listed()).toMatchObject(FINN);
+  expect(await listed()).toMatchObject(ACME);
 
   const cleared = await post(JSON.stringify({ sandboxAllowedDomains: null, verification: null, worktreeSetup: null, protectedPaths: null }));
   expect(cleared.status).toBe(200);
@@ -197,7 +197,7 @@ test("POST /projects/:id/settings sets, validates and clears; GET /projects retu
 
 test("settingsFor: the set keys of the project at that path, {} for a project with none, undefined for an unregistered path, trailing slash tolerated", async () => {
   const store = new SqliteProjectStore(new Database(":memory:"));
-  const repo = join(dir, "finn-platform");
+  const repo = join(dir, "acme-platform");
   mkdirSync(repo);
   const gitOk = async () => ({ stdout: "", stderr: "", exitCode: 0 });
   const added = await store.addLocalProject(repo, {}, gitOk);
@@ -206,16 +206,16 @@ test("settingsFor: the set keys of the project at that path, {} for a project wi
   expect(await store.settingsFor(repo)).toEqual({});
   expect(await store.settingsFor(join(dir, "elsewhere"))).toBeUndefined();
 
-  await store.setSettings(added.project.id, { verification: FINN.verification });
-  expect(await store.settingsFor(repo)).toEqual({ verification: FINN.verification });
-  expect(await store.settingsFor(`${repo}/`)).toEqual({ verification: FINN.verification });
-  expect(await store.settingsFor(join(repo, "..", "finn-platform"))).toEqual({ verification: FINN.verification });
+  await store.setSettings(added.project.id, { verification: ACME.verification });
+  expect(await store.settingsFor(repo)).toEqual({ verification: ACME.verification });
+  expect(await store.settingsFor(`${repo}/`)).toEqual({ verification: ACME.verification });
+  expect(await store.settingsFor(join(repo, "..", "acme-platform"))).toEqual({ verification: ACME.verification });
 
-  await store.setSettings(added.project.id, { protectedPaths: FINN.protectedPaths });
-  expect(await store.settingsFor(repo)).toEqual({ verification: FINN.verification, protectedPaths: FINN.protectedPaths });
+  await store.setSettings(added.project.id, { protectedPaths: ACME.protectedPaths });
+  expect(await store.settingsFor(repo)).toEqual({ verification: ACME.verification, protectedPaths: ACME.protectedPaths });
 
   await store.setSettings(added.project.id, { verification: null });
-  expect(await store.settingsFor(repo)).toEqual({ protectedPaths: FINN.protectedPaths });
+  expect(await store.settingsFor(repo)).toEqual({ protectedPaths: ACME.protectedPaths });
 });
 
 test("a uv/ruff/pyright/pytest verification passes the same checks as a per-card grant: `uv run pytest` is accepted, `python` stays refused", () => {

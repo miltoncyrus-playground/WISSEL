@@ -94,7 +94,6 @@ test("buildSandboxSettings: strict sandbox, exact deny/allow lists, git writes d
           "~/.config/gh",
           "~/.claude",
           "~/.claude.json",
-          "~/.claude-adevinta",
           "~/.codex",
           "~/.wissel/board.sqlite*",
           "/home/u/.claude-x",
@@ -117,13 +116,13 @@ test("buildSandboxSettings: strict sandbox, exact deny/allow lists, git writes d
 
 // ---------- per-project allowed domains (docs/SDD-write-tier-sandbox.md §11) ----------
 
-/** What finn-platform sets through POST /projects/:id/settings. */
-const FINN_DOMAINS = ["pypi.org", "files.pythonhosted.org", "registry.terraform.io", "releases.hashicorp.com"];
+/** What acme-platform sets through POST /projects/:id/settings. */
+const ACME_DOMAINS = ["pypi.org", "files.pythonhosted.org", "registry.terraform.io", "releases.hashicorp.com"];
 
 test("mergeAllowedDomains: fixed hosts first, then the project's in order, each once; nothing given is today's list", () => {
   expect(mergeAllowedDomains()).toEqual(["registry.npmjs.org", "github.com"]);
   expect(mergeAllowedDomains([])).toEqual([...SANDBOX_ALLOWED_DOMAINS]);
-  expect(mergeAllowedDomains(FINN_DOMAINS)).toEqual(["registry.npmjs.org", "github.com", ...FINN_DOMAINS]);
+  expect(mergeAllowedDomains(ACME_DOMAINS)).toEqual(["registry.npmjs.org", "github.com", ...ACME_DOMAINS]);
   // A project repeating a fixed host, or itself, adds nothing; the first
   // occurrence keeps its place.
   expect(mergeAllowedDomains(["github.com", "pypi.org", "pypi.org", "registry.npmjs.org", "*.hashicorp.com"])).toEqual([
@@ -139,27 +138,27 @@ test("mergeAllowedDomains: fixed hosts first, then the project's in order, each 
   merged.push("evil.example");
   expect(input).toEqual(["pypi.org"]);
   expect(SANDBOX_ALLOWED_DOMAINS).toEqual(["registry.npmjs.org", "github.com"]);
-  // Every host finn needs passes the settings validation that guards the list.
-  for (const d of FINN_DOMAINS) expect(domainError(d)).toBeUndefined();
+  // Every host acme needs passes the settings validation that guards the list.
+  for (const d of ACME_DOMAINS) expect(domainError(d)).toBeUndefined();
 });
 
 test("buildSandboxSettings: project domains land in network.allowedDomains, strict stays on; none given is byte-identical to today", () => {
-  const base = buildSandboxSettings({ repo: "/r/finn" });
-  expect(JSON.stringify(buildSandboxSettings({ repo: "/r/finn", allowedDomains: [] }))).toBe(JSON.stringify(base));
-  expect(JSON.stringify(buildSandboxSettings({ repo: "/r/finn", allowedDomains: undefined }))).toBe(JSON.stringify(base));
+  const base = buildSandboxSettings({ repo: "/r/acme" });
+  expect(JSON.stringify(buildSandboxSettings({ repo: "/r/acme", allowedDomains: [] }))).toBe(JSON.stringify(base));
+  expect(JSON.stringify(buildSandboxSettings({ repo: "/r/acme", allowedDomains: undefined }))).toBe(JSON.stringify(base));
 
-  const withFinn = buildSandboxSettings({ repo: "/r/finn", allowedDomains: FINN_DOMAINS });
-  expect((withFinn.sandbox as { network: unknown }).network).toEqual({
-    allowedDomains: ["registry.npmjs.org", "github.com", ...FINN_DOMAINS],
+  const withAcme = buildSandboxSettings({ repo: "/r/acme", allowedDomains: ACME_DOMAINS });
+  expect((withAcme.sandbox as { network: unknown }).network).toEqual({
+    allowedDomains: ["registry.npmjs.org", "github.com", ...ACME_DOMAINS],
     strictAllowlist: true,
   });
   // Only the network block differs from today's settings.
   const { sandbox: baseSandbox, ...baseRest } = base;
-  const { sandbox: finnSandbox, ...finnRest } = withFinn;
-  expect(finnRest).toEqual(baseRest);
+  const { sandbox: acmeSandbox, ...acmeRest } = withAcme;
+  expect(acmeRest).toEqual(baseRest);
   const { network: _b, ...baseSandboxRest } = baseSandbox as Record<string, unknown>;
-  const { network: _f, ...finnSandboxRest } = finnSandbox as Record<string, unknown>;
-  expect(finnSandboxRest).toEqual(baseSandboxRest);
+  const { network: _f, ...acmeSandboxRest } = acmeSandbox as Record<string, unknown>;
+  expect(acmeSandboxRest).toEqual(baseSandboxRest);
 });
 
 /** A registered local project at `repo` (an existing directory) with
@@ -176,12 +175,12 @@ async function projectWith(repo: string, body: unknown): Promise<SqliteProjectSt
 
 test("settingsFor: by normalised path; undefined for an unregistered repo, no keys for a project with none set", async () => {
   await withTmp(async (dir) => {
-    const repo = join(dir, "finn");
+    const repo = join(dir, "acme");
     await mkdir(repo);
-    const store = await projectWith(repo, { sandboxAllowedDomains: FINN_DOMAINS, worktreeSetup: [["uv", "sync"]] });
-    expect(await store.settingsFor(repo)).toEqual({ sandboxAllowedDomains: FINN_DOMAINS, worktreeSetup: [["uv", "sync"]] });
-    expect(await store.settingsFor(`${repo}/`)).toEqual({ sandboxAllowedDomains: FINN_DOMAINS, worktreeSetup: [["uv", "sync"]] });
-    expect(await store.settingsFor(join(repo, "..", "finn"))).toEqual({ sandboxAllowedDomains: FINN_DOMAINS, worktreeSetup: [["uv", "sync"]] });
+    const store = await projectWith(repo, { sandboxAllowedDomains: ACME_DOMAINS, worktreeSetup: [["uv", "sync"]] });
+    expect(await store.settingsFor(repo)).toEqual({ sandboxAllowedDomains: ACME_DOMAINS, worktreeSetup: [["uv", "sync"]] });
+    expect(await store.settingsFor(`${repo}/`)).toEqual({ sandboxAllowedDomains: ACME_DOMAINS, worktreeSetup: [["uv", "sync"]] });
+    expect(await store.settingsFor(join(repo, "..", "acme"))).toEqual({ sandboxAllowedDomains: ACME_DOMAINS, worktreeSetup: [["uv", "sync"]] });
     expect(await store.settingsFor(join(dir, "other"))).toBeUndefined();
     // Never the whole Project: only the four setting fields.
     const bare = new SqliteProjectStore(new Database(":memory:"));
@@ -193,11 +192,11 @@ test("settingsFor: by normalised path; undefined for an unregistered repo, no ke
 
 test("sandbox on: the project's sandboxAllowedDomains flow from POST /projects/:id/settings through WriteExecutor into --settings", async () => {
   await withTmp(async (dir) => {
-    const repo = join(dir, "finn");
+    const repo = join(dir, "acme");
     await mkdir(repo);
     const home = join(dir, "home");
     // github.com repeated on purpose: it must not appear twice.
-    const store = await projectWith(repo, { sandboxAllowedDomains: [...FINN_DOMAINS, "github.com"] });
+    const store = await projectWith(repo, { sandboxAllowedDomains: [...ACME_DOMAINS, "github.com"] });
     const lookups: string[] = [];
     const projectSettings = async (r: string) => {
       lookups.push(r);
@@ -212,10 +211,10 @@ test("sandbox on: the project's sandboxAllowedDomains flow from POST /projects/:
     expect(lookups).toEqual([repo]);
     const settings = JSON.parse(flagValues(seen.cmd, "--settings")[0]!);
     expect(settings.sandbox.network).toEqual({
-      allowedDomains: ["registry.npmjs.org", "github.com", ...FINN_DOMAINS],
+      allowedDomains: ["registry.npmjs.org", "github.com", ...ACME_DOMAINS],
       strictAllowlist: true,
     });
-    expect(settings).toEqual(buildSandboxSettings({ repo, extraDenyRead: [], allowedDomains: FINN_DOMAINS }));
+    expect(settings).toEqual(buildSandboxSettings({ repo, extraDenyRead: [], allowedDomains: ACME_DOMAINS }));
 
     // A later edit takes effect on the next run, no restart.
     const check = validateProjectSettings({ sandboxAllowedDomains: ["pypi.org"] });
@@ -235,12 +234,12 @@ test("sandbox on: the project's sandboxAllowedDomains flow from POST /projects/:
 
 test("sandbox on, repo not a registered project or no lookup wired: today's --settings exactly", async () => {
   await withTmp(async (dir) => {
-    const repo = join(dir, "finn");
+    const repo = join(dir, "acme");
     await mkdir(repo);
     const other = join(dir, "other");
     await mkdir(other);
     const home = join(dir, "home");
-    const store = await projectWith(repo, { sandboxAllowedDomains: FINN_DOMAINS });
+    const store = await projectWith(repo, { sandboxAllowedDomains: ACME_DOMAINS });
     const today = buildSandboxSettings({ repo: other, extraDenyRead: [] });
 
     const unregistered = capture();
@@ -258,13 +257,13 @@ test("sandbox on, repo not a registered project or no lookup wired: today's --se
 
 test("sandbox off or unavailable: the project's sandbox hosts are never used and no --settings is passed", async () => {
   await withTmp(async (dir) => {
-    const repo = join(dir, "finn");
+    const repo = join(dir, "acme");
     await mkdir(repo);
     const home = join(dir, "home");
     let lookups = 0;
     const projectSettings = async () => {
       lookups++;
-      return { sandboxAllowedDomains: FINN_DOMAINS };
+      return { sandboxAllowedDomains: ACME_DOMAINS };
     };
     for (const sandbox of [undefined, { state: "off" as const, problems: [] }, { state: "unavailable" as const, problems: ["socat is not installed"] }]) {
       const { runner, seen } = capture();
@@ -416,7 +415,44 @@ function probes(over: Partial<SandboxProbes> & { bins?: string[]; bwrapExit?: nu
 test("preflight: bwrap + socat + a working namespace is on, and runs bwrap for real", async () => {
   const p = probes();
   expect(await probeSandbox(p)).toEqual({ state: "on", problems: [] });
-  expect(p.ran).toEqual([["/usr/bin/bwrap", "--ro-bind", "/", "/", "--unshare-user", "--unshare-net", "true"]]);
+  expect(p.ran).toEqual([
+    ["/usr/bin/bwrap", "--ro-bind", "/", "/", "--unshare-user", "--unshare-net", "true"],
+    // ...and once more one level down: bwrap inside bwrap.
+    ["/usr/bin/bwrap", "--ro-bind", "/", "/", "--unshare-user", "--unshare-net", "/usr/bin/bwrap", "--ro-bind", "/", "/", "--unshare-user", "true"],
+  ]);
+});
+
+test("preflight: bwrap that works one level but not nested is unavailable, naming the stock AppArmor profile and the fallback", async () => {
+  const ran: string[][] = [];
+  const base = probes();
+  const p: SandboxProbes = {
+    ...base,
+    readFile: async (path) => (path === "/etc/apparmor.d/bwrap-userns-restrict" ? "profile bwrap /usr/bin/bwrap {}" : "1\n"),
+    // The first (one-level) run passes; the nested one fails.
+    run: async (cmd) => {
+      ran.push(cmd);
+      return ran.length === 1 ? 0 : 1;
+    },
+  };
+  const status = await probeSandbox(p);
+  expect(status.state).toBe("unavailable");
+  expect(status.problems).toHaveLength(1);
+  expect(status.problems[0]).toContain("works one level deep but not nested");
+  expect(status.problems[0]).toContain("/etc/apparmor.d/bwrap-userns-restrict");
+  expect(status.problems[0]).toContain("allowlist");
+  expect(status.problems[0]).toContain("WISSEL_WRITE_SANDBOX=off");
+  expect(ran).toHaveLength(2);
+  // Without the stock profile the message doesn't name one.
+  const plain = await probeSandbox({ ...p, readFile: async (path) => (path.includes("apparmor_restrict") ? "0\n" : null), run: async (cmd) => (cmd.filter((a) => a.endsWith("bwrap")).length === 2 ? 1 : 0) });
+  expect(plain.state).toBe("unavailable");
+  expect(plain.problems[0]).not.toContain("bwrap-userns-restrict");
+});
+
+test("preflight: a failed one-level check stops there, the nested check is not run", async () => {
+  const p = probes({ bwrapExit: 1, apparmor: null });
+  const status = await probeSandbox(p);
+  expect(status.state).toBe("unavailable");
+  expect(p.ran).toHaveLength(1);
 });
 
 test("preflight: missing bwrap and socat are each named with their install command", async () => {

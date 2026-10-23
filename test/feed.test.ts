@@ -90,10 +90,10 @@ describe("needs-you", () => {
   });
 
   test("a queued card pinned to a disabled harness is held; to an enabled one it is not", () => {
-    const held = card("h", { status: "inbox", harnessOverride: "claude-adevinta" });
-    expect(needsYouAction(held, new Set(["claude-adevinta"]))!.detail).toBe("Held: claude-adevinta is switched off");
+    const held = card("h", { status: "inbox", harnessOverride: "claude-work" });
+    expect(needsYouAction(held, new Set(["claude-work"]))!.detail).toBe("Held: claude-work is switched off");
     expect(needsYouAction(held, none)).toBeNull();
-    expect(needsYouAction(card("r", { status: "running", harnessOverride: "claude-adevinta" }), new Set(["claude-adevinta"]))).toBeNull();
+    expect(needsYouAction(card("r", { status: "running", harnessOverride: "claude-work" }), new Set(["claude-work"]))).toBeNull();
   });
 
   test("running, done, archived and superseded cards don't need you", () => {

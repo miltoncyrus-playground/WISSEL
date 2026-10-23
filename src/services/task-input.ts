@@ -11,6 +11,7 @@ import { resolveHandoffAllowlist } from "../core/orchestrator.ts";
 import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import { validateNotBefore } from "../core/not-before.ts";
+import { validateMergeTarget } from "./worktree.ts";
 import type { ScheduleTaskTemplate, TaskCard } from "../core/types.ts";
 
 export type NewTask = Omit<TaskCard, "id" | "status">;
@@ -22,6 +23,10 @@ export interface NewTaskDeps {
   harnesses: HarnessPool;
   modelsCachePath: string;
   now: Date;
+  /** The harness the project registered at `repo` asks its new cards to
+   *  run on (Project.harness), if any. Filled in when the card names
+   *  none. docs/SDD-project-harness.md. */
+  projectHarnessFor?: (repo: string) => Promise<string | undefined>;
 }
 
 export type NewTaskCheck = { ok: true; task: NewTask } | { ok: false; error: string };
@@ -44,6 +49,11 @@ export async function validateNewTask(input: NewTask, deps: NewTaskDeps): Promis
   } else {
     body.notBefore = undefined;
   }
+  // `mergeTarget` (docs/SDD-merge-target.md): a plain local branch name,
+  // or none. A bad one is refused here, not discovered at merge time.
+  const mergeTarget = validateMergeTarget(body.mergeTarget);
+  if (!mergeTarget.ok) return { ok: false, error: mergeTarget.error };
+  body.mergeTarget = mergeTarget.target;
   // `harnessOverride` is validated eagerly, at creation time,
   // because we already know exactly which harness it names.
   // `model` with no `harnessOverride` is deliberately NOT
@@ -53,6 +63,9 @@ export async function validateNewTask(input: NewTask, deps: NewTaskDeps): Promis
   // and the fail-loud precedence resolution in
   // src/core/model-resolution.ts, which validates it for real at
   // dispatch time).
+  if (!body.harnessOverride && body.repo && deps.projectHarnessFor) {
+    body.harnessOverride = (await deps.projectHarnessFor(body.repo)) ?? undefined;
+  }
   if (body.harnessOverride) {
     const harness = deps.harnesses.get(body.harnessOverride);
     if (!harness) return { ok: false, error: `unknown harnessOverride "${body.harnessOverride}"` };

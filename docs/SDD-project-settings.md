@@ -19,8 +19,8 @@ Wissel assumes its target repo is Bun/TypeScript:
 - a new worktree only gets `node_modules` symlinked
   (`linkNodeModules`, `src/services/worktree.ts`).
 
-finn-platform (uv, FastAPI, SQLAlchemy, pytest, ruff, pyright, plus
-Terraform; `~/code/mash/finn-sdd.html`) needs PyPI and HashiCorp hosts,
+acme-platform (uv, FastAPI, SQLAlchemy, pytest, ruff, pyright, plus
+Terraform; `~/code/mash/acme-sdd.html`) needs PyPI and HashiCorp hosts,
 `uv run pytest` style checks, a `uv sync` per worktree, and paths agents
 must not touch. This card gives those one home on `Project`. It changes
 no run behaviour.
@@ -83,7 +83,7 @@ Rules:
   `~`, or drive letter), forward slashes only, no `..` segment.
 - Duplicates are dropped, order kept.
 
-Example (finn-platform):
+Example (acme-platform):
 
 ```json
 {
@@ -177,7 +177,7 @@ added. Card grants (`extraAllowedTools`) and the repo's own
 `.claude/settings.json` allow rules follow as before. Codex has no
 `--allowedTools`, so `CodexWriteExecutor` uses only the `commands` half.
 
-Example, finn-platform:
+Example, acme-platform:
 
 ```
 --allowedTools "Bash(uv run pytest:*)" "Bash(uv run ruff check:*)" "Bash(uv run pyright:*)"
@@ -218,4 +218,4 @@ grant, `uv run pytest` accepted, `python` refused).
 No new eval: the periodic sandbox eval (`bun run eval:sandbox-denials`)
 runs the real implementer contract on a Bun fixture repo and so covers
 the default path; a Python fixture repo for the custom path is the
-natural follow-up once finn-platform exists to copy from.
+natural follow-up once acme-platform exists to copy from.

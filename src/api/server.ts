@@ -28,6 +28,7 @@ import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH 
 import { startMergeHealthScheduler } from "../core/merge-health-scheduler.ts";
 import { readMemoryLessons, DEFAULT_MEMORY_PATH } from "../services/memory.ts";
 import { appendTaskOutput, getBufferedOutput, getTaskOutput, TASK_OUTPUT_EVENTS } from "../services/task-output.ts";
+import { parseSubagentRuns, settleSubagentRuns, summarizeSubagentRuns } from "../services/subagent-runs.ts";
 import { buildPipelineRunSummary } from "../services/pipeline-run-summary.ts";
 import { ReadOnlyExecutor } from "../executors/readonly.ts";
 import { WriteExecutor } from "../executors/write.ts";
@@ -58,6 +59,7 @@ import {
   setHarnessDefaultModel,
   setMcpToolTrust,
   setTaskHarnessOverride,
+  editTask,
   setTaskNotBefore,
   createSchedule,
   deleteSchedule,
@@ -94,6 +96,11 @@ export interface CreateAppOptions {
   /** Starts the automatic sweep-on-every-event loop. Off by default —
    *  matches the pre-existing WISSEL_ORCHESTRATOR gate. */
   orchestratorEnabled?: boolean;
+  /** WISSEL_AUTO_CHAIN=1: a chain-only orchestrator (docs/SDD-auto-chain.md).
+   *  Reviews, and the rework a reviewer asks for, run on their own,
+   *  write tier included; every other card waits for a human Run. Has no
+   *  effect when `orchestratorEnabled` already routes everything. */
+  autoChain?: boolean;
   /** Lets the automatic loop itself run write-tier work (see
    *  Orchestrator's option of the same name) instead of only
    *  dispatching it. Off by default. Doesn't affect the manual
@@ -351,6 +358,10 @@ export function createApp(
   const modelsCachePath = opts.modelsCachePath ?? DEFAULT_MODELS_CACHE_PATH;
 
   const executeWriteTier = opts.executeWriteTier ?? false;
+  // The chain's reworks are write-tier runs, so it needs the write executors
+  // even when the blanket flag is off; the sweep gate (isChainCard) keeps it
+  // to cards in a review lineage.
+  const autoChain = (opts.autoChain ?? false) && !opts.orchestratorEnabled;
   // Every claude-cli/codex-cli executor streams its subprocess's raw
   // JSONL straight into the durable task-output store as it runs — see
   // docs/SDD-live-task-output.md §3.2/§4. ApiExecutor is excluded: it
@@ -383,6 +394,8 @@ export function createApp(
   // same store.
   const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
   const settingsFor = (repo: string) => projects.settingsFor(repo);
+  // The harness a project asks its new cards to run on (docs/SDD-project-harness.md).
+  const projectHarnessFor = async (repo: string) => (await projects.settingsFor(repo))?.harness;
   // A new worktree runs its project's worktreeSetup (e.g. `uv sync`)
   // before the agent starts; looked up per run, like the merge gate.
   const worktreeSetupFor = (repo: string) => projects.worktreeSetupFor(repo);
@@ -408,7 +421,7 @@ export function createApp(
     ttsExecutor(),
     digestExecutor(),
   ];
-  if (executeWriteTier) autoExecutors.push(writeExecutor(), codexWriteExecutor());
+  if (executeWriteTier || autoChain) autoExecutors.push(writeExecutor(), codexWriteExecutor());
   const manualExecutors: Executor[] = opts.manualExecutors ?? [
     new ReadOnlyExecutor({ memoryPath: opts.memoryPath, injectMemory: opts.injectMemory, mcpServers, onChunk: onTaskOutputChunk, remoteControl: opts.remoteControl }),
     new ApiExecutor(),
@@ -501,7 +514,7 @@ export function createApp(
     // Orchestrator.process) only get re-checked on a sweep, and a
     // harness toggle isn't a board event, so trigger one here.
     afterEnable: () => {
-      if (opts.orchestratorEnabled) void orchestrator.sweep();
+      if (opts.orchestratorEnabled || autoChain) void orchestrator.sweep();
     },
   };
   const mcpControl: McpControlDeps = { mcpServers, mcpServersPath, reachability: mcpServerReachabilityOpts };
@@ -580,7 +593,8 @@ export function createApp(
     autoExecutors,
     telemetry,
     {
-      executeWriteTier,
+      executeWriteTier: executeWriteTier || autoChain,
+      chainOnly: autoChain,
       merge: mergeContext,
       harnesses,
       maxConcurrentTasks: opts.maxConcurrentTasks,
@@ -631,7 +645,7 @@ export function createApp(
     });
     console.log(`crash recovery: recovered ${recoveredCount} interrupted review verdict(s)`);
   })();
-  if (opts.orchestratorEnabled) void crashRecoveryReady.then(() => orchestrator.start());
+  if (opts.orchestratorEnabled || autoChain) void crashRecoveryReady.then(() => orchestrator.start());
   // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
   // subtask set should get its integrator card queued the moment it
   // completes, the same way spawnReviewerTask always queues a reviewer
@@ -1336,7 +1350,7 @@ export function createApp(
 
         // Per-project execution settings (src/services/project-settings.ts):
         // a partial body of sandboxAllowedDomains, verification,
-        // worktreeSetup, protectedPaths; an absent key is kept, null
+        // worktreeSetup, protectedPaths, harness; an absent key is kept, null
         // clears it. Stored only; nothing reads them yet.
         if (parts.length === 3 && parts[2] === "settings" && req.method === "POST") {
           const project = (await projects.list()).find((p) => p.id === parts[1]);
@@ -1344,6 +1358,9 @@ export function createApp(
           const body = (await req.json().catch(() => undefined)) as unknown;
           const check = validateProjectSettings(body);
           if (!check.ok) return json({ error: check.error }, 400);
+          if (typeof check.patch.harness === "string" && !harnesses.get(check.patch.harness)) {
+            return json({ error: `unknown harness "${check.patch.harness}"` }, 400);
+          }
           return json(await projects.setSettings(project.id, check.patch));
         }
       }
@@ -1361,7 +1378,11 @@ export function createApp(
           const all = status || repo ? await board.list() : tasks;
           const needs = await needsYouFor(board, all);
           console.log(needsYouLogLine(needs));
-          return json(tasks.map((t) => withNeedsYou(t, needs)));
+          // `?live=1`: only cards that still count: not archived and not
+          // replaced by a later attempt (docs/SDD-card-edit.md §3).
+          const live = ["1", "true"].includes(url.searchParams.get("live") ?? "");
+          const shown = live ? tasks.filter((t) => !t.archivedAt && !t.supersededBy) : tasks;
+          return json(shown.map((t) => withNeedsYou(t, needs)));
         }
 
         if (parts.length === 1 && req.method === "POST") {
@@ -1369,10 +1390,18 @@ export function createApp(
           // The checks live in src/services/task-input.ts so a task
           // schedule's template (docs/SDD-schedules.md §3.2) is refused
           // by exactly these rules too.
-          const check = await validateNewTask(body, { board: board as Board, registry, router, harnesses, modelsCachePath, now: new Date() });
+          const check = await validateNewTask(body, { board: board as Board, registry, router, harnesses, modelsCachePath, now: new Date(), projectHarnessFor });
           if (!check.ok) return json({ error: check.error }, 400);
           const task = await board.create(check.task);
           return json(task, 201);
+        }
+
+        // docs/SDD-card-edit.md: change a card that hasn't started.
+        if (parts.length === 2 && req.method === "PATCH") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          const patch = await req.json().catch(() => undefined);
+          return outcome(await editTask(board as Board, task, patch, { board: board as Board, registry, router, harnesses, modelsCachePath, now: new Date(), projectHarnessFor }));
         }
 
         if (parts.length === 2 && req.method === "GET") {
@@ -1457,6 +1486,18 @@ export function createApp(
           if (!task) return notFound();
           const lines = await getTaskOutput(parts[1]!, opts.taskOutputDir);
           return json({ taskId: parts[1]!, lines });
+        }
+
+        // The sub-agents a task's run spawned, read from its output
+        // file: live while it runs, closed off once its result lands.
+        // docs/SDD-subagent-board.md.
+        if (parts.length === 3 && parts[2] === "subagents" && req.method === "GET") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          const parsed = parseSubagentRuns(await getTaskOutput(parts[1]!, opts.taskOutputDir));
+          const result = task.status === "running" || task.status === "dispatched" ? undefined : await board.getResult(parts[1]!);
+          const runs = result ? settleSubagentRuns(parsed, result.ok) : parsed;
+          return json({ taskId: parts[1]!, runs, ...summarizeSubagentRuns(runs) });
         }
 
         // Live tail of a task's raw agent output — SSE, scoped
@@ -1921,6 +1962,9 @@ if (import.meta.main) {
   // "Run" button works either way — see createApp's manualExecutors.
   const orchestratorEnabled = ["1", "true"].includes(process.env.WISSEL_ORCHESTRATOR ?? "");
   const executeWriteTier = ["1", "true"].includes(process.env.WISSEL_EXECUTE_WRITE_TIER ?? "");
+  // Reviews and review-requested reworks run on their own; fresh cards wait
+  // for a human Run (docs/SDD-auto-chain.md).
+  const autoChain = ["1", "true"].includes(process.env.WISSEL_AUTO_CHAIN ?? "");
   // Undefined (unlimited) unless explicitly set — see
   // Orchestrator.sweep's own doc comments for what each guards against.
   // Only meaningful once orchestratorEnabled is also on.
@@ -2000,6 +2044,7 @@ if (import.meta.main) {
     port,
     fetch: createApp(board, registry, telemetry, {
       orchestratorEnabled,
+      autoChain,
       executeWriteTier,
       harnesses,
       harnessesPath,
@@ -2036,7 +2081,9 @@ if (import.meta.main) {
   console.log(
     orchestratorEnabled
       ? `wissel orchestrator running${executeWriteTier ? " — executing write-tier work locally, no agetor handoff" : ""}`
-      : "wissel orchestrator not started — set WISSEL_ORCHESTRATOR=1 to route tasks automatically",
+      : autoChain
+        ? "wissel auto chain on: reviews and review-requested reworks run on their own (write tier included); every other card waits for Run"
+        : "wissel orchestrator not started — set WISSEL_ORCHESTRATOR=1 to route tasks automatically",
   );
   console.log(
     harnesses.all().length

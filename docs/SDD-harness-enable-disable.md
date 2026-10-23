@@ -29,7 +29,7 @@ only auto-discovery/`harnesses.yaml` computes at startup. Today
 `Harness.enabled` is entirely derived: discovery sets it `true`,
 `validateHarness` flips it `false` on an auth failure, and a
 `harnesses.yaml` entry can pin it either way — but nothing lets a human
-say "actually, don't use `claude-adevinta` for the next hour" without
+say "actually, don't use `claude-work` for the next hour" without
 hand-editing a YAML file and restarting the server.
 
 ## 2. This crosses a decision you made deliberately — resolved, not guessed

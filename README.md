@@ -554,6 +554,9 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_ORCHESTRATOR` | off | Route new cards automatically. |
 | `WISSEL_EXECUTE_WRITE_TIER` | off | Run write-tier agents locally in a worktree instead of handing them off. Only matters with `WISSEL_ORCHESTRATOR`. |
 | `WISSEL_MAX_CONCURRENT_TASKS` | unlimited | Cap on tasks the automatic sweep runs at once. Manual **Run** ignores it. |
+| `WISSEL_AUTO_CHAIN` | off | Run only the review and rework loop on its own: a card in a review lineage (a review, or the rework a reviewer asked for) is routed and run, write tier included; every other card waits for a human **Run**. Ignored when `WISSEL_ORCHESTRATOR` is on. `docs/SDD-auto-chain.md`. |
+| `WISSEL_PARALLEL_HINT` | off | `1` adds a paragraph to every claude-cli run's prompt asking for independent reads and checks in one turn and parallel read-only sub-agents. See `docs/SDD-parallel-hint.md`. |
+| `WISSEL_AUTO_MERGE` | on | `0`, `off`, `false` or `no` stops an approved review from landing its card by itself (the reviewer agent's `autoMerge`): the card waits in `review` for a human **Merge**. `docs/SDD-merge-target.md`. |
 | `WISSEL_SWEEP_SPEND_CEILING_USD` | unlimited | Stop the automatic sweep once recorded spend for the current UTC day reaches this. |
 | `WISSEL_MEMORY_CURATION` | off | Periodically distill session history into `memory/lessons.md`. |
 | `WISSEL_MEMORY_INTERVAL_HOURS` | 24 | How often curation checks if it's due. |

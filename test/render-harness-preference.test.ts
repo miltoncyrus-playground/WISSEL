@@ -59,17 +59,17 @@ test("describeAgentHarnesses: no list (undefined or empty) means any enabled har
 test("describeAgentHarnesses: keeps the agent's order, not the pool's, and names each entry's state", () => {
   const pool = [
     { id: "claude", label: "Personal", enabled: false, activeCount: 0 },
-    { id: "claude-adevinta", label: "Adevinta", enabled: true, activeCount: 1, maxConcurrent: 2 },
+    { id: "claude-work", label: "Work", enabled: true, activeCount: 1, maxConcurrent: 2 },
     { id: "unlisted", label: "Unlisted", enabled: true, activeCount: 0 },
   ];
-  const desc = describeAgentHarnesses({ harnesses: ["claude-adevinta", "claude", "gone"] }, pool);
+  const desc = describeAgentHarnesses({ harnesses: ["claude-work", "claude", "gone"] }, pool);
   expect(desc.any).toBe(false);
   expect(desc.entries.map((e) => [e.id, e.state])).toEqual([
-    ["claude-adevinta", "available"],
+    ["claude-work", "available"],
     ["claude", "disabled"],
     ["gone", "unknown"],
   ]);
-  expect(desc.text).toBe("Runs on: 1. Adevinta (enabled · 1/2 active) → 2. Personal (disabled) → 3. gone (not configured)");
+  expect(desc.text).toBe("Runs on: 1. Work (enabled · 1/2 active) → 2. Personal (disabled) → 3. gone (not configured)");
   expect(desc.text).not.toContain("Unlisted");
 });
 

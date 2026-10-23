@@ -18,7 +18,7 @@ import {
   VERIFICATION_RUN_TOKEN,
 } from "../src/core/verification.ts";
 
-const FINN = [
+const ACME = [
   ["uv", "run", "pytest"],
   ["uv", "run", "ruff", "check"],
   ["uv", "run", "pyright"],
@@ -37,7 +37,7 @@ test("the defaults are the pair wissel has always run and granted, in --allowedT
 test("renderVerificationContract: no tokens means the text comes back unchanged, with or without a verification", () => {
   const plain = "You run under `--permission-mode plan`. Never attempt `git add`.";
   expect(renderVerificationContract(plain)).toBe(plain);
-  expect(renderVerificationContract(plain, { commands: FINN })).toBe(plain);
+  expect(renderVerificationContract(plain, { commands: ACME })).toBe(plain);
 });
 
 test("renderVerificationContract: no verification renders the literal defaults, so the default prompt never changes", () => {
@@ -51,14 +51,14 @@ test("renderVerificationContract: no verification renders the literal defaults, 
 
 test("renderVerificationContract: a verification renders its commands into both tokens, every occurrence", () => {
   const contract = `${VERIFICATION_RUN_TOKEN}\n\nRun ${VERIFICATION_COMMANDS_TOKEN} plain. Again: ${VERIFICATION_COMMANDS_TOKEN}.`;
-  const out = renderVerificationContract(contract, { commands: FINN });
-  expect(out).toBe(`${runBlock(FINN)}\n\nRun ${commandsInline(FINN)} plain. Again: ${commandsInline(FINN)}.`);
+  const out = renderVerificationContract(contract, { commands: ACME });
+  expect(out).toBe(`${runBlock(ACME)}\n\nRun ${commandsInline(ACME)} plain. Again: ${commandsInline(ACME)}.`);
   expect(out).not.toContain("{{");
   expect(out).not.toContain("bun");
 });
 
 test("runBlock lists each command on its own line and keeps the fix-and-re-run and pre-existing-failure rules", () => {
-  const block = runBlock(FINN);
+  const block = runBlock(ACME);
   expect(block.split("\n").slice(0, 5)).toEqual([
     "Before reporting done, run each of these as a plain command (no",
     "pipes, no redirects):",
@@ -78,7 +78,7 @@ test("runBlock with no commands says so rather than printing an empty list", () 
 test("commandsInline: one, two, three and zero commands read as English", () => {
   expect(commandsInline([["make", "check"]])).toBe("`make check`");
   expect(commandsInline([["uv", "run", "pytest"], ["terraform", "validate"]])).toBe("`uv run pytest` and `terraform validate`");
-  expect(commandsInline(FINN)).toBe("`uv run pytest`, `uv run ruff check` and `uv run pyright`");
+  expect(commandsInline(ACME)).toBe("`uv run pytest`, `uv run ruff check` and `uv run pyright`");
   expect(commandsInline([])).toBe("the project's verification commands");
 });
 

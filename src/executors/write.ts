@@ -171,6 +171,7 @@ export class WriteExecutor implements Executor {
       homeDir: this.homeDir,
       setup: await this.worktreeSetupFor?.(task.repo!),
       setupRunner: this.setupRunner,
+      baseRef: task.mergeTarget,
     });
     if ("error" in worktree) return fail(task, agent, worktree.error);
 

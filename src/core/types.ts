@@ -395,6 +395,12 @@ export interface Project {
   worktreeSetup?: string[][];
   /** Repo-relative globs agents may not modify. */
   protectedPaths?: string[];
+  /** The harness every new card in this repo asks to run on, when the
+   *  card names none of its own (`POST /tasks` fills
+   *  `TaskCard.harnessOverride` from it). A card's own `harnessOverride`
+   *  wins. Derived cards (reviews, retries, planner subtasks,
+   *  integrators) inherit their parent's. docs/SDD-project-harness.md. */
+  harness?: string;
 }
 
 /** Which needs-me state a card is in. See NeedsYou. */
@@ -478,6 +484,13 @@ export interface TaskCard {
    *  enabled harness fails the run loud rather than silently falling
    *  back to the normal pick. */
   harnessOverride?: string;
+  /** The branch this card's work is built on and lands on, instead of
+   *  whatever branch happens to be checked out in `repo`. Set at
+   *  creation (POST /tasks) and validated by `validateMergeTarget`
+   *  (src/services/worktree.ts). Undefined keeps today's behaviour: the
+   *  worktree branches off the repo's HEAD and the merge fast-forwards
+   *  HEAD. docs/SDD-merge-target.md. */
+  mergeTarget?: string;
   /** A task-level override of the routed agent's own declared
    *  `mcpAccess` — same "task override beats the manifest-level default"
    *  shape as `harnessOverride`/`model` above, just for MCP grants

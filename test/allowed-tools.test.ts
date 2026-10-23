@@ -71,8 +71,8 @@ test(`caps a card at ${MAX_EXTRA_ALLOWED_TOOLS} grants`, () => {
 
 // The three real refusals from the "Wissel app 1/6" card's output, verbatim.
 const REAL_DENIALS = [
-  { tool_name: "Bash", tool_use_id: "a", tool_input: { command: "cd /home/mcyrus/.wissel/worktrees/4e7da4ab/app && ls -la && cat package.json && timeout 300 bun install 2>&1 | tail -20" } },
-  { tool_name: "Bash", tool_use_id: "b", tool_input: { command: "bun install --cwd /home/mcyrus/.wissel/worktrees/4e7da4ab/app" } },
+  { tool_name: "Bash", tool_use_id: "a", tool_input: { command: "cd /home/user/.wissel/worktrees/4e7da4ab/app && ls -la && cat package.json && timeout 300 bun install 2>&1 | tail -20" } },
+  { tool_name: "Bash", tool_use_id: "b", tool_input: { command: "bun install --cwd /home/user/.wissel/worktrees/4e7da4ab/app" } },
   { tool_name: "Bash", tool_use_id: "c", tool_input: { command: "npm install --prefix app" } },
 ];
 

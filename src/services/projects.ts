@@ -67,6 +67,7 @@ interface ProjectRow {
   verification?: string | null;
   worktreeSetup?: string | null;
   protectedPaths?: string | null;
+  harness?: string | null;
 }
 
 /** The settings columns: each a nullable JSON TEXT column named after
@@ -89,6 +90,7 @@ function rowToProject(row: ProjectRow): Project {
     ...(row.verification ? { verification: JSON.parse(row.verification) as NonNullable<Project["verification"]> } : {}),
     ...(row.worktreeSetup ? { worktreeSetup: JSON.parse(row.worktreeSetup) as string[][] } : {}),
     ...(row.protectedPaths ? { protectedPaths: JSON.parse(row.protectedPaths) as string[] } : {}),
+    ...(row.harness ? { harness: JSON.parse(row.harness) as string } : {}),
   };
 }
 

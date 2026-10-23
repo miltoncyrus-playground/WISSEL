@@ -6,7 +6,7 @@ docs/SDD-project-settings.md (per-project domains, setup, verification).
 
 ## 1. The question
 
-finn-platform (~/code/mash/finn-sdd.html) is a Python service on one
+acme-platform (~/code/mash/acme-sdd.html) is a Python service on one
 PostgreSQL database. Its visibility model is in the database: the
 application connects as a role that does not own the tables and has no
 bypass right, every protected table has `FORCE ROW LEVEL SECURITY`, and
@@ -218,10 +218,10 @@ PORT_54329=closed (ECONNREFUSED)
 So `pg_ctl start` in one Bash call and `pytest` in the next cannot
 work. The server has to be started by the process that uses it: a
 pytest session fixture, or one script that does start, test, stop.
-That is also what testcontainers did for Finn, so the test shape does
+That is also what testcontainers did for Acme, so the test shape does
 not change, only what the fixture starts.
 
-### 3.4 Side findings that bear on finn-platform
+### 3.4 Side findings that bear on acme-platform
 
 - **PyPI needs the project setting.** From a run with only the fixed
   two hosts:
@@ -235,7 +235,7 @@ not change, only what the fixture starts.
   whose allowlist could not be widened.
 - **uv's cache is read-only inside the sandbox.** Before the network
   refusal: `error: Could not acquire lock ... Read-only file system (os
-  error 30) at path "/home/mcyrus/.cache/uv/.tmpyY0OZA"`. Same class as
+  error 30) at path "/home/user/.cache/uv/.tmpyY0OZA"`. Same class as
   the known `~/.bun/install/cache` side effect (§8 of the sandbox SDD).
   `uv --cache-dir "$TMPDIR/..."` works; so would `UV_CACHE_DIR` in the
   write-tier run's env. `uv run` in a worktree whose `.venv` the
@@ -302,7 +302,7 @@ a switch. Do not budget pushback rounds for "integration tests can't run
 here": they can, and they run with the real engine, real roles and real
 policies.
 
-Concretely for finn-platform:
+Concretely for acme-platform:
 
 1. A pytest session fixture `pg_server` that runs `initdb` once (cached
    under the worktree, say `.pg-test-cluster/`, gitignored), then
@@ -324,7 +324,7 @@ Concretely for finn-platform:
      this sandbox even though it is the nicer API.
    Both are MIT, both bundle PostgreSQL 16/17; either is fine for RLS
    (policies, FORCE RLS and `set_config(..., true)` are PostgreSQL 9.5+).
-3. `FINN_TEST_DB=embedded|testcontainers|<DSN>` chooses the fixture.
+3. `ACME_TEST_DB=embedded|testcontainers|<DSN>` chooses the fixture.
    `embedded` is the default in a Wissel worktree (set by the project's
    verification command or `pytest.ini`); laptops may keep
    testcontainers; CI passes a DSN.
@@ -340,7 +340,7 @@ the same tests, the same engine, no sandbox exception.
 Where it would break:
 
 - A test that reaches for `docker` directly (a Redis container, say)
-  fails the same way. Finn's SDD lists one database and no other
+  fails the same way. Acme's SDD lists one database and no other
   container at test time; if that changes, that service needs its own
   embedded answer or a fake.
 - A test that connects over a unix socket (`host=/var/run/postgresql`)
@@ -359,13 +359,13 @@ Where it would break:
 
 ## 5. Follow-up cards
 
-finn-platform (the target repo; Wissel builds it, so these are cards
+acme-platform (the target repo; Wissel builds it, so these are cards
 there):
 
 1. **Embedded Postgres test fixture.** The `pg_server` fixture of §4,
-   `postgresql-wheel` pinned, TCP-only, free port, `FINN_TEST_DB`
+   `postgresql-wheel` pinned, TCP-only, free port, `ACME_TEST_DB`
    switch, testcontainers kept behind it. Acceptance: `pytest` passes
-   with `FINN_TEST_DB=embedded` on a machine with no docker daemon;
+   with `ACME_TEST_DB=embedded` on a machine with no docker daemon;
    an RLS test (app role, FORCE RLS table, `set_config` principal)
    is in the suite and fails when the policy is dropped.
 2. **Verify the package's socket behaviour.** Part of card 1 or its
@@ -390,7 +390,7 @@ wissel (this repo):
    per-project `verification` docs: a server a Bash call starts dies
    with that call; start it from the test process. Cheap, and it saves
    the first implementer the discovery.
-5. **Register finn-platform with its settings** once the repo exists:
+5. **Register acme-platform with its settings** once the repo exists:
    `sandboxAllowedDomains` (`pypi.org`, `files.pythonhosted.org`,
    `registry.terraform.io`, `releases.hashicorp.com`), `worktreeSetup`
    (`uv sync --frozen`), `verification` (`.venv/bin/ruff check`,
@@ -443,7 +443,7 @@ sandbox mechanism and gave the outputs in §3.6; the first run from a
 normal shell is the end-to-end proof.
 
 Measurable outcome: the live check passes (every assertion above) on
-this host; and when finn-platform's card 1 lands, its pytest run
+this host; and when acme-platform's card 1 lands, its pytest run
 finishes green inside a write-tier run with `denials <= 1`, read from
 the telemetry `result` event, instead of a pushback round about
 docker.

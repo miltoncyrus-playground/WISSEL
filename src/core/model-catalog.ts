@@ -52,7 +52,7 @@ export const CLAUDE_CLI_STATIC_MODELS: string[] = [
  *
  * Snapshot: the `visibility: "list"` slugs, in ascending priority, that
  * `queryCodexModels` returned for the `codex` and `codex-personal`
- * harnesses (codex-cli 0.155.1, `CODEX_HOME=/home/mcyrus/.codex`) in a
+ * harnesses (codex-cli 0.155.1, `CODEX_HOME=/home/user/.codex`) in a
  * live `bun run models:refresh` on 2026-10-13. `codex debug models` also
  * lists `gpt-5.4`, `codex-auto-review` and `gpt-daybreak-{blue,red}-latest`,
  * but not as `list`, so they're left out. The old entry `gpt-5.1-codex`

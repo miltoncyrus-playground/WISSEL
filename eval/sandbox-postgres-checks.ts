@@ -101,7 +101,7 @@ export function parseCheckLines(output: string): Record<string, string> {
   return out;
 }
 
-/** What rls-check.mjs must observe for the three features finn-platform
+/** What rls-check.mjs must observe for the three features acme-platform
  *  relies on: a policy on a FORCE RLS table, read through a NOINHERIT
  *  application role with a transaction-local set_config principal. */
 export const EXPECTED_RLS_CHECKS: Readonly<Record<string, string>> = {

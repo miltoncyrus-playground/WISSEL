@@ -344,7 +344,7 @@ after a start).
 
 ### 7.8 Finishing a resolved conflict (2026-10-19)
 
-**What was wrong.** Landing the Finn cards 32c60ba0 and 42d2bbfb, both
+**What was wrong.** Landing the Acme cards 32c60ba0 and 42d2bbfb, both
 conflicts went the same way: the integrator card resolved the files in
 the worktree correctly, finished, and the next Merge answered
 `<worktree> has an unfinished merge of <repo>'s HEAD into <branch>.
@@ -490,7 +490,7 @@ unchanged.
 
 A new worktree gets the repo's `node_modules` symlinked
 (`linkNodeModules`) and nothing else. That is enough for a Bun repo. A
-Python repo (finn-platform: uv, FastAPI, pytest) has no `.venv` in a
+Python repo (acme-platform: uv, FastAPI, pytest) has no `.venv` in a
 fresh checkout, so every implementer would spend its first turns on
 `uv sync`, or fail its verification contract without saying why.
 Outcome: a card on such a repo starts with its dependencies installed,

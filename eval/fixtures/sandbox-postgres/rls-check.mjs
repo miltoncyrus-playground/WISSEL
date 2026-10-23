@@ -1,4 +1,4 @@
-// The three Postgres features finn-platform's integration tests rely on
+// The three Postgres features acme-platform's integration tests rely on
 // (row-level security, FORCE ROW LEVEL SECURITY, transaction-local
 // set_config), exercised over TCP from a driver the way psycopg would.
 // Plain JS, not TS: it imports `pg`, which is installed next to this file

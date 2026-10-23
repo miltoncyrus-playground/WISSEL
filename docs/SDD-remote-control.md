@@ -27,7 +27,7 @@ The working path held in every case wissel uses:
 - stdin closed right after the two lines (how `runViaBun` writes stdin);
 - `--resume <session>` (a 429 retry). The resumed run reattaches to the
   same claude.ai session, so a card keeps one link across retries;
-- both harness accounts (`claude`, `claude-adevinta`). Corporate runs
+- both harness accounts (`claude`, `claude-work`). Corporate runs
   show up under the corporate claude.ai login.
 
 ## 3. Design

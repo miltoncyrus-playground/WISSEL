@@ -33,6 +33,43 @@ export interface WorktreeOptions {
   setup?: WorktreeSetupConfig;
   /** Runs each setup command; defaults to the merge gate's spawner. */
   setupRunner?: GateCommandRunner;
+  /** The card's `mergeTarget`: when set, a new worktree branches off
+   *  this local branch (created first, from the repo's default branch,
+   *  if it doesn't exist) instead of the repo's HEAD. */
+  baseRef?: string;
+}
+
+/** Checks a card's `mergeTarget`: undefined or "" means none (today's
+ *  behaviour), anything else must be a plain local branch name. Refuses
+ *  what git or a shell could misread (a leading dash, `..`, `@{`,
+ *  whitespace, control characters, a `.lock` suffix) and `HEAD`. */
+export function validateMergeTarget(value: unknown): { ok: true; target?: string } | { ok: false; error: string } {
+  if (value === undefined || value === null || value === "") return { ok: true };
+  if (typeof value !== "string") return { ok: false, error: "mergeTarget must be a string" };
+  const v = value.trim();
+  if (v.length === 0) return { ok: true };
+  if (v.length > 100) return { ok: false, error: "mergeTarget must be at most 100 characters" };
+  if (v === "HEAD" || /^refs\//.test(v)) return { ok: false, error: "mergeTarget must be a branch name, not HEAD or a full ref" };
+  if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(v) || v.includes("..") || v.includes("//") || v.endsWith("/") || v.endsWith(".") || v.endsWith(".lock") || v.includes("/.")) {
+    return { ok: false, error: `mergeTarget "${v}" isn't a safe branch name (letters, digits, . _ - and / only)` };
+  }
+  return { ok: true, target: v };
+}
+
+/** Makes sure the local branch `target` exists in `repo`, creating it
+ *  from the repo's default branch the first time: origin/HEAD, then
+ *  origin/main, origin/master, main, master, and last the current HEAD. */
+async function ensureTargetBranch(repo: string, target: string, runner: CommandRunner): Promise<{ ok: true } | { error: string }> {
+  const have = await runner(["git", "rev-parse", "--verify", "-q", `refs/heads/${target}^{commit}`], { cwd: repo });
+  if (have.exitCode === 0) return { ok: true };
+  for (const start of ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master", "HEAD"]) {
+    const ok = await runner(["git", "rev-parse", "--verify", "-q", `${start}^{commit}`], { cwd: repo });
+    if (ok.exitCode !== 0) continue;
+    const made = await runner(["git", "branch", target, start], { cwd: repo });
+    if (made.exitCode === 0) return { ok: true };
+    return { error: `couldn't create the merge target ${target} in ${repo}: ${(made.stderr || made.stdout).trim()}` };
+  }
+  return { error: `couldn't create the merge target ${target} in ${repo}: no starting commit found` };
 }
 
 /** A project's worktree setup: argv arrays run in order in a new
@@ -123,7 +160,13 @@ export async function createTaskWorktree(repo: string, worktreeKey: string, opts
     return "error" in setup ? setup : { path, branch };
   }
 
-  const result = await opts.runner(["git", "worktree", "add", "-b", branch, path, "HEAD"], { cwd: repo });
+  let start = "HEAD";
+  if (opts.baseRef) {
+    const ensured = await ensureTargetBranch(repo, opts.baseRef, opts.runner);
+    if ("error" in ensured) return ensured;
+    start = `refs/heads/${opts.baseRef}`;
+  }
+  const result = await opts.runner(["git", "worktree", "add", "-b", branch, path, start], { cwd: repo });
   if (result.exitCode !== 0) {
     return { error: `failed to create worktree for ${worktreeKey}: ${(result.stderr || result.stdout).trim()}` };
   }
@@ -518,9 +561,22 @@ async function mergeLocked(
   if (!tipRes.ok) return fail("error", `branch ${worktree.branch} not found in ${repo}: ${tipRes.text}`);
   let tip = tipRes.stdout.trim();
 
+  // Where this card lands: its own target branch, or the repo's HEAD.
+  // A target that isn't the checked-out branch moves with update-ref
+  // (compare-and-swap) and never touches the working tree; a target that
+  // is checked out takes the normal fast-forward.
+  const target = task.mergeTarget;
+  const baseRef = target ? `refs/heads/${target}` : "HEAD";
+  const where = target ? `branch ${target} of ${repo}` : `${repo}'s HEAD`;
+  let viaUpdateRef = false;
+  if (target) {
+    const checkedOut = await git(repo, ["symbolic-ref", "-q", "--short", "HEAD"]);
+    viaUpdateRef = !(checkedOut.ok && checkedOut.stdout.trim() === target);
+  }
+
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const baseRes = await git(repo, ["rev-parse", "--verify", "HEAD^{commit}"]);
-    if (!baseRes.ok) return fail("error", `can't read ${repo}'s HEAD: ${baseRes.text}`);
+    const baseRes = await git(repo, ["rev-parse", "--verify", `${baseRef}^{commit}`]);
+    if (!baseRes.ok) return fail("error", `can't read ${where}: ${baseRes.text}`);
     const base = baseRes.stdout.trim();
 
     // Nothing on the branch that HEAD doesn't already have.
@@ -562,14 +618,31 @@ async function mergeLocked(
 
     await ctx.beforeLand?.();
 
-    const headNow = (await git(repo, ["rev-parse", "--verify", "HEAD^{commit}"])).stdout.trim();
+    const headNow = (await git(repo, ["rev-parse", "--verify", `${baseRef}^{commit}`])).stdout.trim();
     if (headNow !== base) {
       if (attempt === 1) continue;
       return fail(
         "head-moved",
-        `${repo}'s HEAD moved twice while this merge was being checked (${short(base)} -> ${short(headNow)}); nothing landed. Merge again when the repo is quiet.`,
+        `${where} moved twice while this merge was being checked (${short(base)} -> ${short(headNow)}); nothing landed. Merge again when the repo is quiet.`,
         gate,
       );
+    }
+
+    if (viaUpdateRef) {
+      // Not the checked-out branch: nothing in the working tree can be
+      // overwritten, so there is no overlap check. The old value makes
+      // this a compare-and-swap: a branch that moved since `base` fails.
+      const moved = await git(repo, ["update-ref", `refs/heads/${target}`, landing, base]);
+      if (!moved.ok) {
+        if (attempt === 1) continue;
+        return fail("head-moved", `${where} moved while landing; nothing landed. Merge again when the repo is quiet.`, gate);
+      }
+      const landedTarget = (await git(repo, ["rev-parse", "--verify", `${baseRef}^{commit}`])).stdout.trim();
+      if (landedTarget !== landing) {
+        return fail("error", `update-ref reported success but ${where} is ${short(landedTarget)}, not ${short(landing)}`, gate);
+      }
+      const noteT = gate.status === "passed" ? ` (gate passed in ${Math.round(gate.durationMs / 1000)}s)` : gate.status === "none" ? " (no merge gate configured)" : "";
+      return land(repo, worktree, ctx, landing, gate, onLanded, `landed ${worktree.branch} on ${where} at ${short(landing)}${noteT}${landNote}`, extra);
     }
 
     // ff-only would refuse these anyway; checking first names every file,
@@ -583,17 +656,17 @@ async function mergeLocked(
       if (files.length > 0) return blockedResult(repo, files, gate);
       if (/not possible to fast-forward/i.test(ff.text)) {
         if (attempt === 1) continue;
-        return fail("head-moved", `${repo}'s HEAD moved while landing; nothing landed. Merge again when the repo is quiet.`, gate);
+        return fail("head-moved", `${where} moved while landing; nothing landed. Merge again when the repo is quiet.`, gate);
       }
       return fail("error", `fast-forward of ${repo} to ${short(landing)} failed: ${ff.text}`, gate);
     }
 
-    const landedHead = (await git(repo, ["rev-parse", "--verify", "HEAD^{commit}"])).stdout.trim();
+    const landedHead = (await git(repo, ["rev-parse", "--verify", `${baseRef}^{commit}`])).stdout.trim();
     if (landedHead !== landing) {
-      return fail("error", `fast-forward reported success but ${repo}'s HEAD is ${short(landedHead)}, not ${short(landing)}`, gate);
+      return fail("error", `fast-forward reported success but ${where} is ${short(landedHead)}, not ${short(landing)}`, gate);
     }
     const gateNote = gate.status === "passed" ? ` (gate passed in ${Math.round(gate.durationMs / 1000)}s)` : gate.status === "none" ? " (no merge gate configured)" : "";
-    return land(repo, worktree, ctx, landing, gate, onLanded, `landed ${worktree.branch} on ${repo} at ${short(landing)}${gateNote}${landNote}`, extra);
+    return land(repo, worktree, ctx, landing, gate, onLanded, `landed ${worktree.branch} on ${target ? where : repo} at ${short(landing)}${gateNote}${landNote}`, extra);
   }
   // Unreachable: every iteration returns or continues at most once.
   return fail("head-moved", `${repo}'s HEAD kept moving; nothing landed`);

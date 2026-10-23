@@ -38,14 +38,14 @@ test("returns a Harness only for candidate dirs claude auth status reports as lo
   try {
     const runner = statusFor({
       ".claude": { loggedIn: false },
-      ".claude-personal": { loggedIn: true, email: "milton.cyrus@gmail.com" },
+      ".claude-personal": { loggedIn: true, email: "user@gmail.com" },
     });
     const harnesses = await discoverHarnesses({ runner, homeDir: home });
     expect(harnesses).toEqual([
       {
         id: "claude-personal",
         tool: "claude-cli",
-        label: "Claude — milton.cyrus@gmail.com",
+        label: "Claude — user@gmail.com",
         enabled: true,
         env: { CLAUDE_CONFIG_DIR: join(home, ".claude-personal") },
       },
@@ -153,7 +153,7 @@ test("validateHarness keeps an entry enabled when its declared env is actually a
 
 test("validateHarness disables an entry whose declared env is not authenticated (the checked-in-wrong-machine case)", async () => {
   const runner: CommandRunner = async () => ({ stdout: JSON.stringify({ loggedIn: false }), stderr: "", exitCode: 0 });
-  const h = harness({ id: "claude-personal", env: { CLAUDE_CONFIG_DIR: "/Users/milton.cyrus/.claude-personal" } });
+  const h = harness({ id: "claude-personal", env: { CLAUDE_CONFIG_DIR: "/Users/user/.claude-personal" } });
 
   const result = await validateHarness(h, { runner });
 

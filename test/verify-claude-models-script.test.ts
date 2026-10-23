@@ -8,7 +8,7 @@ import { formatTable, isCorporate, judge, parseArgs, refusal, sameModel, verifyM
 // probe. Everything here runs on an injected runner; nothing spawns claude.
 
 const claude: Harness = { id: "claude", tool: "claude-cli", label: "Claude", enabled: true, env: { CLAUDE_CONFIG_DIR: "/home/x/.claude" } };
-const adevinta: Harness = { id: "claude-adevinta", tool: "claude-cli", label: "Corp", enabled: true, env: { CLAUDE_CONFIG_DIR: "/home/x/.claude-adevinta" } };
+const work: Harness = { id: "claude-work", tool: "claude-cli", label: "Corp", enabled: true, env: { CLAUDE_CONFIG_DIR: "/home/x/.claude-work" } };
 const args = (a: string[]) => parseArgs(a) as VerifyArgs;
 const okJson = (model: string) => JSON.stringify({ is_error: false, result: "ok", modelUsage: { [model]: { inputTokens: 3 } } });
 
@@ -28,19 +28,19 @@ test("parseArgs rejects unknown flags and missing values", () => {
 });
 
 test("isCorporate matches the corporate id or its config dir", () => {
-  expect(isCorporate(adevinta)).toBe(true);
-  expect(isCorporate({ id: "work", env: { CLAUDE_CONFIG_DIR: "/home/x/.claude-adevinta" } })).toBe(true);
-  expect(isCorporate({ id: "work", env: { CLAUDE_CONFIG_DIR: "/home/x/.claude-adevinta/" } })).toBe(true);
+  expect(isCorporate(work)).toBe(true);
+  expect(isCorporate({ id: "work", env: { CLAUDE_CONFIG_DIR: "/home/x/.claude-work" } })).toBe(true);
+  expect(isCorporate({ id: "work", env: { CLAUDE_CONFIG_DIR: "/home/x/.claude-work/" } })).toBe(true);
   expect(isCorporate(claude)).toBe(false);
   expect(isCorporate({ id: "claude-personal" })).toBe(false);
 });
 
-test("refuses the corporate account unless --harness claude-adevinta is explicit", () => {
-  expect(refusal(adevinta, args(["--harness", "claude-adevinta"]))).toBeUndefined();
+test("refuses the corporate account unless --harness claude-work is explicit", () => {
+  expect(refusal(work, args(["--harness", "claude-work"]))).toBeUndefined();
   // Reached without the explicit flag (e.g. a harness renamed onto the corp config dir).
-  const renamed: Harness = { ...adevinta, id: "work" };
+  const renamed: Harness = { ...work, id: "work" };
   expect(refusal(renamed, args(["--harness", "work"]))).toContain("corporate account");
-  expect(refusal(adevinta, { harness: "claude-adevinta", explicitHarness: false, models: [] })).toContain("pass --harness claude-adevinta");
+  expect(refusal(work, { harness: "claude-work", explicitHarness: false, models: [] })).toContain("pass --harness claude-work");
 });
 
 test("refuses a missing, non-claude-cli or disabled harness", () => {

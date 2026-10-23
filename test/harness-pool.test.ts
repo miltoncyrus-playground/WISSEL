@@ -167,10 +167,10 @@ test("autoload() lets a manual harnesses.yaml entry override a discovered accoun
       'harnesses:\n  - id: claude-personal\n    tool: claude-cli\n    label: "Claude — personal"\n    enabled: true\n',
     );
 
-    const pool = await HarnessPool.autoload(manifestPath, { runner: loggedInRunner("milton.cyrus@gmail.com"), homeDir: home, env: {} });
+    const pool = await HarnessPool.autoload(manifestPath, { runner: loggedInRunner("user@gmail.com"), homeDir: home, env: {} });
 
     // The manual label wins over what discovery would have generated
-    // ("Claude — milton.cyrus@gmail.com") — proves precedence, not just
+    // ("Claude — user@gmail.com") — proves precedence, not just
     // that the id survived.
     expect(pool.get("claude-personal")).toEqual({ id: "claude-personal", tool: "claude-cli", label: "Claude — personal", enabled: true });
   } finally {
@@ -216,7 +216,7 @@ test("autoload() disables a manual entry whose declared env isn't actually authe
         '    label: "Claude — personal"\n' +
         "    enabled: true\n" +
         "    env:\n" +
-        '      CLAUDE_CONFIG_DIR: "/Users/milton.cyrus/.claude-personal"\n',
+        '      CLAUDE_CONFIG_DIR: "/Users/user/.claude-personal"\n',
     );
     // Nothing under $HOME is logged in — the ambient discovery pass
     // finds zero accounts, and the runner reports "not logged in" for
@@ -230,7 +230,7 @@ test("autoload() disables a manual entry whose declared env isn't actually authe
     // Everything else about the entry (label, env) survives — visible
     // and diagnosable, not silently dropped.
     expect(entry?.label).toBe("Claude — personal");
-    expect(entry?.env).toEqual({ CLAUDE_CONFIG_DIR: "/Users/milton.cyrus/.claude-personal" });
+    expect(entry?.env).toEqual({ CLAUDE_CONFIG_DIR: "/Users/user/.claude-personal" });
   } finally {
     await rm(home, { recursive: true, force: true });
   }

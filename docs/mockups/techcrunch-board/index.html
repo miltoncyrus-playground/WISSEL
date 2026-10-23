@@ -77,7 +77,7 @@ table{width:100%;border-collapse:collapse}th{font:800 11px var(--sans);letter-sp
 <div class="controls"><select id="proj" aria-label="Project"><option>All projects</option><option>wissel</option><option>kijiji-ads</option></select>
 <div class="seg" role="group" aria-label="Board view"><button aria-pressed="true">Lanes</button><button aria-pressed="false">Swimlanes</button></div>
 <label style="font-size:13px;color:var(--muted);font-weight:600"><input type="checkbox"> Show superseded</label>
-<div class="chips" aria-label="Accounts"><span class="chip"><b>claude</b> · adevinta · 62% left</span><span class="chip"><b>claude</b> · personal · 91%</span><span class="chip"><b>codex</b> · 38%</span></div></div>
+<div class="chips" aria-label="Accounts"><span class="chip"><b>claude</b> · work · 62% left</span><span class="chip"><b>claude</b> · personal · 91%</span><span class="chip"><b>codex</b> · 38%</span></div></div>
 <div class="head"><h1>Board</h1><span style="color:var(--muted);font-size:13px;font-weight:600">Updated just now</span></div>
 <div class="needs"><h2>Needs you <span class="tag" style="background:var(--amber);color:#fff">4</span></h2><div class="ngrid">
 <button class="ni s-rev" data-open="d1"><span class="st">Review</span><div class="t" style="font-size:15px">Grant and retry: raise the implementer token budget</div><div class="m">Paused 22 min · wissel</div></button>
@@ -135,7 +135,7 @@ table{width:100%;border-collapse:collapse}th{font:800 11px var(--sans);letter-sp
 <div class="acts" style="margin-top:16px"><button class="btn" type="button">Approve and retry</button><button class="btn o" type="button">Send back</button><button class="btn o" type="button">Archive</button></div>
 <h4>Description</h4><p style="margin:0">The run stopped after a 429 and needs a larger budget before it resumes. Approve to continue from turn 18, or send it back with instructions.</p>
 <h4>Escalation history</h4><div class="tl"><div><b>9:02</b> Implementer hit the token budget at turn 18.</div><div><b>9:03</b> Reviewer asked for a grant.</div><div><b>9:25</b> Waiting on you.</div></div>
-<h4>Routing decision</h4><p style="margin:0">Matched <b>implementer</b> on “raise the token budget”. Harness: claude (adevinta).</p>
+<h4>Routing decision</h4><p style="margin:0">Matched <b>implementer</b> on “raise the token budget”. Harness: claude (work).</p>
 <h4>Diff</h4><div class="diff"><span class="d">- maxTurnTokens: 120_000</span>
 <span class="a">+ maxTurnTokens: 200_000</span>
 <span class="a">+ resumeAfter429: true</span></div>

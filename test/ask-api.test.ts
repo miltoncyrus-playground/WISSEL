@@ -240,7 +240,7 @@ describe("POST /ask", () => {
   });
 
   test("a disabled or missing claude harness: a plain reply, no model call, no spend", async () => {
-    for (const pool of [HarnessPool.from([claudeHarness({ enabled: false })]), HarnessPool.from([claudeHarness({ id: "claude-adevinta" })])]) {
+    for (const pool of [HarnessPool.from([claudeHarness({ enabled: false })]), HarnessPool.from([claudeHarness({ id: "claude-work" })])]) {
       const { runner, prompts } = scripted([]);
       const { board, app } = await setup(runner, { conciergeHarnesses: pool });
       const body = (await (await app(post("/ask", { text: "create a card" }))).json()) as AskBody;
