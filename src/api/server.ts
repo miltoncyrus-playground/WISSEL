@@ -41,6 +41,9 @@ import { DigestExecutor } from "../executors/digest.ts";
 import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-audio.ts";
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
+import { getProjectGitOverview, groupWork } from "../services/project-git.ts";
+import { loadTicketProvider, type TicketsSetup } from "../services/integrations.ts";
+import { KEY_RE, TicketError } from "../services/ticket-provider.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
 import { taskTemplateValidator, validateNewTask, type NewTask } from "../services/task-input.ts";
 import type { AnthropicMessagesClient } from "../executors/anthropic-api.ts";
@@ -148,6 +151,11 @@ export interface CreateAppOptions {
    *  /mcp-servers/:id/enable`/`/disable` persist a human's decision. Same
    *  convention as `harnessesPath` above. */
   mcpServersPath?: string;
+  /** The ticket tracker GET /tickets reads and writes back to
+   *  (src/services/integrations.ts): a provider, or the reason there is
+   *  none. Injectable so tests never reach a real tracker. Undefined is
+   *  "not set up". */
+  tickets?: TicketsSetup;
   /** Used only by `POST /mcp-servers/:id/enable`'s re-validation check —
    *  injectable so tests never hit a real filesystem PATH lookup or
    *  network probe. Defaults to the real environment/fetch. */
@@ -821,6 +829,12 @@ export function createApp(
         return new Response(Bun.file(new URL("board-schedules.js", PUBLIC_DIR)));
       }
 
+      // The Tickets page's helpers: ticket keys on cards and the page's
+      // filters. Same static-sibling reasoning.
+      if (url.pathname === "/board-work.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("board-work.js", PUBLIC_DIR)));
+      }
+
       if (url.pathname === "/agents" && req.method === "GET") {
         return json(registry.all());
       }
@@ -1267,6 +1281,85 @@ export function createApp(
         return await pipelineAudioResponse(audioDir, root.id, req);
       }
 
+      // Ticket details from the configured tracker (integrations.yaml),
+      // and, when its config allows, write-back. The tracker is optional:
+      // without it the board works on git alone and says why.
+      if (parts[0] === "tickets") {
+        const setup: TicketsSetup = opts.tickets ?? { reason: "no ticket tracker is set up" };
+        const provider = setup.provider;
+        const fail = (e: unknown): Response => {
+          if (e instanceof TicketError) return json({ error: e.message }, e.status && e.status >= 400 && e.status < 600 ? e.status : 502);
+          return json({ error: e instanceof Error ? e.message : String(e) }, 502);
+        };
+
+        // GET /tickets?keys=ABC-1,ABC-2
+        if (parts.length === 1 && req.method === "GET") {
+          if (!provider) return json({ configured: false, writeBack: false, reason: setup.reason, tickets: {} });
+          const keys = (url.searchParams.get("keys") ?? "").split(",").map((k) => k.trim()).filter(Boolean);
+          if (keys.length > 200) return json({ error: "at most 200 keys at once" }, 400);
+          const valid = keys.filter((k) => KEY_RE.test(k));
+          try {
+            return json({ configured: true, writeBack: provider.writeBack, tickets: await provider.lookup(valid) });
+          } catch (e) {
+            // The tracker being down must not break the page: report it.
+            return json({ configured: true, writeBack: provider.writeBack, tickets: {}, error: e instanceof Error ? e.message : String(e) });
+          }
+        }
+
+        const key = parts[1] ? decodeURIComponent(parts[1]) : "";
+        if (parts.length === 3 && key) {
+          if (!provider) return json({ error: setup.reason }, 409);
+          if (!provider.writeBack) return json({ error: "write-back is off for this integration (set writeBack: true)" }, 403);
+          if (parts[2] === "transitions" && req.method === "GET") {
+            try {
+              return json(await provider.transitions(key));
+            } catch (e) {
+              return fail(e);
+            }
+          }
+          // The write calls change the tracker, so each must say it is
+          // meant: `confirm: true`, which the board sends only after the
+          // person has seen the exact action.
+          if ((parts[2] === "comment" || parts[2] === "transition") && req.method === "POST") {
+            const body = (await req.json().catch(() => null)) as { confirm?: unknown; text?: unknown; transitionId?: unknown } | null;
+            if (!body || body.confirm !== true) return json({ error: "this changes the ticket; send confirm: true" }, 400);
+            try {
+              if (parts[2] === "comment") {
+                if (typeof body.text !== "string") return json({ error: "text must be a string" }, 400);
+                await provider.comment(key, body.text);
+              } else {
+                if (typeof body.transitionId !== "string") return json({ error: "transitionId must be a string" }, 400);
+                await provider.transition(key, body.transitionId);
+              }
+              console.log(`tickets: ${parts[2]} on ${key}`);
+              return json({ ok: true });
+            } catch (e) {
+              return fail(e);
+            }
+          }
+        }
+        return notFound();
+      }
+
+      // Every project's branches, worktrees and cards merged by ticket
+      // (src/services/project-git.ts): the Tickets page. Read-only git,
+      // one project failing to read doesn't hide the rest.
+      if (parts[0] === "work" && parts.length === 1 && req.method === "GET") {
+        const cards = await board.list();
+        const entries = await Promise.all(
+          (await projects.list()).map(async (project) => ({
+            project,
+            // A folder that was moved or deleted can't even start git.
+            overview: await getProjectGitOverview(project.path, commandRunner, {
+              ticketPatterns: project.ticketPatterns,
+              referencePatterns: project.referencePatterns,
+              cards,
+            }).catch((e: unknown) => ({ error: `cannot read ${project.path}: ${e instanceof Error ? e.message : String(e)}` })),
+          })),
+        );
+        return json(groupWork(entries));
+      }
+
       if (parts[0] === "projects") {
         if (parts.length === 1 && req.method === "GET") {
           return json(await projects.list());
@@ -1313,6 +1406,21 @@ export function createApp(
           const status = await getProjectGitStatus(project.path, commandRunner);
           if ("error" in status) return json({ error: status.error }, 400);
           return json(status);
+        }
+
+        // Branches, worktrees and the cards on them, grouped by ticket
+        // (src/services/project-git.ts). Read-only git on the project's
+        // own checkout; no fetch, no LLM, nothing cached.
+        if (parts.length === 3 && parts[2] === "git" && req.method === "GET") {
+          const project = (await projects.list()).find((p) => p.id === parts[1]);
+          if (!project) return notFound();
+          const overview = await getProjectGitOverview(project.path, commandRunner, {
+            ticketPatterns: project.ticketPatterns,
+            referencePatterns: project.referencePatterns,
+            cards: await board.list(),
+          }).catch((e: unknown) => ({ error: `cannot read ${project.path}: ${e instanceof Error ? e.message : String(e)}` }));
+          if ("error" in overview) return json({ error: overview.error }, 400);
+          return json(overview);
         }
 
         // Lazily generates and caches a one-paragraph ELI5 summary
@@ -1945,6 +2053,12 @@ if (import.meta.main) {
   // point" tolerance for its own manual-entries layer.
   const mcpServersPath = process.env.WISSEL_MCP_SERVERS_PATH ?? "mcp-servers.yaml";
   const mcpServers = await McpServerPool.load(mcpServersPath).catch(() => McpServerPool.from([]));
+  // The ticket tracker (docs/SDD-git-jira-visibility.md): optional, read
+  // from integrations.yaml; credentials come from the environment
+  // variables it names. A missing or unusable file leaves the board on
+  // git alone.
+  const tickets = await loadTicketProvider(process.env.WISSEL_INTEGRATIONS_PATH ?? "integrations.yaml", process.env);
+  console.log(tickets.provider ? `tickets: ${tickets.provider.id} (write-back ${tickets.provider.writeBack ? "on" : "off"})` : `tickets: off (${tickets.reason})`);
 
   // Can write-tier Bash run inside Claude Code's OS sandbox here? Probed
   // once (bubblewrap, socat, AppArmor userns); "unavailable" falls back
@@ -2050,6 +2164,7 @@ if (import.meta.main) {
       harnessesPath,
       mcpServers,
       mcpServersPath,
+      tickets,
       maxConcurrentTasks,
       spendCeilingUsd,
       memoryCurationEnabled,

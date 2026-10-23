@@ -513,6 +513,29 @@
   .field input[type="number"] { width: 90px; }
   .field .check-label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
   /* A card's start time (TaskCard.notBefore, docs/SDD-schedules.md §4). */
+  .tk-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .tk-projects { display: grid; gap: 0; }
+  .tk-project { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 4px 16px; padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .tk-project:last-child { border-bottom: 0; }
+  .tk-project .tk-name { font-weight: 700; }
+  .tk-project .tk-state { color: var(--ink-muted); overflow-wrap: anywhere; }
+  .tk-project.needs-look .tk-state { color: var(--ink); }
+  .tk-ticket-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .tk-ticket-head h2 { margin: 0; }
+  .tk-share { padding: 10px 16px; border-bottom: 1px solid var(--line); display: grid; gap: 6px; }
+  .tk-share:last-child { border-bottom: 0; }
+  .tk-share-name { font-weight: 700; font-size: 13px; }
+  .tk-share-cards { display: grid; gap: 4px; }
+  .tk-share-card { background: none; border: 0; padding: 0; color: var(--ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+  .tk-share-card:hover { text-decoration: underline; }
+  .tk-branches { font-size: 12px; color: var(--ink-muted); overflow-wrap: anywhere; }
+  .ticket-chip { font-size: 11px; font-weight: 700; color: var(--ink); background: var(--accent-wash); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+  .tk-tracker { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .tk-tracker a { color: var(--ink); font-weight: 600; }
+  .tk-status-pill { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 8px; background: var(--accent-wash); color: var(--ink); white-space: nowrap; }
+  .tk-move { display: inline-flex; gap: 6px; align-items: center; }
+  .tk-tree { display: grid; gap: 6px; margin-top: 8px; font-size: 12px; }
+  .tk-tree .tk-tree-key { font-weight: 700; }
   .start-chip { font-size: 11px; font-weight: 700; color: var(--accent); background: var(--accent-wash); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
   .td-start-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .td-start-row input { font: inherit; font-size: 13px; color: var(--ink-1); background: var(--page); border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; }
@@ -893,6 +916,10 @@
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="2.5" width="3.5" height="11" rx="1"/><rect x="6.25" y="2.5" width="3.5" height="7" rx="1"/><rect x="10.5" y="2.5" width="3.5" height="9" rx="1"/></svg></span>
       <span class="nav-label">Board</span>
     </a>
+    <a class="nav-item" href="#/tickets" data-route="tickets" title="Tickets">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 5.5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1V7a1.25 1.25 0 0 0 0 2.5V11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V9.5A1.25 1.25 0 0 0 2 7z"/><path d="M6.5 6.5v3"/></svg></span>
+      <span class="nav-label">Tickets</span>
+    </a>
     <a class="nav-item" href="#/pipelines" data-route="pipelines" title="Pipelines">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.75"/><circle cx="12.5" cy="3.75" r="1.75"/><circle cx="12.5" cy="12.25" r="1.75"/><path d="M5.25 8h2.5M7.75 8 10.75 4.5M7.75 8l3 3.5"/></svg></span>
       <span class="nav-label">Pipelines</span>
@@ -1032,6 +1059,23 @@
         <div id="rcNodes"></div>
       </div>
     </div>
+  </section>
+
+  <section id="ticketsPage" data-page hidden>
+    <p class="eyebrow">Tickets</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 16px;">Every ticket and the work on it across your projects: its cards, its branches and where each checkout stands. Read only, as of each repo's last fetch.</p>
+    <div class="tk-filters">
+      <select id="tkProject" aria-label="Project"><option value="">All projects</option></select>
+      <label class="sup-toggle"><input type="checkbox" id="tkAttention"> Needs a look</label>
+      <button type="button" class="harness-manage-btn" id="tkRefresh">Refresh</button>
+      <span class="muted" id="tkStatus" role="status"></span>
+    </div>
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Checkouts</h2></div>
+      <div id="tkProjects" class="tk-projects"></div>
+    </section>
+    <p class="muted" id="tkTracker" style="font-size: 12.5px; margin: 0 0 12px 0;"></p>
+    <div id="tkTickets"></div>
   </section>
 
   <section id="archivePanel" data-page hidden>
@@ -1601,6 +1645,7 @@
 <script src="/board-run-canvas.js"></script>
 <script src="/board-news.js"></script>
 <script src="/board-schedules.js"></script>
+<script src="/board-work.js"></script>
 <script>
 (function () {
   "use strict";
@@ -2726,6 +2771,9 @@
     var facts = document.createElement("span"); facts.className = "rd-step-facts";
     if (row.isRoot) {
       facts.appendChild(factSpan("repo", "Repo", t.repo || "—"));
+      var drawerTicket = cardTicketKey(t, projects);
+      if (drawerTicket) facts.appendChild(factSpan("ticket", "Ticket", drawerTicket));
+      if (t.mergeTarget) facts.appendChild(factSpan("branch", "Branch", t.mergeTarget));
       facts.appendChild(factSpan("cost", "Total cost", formatCost(runSummary ? runSummary.totalCost : null)));
     } else {
       var s = runSummaryStep(t.id);
@@ -3943,6 +3991,13 @@
     var repoSpan = document.createElement("span"); repoSpan.className = "repo"; repoSpan.textContent = t.repo || "(scratch)";
     repoSpan.title = t.repo || "(scratch)";
     ka.appendChild(repoSpan);
+    // The card's ticket (ABC-123), by its project's ticket patterns.
+    var ticket = cardTicketKey(t, projects);
+    if (ticket) {
+      var ticketChip = document.createElement("span"); ticketChip.className = "ticket-chip"; ticketChip.textContent = ticket;
+      ticketChip.title = "Ticket " + ticket;
+      ka.insertBefore(ticketChip, repoSpan);
+    }
     // "Live output" — only while there's something actually live to
     // watch (see docs/SDD-live-task-output.md §3.6); a finished task's
     // output is still reachable from its drawer regardless of status.
@@ -4684,6 +4739,7 @@
   // firing every few seconds shouldn't spawn a fresh git process each
   // time for data that hasn't moved). `null` means "not loaded yet for
   // the current selection."
+  var projSummaryGit = null;
   var projSummaryStatus = null;
   var projSummaryStatusForPath = null;
   var projSummaryStatusLoading = false;
@@ -4703,6 +4759,14 @@
     }).catch(function () {
       projSummaryStatusLoading = false;
     });
+    // The same project's branches grouped by ticket, shown under its
+    // status line (GET /projects/:id/git). Failing quietly leaves the
+    // status line as it was.
+    fetch("/projects/" + projectId + "/git").then(function (r) { return r.json(); }).then(function (git) {
+      if (forPath !== selectedProjectPath) return;
+      projSummaryGit = git.error ? null : git;
+      renderProjectSummaryBox();
+    }).catch(function () {});
   }
 
   // Generates (if missing) or force-refreshes (refresh: true) a
@@ -4791,6 +4855,7 @@
     if (projSummaryStatusForPath !== selectedProjectPath) {
       projSummaryStatusForPath = selectedProjectPath;
       projSummaryStatus = null;
+      projSummaryGit = null;
       fetchProjectStatus(project.id, selectedProjectPath);
     }
 
@@ -4806,6 +4871,23 @@
     stateP.style.cssText = "margin: 0; font-size: 12px; color: var(--ink-muted);";
     stateP.textContent = projSummaryStatus ? formatProjectStatusLine(projSummaryStatus) : "Loading current state…";
     body.appendChild(stateP);
+
+    if (projSummaryGit && projSummaryGit.tickets.length) {
+      var tree = document.createElement("div");
+      tree.className = "tk-tree";
+      projSummaryGit.tickets.forEach(function (t) {
+        var row = document.createElement("div");
+        var key = document.createElement("span"); key.className = "tk-tree-key mono"; key.textContent = t.key || "No ticket";
+        row.appendChild(key);
+        var parts = [];
+        if (t.cards.length) parts.push(t.cards.length + (t.cards.length === 1 ? " card" : " cards"));
+        parts.push(t.branches.length + (t.branches.length === 1 ? " branch" : " branches"));
+        if (t.worktrees.length) parts.push(t.worktrees.length + (t.worktrees.length === 1 ? " worktree" : " worktrees"));
+        row.appendChild(document.createTextNode(" · " + parts.join(" · ")));
+        tree.appendChild(row);
+      });
+      body.appendChild(tree);
+    }
   }
 
   document.getElementById("projectSwitcher").addEventListener("change", function (ev) {
@@ -6514,6 +6596,7 @@
     runCanvasId = route === RUN_CANVAS_ROUTE ? parsed.params.runId : null;
     if (runCanvasId) renderRunCanvas();
     if (route === "setup/projects") { loadProjectsTab(); renderProjectSummaryBox(); }
+    if (route === "tickets") loadTicketsPage();
   }
 
   document.querySelectorAll("#boardViewToggle button").forEach(function (btn) {
@@ -6524,6 +6607,186 @@
   document.getElementById("newBtn").addEventListener("click", function () { openNewDrawer("task"); });
   window.addEventListener("hashchange", applyRoute);
   applyRoute();
+
+  // --- Tickets page ----------------------------------------------------
+  //
+  // GET /work: every project's branches, worktrees and cards merged by
+  // ticket (src/services/project-git.ts groupWork). Fetched on every visit
+  // and on Refresh, never polled: it runs git in each project. The
+  // filters (board-work.js filterWork) apply to the last answer, so
+  // changing them costs no request.
+  var ticketsWork = null;
+  var ticketsLoading = false;
+  // GET /tickets for the keys on the page: the tracker's summary and
+  // status per key, whether write-back is on, or why there is no tracker.
+  var ticketsInfo = { configured: false, writeBack: false, tickets: {} };
+
+  function loadTicketsInfo() {
+    var keys = ticketsWork ? ticketKeysOf(ticketsWork) : [];
+    if (keys.length === 0) { ticketsInfo = { configured: false, writeBack: false, tickets: {} }; renderTicketsPage(); return Promise.resolve(); }
+    return fetch("/tickets?keys=" + encodeURIComponent(keys.join(","))).then(function (r) { return r.json(); }).then(function (info) {
+      ticketsInfo = info && info.tickets ? info : { configured: false, writeBack: false, tickets: {} };
+      renderTicketsPage();
+    }).catch(function () {});
+  }
+
+  // A write to the tracker: the person sees the exact action first, the
+  // server only acts on confirm: true, and the page re-reads afterwards.
+  function ticketWrite(key, what, path, payload) {
+    var status = document.getElementById("tkStatus");
+    status.textContent = "Updating " + key + "…";
+    var body = { confirm: true };
+    Object.keys(payload).forEach(function (k) { body[k] = payload[k]; });
+    return fetch("/tickets/" + encodeURIComponent(key) + "/" + path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ("HTTP " + r.status)); }); })
+      .then(function () { status.textContent = what + " on " + key + " done."; return loadTicketsInfo(); })
+      .catch(function (err) { status.textContent = "Could not update " + key + ": " + err.message; });
+  }
+
+  function ticketComment(key) {
+    var text = window.prompt("Comment to add to " + key + ":");
+    if (!text || !text.trim()) return;
+    if (!window.confirm("Add this comment to " + key + "?\n\n" + text)) return;
+    ticketWrite(key, "Comment", "comment", { text: text });
+  }
+
+  // Swaps the Move button for a list of the moves the tracker allows now.
+  function ticketMove(key, holder) {
+    holder.textContent = "Loading…";
+    fetch("/tickets/" + encodeURIComponent(key) + "/transitions").then(function (r) {
+      return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ("HTTP " + r.status)); return j; });
+    }).then(function (list) {
+      holder.textContent = "";
+      if (!list.length) { holder.textContent = "No moves available"; return; }
+      var sel = document.createElement("select");
+      list.forEach(function (t) { var o = document.createElement("option"); o.value = t.id; o.textContent = t.name + " → " + t.to; sel.appendChild(o); });
+      var go = document.createElement("button"); go.type = "button"; go.className = "harness-manage-btn"; go.textContent = "Apply";
+      go.addEventListener("click", function () {
+        var chosen = list.filter(function (t) { return t.id === sel.value; })[0];
+        if (!chosen || !window.confirm("Move " + key + " to " + chosen.to + "?")) return;
+        ticketWrite(key, "Move", "transition", { transitionId: chosen.id });
+      });
+      holder.appendChild(sel); holder.appendChild(go);
+    }).catch(function (err) { holder.textContent = "Could not load moves: " + err.message; });
+  }
+
+  function loadTicketsPage() {
+    if (ticketsLoading) return;
+    ticketsLoading = true;
+    var status = document.getElementById("tkStatus");
+    status.textContent = "Reading projects…";
+    fetch("/work").then(function (r) {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    }).then(function (work) {
+      ticketsLoading = false;
+      ticketsWork = work;
+      status.textContent = "Read " + new Date().toLocaleTimeString();
+      renderTicketsPage();
+      loadTicketsInfo();
+    }).catch(function (err) {
+      ticketsLoading = false;
+      status.textContent = "Could not read: " + err.message;
+    });
+  }
+
+  function renderTicketsFilter() {
+    var sel = document.getElementById("tkProject");
+    var chosen = sel.value;
+    sel.textContent = "";
+    var all = document.createElement("option"); all.value = ""; all.textContent = "All projects"; sel.appendChild(all);
+    (ticketsWork ? ticketsWork.projects : []).forEach(function (p) {
+      var o = document.createElement("option"); o.value = p.id; o.textContent = p.name; sel.appendChild(o);
+    });
+    sel.value = chosen;
+  }
+
+  function renderTicketsPage() {
+    if (!ticketsWork) return;
+    renderTicketsFilter();
+    var view = filterWork(ticketsWork, {
+      projectId: document.getElementById("tkProject").value,
+      attentionOnly: document.getElementById("tkAttention").checked,
+    });
+
+    var projectsEl = document.getElementById("tkProjects");
+    projectsEl.textContent = "";
+    if (view.projects.length === 0) {
+      var none = document.createElement("p"); none.className = "muted"; none.style.padding = "10px 16px";
+      none.textContent = ticketsWork.projects.length === 0 ? "No projects registered yet." : "Nothing needs a look.";
+      projectsEl.appendChild(none);
+    }
+    view.projects.forEach(function (p) {
+      var row = document.createElement("div");
+      row.className = "tk-project" + (p.attention.length || p.error ? " needs-look" : "");
+      var name = document.createElement("span"); name.className = "tk-name"; name.textContent = p.name;
+      var state = document.createElement("span"); state.className = "tk-state mono"; state.textContent = projectStateLine(p);
+      row.appendChild(name); row.appendChild(state);
+      projectsEl.appendChild(row);
+    });
+
+    var ticketsEl = document.getElementById("tkTickets");
+    ticketsEl.textContent = "";
+    var tracker = document.getElementById("tkTracker");
+    tracker.textContent = ticketsInfo.configured ? (ticketsInfo.error ? "Ticket tracker: " + ticketsInfo.error : "") : (ticketsInfo.reason ? "No ticket tracker: " + ticketsInfo.reason : "");
+    view.tickets.forEach(function (t) {
+      var section = document.createElement("section");
+      section.className = "panel-flush section-gap";
+      section.dataset.ticket = t.key || "";
+      var head = document.createElement("div"); head.className = "panel-head tk-ticket-head";
+      var h = document.createElement("h2"); h.className = "mono"; h.textContent = t.key || "No ticket";
+      var sum = document.createElement("span"); sum.className = "count"; sum.textContent = ticketSummary(t);
+      head.appendChild(h); head.appendChild(sum);
+      section.appendChild(head);
+      var info = t.key ? ticketsInfo.tickets[t.key] : null;
+      if (info) {
+        var line = document.createElement("div"); line.className = "tk-tracker";
+        var link = document.createElement("a"); link.href = info.url; link.target = "_blank"; link.rel = "noopener noreferrer"; link.textContent = info.summary || info.key;
+        var pill = document.createElement("span"); pill.className = "tk-status-pill"; pill.textContent = info.status;
+        line.appendChild(link); line.appendChild(pill);
+        if (info.assignee) { var who = document.createElement("span"); who.className = "muted"; who.textContent = info.assignee; line.appendChild(who); }
+        if (ticketsInfo.writeBack) {
+          var cb = document.createElement("button"); cb.type = "button"; cb.className = "harness-manage-btn"; cb.textContent = "Comment";
+          cb.addEventListener("click", function () { ticketComment(t.key); });
+          var holder = document.createElement("span"); holder.className = "tk-move";
+          var mb = document.createElement("button"); mb.type = "button"; mb.className = "harness-manage-btn"; mb.textContent = "Move…";
+          mb.addEventListener("click", function () { ticketMove(t.key, holder); });
+          holder.appendChild(mb);
+          line.appendChild(cb); line.appendChild(holder);
+        }
+        section.appendChild(line);
+      }
+      t.projects.forEach(function (s) {
+        var share = document.createElement("div"); share.className = "tk-share";
+        var nm = document.createElement("div"); nm.className = "tk-share-name"; nm.textContent = s.name;
+        share.appendChild(nm);
+        if (s.cards.length) {
+          var cards = document.createElement("div"); cards.className = "tk-share-cards";
+          s.cards.forEach(function (c) {
+            var b = document.createElement("button"); b.type = "button"; b.className = "tk-share-card";
+            b.textContent = (c.title || c.id.slice(0, 8)) + " · " + c.status;
+            // The same drawer the Board's cards open.
+            b.addEventListener("click", function () { openTaskDrawer(c.id); });
+            cards.appendChild(b);
+          });
+          share.appendChild(cards);
+        }
+        var br = document.createElement("div"); br.className = "tk-branches mono";
+        br.textContent = s.branches.slice(0, 8).join(", ") + (s.branches.length > 8 ? " +" + (s.branches.length - 8) + " more" : "") + (s.worktrees ? " · " + s.worktrees + (s.worktrees === 1 ? " worktree" : " worktrees") : "");
+        share.appendChild(br);
+        section.appendChild(share);
+      });
+      ticketsEl.appendChild(section);
+    });
+    if (view.tickets.length === 0 && ticketsWork.projects.length > 0) {
+      var empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "No tickets match.";
+      ticketsEl.appendChild(empty);
+    }
+  }
+
+  document.getElementById("tkProject").addEventListener("change", renderTicketsPage);
+  document.getElementById("tkAttention").addEventListener("change", renderTicketsPage);
+  document.getElementById("tkRefresh").addEventListener("click", loadTicketsPage);
 
   // --- Memory tab ----------------------------------------------------
   function formatMemoryRunHead(run) {

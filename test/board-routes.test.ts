@@ -15,6 +15,7 @@ test("every route the SDD names parses to itself", () => {
   for (const route of [
     "board",
     "board/features",
+    "tickets",
     "pipelines",
     "pipelines/new",
     "archive",
@@ -150,9 +151,10 @@ test("every sidebar link's data-route is a real route, and every nav target has 
   for (const def of Object.values(BOARD_ROUTES)) {
     if (def.nav) expect(linked.has(def.nav)).toBe(true);
   }
-  // Work: Board, Pipelines, Archive. Setup: the six pages. In that order.
+  // Work: Board, Tickets, Pipelines, Archive. Setup: the six pages. In that order.
   expect(links.map((l) => l.route)).toEqual([
     "board",
+    "tickets",
     "pipelines",
     "archive",
     "setup/agents",

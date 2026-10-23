@@ -715,3 +715,20 @@ a.result-text:hover { text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* The Projects section: each project opens to its branches and cards
+   grouped by ticket. */
+.lane-projects { margin-top: 14px; }
+.project-item { border-bottom: 1px solid var(--line); min-width: 0; }
+.project-head {
+  display: flex; width: 100%; min-height: 44px; padding: 12px 0; border: 0;
+  background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.project-head:hover .task-title { text-decoration: underline; }
+.project-body { display: grid; gap: 10px; justify-items: start; padding: 0 0 12px 18px; min-width: 0; }
+.project-body p { margin: 0; }
+.project-tickets { display: grid; gap: 12px; width: 100%; }
+.ticket-group { display: grid; gap: 2px; min-width: 0; }
+.ticket-key { margin: 0; font-size: 14px; font-weight: 800; }
+.ticket-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.ticket-cards .pill { margin-left: 4px; }

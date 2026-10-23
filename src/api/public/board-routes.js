@@ -22,6 +22,7 @@ var BOARD_ROUTES = {
   "pipelines/new": { page: "pipelineEditorPage", nav: "pipelines", editor: "new" },
   "pipelines/edit/:id": { page: "pipelineEditorPage", nav: "pipelines", editor: "edit" },
   "pipelines/run/:runId": { page: "runCanvasPage", nav: "pipelines" },
+  tickets: { page: "ticketsPage", nav: "tickets" },
   archive: { page: "archivePanel", nav: "archive" },
   "setup/agents": { page: "agentsPage", nav: "setup/agents" },
   "setup/harnesses": { page: "harnessPanel", nav: "setup/harnesses" },

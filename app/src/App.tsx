@@ -14,6 +14,7 @@ import { FeedScreen } from "./screens/FeedScreen";
 import { ListenScreen } from "./screens/ListenScreen";
 import { YouScreen } from "./screens/YouScreen";
 import { AgentsContext, useAgentsLoader } from "./useAgents";
+import { ProjectsContext, useProjectsLoader } from "./useProjects";
 import { useAsk } from "./useAsk";
 import { PlayerContext, useShellPlayer } from "./usePlayer";
 
@@ -40,6 +41,8 @@ export function App() {
   const hasPlayer = player.api.state.track !== null;
   // Names and faces for every agent on every screen (SDD §3.6).
   const agents = useAgentsLoader();
+  // The registered projects, for the ticket on each card.
+  const projects = useProjectsLoader();
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), CLOCK_TICK_MS);
@@ -100,6 +103,7 @@ export function App() {
   // with the route or the breakpoint, so playback never stops.
   return (
     <AgentsContext.Provider value={agents}>
+      <ProjectsContext.Provider value={projects}>
       <PlayerContext.Provider value={player.api}>
         <div className={`shell ${desktop ? "is-desktop" : "is-phone"}${hasPlayer ? " has-player" : ""}`}>
           {desktop ? <Rail current={route.screen} onOpenPalette={openPalette} /> : <TopBar title={title} onOpenPalette={openPalette} />}
@@ -116,6 +120,7 @@ export function App() {
           <audio ref={player.audioRef} preload="metadata" className="shell-audio" />
         </div>
       </PlayerContext.Provider>
+      </ProjectsContext.Provider>
     </AgentsContext.Provider>
   );
 }

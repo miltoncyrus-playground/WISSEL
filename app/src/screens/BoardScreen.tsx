@@ -5,6 +5,9 @@ import { Icon } from "../components/Icon";
 import { TaskRow } from "../components/TaskRow";
 import { ScheduledSection } from "../components/ScheduledSection";
 import { startsChip } from "../schedules";
+import { cardTicket, projectOf } from "../ticket";
+import { useProjects } from "../useProjects";
+import { ProjectsSection } from "../components/ProjectsSection";
 
 const EMPTY: Record<string, string> = {
   running: "Nothing running.",
@@ -51,6 +54,7 @@ export function BoardScreen({ lanes, loaded, error, reload }: { lanes: Lanes; lo
           ))}
         </div>
       )}
+      <ProjectsSection />
       <ScheduledSection />
     </div>
   );
@@ -62,6 +66,9 @@ export function CardDetail({ taskId, tasks, loaded }: { taskId: string; tasks: T
   const task = tasks.find((t) => t.id === taskId);
   const lane = task ? laneOf(task, startOfLocalDay(Date.now())) : null;
   const starts = startsChip(task?.notBefore, Date.now());
+  const projects = useProjects();
+  const ticket = task ? cardTicket(task, projects) : undefined;
+  const project = task ? projectOf(task, projects) : undefined;
   return (
     <div className="screen card-detail">
       <div className="screen-head">
@@ -98,10 +105,22 @@ export function CardDetail({ taskId, tasks, loaded }: { taskId: string; tasks: T
                 <dd>{task.labels.join(", ")}</dd>
               </>
             )}
+            {ticket && (
+              <>
+                <dt>Ticket</dt>
+                <dd className="mono">{ticket}</dd>
+              </>
+            )}
             {task.repo && (
               <>
                 <dt>Repo</dt>
-                <dd className="mono">{task.repo}</dd>
+                <dd className="mono">{project?.name ?? task.repo}</dd>
+              </>
+            )}
+            {task.mergeTarget && (
+              <>
+                <dt>Branch</dt>
+                <dd className="mono">{task.mergeTarget}</dd>
               </>
             )}
             <dt>Id</dt>

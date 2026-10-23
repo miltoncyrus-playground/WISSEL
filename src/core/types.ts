@@ -401,6 +401,13 @@ export interface Project {
    *  wins. Derived cards (reviews, retries, planner subtasks,
    *  integrators) inherit their parent's. docs/SDD-project-harness.md. */
   harness?: string;
+  /** Regular expression sources that find a ticket key (`ABC-123`) in a
+   *  card title, branch name or commit subject; the first match wins.
+   *  Unset means any `PROJ-123`-shaped key. src/services/ticket-refs.ts. */
+  ticketPatterns?: string[];
+  /** Patterns for references that are not tickets (a decision or spec
+   *  id): shown as plain labels next to a branch, never linked. */
+  referencePatterns?: string[];
 }
 
 /** Which needs-me state a card is in. See NeedsYou. */

@@ -10,6 +10,9 @@ playwright-report/
 # eval:stt voice notes: made from Kokoro or recorded locally, never committed
 eval/fixtures/stt/*.opus
 
+# Ticket tracker config: names env vars, but keep your own copy local
+integrations.yaml
+
 # Local, per-machine: your accounts and the memory curator's notes
 harnesses.yaml
 memory/lessons.md

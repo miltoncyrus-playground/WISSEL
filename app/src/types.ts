@@ -25,6 +25,8 @@ export interface TaskCard {
   body: string;
   labels: string[];
   repo?: string;
+  /** The branch the card is built on and lands on. */
+  mergeTarget?: string;
   status: TaskStatus;
   routedTo?: string;
   harness?: string;
@@ -284,3 +286,32 @@ export type AskEvent =
   | { type: "ask.pending"; conversationId: string; messageId: string; pendingId: string }
   /** A pending action was confirmed, cancelled, or (kind undo) undone. */
   | { type: "ask.confirmed"; conversationId: string; messageId: string; pendingId: string; resolution: "confirmed" | "cancelled" };
+
+/** GET /projects: the slice the app reads. Mirrors src/core/types.ts
+ *  Project. */
+export interface ProjectInfo {
+  id: string;
+  name: string;
+  path: string;
+  /** Regular expression sources that find a ticket key in a title or
+   *  branch name. Unset: any `PROJ-123`-shaped key. */
+  ticketPatterns?: string[];
+}
+
+/** GET /projects/:id/git. Mirrors src/services/project-git.ts. */
+export interface ProjectGit {
+  status: {
+    branch: string;
+    detached: boolean;
+    dirty: boolean;
+    changedFiles: number;
+    hasUpstream: boolean;
+    ahead?: number;
+    behind?: number;
+    latestCommit?: { shortSha: string; message: string; date: string; author: string };
+  };
+  branches: { name: string; local: boolean; remote: boolean; current: boolean; shortSha: string; date: string; subject: string; references: string[] }[];
+  worktrees: { path: string; branch?: string; cardId?: string }[];
+  tickets: { key: string | null; branches: string[]; worktrees: string[]; cards: { id: string; title: string; status: TaskStatus }[] }[];
+  truncated: boolean;
+}

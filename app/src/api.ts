@@ -1,7 +1,7 @@
 // The server endpoints the shell reads. Same origin: the server that
 // serves /app also serves the API.
 
-import type { AgentInfo, AskResult, Conversation, ConversationDetail, FeedPage, PendingResult, PipelineDef, PodcastEpisode, Schedule, TaskCard, Wrapped } from "./types";
+import type { AgentInfo, AskResult, Conversation, ConversationDetail, FeedPage, PendingResult, PipelineDef, PodcastEpisode, ProjectGit, ProjectInfo, Schedule, TaskCard, Wrapped } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -12,6 +12,12 @@ async function getJson<T>(path: string): Promise<T> {
 export const fetchTasks = () => getJson<TaskCard[]>("/tasks");
 
 export const fetchPipelines = () => getJson<PipelineDef[]>("/pipelines");
+
+/** GET /projects: the registered projects. */
+export const fetchProjects = () => getJson<ProjectInfo[]>("/projects");
+
+/** GET /projects/:id/git: branches, worktrees and cards by ticket. */
+export const fetchProjectGit = (id: string) => getJson<ProjectGit>(`/projects/${encodeURIComponent(id)}/git`);
 
 /** GET /agents: the manifest, for names and personas. */
 export const fetchAgents = () => getJson<AgentInfo[]>("/agents");

@@ -12,6 +12,7 @@ import { SqliteProjectStore } from "../src/services/projects.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { createApp } from "../src/api/server.ts";
+import { runViaBun } from "../src/executors/claude-cli.ts";
 
 let dir: string;
 beforeEach(() => {
@@ -240,4 +241,27 @@ test("a uv/ruff/pyright/pytest verification passes the same checks as a per-card
     expect(viaSettings.ok).toBe(false);
     if (!viaSettings.ok) expect(viaSettings.error).toBe(`verification.allowedTools: ${(direct as { error: string }).error}`);
   }
+});
+
+test("ticketPatterns and referencePatterns validate, dedupe, clear, and round-trip through the store", async () => {
+  expect(validateProjectSettings({ ticketPatterns: ["ABC-\\d+", "ABC-\\d+"], referencePatterns: ["DEC-\\d+"] })).toEqual({
+    ok: true,
+    patch: { ticketPatterns: ["ABC-\\d+"], referencePatterns: ["DEC-\\d+"] },
+  });
+  expect(validateProjectSettings({ ticketPatterns: null, referencePatterns: [] })).toEqual({ ok: true, patch: { ticketPatterns: null, referencePatterns: null } });
+  for (const bad of [["("], [""], ["(a+)+$"], ["x".repeat(81)], "ABC-\\d+", [1], Array(6).fill("a").map((a, i) => `${a}${i}`)]) {
+    const r = validateProjectSettings({ ticketPatterns: bad });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("ticketPatterns");
+  }
+
+  Bun.spawnSync(["git", "init", "-q"], { cwd: dir });
+  const store = new SqliteProjectStore(new SqliteBoard().db);
+  const added = await store.addLocalProject(dir, {}, runViaBun);
+  if ("error" in added) throw new Error(added.error);
+  const set = await store.setSettings(added.project.id, { ticketPatterns: ["ABC-\\d+"], referencePatterns: ["DEC-\\d+"] });
+  expect(set.ticketPatterns).toEqual(["ABC-\\d+"]);
+  expect((await store.list())[0]!.referencePatterns).toEqual(["DEC-\\d+"]);
+  await store.setSettings(added.project.id, { ticketPatterns: null });
+  expect((await store.list())[0]!.ticketPatterns).toBeUndefined();
 });

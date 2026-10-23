@@ -1,0 +1,26 @@
+# Where wissel reads ticket details from (and, if you allow it, writes
+# back to). Copy this file to integrations.yaml, which is git-ignored, and
+# edit it. Without integrations.yaml wissel works on git alone and the
+# Tickets page just shows keys.
+#
+# Credentials are never written here. `emailEnv` and `tokenEnv` are the
+# NAMES of environment variables in the server's environment, e.g. in a
+# systemd unit or the shell you start wissel from:
+#
+#   JIRA_EMAIL=you@example.com
+#   JIRA_API_TOKEN=...   # https://id.atlassian.com/manage-profile/security/api-tokens
+#
+# Only the first entry is used today.
+integrations:
+  - id: jira
+    kind: jira
+    # Your Jira Cloud site. https only.
+    site: https://your-team.atlassian.net
+    emailEnv: JIRA_EMAIL
+    tokenEnv: JIRA_API_TOKEN
+    # Optional: only look up tickets in these projects. Leave out for any.
+    projectKeys: [ABC]
+    # true lets the Tickets page add a comment or move a ticket to another
+    # status, one confirmed action at a time. false (the default) is
+    # read-only.
+    writeBack: false

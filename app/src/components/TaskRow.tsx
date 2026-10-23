@@ -3,8 +3,10 @@ import { postAction } from "../api";
 import { needsYouView, type LaneId, type NeedsYouView } from "../lanes";
 import { routeHash } from "../routes";
 import { startsChip } from "../schedules";
+import { cardTicket } from "../ticket";
 import type { TaskCard } from "../types";
 import { agentName, useAgents } from "../useAgents";
+import { useProjects } from "../useProjects";
 import { Avatar } from "./Avatar";
 
 /** One card as a link to its detail (`#/board/<id>`). The lane picks
@@ -15,9 +17,10 @@ import { Avatar } from "./Avatar";
  *  after a POST button lands. */
 export function TaskRow({ task, lane, onChanged }: { task: TaskCard; lane: LaneId; onChanged?: () => void | Promise<void> }) {
   const agents = useAgents();
+  const ticket = cardTicket(task, useProjects());
   const agent = task.routedTo ? agentName(agents, task.routedTo) : undefined;
   const view = lane === "needs-you" ? needsYouView(task) : null;
-  const sub = view ? view.line : [agent, task.harness].filter(Boolean).join(" · ") || task.status;
+  const sub = view ? view.line : [ticket, agent, task.harness].filter(Boolean).join(" · ") || task.status;
   const starts = startsChip(task.notBefore, Date.now());
   const extra = view && (view.reason || view.blocker || view.action);
   return (

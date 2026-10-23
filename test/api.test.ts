@@ -2174,6 +2174,124 @@ test("GET /projects/:id/status returns real git state for a registered project (
   }
 });
 
+test("GET /projects/:id/git groups branches by the project's ticket pattern (404 on unknown id)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-api-projects-git-"));
+  try {
+    gitInitWithCommit(dir);
+    Bun.spawnSync(["git", "branch", "feat/ABC-7-thing"], { cwd: dir });
+    const app = await makeApp();
+    const created = (await (await app(req("/projects/local", { method: "POST", body: JSON.stringify({ path: dir }) }))).json()) as { id: string };
+    const set = await app(req(`/projects/${created.id}/settings`, { method: "POST", body: JSON.stringify({ ticketPatterns: ["ABC-\\d+"] }) }));
+    expect(set.status).toBe(200);
+
+    const res = await app(req(`/projects/${created.id}/git`));
+    expect(res.status).toBe(200);
+    const overview = (await res.json()) as { status: { dirty: boolean }; tickets: { key: string | null; branches: string[] }[] };
+    expect(overview.status.dirty).toBe(false);
+    expect(overview.tickets.find((t) => t.key === "ABC-7")?.branches).toEqual(["feat/ABC-7-thing"]);
+
+    expect((await app(req("/projects/does-not-exist/git"))).status).toBe(404);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GET /work merges every project's branches by ticket, and a repo that cannot be read does not hide the rest", async () => {
+  const a = await mkdtemp(join(tmpdir(), "wissel-api-work-a-"));
+  const b = await mkdtemp(join(tmpdir(), "wissel-api-work-b-"));
+  try {
+    gitInitWithCommit(a);
+    gitInitWithCommit(b);
+    Bun.spawnSync(["git", "branch", "feat/ABC-7-one"], { cwd: a });
+    Bun.spawnSync(["git", "branch", "feat/ABC-7-two"], { cwd: b });
+    const app = await makeApp();
+    for (const dir of [a, b]) await app(req("/projects/local", { method: "POST", body: JSON.stringify({ path: dir }) }));
+    const res = await app(req("/work"));
+    expect(res.status).toBe(200);
+    const work = (await res.json()) as { projects: { name: string }[]; tickets: { key: string | null; projects: unknown[]; branchCount: number }[] };
+    expect(work.projects).toHaveLength(2);
+    const ticket = work.tickets.find((t) => t.key === "ABC-7")!;
+    expect(ticket.projects).toHaveLength(2);
+    expect(ticket.branchCount).toBe(2);
+
+    // One repo goes away: it is reported, the other still answers.
+    await rm(b, { recursive: true, force: true });
+    const after = (await (await app(req("/work"))).json()) as { projects: { error?: string }[]; tickets: { key: string | null }[] };
+    expect(after.projects.filter((p) => p.error)).toHaveLength(1);
+    expect(after.tickets.some((t) => t.key === "ABC-7")).toBe(true);
+  } finally {
+    await rm(a, { recursive: true, force: true });
+    await rm(b, { recursive: true, force: true });
+  }
+});
+
+test("GET /board-work.js serves the Tickets page helpers", async () => {
+  const res = await (await makeApp())(req("/board-work.js"));
+  expect(res.status).toBe(200);
+  expect(await res.text()).toContain("function filterWork");
+});
+
+function fakeTickets(writeBack: boolean) {
+  const writes: string[] = [];
+  const provider: import("../src/services/ticket-provider.ts").TicketProvider = {
+    id: "fake",
+    writeBack,
+    lookup: async (keys) => Object.fromEntries(keys.filter((k) => k !== "ABC-404").map((k) => [k, { key: k, summary: `About ${k}`, status: "In Progress", url: `https://t.example.net/browse/${k}` }])),
+    transitions: async () => [{ id: "31", name: "Start", to: "In Progress" }],
+    comment: async (key, text) => { writes.push(`comment ${key}: ${text}`); },
+    transition: async (key, id) => { writes.push(`transition ${key}: ${id}`); },
+  };
+  return { setup: { provider }, writes };
+}
+
+test("GET /tickets says why when no tracker is set up, and refuses writes with 409", async () => {
+  const app = await makeApp();
+  const body = (await (await app(req("/tickets?keys=ABC-1"))).json()) as { configured: boolean; reason: string; tickets: object };
+  expect(body).toMatchObject({ configured: false, tickets: {} });
+  expect(body.reason).toContain("no ticket tracker");
+  expect((await app(req("/tickets/ABC-1/comment", { method: "POST", body: JSON.stringify({ confirm: true, text: "hi" }) }))).status).toBe(409);
+});
+
+test("GET /tickets returns the tracker's tickets, drops malformed keys and unknown ones", async () => {
+  const { setup } = fakeTickets(false);
+  const app = await makeApp(undefined, { tickets: setup });
+  const body = (await (await app(req("/tickets?keys=ABC-1,ABC-404,bad key,x"))).json()) as { configured: boolean; writeBack: boolean; tickets: Record<string, { summary: string }> };
+  expect(body).toMatchObject({ configured: true, writeBack: false });
+  expect(Object.keys(body.tickets)).toEqual(["ABC-1"]);
+  expect(body.tickets["ABC-1"]!.summary).toBe("About ABC-1");
+  expect((await app(req(`/tickets?keys=${Array.from({ length: 201 }, (_, i) => `ABC-${i + 1}`).join(",")}`))).status).toBe(400);
+});
+
+test("a tracker that is down is reported in the answer, not as a server error", async () => {
+  const { TicketError } = await import("../src/services/ticket-provider.ts");
+  const app = await makeApp(undefined, { tickets: { provider: { id: "x", writeBack: false, lookup: async () => { throw new TicketError("could not reach Jira: boom"); }, transitions: async () => [], comment: async () => {}, transition: async () => {} } } });
+  const res = await app(req("/tickets?keys=ABC-1"));
+  expect(res.status).toBe(200);
+  expect(await res.json()).toMatchObject({ configured: true, tickets: {}, error: "could not reach Jira: boom" });
+});
+
+test("write-back: off refuses with 403; on needs confirm: true and then writes once", async () => {
+  const off = fakeTickets(false);
+  const appOff = await makeApp(undefined, { tickets: off.setup });
+  expect((await appOff(req("/tickets/ABC-1/comment", { method: "POST", body: JSON.stringify({ confirm: true, text: "hi" }) }))).status).toBe(403);
+  expect((await appOff(req("/tickets/ABC-1/transitions"))).status).toBe(403);
+  expect(off.writes).toEqual([]);
+
+  const on = fakeTickets(true);
+  const app = await makeApp(undefined, { tickets: on.setup });
+  const post = (path: string, body: unknown) => app(req(path, { method: "POST", body: JSON.stringify(body) }));
+  expect((await post("/tickets/ABC-1/comment", { text: "hi" })).status).toBe(400);
+  expect((await post("/tickets/ABC-1/comment", { confirm: "true", text: "hi" })).status).toBe(400);
+  expect((await post("/tickets/ABC-1/comment", { confirm: true, text: 5 })).status).toBe(400);
+  expect((await post("/tickets/ABC-1/transition", { confirm: true })).status).toBe(400);
+  expect(on.writes).toEqual([]);
+  expect((await post("/tickets/ABC-1/comment", { confirm: true, text: "hi" })).status).toBe(200);
+  expect((await post("/tickets/ABC-1/transition", { confirm: true, transitionId: "31" })).status).toBe(200);
+  expect(on.writes).toEqual(["comment ABC-1: hi", "transition ABC-1: 31"]);
+  expect(await (await app(req("/tickets/ABC-1/transitions"))).json()).toEqual([{ id: "31", name: "Start", to: "In Progress" }]);
+  expect((await app(req("/tickets/ABC-1/nothing", { method: "POST", body: "{}" }))).status).toBe(404);
+});
+
 test("GET /projects/:id/eli5 generates and caches on first call, then serves the cache on a second call without invoking the model again", async () => {
   const dir = await mkdtemp(join(tmpdir(), "wissel-api-projects-eli5-"));
   try {

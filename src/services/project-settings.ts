@@ -12,15 +12,16 @@
 
 import type { Project } from "../core/types.ts";
 import { grantError, MAX_EXTRA_ALLOWED_TOOLS } from "../core/allowed-tools.ts";
+import { MAX_REF_PATTERNS, patternError } from "./ticket-refs.ts";
 
 export const MAX_SANDBOX_DOMAINS = 20;
 export const MAX_SETTING_COMMANDS = 20;
 export const MAX_PROTECTED_PATHS = 50;
 
-/** The four settings, as stored on Project. */
-export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness">;
+/** The settings, as stored on Project. */
+export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns">;
 export type ProjectSettingKey = keyof Required<ProjectSettings>;
-export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness"];
+export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness", "ticketPatterns", "referencePatterns"];
 
 /** A partial update: a key that's absent is left alone, `null` clears
  *  it. An empty list (or a verification with no commands and no tools)
@@ -158,6 +159,18 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
     else if (typeof v !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(v)) {
       return { ok: false, error: "harness must be a harness id (letters, digits, . _ -), or null to clear it" };
     } else patch.harness = v;
+  }
+
+  for (const key of ["ticketPatterns", "referencePatterns"] as const) {
+    if (!(key in raw)) continue;
+    const v = raw[key];
+    if (v === null) patch[key] = null;
+    else {
+      const error = stringListError(key, v, MAX_REF_PATTERNS, patternError);
+      if (error) return { ok: false, error };
+      const patterns = dedupe(v as string[]);
+      patch[key] = patterns.length > 0 ? patterns : null;
+    }
   }
 
   return { ok: true, patch };
