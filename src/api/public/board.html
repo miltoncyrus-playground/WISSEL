@@ -528,6 +528,28 @@
   .tk-share-cards { display: grid; gap: 4px; }
   .tk-share-card { background: none; border: 0; padding: 0; color: var(--ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
   .tk-share-card:hover { text-decoration: underline; }
+  .kcol-mine .kmine { position: relative; border: 1px solid var(--border); border-left: 3px solid var(--line); border-radius: 7px; padding: 7px 10px; margin-bottom: 7px; background: var(--surface); font-size: 12.5px; line-height: 1.35; display: grid; gap: 4px; }
+  .kcol-mine .kmine .kt { font-weight: 600; overflow-wrap: anywhere; }
+  .kcol-mine .kmine .ka { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--ink-muted); font-size: 10.5px; }
+  .kcol-mine .kmine a { color: var(--ink); font-weight: 700; }
+  .kcol-mine .kmine .kmine-btn { margin-left: auto; font: inherit; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); background: none; color: var(--ink); cursor: pointer; }
+  .kcol-mine .kmine .kmine-btn:hover { border-color: var(--accent); }
+  .kcol-mine .kmine-note { font-size: 12px; color: var(--ink-muted); margin: 0 0 8px; overflow-wrap: anywhere; }
+  .jt-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
+  .jt-row:last-child { border-bottom: 0; }
+  .jt-row a { color: var(--ink); font-weight: 700; }
+  .jt-row .jt-sum { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+  .jt-row .jt-note { color: var(--ink-muted); font-size: 12px; }
+  .jt-row .kmine-btn { font: inherit; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); background: none; color: var(--ink); cursor: pointer; }
+  .jt-row .kmine-btn:hover { border-color: var(--accent); }
+  .jt-strip { padding: 8px 16px; border-bottom: 1px solid var(--line); }
+  .jt-line { font-size: 12px; color: var(--ink-muted); overflow-wrap: anywhere; }
+  .jt-epic { margin: 8px 0 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); }
+  .jt-strip h4 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); }
+  .jt-group { padding: 10px 16px; }
+  .jt-group h3 { margin: 0 0 4px; font-size: 12px; }
+  .tk-pr { font-size: 13px; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
+  .tk-pr:hover { text-decoration: underline; }
   .tk-branches { font-size: 12px; color: var(--ink-muted); overflow-wrap: anywhere; }
   .ticket-chip { font-size: 11px; font-weight: 700; color: var(--ink); background: var(--accent-wash); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
   .tk-tracker { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 13px; }
@@ -1075,6 +1097,10 @@
       <div id="tkProjects" class="tk-projects"></div>
     </section>
     <p class="muted" id="tkTracker" style="font-size: 12.5px; margin: 0 0 12px 0;"></p>
+    <section class="panel-flush section-gap" id="tkMineSection" hidden>
+      <div class="panel-head"><h2>Assigned to me</h2><span class="count" id="tkMineCount"></span></div>
+      <div id="tkMine"></div>
+    </section>
     <div id="tkTickets"></div>
   </section>
 
@@ -4040,6 +4066,153 @@
   }
 
   // One lane column: header (swatch, label, count, actions) and cards.
+  // GET /tickets/mine: open Jira tickets assigned to the signed-in
+  // account. Read at page load and on the column's Refresh, never polled.
+  // With no tracker set up the column is not drawn at all.
+  var mineInfo = null;
+  var mineLoading = false;
+
+  function loadMine() {
+    if (mineLoading) return Promise.resolve();
+    mineLoading = true;
+    return fetch("/tickets/mine").then(function (r) { return r.json(); }).then(function (info) {
+      mineInfo = info && typeof info === "object" ? info : null;
+    }).catch(function (err) {
+      mineInfo = { configured: true, tickets: [], error: err.message };
+    }).then(function () {
+      mineLoading = false;
+      renderKanban();
+      renderSwimlanes();
+      renderTicketsPage();
+    });
+  }
+
+  // GET /tickets for the keys the cards name, so a feature lane can find
+  // the epic of the ticket it implemented. Asked again only when the set
+  // of keys changes (the server caches for a minute as well).
+  var knownInfo = {};
+  var knownSig = "";
+
+  function ensureKnown() {
+    if (!mineInfo || !mineInfo.configured) return;
+    var seen = {};
+    allTasks.forEach(function (t) {
+      if (t.archivedAt) return;
+      var k = cardTicketKey(t, projects);
+      if (k) seen[k] = true;
+    });
+    var keys = Object.keys(seen).sort().slice(0, 200);
+    var sig = keys.join(",");
+    if (!sig || sig === knownSig) return;
+    knownSig = sig;
+    fetch("/tickets?keys=" + encodeURIComponent(sig)).then(function (r) { return r.json(); }).then(function (info) {
+      if (info && info.tickets) { Object.keys(info.tickets).forEach(function (k) { knownInfo[k] = info.tickets[k]; }); renderSwimlanes(); }
+    }).catch(function () { knownSig = ""; });
+  }
+
+  // One of my tickets as a row: key (link), title, Jira status, whether
+  // anything has been started for it, and Create card.
+  function buildTicketRow(t) {
+    var row = document.createElement("div"); row.className = "jt-row"; row.dataset.key = t.key;
+    var a = document.createElement("a"); a.href = t.url; a.target = "_blank"; a.rel = "noopener noreferrer"; a.textContent = t.key;
+    var sum = document.createElement("span"); sum.className = "jt-sum"; sum.textContent = t.summary;
+    var st = document.createElement("span"); st.className = "tk-status-pill"; st.textContent = t.status;
+    var note = document.createElement("span"); note.className = "jt-note";
+    // Branches are only known once the Tickets page has read /work; until
+    // then say what is certain: whether a card exists.
+    var started = ticketStarted(t.key, allTasks, projects, workByKey(ticketsWork));
+    note.textContent = ticketsWork ? (started ? "work started" : "not started") : (started ? "has a card" : "no card yet");
+    var btn = document.createElement("button"); btn.type = "button"; btn.className = "kmine-btn";
+    btn.textContent = cardsForTicket(t.key, allTasks, projects).length ? "Another card" : "Create card";
+    btn.addEventListener("click", function () { createCardFromTicket(t); });
+    [a, sum, st, note, btn].forEach(function (el) { row.appendChild(el); });
+    return row;
+  }
+
+  // One line under a feature lane's head, not a list: the lane's epic, the
+  // tickets of mine under it that no card names (the follow-ups) and the
+  // lane's own ticket while Jira still has it open. The rows live once per
+  // epic above the lanes (buildFollowUpGroup).
+  function buildFollowUpStrip(fu) {
+    var strip = document.createElement("div"); strip.className = "jt-strip jt-line";
+    var bits = [fu.epics.map(function (e) { return "Jira " + e.key; }).join(", ")];
+    if (fu.own.length) bits.push(fu.own.map(function (t) { return t.key + " still open in Jira (" + t.status + ")"; }).join(", "));
+    if (fu.followUps.length) bits.push((fu.implemented ? "follow-ups: " : "same epic: ") + fu.followUps.map(function (t) { return t.key; }).join(", "));
+    strip.textContent = bits.join(" · ");
+    return strip;
+  }
+
+  // Above the lanes, once: my tickets under a feature's epic that no card
+  // names yet, grouped by epic, each with Create card.
+  function buildFollowUpGroup(tickets) {
+    var group = document.createElement("section"); group.className = "panel-flush section-gap jt-group"; group.dataset.jira = "follow-ups";
+    var h = document.createElement("h3"); h.textContent = "Jira follow-ups: assigned to me, under a feature's epic, no card yet (" + tickets.length + ")";
+    group.appendChild(h);
+    epicGroups(tickets).forEach(function (g) {
+      var eh = document.createElement("h4"); eh.className = "jt-epic"; eh.textContent = g.epic ? g.epic.key + (g.epic.summary ? " · " + g.epic.summary : "") : "No epic";
+      group.appendChild(eh);
+      g.tickets.forEach(function (t) { group.appendChild(buildTicketRow(t)); });
+    });
+    return group;
+  }
+
+  // Fills the New card drawer for a ticket; the person still submits it.
+  function createCardFromTicket(ticket) {
+    var draft = ticketCardDraft(ticket, projects);
+    openNewDrawer("task");
+    document.getElementById("ntTitle").value = draft.title;
+    document.getElementById("ntBody").value = draft.body;
+    var repoEl = document.getElementById("ntRepo");
+    if (draft.repo && !repoEl.readOnly) repoEl.value = draft.repo;
+    updateSubmitEnabled();
+    (repoEl.value ? document.getElementById("ntTitle") : repoEl).focus();
+  }
+
+  function buildMineColumn() {
+    var info = mineInfo;
+    var tickets = info.tickets || [];
+    var col = document.createElement("div");
+    col.className = "kcol kcol-mine";
+    col.dataset.lane = "jira-mine";
+    var h3 = document.createElement("h3");
+    var dot = document.createElement("span"); dot.className = "swatch"; dot.style.background = "var(--sig-inbox)";
+    h3.appendChild(dot);
+    var label = document.createElement("span"); label.className = "lane-label"; label.textContent = "Assigned to me (" + tickets.length + ")";
+    h3.appendChild(label);
+    h3.appendChild(colButton("col-toggle", mineLoading ? "Reading…" : "Refresh", "Read your Jira tickets again", function () { loadMine(); }));
+    col.appendChild(h3);
+    if (info.error) {
+      var note = document.createElement("p"); note.className = "kmine-note"; note.textContent = "Jira: " + info.error;
+      col.appendChild(note);
+    }
+    tickets.forEach(function (t) {
+      var card = document.createElement("div"); card.className = "kmine"; card.dataset.key = t.key;
+      var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.summary || t.key; kt.title = t.summary || "";
+      card.appendChild(kt);
+      var ka = document.createElement("div"); ka.className = "ka";
+      var link = document.createElement("a"); link.href = t.url; link.target = "_blank"; link.rel = "noopener"; link.textContent = t.key;
+      ka.appendChild(link);
+      var st = document.createElement("span"); st.textContent = t.status; ka.appendChild(st);
+      var have = cardsForTicket(t.key, allTasks, projects);
+      if (have.length) {
+        var on = document.createElement("span"); on.textContent = "on the board · " + have.length + (have.length === 1 ? " card" : " cards");
+        ka.appendChild(on);
+      }
+      var btn = document.createElement("button"); btn.type = "button"; btn.className = "kmine-btn";
+      btn.textContent = have.length ? "Another card" : "Create card";
+      btn.title = "Open the New card form filled in for " + t.key;
+      btn.addEventListener("click", function () { createCardFromTicket(t); });
+      ka.appendChild(btn);
+      card.appendChild(ka);
+      col.appendChild(card);
+    });
+    if (!tickets.length && !info.error) {
+      var empty = document.createElement("p"); empty.className = "kmine-note"; empty.textContent = "Nothing open is assigned to you.";
+      col.appendChild(empty);
+    }
+    return col;
+  }
+
   function buildKanbanColumn(id, labelText, color, cards, countText, actions) {
     var col = document.createElement("div");
     // Every lane takes an equal share of the width, empty or not, so a
@@ -4083,6 +4256,7 @@
 
     var body = document.getElementById("kanbanBody");
     body.textContent = "";
+    if (mineInfo && mineInfo.configured) body.appendChild(buildMineColumn());
     BOARD_LANES.forEach(function (lane) {
       var cards = parts.lanes[lane.id];
       var countText = String(cards.length);
@@ -4407,6 +4581,8 @@
     }
     if (opts && opts.headAction) head.appendChild(opts.headAction(root, members));
     lane.appendChild(head);
+    var extra = opts && opts.laneExtra ? opts.laneExtra(root, members) : null;
+    if (extra) lane.appendChild(extra);
 
     var laneBody = document.createElement("div");
     laneBody.className = "swimlane-body";
@@ -4474,13 +4650,35 @@
     // Excludes archived cards, same as renderKanban — see
     // TaskCard.archivedAt. They show up in the Archive tab instead.
     var members = tasks.filter(function (t) { return !t.archivedAt; });
+    ensureKnown();
+    // My Jira tickets against each lane (board-work.js featureFollowUps).
+    var mine = mineInfo && mineInfo.configured ? (mineInfo.tickets || []) : [];
+    var followUps = {};
+    var related = {};
+    var named = {};
+    members.forEach(function (t) { var k = cardTicketKey(t, projects); if (k) named[k] = true; });
+    if (mine.length && members.length) {
+      var laneData = computeLanes(members, byId);
+      laneData.laneOrder.forEach(function (rootId) {
+        var fu = featureFollowUps(laneData.lanes[rootId], mine, knownInfo, projects);
+        // A sibling under the epic that a card of its own names has its own
+        // lane; it is not a follow-up of this one.
+        fu.followUps = fu.followUps.filter(function (t) { return !named[t.key]; });
+        if (fu.own.length || fu.followUps.length) {
+          followUps[rootId] = fu;
+          fu.own.concat(fu.followUps).forEach(function (t) { related[t.key] = true; });
+        }
+      });
+    }
+    var body = document.getElementById("swimlanesBody");
     renderLanes(
-      document.getElementById("swimlanesBody"),
+      body,
       document.getElementById("swimlanesCount"),
       members,
       byId,
       {
         activeFirst: true,
+        laneExtra: function (root) { return followUps[root.id] ? buildFollowUpStrip(followUps[root.id]) : null; },
         headAction: function (root, laneMembers) {
           return laneActionButton("Archive this lane", function () {
             if (!window.confirm("Archive \"" + root.title + "\" and all " + laneMembers.length + " card(s) in this lane? They move to the Archive tab; unarchive them individually later if needed.")) return;
@@ -4490,6 +4688,17 @@
       },
       "No tasks yet.",
     );
+    // Tickets of mine that no lane is about yet: nothing is hidden.
+    var open = mine.filter(function (t) { return related[t.key] && !named[t.key]; });
+    var loose = mine.filter(function (t) { return !related[t.key]; });
+    if (open.length) body.insertBefore(buildFollowUpGroup(open), body.firstChild);
+    if (loose.length) {
+      var group = document.createElement("section"); group.className = "panel-flush section-gap jt-group"; group.dataset.jira = "no-feature";
+      var gh = document.createElement("h3"); gh.textContent = "Assigned to me, no feature yet (" + loose.length + ")";
+      group.appendChild(gh);
+      loose.forEach(function (t) { group.appendChild(buildTicketRow(t)); });
+      body.insertBefore(group, body.firstChild);
+    }
   }
 
   function renderArchiveTab() {
@@ -6596,7 +6805,7 @@
     runCanvasId = route === RUN_CANVAS_ROUTE ? parsed.params.runId : null;
     if (runCanvasId) renderRunCanvas();
     if (route === "setup/projects") { loadProjectsTab(); renderProjectSummaryBox(); }
-    if (route === "tickets") loadTicketsPage();
+    if (route === "tickets") { loadTicketsPage(); if (!mineInfo) loadMine(); }
   }
 
   document.querySelectorAll("#boardViewToggle button").forEach(function (btn) {
@@ -6607,6 +6816,7 @@
   document.getElementById("newBtn").addEventListener("click", function () { openNewDrawer("task"); });
   window.addEventListener("hashchange", applyRoute);
   applyRoute();
+  loadMine();
 
   // --- Tickets page ----------------------------------------------------
   //
@@ -6620,6 +6830,21 @@
   // GET /tickets for the keys on the page: the tracker's summary and
   // status per key, whether write-back is on, or why there is no tracker.
   var ticketsInfo = { configured: false, writeBack: false, tickets: {} };
+  // GET /github per project (board-work.js prsByProject): pull requests
+  // and CI by branch, or why they could not be read.
+  var githubPrs = {};
+
+  function loadGithub() {
+    // A cold read asks GitHub once per project, about 6 s for large repos.
+    var status = document.getElementById("tkStatus");
+    var base = status.textContent;
+    status.textContent = base + " · reading GitHub…";
+    return fetch("/github").then(function (r) { return r.json(); }).then(function (answer) {
+      githubPrs = prsByProject(answer);
+      status.textContent = base + " · GitHub read " + new Date().toLocaleTimeString();
+      renderTicketsPage();
+    }).catch(function () { status.textContent = base + " · GitHub not read"; });
+  }
 
   function loadTicketsInfo() {
     var keys = ticketsWork ? ticketKeysOf(ticketsWork) : [];
@@ -6684,6 +6909,7 @@
       status.textContent = "Read " + new Date().toLocaleTimeString();
       renderTicketsPage();
       loadTicketsInfo();
+      loadGithub();
     }).catch(function (err) {
       ticketsLoading = false;
       status.textContent = "Could not read: " + err.message;
@@ -6723,6 +6949,24 @@
       var state = document.createElement("span"); state.className = "tk-state mono"; state.textContent = projectStateLine(p);
       row.appendChild(name); row.appendChild(state);
       projectsEl.appendChild(row);
+    });
+
+    var mineSection = document.getElementById("tkMineSection");
+    var mineBody = document.getElementById("tkMine");
+    var mineList = mineInfo && mineInfo.configured ? (mineInfo.tickets || []) : [];
+    mineSection.hidden = !(mineInfo && mineInfo.configured);
+    mineBody.textContent = "";
+    document.getElementById("tkMineCount").textContent = mineList.length ? String(mineList.length) : "";
+    if (mineInfo && mineInfo.error) {
+      var me = document.createElement("p"); me.className = "muted"; me.style.padding = "10px 16px"; me.textContent = "Jira: " + mineInfo.error;
+      mineBody.appendChild(me);
+    }
+    epicGroups(mineList).forEach(function (g) {
+      var grp = document.createElement("div"); grp.className = "jt-group";
+      var gh = document.createElement("h3"); gh.textContent = g.epic ? g.epic.key + (g.epic.summary ? " · " + g.epic.summary : "") : "No epic";
+      grp.appendChild(gh);
+      g.tickets.forEach(function (t) { grp.appendChild(buildTicketRow(t)); });
+      mineBody.appendChild(grp);
     });
 
     var ticketsEl = document.getElementById("tkTickets");
@@ -6774,6 +7018,21 @@
         var br = document.createElement("div"); br.className = "tk-branches mono";
         br.textContent = s.branches.slice(0, 8).join(", ") + (s.branches.length > 8 ? " +" + (s.branches.length - 8) + " more" : "") + (s.worktrees ? " · " + s.worktrees + (s.worktrees === 1 ? " worktree" : " worktrees") : "");
         share.appendChild(br);
+        var gh = githubPrs[s.id];
+        if (gh && gh.error) {
+          var ge = document.createElement("div"); ge.className = "tk-branches"; ge.textContent = "GitHub: " + gh.error;
+          share.appendChild(ge);
+        } else if (gh) {
+          var shown = {};
+          s.branches.forEach(function (name) {
+            var pr = gh.byBranch[name];
+            if (!pr || shown[pr.number]) return;
+            shown[pr.number] = true;
+            var line = document.createElement("a"); line.className = "tk-pr"; line.href = pr.url; line.target = "_blank"; line.rel = "noopener";
+            line.textContent = prLine(pr) + " · " + pr.title;
+            share.appendChild(line);
+          });
+        }
         section.appendChild(share);
       });
       ticketsEl.appendChild(section);

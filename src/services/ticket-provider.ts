@@ -17,6 +17,8 @@ export interface Ticket {
   /** The tracker's coarse bucket: "new", "indeterminate" or "done". */
   statusCategory?: string;
   assignee?: string;
+  /** The epic or parent issue this one sits under, when the tracker says. */
+  parent?: { key: string; summary: string };
   url: string;
 }
 
@@ -34,6 +36,10 @@ export interface TicketProvider {
   /** The tickets found for `keys`; a key the tracker doesn't know, or the
    *  provider isn't allowed to read, is left out. Throws TicketError. */
   lookup(keys: readonly string[]): Promise<Record<string, Ticket>>;
+  /** Open tickets assigned to the account the provider signs in as,
+   *  most recently updated first, at most `MINE_LIMIT`. Optional: a
+   *  tracker that cannot say who "me" is leaves it out. Throws TicketError. */
+  assignedToMe?(): Promise<Ticket[]>;
   transitions(key: string): Promise<TicketTransition[]>;
   comment(key: string, text: string): Promise<void>;
   transition(key: string, transitionId: string): Promise<void>;
@@ -51,6 +57,8 @@ export class TicketError extends Error {
   }
 }
 
+export const MINE_LIMIT = 50;
+
 export const KEY_RE = /^[A-Z][A-Z0-9_]*-\d{1,9}$/;
 
 /** Wraps a provider so repeated lookups inside `ttlMs` don't hit the
@@ -58,6 +66,13 @@ export const KEY_RE = /^[A-Z][A-Z0-9_]*-\d{1,9}$/;
  *  fresh. */
 export function withLookupCache(inner: TicketProvider, ttlMs = 60_000, now: () => number = Date.now): TicketProvider {
   const cache = new Map<string, { at: number; ticket: Ticket | null }>();
+  let mine: { at: number; tickets: Ticket[] } | undefined;
+  const cachedMine = async (): Promise<Ticket[]> => {
+    if (mine && now() - mine.at < ttlMs) return mine.tickets;
+    const tickets = await inner.assignedToMe!();
+    mine = { at: now(), tickets };
+    return tickets;
+  };
   return {
     id: inner.id,
     writeBack: inner.writeBack,
@@ -80,14 +95,17 @@ export function withLookupCache(inner: TicketProvider, ttlMs = 60_000, now: () =
       }
       return out;
     },
+    ...(inner.assignedToMe ? { assignedToMe: () => cachedMine() } : {}),
     transitions: (key) => inner.transitions(key),
     async comment(key, text) {
       await inner.comment(key, text);
       cache.delete(key);
+      mine = undefined;
     },
     async transition(key, transitionId) {
       await inner.transition(key, transitionId);
       cache.delete(key);
+      mine = undefined;
     },
   };
 }

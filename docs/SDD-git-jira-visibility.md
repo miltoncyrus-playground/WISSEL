@@ -3,7 +3,9 @@
 Status: **Partly built.** Built: the git overview, ticket-key detection,
 `GET /projects/:id/git`, `GET /work`, the Tickets page, ticket chips, the
 Projects section in the app, the Jira provider (read), and confirmed
-write-back (comment, move). Not built: GitHub pull-request and CI status,
+write-back (comment, move). Also built: GitHub pull-request and CI status
+(section 2.7), and "Assigned to me" with create card from ticket
+(section 2.8). Not built: CD status,
 automatic write-back on card events, a Jira inbox that creates cards.
 Setup for a user is in the README under "Git and tickets".
 
@@ -115,12 +117,76 @@ write is logged (`tickets: comment on ABC-1`).
 
 Ticket text is shown as data. It is not placed in any agent's prompt.
 
+### 2.7 GitHub pull requests and CI
+
+`src/services/github-status.ts` reads `gh pr list --repo ORG/REPO --state
+all --json ...` (fixed argv, read-only) for each project. `ORG/REPO` is
+parsed from `origin` in any form, including an SSH host alias. It uses the
+login `gh` has active; nothing switches accounts or handles a token. The
+newest PR per branch is kept, with its state (open, draft, merged, closed),
+review decision, mergeable flag and a CI summary folded from
+`statusCheckRollup` (failing, pending, passing, none, with the names of
+failing checks). Answers are cached 60 s per project; failures are not.
+
+`GET /github` is separate from `/work` because it calls GitHub. The Tickets
+page loads it after `/work` and shows one line per PR under the branches
+that have one (`board-work.js` `prLine`). A project whose `gh` call fails
+shows the reason on its own row. Not built: deployment (CD) status, and a
+per-project account.
+
+### 2.8 "Assigned to me" and create card from ticket
+
+`GET /tickets/mine` asks the provider's optional `assignedToMe()`. Jira runs
+one fixed query, `assignee = currentUser() AND statusCategory != Done
+[AND project in (projectKeys)] ORDER BY updated DESC`, at most 50, cached
+60 s with the other lookups (a write drops it). The board's first column,
+"Assigned to me", shows each ticket's key (a link), title and status, and
+"on the board" when a live card already names the key. With no tracker set
+up the column is not drawn; a tracker that is down shows its error in the
+column and leaves the rest of the board alone. It loads with the page and on
+its Refresh button, never on a timer.
+
+**Create card** opens the existing New card drawer filled in: the title
+`KEY: summary` (so the card finds its ticket again by the chip rule), a body
+that links to the ticket and states its Jira status, and the repo only when
+exactly one project's `ticketPatterns` match the key. The person reviews and
+submits it; nothing is created, and nothing is written to Jira, by the click.
+The ticket text is the tracker's and ends up in the card body, so the
+person reads it before submitting. Not built: naming the card's
+`mergeTarget` after the key (the New card form has no such field yet) and
+moving the ticket in Jira when the card starts or lands.
+
+### 2.9 My tickets on the Tickets tab and the By feature view
+
+A ticket carries its `parent` (the epic) when the tracker names one; Jira
+returns it with the same search, so no extra call.
+
+- **Tickets tab:** an "Assigned to me" section, grouped by epic, each row
+  with the key, title, Jira status, whether work has started (a live card
+  or a branch) and Create card.
+- **By feature:** a lane's cards name tickets by the usual key rule; those
+  tickets' epics (asked with `GET /tickets?keys=` for the keys on the
+  board) are the lane's epics. Any of my open tickets under those epics is
+  related to the lane. Above the lanes, once, a "Jira follow-ups" group
+  lists my related tickets that no card names yet, by epic, each with
+  Create card. Each related lane gets one line under its head: the epic,
+  the lane's own ticket while Jira still has it open, and the follow-ups.
+  A sibling that has a lane of its own is not a follow-up of another lane.
+  Tickets of mine related to no lane sit above the lanes under "no feature
+  yet", so nothing is hidden.
+
+The match is by epic only: a follow-up filed under another epic is not
+linked to the feature. The logic is `featureFollowUps` and `epicGroups` in
+`board-work.js`, covered by `test/board-work.test.ts`.
+
 ## 3. The surface
 
 | | |
 |---|---|
 | `GET /projects/:id/git` | status, branches, worktrees, ticket groups |
 | `GET /work` | all projects merged by ticket, plus per-project attention |
+| `GET /tickets/mine` | open tickets assigned to the tracker account |
+| `GET /github` | pull requests and CI per project and branch, via `gh` |
 | `GET /tickets?keys=` | tracker details, `writeBack`, or why there is none |
 | `GET /tickets/:key/transitions` | allowed moves (write-back only) |
 | `POST /tickets/:key/comment` | `{confirm, text}` |
@@ -145,15 +211,15 @@ Board tab and the chip on card rows.
 
 ## 5. Not built, in the order I would build it
 
-1. GitHub pull-request and CI state per branch through `gh`, with a
-   per-project account (applied per call through `GH_TOKEN`, never by
-   switching the global login), and org and repo parsed from the remote URL
-   in all its forms (HTTPS, SSH, SSH host aliases). The default branch for
-   "needs a look" should come from `origin/HEAD` instead of `main`/`master`.
+1. A per-project GitHub account, applied per call through `GH_TOKEN`
+   (`gh auth token --user NAME`), never by switching the global login.
+   The default branch for "needs a look" should come from `origin/HEAD`
+   instead of `main`/`master`. Deployment status, if CD runs outside
+   GitHub, would be a second provider.
 2. Write-back on card events (comment the branch or PR when a card lands),
    as an opt-in per project, still confirmed or clearly logged.
-3. A Jira inbox (a saved JQL) with "create card from ticket", which also
-   names the card's `mergeTarget` after the key.
+3. Create card from ticket also naming the card's `mergeTarget` after the
+   key, and a saved-JQL inbox beyond "assigned to me".
 
 ## 6. Tests
 

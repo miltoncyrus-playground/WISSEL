@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { cardTicketKey, filterWork, projectForRepo, projectStateLine, ticketKeyOf, ticketSummary } from "../src/api/public/board-work.js";
+import { cardTicketKey, filterWork, projectForRepo, cardsForTicket, epicGroups, featureFollowUps, prLine, ticketStarted, workByKey, prsByProject, ticketCardDraft, projectStateLine, ticketKeyOf, ticketSummary } from "../src/api/public/board-work.js";
 import { attentionOf, groupWork, type ProjectGitOverview, type WorkView } from "../src/services/project-git.ts";
 import type { ProjectGitStatus } from "../src/services/project-status.ts";
 
@@ -108,4 +108,82 @@ test("the Tickets page asks for the tracker's details and only offers writes aft
   expect(html).toContain('"/tickets?keys="');
   expect(html).toContain("confirm: true");
   expect(html).toContain("window.confirm(");
+});
+
+test("a pull request reads as one line, review and CI only while it is open", () => {
+  const pr = (over: object) => ({ number: 9, title: "t", url: "u", branch: "b", state: "open" as const, checks: { state: "none" as const, total: 0, failing: [] }, ...over });
+  expect(prLine(pr({}))).toBe("#9 open");
+  expect(prLine(pr({ state: "draft", checks: { state: "failing", total: 2, failing: ["fast", "lint"] }, review: "CHANGES_REQUESTED", mergeable: "CONFLICTING" }))).toBe("#9 draft · CI failing (fast, lint) · changes requested · conflicts");
+  expect(prLine(pr({ checks: { state: "pending", total: 1, failing: [] }, review: "APPROVED" }))).toBe("#9 open · CI running · approved");
+  expect(prLine(pr({ state: "merged", review: "APPROVED", checks: { state: "passing", total: 1, failing: [] } }))).toBe("#9 merged");
+  expect(prLine(pr({ state: "merged", checks: { state: "failing", total: 1, failing: ["x"] } }))).toBe("#9 merged · CI failed");
+});
+
+test("prsByProject indexes by branch and keeps a project's error", () => {
+  const out = prsByProject({ projects: [{ id: "a", repo: "o/r", prs: [{ number: 1, title: "", url: "", branch: "x", state: "open", checks: { state: "none", total: 0, failing: [] } }] }, { id: "b", error: "gh: nope" }] });
+  expect(out.a!.byBranch.x!.number).toBe(1);
+  expect(out.b).toEqual({ error: "gh: nope", byBranch: {} });
+  expect(prsByProject(undefined as never)).toEqual({});
+});
+
+const proj = (path: string, ticketPatterns?: string[]) => ({ id: path, name: path, path, ...(ticketPatterns ? { ticketPatterns } : {}) });
+
+test("ticketCardDraft names the key, points back at the ticket, and picks a repo only when one project claims the key", () => {
+  const t = { key: "ABC-7", summary: "Fix  the\nthing", status: "To Do", url: "https://j.example.net/browse/ABC-7" };
+  const one = ticketCardDraft(t, [proj("/a", ["ABC-\\d+"]), proj("/b", ["XYZ-\\d+"]), proj("/c")]);
+  expect(one.title).toBe("ABC-7: Fix the thing");
+  expect(one.body).toBe("Jira ticket ABC-7 — https://j.example.net/browse/ABC-7\nStatus in Jira: To Do\n\nFix  the\nthing");
+  expect(one.repo).toBe("/a");
+  // Two claim it, or none sets a pattern: the person chooses.
+  expect(ticketCardDraft(t, [proj("/a", ["ABC-\\d+"]), proj("/b", ["ABC-\\d+"])]).repo).toBeUndefined();
+  expect(ticketCardDraft(t, [proj("/c")]).repo).toBeUndefined();
+  expect(ticketCardDraft({ ...t, summary: "x".repeat(300) }, []).title.length).toBe(200);
+  // The draft's title is found by the chip rule again.
+  expect(ticketKeyOf([one.title])).toBe("ABC-7");
+});
+
+test("cardsForTicket finds live cards whose title or branch names the key", () => {
+  const projects = [proj("/a", ["ABC-\\d+"])];
+  const cards = [
+    { id: "1", title: "ABC-7: one", repo: "/a" },
+    { id: "2", title: "other", repo: "/a", mergeTarget: "feat/ABC-7-x" },
+    { id: "3", title: "ABC-7: gone", repo: "/a", archivedAt: "2026-01-01" },
+    { id: "4", title: "ABC-8: no", repo: "/a" },
+  ];
+  expect(cardsForTicket("ABC-7", cards, projects).map((c) => c.id)).toEqual(["1", "2"]);
+});
+
+const tk = (key: string, parent?: string) => ({ key, summary: key, status: "To Do", url: "u", ...(parent ? { parent: { key: parent, summary: parent } } : {}) });
+
+test("epicGroups groups by parent in first-seen order, no-epic tickets last", () => {
+  const g = epicGroups([tk("A-1", "E-1"), tk("A-2"), tk("A-3", "E-2"), tk("A-4", "E-1")]);
+  expect(g.map((x) => [x.epic?.key ?? null, x.tickets.map((t) => t.key)])).toEqual([["E-1", ["A-1", "A-4"]], ["E-2", ["A-3"]], [null, ["A-2"]]]);
+});
+
+test("ticketStarted is true for a live card or a branch, not for a bare ticket", () => {
+  const projects = [proj("/a", ["ABC-\\d+"])];
+  const byKey = workByKey({ tickets: [{ key: "ABC-2", cardCount: 0, branchCount: 1 }, { key: null, cardCount: 3, branchCount: 0 }] });
+  expect(byKey).toEqual({ "ABC-2": { cards: 0, branches: 1 } });
+  const cards = [{ id: "1", title: "ABC-1: x", repo: "/a" }];
+  expect(ticketStarted("ABC-1", cards, projects, byKey)).toBe(true);
+  expect(ticketStarted("ABC-2", cards, projects, byKey)).toBe(true);
+  expect(ticketStarted("ABC-3", cards, projects, byKey)).toBe(false);
+});
+
+test("featureFollowUps relates my tickets to a lane through the epic of the tickets its cards name", () => {
+  const projects = [proj("/a", ["ABC-\\d+"])];
+  const known = { "ABC-1": tk("ABC-1", "E-1"), "ABC-9": tk("ABC-9", "E-9") };
+  const mine = [tk("ABC-1", "E-1"), tk("ABC-2", "E-1"), tk("ABC-3", "E-2"), tk("ABC-4")];
+  const done = [{ id: "1", title: "ABC-1: built", repo: "/a", status: "done" }, { id: "2", title: "review", repo: "/a", status: "done" }];
+  const r = featureFollowUps(done, mine, known, projects);
+  expect(r.implemented).toBe(true);
+  expect(r.epics.map((e) => e.key)).toEqual(["E-1"]);
+  expect(r.own.map((t) => t.key)).toEqual(["ABC-1"]);
+  expect(r.followUps.map((t) => t.key)).toEqual(["ABC-2"]);
+  // Not implemented, and a lane with no ticket, relate to nothing.
+  expect(featureFollowUps([{ id: "1", title: "ABC-1: wip", repo: "/a", status: "running" }], mine, known, projects).implemented).toBe(false);
+  const bare = featureFollowUps([{ id: "3", title: "no key", repo: "/a", status: "done" }], mine, known, projects);
+  expect([bare.epics, bare.own, bare.followUps]).toEqual([[], [], []]);
+  // A key the tracker does not know yields no epic, so nothing relates.
+  expect(featureFollowUps([{ id: "4", title: "ABC-5: x", repo: "/a", status: "done" }], mine, known, projects).followUps).toEqual([]);
 });

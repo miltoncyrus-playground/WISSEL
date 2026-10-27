@@ -117,3 +117,52 @@ test("withLookupCache serves repeats from memory until the ttl, and a write drop
   await cached.lookup(["ABC-1"]);
   expect(looked).toBe(3);
 });
+
+test("assignedToMe asks one fixed JQL for open tickets of the signed-in account, scoped to projectKeys", async () => {
+  const { jira, calls } = make([{ body: { issues: [issue("ABC-3", "Mine"), { key: "not a key", fields: {} }] } }], { projectKeys: ["ABC", "DEF"] });
+  const out = await jira.assignedToMe();
+  expect(out.map((t) => t.key)).toEqual(["ABC-3"]);
+  expect(out[0]).toMatchObject({ summary: "Mine", status: "In Progress", url: "https://t.example.net/browse/ABC-3" });
+  const u = new URL(calls[0]!.url);
+  expect(u.searchParams.get("jql")).toBe("assignee = currentUser() AND statusCategory != Done AND project in (ABC,DEF) ORDER BY updated DESC");
+  expect(u.searchParams.get("maxResults")).toBe("50");
+  expect(calls[0]!.method).toBe("GET");
+});
+
+test("assignedToMe without projectKeys has no project clause, and reads need no write-back", async () => {
+  const { jira, calls } = make([{ body: { issues: [] } }], { writeBack: false });
+  expect(await jira.assignedToMe()).toEqual([]);
+  expect(new URL(calls[0]!.url).searchParams.get("jql")).toBe("assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC");
+});
+
+test("the lookup cache keeps assignedToMe for its ttl and a write drops it", async () => {
+  let t = 0;
+  let n = 0;
+  const inner: TicketProvider = {
+    id: "x", writeBack: true,
+    lookup: async () => ({}),
+    assignedToMe: async () => (++n, []),
+    transitions: async () => [], comment: async () => {}, transition: async () => {},
+  };
+  const cached = withLookupCache(inner, 1000, () => t);
+  await cached.assignedToMe!();
+  await cached.assignedToMe!();
+  expect(n).toBe(1);
+  await cached.comment("ABC-1", "hi");
+  await cached.assignedToMe!();
+  expect(n).toBe(2);
+  t = 5000;
+  await cached.assignedToMe!();
+  expect(n).toBe(3);
+  expect(withLookupCache({ ...inner, assignedToMe: undefined }).assignedToMe).toBeUndefined();
+});
+
+test("a ticket carries its parent (epic) when Jira names one, and the search asks for the field", async () => {
+  const withParent = { ...issue("ABC-4", "Child"), fields: { ...issue("ABC-4", "Child").fields, parent: { key: "ABC-1", fields: { summary: "The epic" } } } };
+  const { jira, calls } = make([{ body: { issues: [withParent, issue("ABC-5", "Orphan")] } }, { body: { issues: [withParent] } }]);
+  const out = await jira.lookup(["ABC-4", "ABC-5"]);
+  expect(out["ABC-4"]!.parent).toEqual({ key: "ABC-1", summary: "The epic" });
+  expect(out["ABC-5"]!.parent).toBeUndefined();
+  expect(new URL(calls[0]!.url).searchParams.get("fields")).toBe("summary,status,assignee,parent");
+  expect((await jira.assignedToMe())[0]!.parent?.key).toBe("ABC-1");
+});

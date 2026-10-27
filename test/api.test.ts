@@ -11,7 +11,7 @@ import { HarnessPool } from "../src/core/harness-pool.ts";
 import { Orchestrator } from "../src/core/orchestrator.ts";
 import { McpServerPool } from "../src/core/mcp-server-pool.ts";
 import type { AgentDef, Executor, Harness, McpServer, TaskCard, TaskResult } from "../src/core/types.ts";
-import type { CommandRunner } from "../src/executors/claude-cli.ts";
+import { runViaBun, type CommandRunner } from "../src/executors/claude-cli.ts";
 import type { AnthropicMessagesClient } from "../src/executors/anthropic-api.ts";
 import type Anthropic from "@anthropic-ai/sdk";
 
@@ -2225,6 +2225,32 @@ test("GET /work merges every project's branches by ticket, and a repo that canno
   }
 });
 
+test("GET /github reports pull requests per project, and a project gh cannot read does not hide the rest", async () => {
+  const a = await mkdtemp(join(tmpdir(), "wissel-api-gh-a-"));
+  const b = await mkdtemp(join(tmpdir(), "wissel-api-gh-b-"));
+  try {
+    gitInitWithCommit(a);
+    gitInitWithCommit(b);
+    const commandRunner: CommandRunner = async (cmd, opts) => {
+      if (cmd[0] === "git" && cmd[1] === "remote") return { stdout: opts.cwd === a ? "git@github-alias:acme/a.git" : "git@github-alias:acme/b.git", stderr: "", exitCode: 0 };
+      if (cmd[0] === "gh" && cmd[4] === "acme/b") return { stdout: "", stderr: "HTTP 403: SAML enforcement", exitCode: 1 };
+      if (cmd[0] === "gh") return { stdout: JSON.stringify([{ number: 4, title: "t", url: "u", headRefName: "feat/ABC-7-x", state: "MERGED" }]), stderr: "", exitCode: 0 };
+      return runViaBun(cmd, opts);
+    };
+    const app = await makeApp(new SqliteBoard(), { commandRunner });
+    for (const dir of [a, b]) await app(req("/projects/local", { method: "POST", body: JSON.stringify({ path: dir }) }));
+    const res = await app(req("/github"));
+    expect(res.status).toBe(200);
+    const answer = (await res.json()) as { projects: { repo?: string; error?: string; prs?: { number: number; state: string }[] }[] };
+    expect(answer.projects).toHaveLength(2);
+    expect(answer.projects.find((p) => p.repo === "acme/a")?.prs?.[0]).toMatchObject({ number: 4, state: "merged" });
+    expect(answer.projects.find((p) => p.error)?.error).toBe("gh: HTTP 403: SAML enforcement");
+  } finally {
+    await rm(a, { recursive: true, force: true });
+    await rm(b, { recursive: true, force: true });
+  }
+});
+
 test("GET /board-work.js serves the Tickets page helpers", async () => {
   const res = await (await makeApp())(req("/board-work.js"));
   expect(res.status).toBe(200);
@@ -2250,6 +2276,22 @@ test("GET /tickets says why when no tracker is set up, and refuses writes with 4
   expect(body).toMatchObject({ configured: false, tickets: {} });
   expect(body.reason).toContain("no ticket tracker");
   expect((await app(req("/tickets/ABC-1/comment", { method: "POST", body: JSON.stringify({ confirm: true, text: "hi" }) }))).status).toBe(409);
+});
+
+test("GET /tickets/mine lists my tickets, says why when there is no tracker, and reports a tracker that is down", async () => {
+  const none = await (await makeApp())(req("/tickets/mine"));
+  expect(await none.json()).toMatchObject({ configured: false, tickets: [] });
+
+  const mine = { key: "ABC-9", summary: "Mine", status: "To Do", url: "https://t.example.net/browse/ABC-9" };
+  const ok = fakeTickets(false).setup.provider;
+  const withMine = await makeApp(undefined, { tickets: { provider: { ...ok, assignedToMe: async () => [mine] } } });
+  expect(await (await withMine(req("/tickets/mine"))).json()).toEqual({ configured: true, tickets: [mine] });
+
+  const down = await makeApp(undefined, { tickets: { provider: { ...ok, assignedToMe: async () => { throw new Error("Jira answered HTTP 502"); } } } });
+  expect(await (await down(req("/tickets/mine"))).json()).toEqual({ configured: true, tickets: [], error: "Jira answered HTTP 502" });
+
+  const unsupported = await makeApp(undefined, { tickets: fakeTickets(false).setup });
+  expect(await (await unsupported(req("/tickets/mine"))).json()).toMatchObject({ configured: true, tickets: [], error: "this tracker cannot list your tickets" });
 });
 
 test("GET /tickets returns the tracker's tickets, drops malformed keys and unknown ones", async () => {

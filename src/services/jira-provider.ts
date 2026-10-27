@@ -1,4 +1,4 @@
-import { TicketError, KEY_RE, type Ticket, type TicketProvider, type TicketTransition } from "./ticket-provider.ts";
+import { TicketError, KEY_RE, MINE_LIMIT, type Ticket, type TicketProvider, type TicketTransition } from "./ticket-provider.ts";
 
 /** The slice of `fetch` this uses: injectable so tests never touch a
  *  network. */
@@ -16,7 +16,10 @@ interface JiraIssueFields {
   summary?: unknown;
   status?: { name?: unknown; statusCategory?: { key?: unknown } };
   assignee?: { displayName?: unknown } | null;
+  parent?: { key?: unknown; fields?: { summary?: unknown } } | null;
 }
+
+const FIELDS = "summary,status,assignee,parent";
 
 /** Jira Cloud over its REST API v3, with an email and an API token
  *  (basic auth). Nothing here writes unless `writeBack` is set. */
@@ -74,20 +77,42 @@ export class JiraProvider implements TicketProvider {
       const chunk = wanted.slice(i, i + KEYS_PER_SEARCH);
       // Keys passed KEY_RE, so nothing here can break out of the JQL.
       const jql = `key in (${chunk.join(",")})`;
-      const q = new URLSearchParams({ jql, fields: "summary,status,assignee", maxResults: String(KEYS_PER_SEARCH) });
+      const q = new URLSearchParams({ jql, fields: FIELDS, maxResults: String(KEYS_PER_SEARCH) });
       const data = (await this.call("GET", `/rest/api/3/search/jql?${q}`)) as { issues?: { key?: unknown; fields?: JiraIssueFields }[] } | undefined;
       for (const issue of data?.issues ?? []) {
         if (typeof issue.key !== "string" || !chunk.includes(issue.key)) continue;
-        const f = issue.fields ?? {};
-        out[issue.key] = {
-          key: issue.key,
-          summary: typeof f.summary === "string" ? f.summary : "",
-          status: typeof f.status?.name === "string" ? f.status.name : "",
-          ...(typeof f.status?.statusCategory?.key === "string" ? { statusCategory: f.status.statusCategory.key } : {}),
-          ...(typeof f.assignee?.displayName === "string" ? { assignee: f.assignee.displayName } : {}),
-          url: `${this.site}/browse/${issue.key}`,
-        };
+        out[issue.key] = this.toTicket(issue.key, issue.fields ?? {});
       }
+    }
+    return out;
+  }
+
+  private toTicket(key: string, f: JiraIssueFields): Ticket {
+    const parentKey = f.parent?.key;
+    return {
+      key,
+      summary: typeof f.summary === "string" ? f.summary : "",
+      status: typeof f.status?.name === "string" ? f.status.name : "",
+      ...(typeof f.status?.statusCategory?.key === "string" ? { statusCategory: f.status.statusCategory.key } : {}),
+      ...(typeof f.assignee?.displayName === "string" ? { assignee: f.assignee.displayName } : {}),
+      ...(typeof parentKey === "string" && KEY_RE.test(parentKey) ? { parent: { key: parentKey, summary: typeof f.parent?.fields?.summary === "string" ? f.parent.fields.summary : "" } } : {}),
+      url: `${this.site}/browse/${key}`,
+    };
+  }
+
+  /** Open tickets assigned to the signed-in account. The JQL is fixed;
+   *  the only variable part is the configured project keys, each checked
+   *  against a strict pattern before it gets near the query. */
+  async assignedToMe(): Promise<Ticket[]> {
+    const projects = this.projectKeys ? [...this.projectKeys].filter((k) => /^[A-Z][A-Z0-9_]*$/.test(k)) : [];
+    const scope = projects.length > 0 ? ` AND project in (${projects.join(",")})` : "";
+    const jql = `assignee = currentUser() AND statusCategory != Done${scope} ORDER BY updated DESC`;
+    const q = new URLSearchParams({ jql, fields: FIELDS, maxResults: String(MINE_LIMIT) });
+    const data = (await this.call("GET", `/rest/api/3/search/jql?${q}`)) as { issues?: { key?: unknown; fields?: JiraIssueFields }[] } | undefined;
+    const out: Ticket[] = [];
+    for (const issue of data?.issues ?? []) {
+      if (typeof issue.key !== "string" || !KEY_RE.test(issue.key)) continue;
+      out.push(this.toTicket(issue.key, issue.fields ?? {}));
     }
     return out;
   }

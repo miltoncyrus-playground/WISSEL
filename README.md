@@ -391,6 +391,8 @@ has the access you want wissel to have.
 |---|---|
 | `GET /projects/:id/git` | One repo: checkout state, branches, worktrees, and cards grouped by ticket. |
 | `GET /work` | Every project's `/git` merged by ticket, plus per-project "needs a look" reasons. A repo that cannot be read is reported, not fatal. |
+| `GET /github` | Pull requests (state, review, mergeable) and CI checks per project and branch, read with `gh`. A project `gh` cannot read is reported, not fatal. |
+| `GET /tickets/mine` | Open tickets assigned to the tracker account (Jira: `assignee = currentUser()`, limited to `projectKeys`), newest update first, at most 50. Drives the board's "Assigned to me" column. |
 | `GET /tickets?keys=ABC-1,ABC-2` | Tracker details per key, or `{configured:false, reason}`. |
 | `GET /tickets/:key/transitions` | The moves Jira allows now. Needs `writeBack`. |
 | `POST /tickets/:key/comment` | `{confirm:true, text}`. Needs `writeBack`. |

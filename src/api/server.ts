@@ -42,6 +42,7 @@ import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { getProjectGitOverview, groupWork } from "../services/project-git.ts";
+import { getProjectPrs, withPrCache } from "../services/github-status.ts";
 import { loadTicketProvider, type TicketsSetup } from "../services/integrations.ts";
 import { KEY_RE, TicketError } from "../services/ticket-provider.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
@@ -487,6 +488,7 @@ export function createApp(
   const pipelineEditorDist = opts.pipelineEditorDist ?? DEFAULT_PIPELINE_EDITOR_DIST;
   const appDist = opts.appDist ?? DEFAULT_APP_DIST;
   const commandRunner = opts.commandRunner ?? runViaBun;
+  const prsOf = withPrCache((path) => getProjectPrs(path, commandRunner));
   // The merge path's context (docs/SDD-worktree-isolation.md §7): the
   // one every merge goes through, the Merge button, Ask's
   // merge and the orchestrator's auto-merge alike. The gate is the
@@ -1306,6 +1308,18 @@ export function createApp(
           }
         }
 
+        // GET /tickets/mine: open tickets assigned to the signed-in
+        // account, for the board's "Assigned to me" column.
+        if (parts.length === 2 && parts[1] === "mine" && req.method === "GET") {
+          if (!provider) return json({ configured: false, reason: setup.reason, tickets: [] });
+          if (!provider.assignedToMe) return json({ configured: true, tickets: [], error: "this tracker cannot list your tickets" });
+          try {
+            return json({ configured: true, tickets: await provider.assignedToMe() });
+          } catch (e) {
+            return json({ configured: true, tickets: [], error: e instanceof Error ? e.message : String(e) });
+          }
+        }
+
         const key = parts[1] ? decodeURIComponent(parts[1]) : "";
         if (parts.length === 3 && key) {
           if (!provider) return json({ error: setup.reason }, 409);
@@ -1358,6 +1372,19 @@ export function createApp(
           })),
         );
         return json(groupWork(entries));
+      }
+
+      // Pull requests and CI per project, read through `gh`
+      // (src/services/github-status.ts). Separate from /work because it
+      // calls GitHub; one project failing doesn't hide the rest.
+      if (parts[0] === "github" && parts.length === 1 && req.method === "GET") {
+        const entries = await Promise.all(
+          (await projects.list()).map(async (project) => ({
+            id: project.id,
+            ...(await prsOf(project.path).catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }))),
+          })),
+        );
+        return json({ projects: entries });
       }
 
       if (parts[0] === "projects") {

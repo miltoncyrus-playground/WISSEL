@@ -89,6 +89,116 @@ function projectStateLine(p) {
   return bits.join(" · ");
 }
 
+// "#9 draft · CI failing (fast) · changes requested": one pull request
+// as text, so the state never depends on a colour. `merged` and `closed`
+// hide the review and conflict notes, which no longer matter.
+function prLine(pr) {
+  var bits = ["#" + pr.number + " " + pr.state];
+  if (pr.state === "open" || pr.state === "draft") {
+    if (pr.checks.state === "failing") bits.push("CI failing" + (pr.checks.failing.length ? " (" + pr.checks.failing.join(", ") + ")" : ""));
+    else if (pr.checks.state === "pending") bits.push("CI running");
+    else if (pr.checks.state === "passing") bits.push("CI passing");
+    if (pr.review === "APPROVED") bits.push("approved");
+    else if (pr.review === "CHANGES_REQUESTED") bits.push("changes requested");
+    else if (pr.review === "REVIEW_REQUIRED") bits.push("review needed");
+    if (pr.mergeable === "CONFLICTING") bits.push("conflicts");
+  } else if (pr.state === "merged" && pr.checks.state === "failing") bits.push("CI failed");
+  return bits.join(" · ");
+}
+
+// GET /github as { projectId: { branch: pr } }, or the project's error.
+function prsByProject(answer) {
+  var out = {};
+  ((answer && answer.projects) || []).forEach(function (p) {
+    if (p.error) { out[p.id] = { error: p.error, byBranch: {} }; return; }
+    var byBranch = {};
+    (p.prs || []).forEach(function (pr) { byBranch[pr.branch] = pr; });
+    out[p.id] = { repo: p.repo, byBranch: byBranch };
+  });
+  return out;
+}
+
+// The live cards (not archived) that belong to ticket `key`, by the same
+// rule the chip uses.
+function cardsForTicket(key, tasks, projects) {
+  return tasks.filter(function (t) { return !t.archivedAt && cardTicketKey(t, projects) === key; });
+}
+
+// What the New card form is filled with for a ticket: a title that names
+// the key (so the card finds its ticket again), a body that points back
+// at the ticket, and a repo only when exactly one project sets a ticket
+// pattern that matches the key. The person reviews and submits it; nothing
+// is created here. The ticket text is the tracker's, shown as typed.
+function ticketCardDraft(ticket, projects) {
+  var title = (ticket.key + ": " + (ticket.summary || "")).replace(/\s+/g, " ").trim();
+  if (title.length > 200) title = title.slice(0, 199) + "…";
+  var body = ["Jira ticket " + ticket.key + (ticket.url ? " — " + ticket.url : ""), ticket.status ? "Status in Jira: " + ticket.status : "", "", ticket.summary || ""].join("\n").trim();
+  var matches = projects.filter(function (p) {
+    return p.ticketPatterns && p.ticketPatterns.length && ticketKeyOf([ticket.key], p.ticketPatterns) === ticket.key;
+  });
+  return { title: title, body: body, repo: matches.length === 1 ? matches[0].path : undefined };
+}
+
+// key -> { cards, branches } for every ticket GET /work names.
+function workByKey(work) {
+  var out = {};
+  ((work && work.tickets) || []).forEach(function (t) { if (t.key) out[t.key] = { cards: t.cardCount, branches: t.branchCount }; });
+  return out;
+}
+
+// Has anything been started for this ticket: a live card, or a branch.
+function ticketStarted(key, tasks, projects, byKey) {
+  var w = byKey && byKey[key];
+  return cardsForTicket(key, tasks, projects).length > 0 || !!(w && (w.cards > 0 || w.branches > 0));
+}
+
+// Tickets grouped by their epic (the tracker's parent), epics in order of
+// their first ticket, tickets without one last. Order inside is kept.
+function epicGroups(tickets) {
+  var groups = [];
+  var byKey = {};
+  var none = null;
+  tickets.forEach(function (t) {
+    if (!t.parent) {
+      if (!none) { none = { epic: null, tickets: [] }; }
+      none.tickets.push(t);
+      return;
+    }
+    var g = byKey[t.parent.key];
+    if (!g) { g = { epic: t.parent, tickets: [] }; byKey[t.parent.key] = g; groups.push(g); }
+    g.tickets.push(t);
+  });
+  if (none) groups.push(none);
+  return groups;
+}
+
+// What one feature lane (its cards) says about my Jira tickets. `known`
+// is { key: ticket } for the keys the cards name (GET /tickets), `mine`
+// the tickets assigned to me. A lane is implemented when one of its cards
+// is done. Its epics are the parents of the tickets its cards name; any of
+// my open tickets under those epics is related, and one the cards do not
+// name themselves is a follow-up.
+function featureFollowUps(laneCards, mine, known, projects) {
+  var laneKeys = {};
+  laneCards.forEach(function (c) {
+    var k = cardTicketKey(c, projects);
+    if (k) laneKeys[k] = true;
+  });
+  var epics = {};
+  var epicList = [];
+  Object.keys(laneKeys).forEach(function (k) {
+    var t = known[k];
+    if (t && t.parent && !epics[t.parent.key]) { epics[t.parent.key] = true; epicList.push(t.parent); }
+  });
+  var related = mine.filter(function (t) { return t.parent && epics[t.parent.key]; });
+  return {
+    implemented: laneCards.some(function (c) { return c.status === "done"; }),
+    epics: epicList,
+    own: related.filter(function (t) { return laneKeys[t.key]; }),
+    followUps: related.filter(function (t) { return !laneKeys[t.key]; }),
+  };
+}
+
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     ticketKeyOf: ticketKeyOf,
@@ -98,5 +208,13 @@ if (typeof module !== "undefined" && module.exports) {
     ticketSummary: ticketSummary,
     ticketKeysOf: ticketKeysOf,
     projectStateLine: projectStateLine,
+    prLine: prLine,
+    cardsForTicket: cardsForTicket,
+    workByKey: workByKey,
+    ticketStarted: ticketStarted,
+    epicGroups: epicGroups,
+    featureFollowUps: featureFollowUps,
+    ticketCardDraft: ticketCardDraft,
+    prsByProject: prsByProject,
   };
 }
