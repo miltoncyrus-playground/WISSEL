@@ -26,7 +26,7 @@ test("the old split inflated key counts on quoted pipes; the new one doesn't", (
   expect(legacyCommandKeys(cmd)).toEqual(["landedSha\\", 'recordMerge(" src']);
   const raw = [bash(cmd), bash("bun test 2>&1 | tail"), bash("bun test 2>&1 | tail")];
   expect(legacyKeyCount(raw)).toBe(3);
-  expect(summarizeDenials(raw)).toEqual(["Bash", "Bash: bun test"]);
+  expect(summarizeDenials(raw)).toEqual(["Bash: grep (shell form)", "Bash: bun test"]);
   expect(legacyKeyCount([{ tool_name: "Write", tool_input: {} }, null as never])).toBe(1);
 });
 

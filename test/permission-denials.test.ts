@@ -41,11 +41,11 @@ test("card 494f87d6's 16 refusals get the expected keys", () => {
   for (const [command, keys] of CARD_494F87D6) expect({ command, keys: commandKeys(command) }).toEqual({ command, keys });
 });
 
-test("card 494f87d6 summarized: seven clean keys, no junk from inside quotes", () => {
+test("card 494f87d6 summarized: nine clean keys, no junk from inside quotes", () => {
   const raw = CARD_494F87D6.map(([command]) => ({ tool_name: "Bash", tool_input: { command } }));
   const keys = summarizeDenials(raw);
-  expect(keys).toEqual(["Bash", "Bash: sed", "Bash: git", "Bash: bun", "Bash: bun test", "Bash: bun run typecheck", "Bash: bun -e"]);
-  for (const k of keys) expect(k).not.toMatch(/["'\\()]/);
+  expect(keys).toEqual(["Bash: grep (shell form)", "Bash: sed", "Bash: cat (shell form)", "Bash: ls (shell form)", "Bash: git", "Bash: bun", "Bash: bun test", "Bash: bun run typecheck", "Bash: bun -e"]);
+  for (const k of keys) expect(k.replace(" (shell form)", "")).not.toMatch(/["'\\()]/);
 });
 
 test("quoted pipes, semicolons and ampersands don't split", () => {
@@ -158,4 +158,15 @@ test("inline-code interpreters are keyed by -e, whatever the code says", () => {
   expect(commandKeys(`node -e "require('fs')"`)).toEqual(["node -e"]);
   expect(commandKeys(`bun --eval 'x'`)).toEqual(["bun -e"]);
   expect(commandKeys("node script.js")).toEqual(["node script.js"]);
+});
+
+test("a heredoc with a helper-only command gets a descriptive key, never a bare Bash", () => {
+  const heredoc = "cat >> notes.md <<'EOF'\nmake fast\nEOF";
+  expect(commandKeys(heredoc)).toEqual([]);
+  expect(summarizeDenials([{ tool_name: "Bash", tool_input: { command: heredoc } }])).toEqual(["Bash: heredoc"]);
+});
+
+test("a helper-only command (cat) is keyed by its program in shell form", () => {
+  expect(summarizeDenials([{ tool_name: "Bash", tool_input: { command: "cat notes.md" } }])).toEqual(["Bash: cat (shell form)"]);
+  expect(summarizeDenials([{ tool_name: "Bash", tool_input: { command: "FOO=1 cat notes.md" } }])).toEqual(["Bash: cat (shell form)"]);
 });

@@ -91,7 +91,7 @@ test("commandKeys finds the real command behind navigation, wrappers and redirec
 
 test("summarizeDenials: comparable keys, non-Bash tools by name, malformed entries skipped", () => {
   expect(summarizeDenials(REAL_DENIALS)).toEqual(["Bash: bun install", "Bash: npm install"]);
-  expect(summarizeDenials([{ tool_name: "Write", tool_input: { file_path: "/etc/x" } }, { tool_name: "Bash", tool_input: { command: "cd x" } }, {}, null, 3, { tool_name: "" }])).toEqual(["Write", "Bash"]);
+  expect(summarizeDenials([{ tool_name: "Write", tool_input: { file_path: "/etc/x" } }, { tool_name: "Bash", tool_input: { command: "cd x" } }, {}, null, 3, { tool_name: "" }])).toEqual(["Write", "Bash: cd (shell form)"]);
   expect(summarizeDenials(undefined)).toEqual([]);
   expect(summarizeDenials("nope")).toEqual([]);
 });

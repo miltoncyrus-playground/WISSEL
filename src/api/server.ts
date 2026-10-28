@@ -497,6 +497,7 @@ export function createApp(
   const mergeContext: MergeContext = {
     runner: runViaBun,
     gateFor: (repo) => projects.mergeGateFor(repo),
+    settingsFor,
     ...(telemetry ? { telemetry } : {}),
     ...opts.mergeContext,
   };

@@ -381,6 +381,9 @@ export type ConflictIntegratorState = { finished: true; cardId: string } | { fin
  *  bare CommandRunner still works and means: no gate, no telemetry. */
 export interface MergeContext {
   runner: CommandRunner;
+  /** The repo's project settings (ProjectStore.settingsFor), so a
+   *  reviewer's suggested grants can skip ones the card already has. */
+  settingsFor?: (repo: string) => Promise<{ verification?: { allowedTools?: string[] } } | undefined>;
   /** The repo's gate (Project.mergeGate); absent means none. */
   gateFor?: MergeGateResolver;
   gateRunner?: GateCommandRunner;

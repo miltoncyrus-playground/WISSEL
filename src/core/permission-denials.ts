@@ -301,6 +301,17 @@ export function commandKeys(command: string): string[] {
   return keys;
 }
 
+/** First word of a shell line past assignments, for a descriptive key
+ *  when commandKeys finds none ("shell" when there is no word). */
+function firstProgram(command: string): string {
+  for (const w of command.trim().split(/\s+/)) {
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(w)) continue;
+    const name = w.replace(/^.*\//, "").replace(/[^\w.+@-]/g, "");
+    return name || "shell";
+  }
+  return "shell";
+}
+
 /** Comparable keys for a run's raw `permission_denials`, deduplicated,
  *  first seen first: "Bash: bun install", "Write" (non-Bash tools by
  *  name). Anything malformed is skipped, never thrown on. */
@@ -318,7 +329,10 @@ export function summarizeDenials(raw: unknown): string[] {
     const command = typeof input === "object" && input !== null ? (input as { command?: unknown }).command : undefined;
     if (tool === "Bash" && typeof command === "string") {
       const keys = commandKeys(command);
-      if (keys.length === 0) add("Bash");
+      // A command with no key (a helper like cat, or a bare heredoc) is
+      // still a refusal: say what it was, never a bare "Bash", which a
+      // reviewer reads as "every Bash call was refused".
+      if (keys.length === 0) add(command.includes("<<") ? "Bash: heredoc" : `Bash: ${firstProgram(command)} (shell form)`);
       for (const k of keys) add(`Bash: ${k}`);
     } else {
       add(tool);

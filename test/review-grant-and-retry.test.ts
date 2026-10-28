@@ -142,7 +142,7 @@ test("the reviewer card is told what the implementer was refused", async () => {
   await finishResult(board, registry, { taskId: card.id, agentId: "implementer", ok: true, summary: "done", permissionDenials: ["Bash: bun run build:app"] }, undefined, noRunner);
   const reviewerCard = (await board.list()).find((t) => t.parentTaskId === card.id)!;
   expect(reviewerCard.body).toContain("the body");
-  expect(reviewerCard.body).toContain("The implementer was refused these commands on this attempt: Bash: bun run build:app.");
+  expect(reviewerCard.body).toContain("The implementer was refused only these commands on this attempt: Bash: bun run build:app. Its other commands ran normally");
 });
 
 test("POST /tasks/:id/escalation/grant-and-retry: 201 with the next attempt, 400 on bad input", async () => {
@@ -159,4 +159,25 @@ test("POST /tasks/:id/escalation/grant-and-retry: 201 with the next attempt, 400
   expect(next.extraAllowedTools).toEqual([FIXTURES]);
   expect((await post(next.id, {})).status).toBe(400); // not escalated
   expect((await post("missing", {})).status).toBe(404);
+});
+
+test("grantsToSuggest drops grants the card's project, repo or extras already allow", () => {
+  const card = { extraAllowedTools: ["Bash(make lint)"] } as TaskCard;
+  const allowed = ["Bash(make fast)", "Bash(uv run pytest:*)"];
+  const out = grantsToSuggest(["Bash(make fast)", "Bash(uv run pytest tests/a.py)", "Bash(make lint)", FIXTURES], card, allowed);
+  expect(out.grants).toEqual([FIXTURES]);
+  expect(grantsToSuggest(["Bash(make fast)"], card, allowed).grants).toEqual([]);
+});
+
+test("a verdict whose grants are all already allowed is a plain pushback, not grant-tools", async () => {
+  const board = new SqliteBoard();
+  const card = await attempt(board);
+  const reviewer = await board.create({ title: "Review", body: "b", labels: ["review"], repo: "/tmp/repo", parentTaskId: card.id, dependsOn: [], routedTo: "reviewer" });
+  await board.move(reviewer.id, "done");
+  const result = { taskId: reviewer.id, agentId: "reviewer", ok: true, summary: "s", verdict: "changes_requested", reviewFeedback: "f", reviewGrants: ["Bash(make fast)"] } as TaskResult;
+  const merge = { runner: noRunner, settingsFor: async () => ({ verification: { allowedTools: ["Bash(make fast)"] } }) };
+  await resumeAfterReviewVerdict(board, registry, reviewer, result, merge);
+  const after = (await board.get(card.id))!;
+  expect(after.suggestedGrants).toBeUndefined();
+  expect(after.status).not.toBe("escalated");
 });

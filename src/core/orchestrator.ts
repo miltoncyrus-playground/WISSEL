@@ -19,7 +19,8 @@ import {
 } from "../services/worktree.ts";
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
 import { handlePipelineStepResult } from "./pipeline-runner.ts";
-import { validateExtraAllowedTools } from "./allowed-tools.ts";
+import { readProjectAllowRules, validateExtraAllowedTools } from "./allowed-tools.ts";
+import { DEFAULT_VERIFICATION } from "./verification.ts";
 import { formatMcpTranscript } from "../services/mcp-transcript.ts";
 import type { AgentDef, Executor, Harness, HarnessTool, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
 
@@ -349,7 +350,7 @@ async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result
   // back for work that can't be done without it (2026-10-11: "Wissel app
   // 5/6" looped 5 rounds on a fixture script it was never allowed to run).
   const body = result.permissionDenials?.length
-    ? `${reviewed}\n\n---\nThe implementer was refused these commands on this attempt: ${result.permissionDenials.join(", ")}.`
+    ? `${reviewed}\n\n---\nThe implementer was refused only these commands on this attempt: ${result.permissionDenials.join(", ")}. Its other commands ran normally; do not conclude that nothing ran.`
     : reviewed;
   await board.create({
     title: `Review: ${implementerTask.title}`,
@@ -468,7 +469,7 @@ export async function resumeAfterReviewVerdict(
   // with the grants offered as one-click "Grant and retry", instead of
   // pushing back until the round limit (docs/proposal-agent-run-
   // efficiency.md item 3).
-  const { grants, invalid } = grantsToSuggest(result.reviewGrants, implementerTask);
+  const { grants, invalid } = grantsToSuggest(result.reviewGrants, implementerTask, await allowedForCard(implementerTask, toMergeContext(runner)));
   if (grants.length > 0) {
     const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
     const history = await buildEscalationContext(board, lineageId);
@@ -618,17 +619,41 @@ export function deniedKeyGranted(key: string, grants: string[]): boolean {
   });
 }
 
+/** True when `grant` ("Bash(make fast)") is already covered by one of
+ *  `allowed` rules: the same rule, or a "Bash(prefix:*)" rule whose
+ *  prefix is a word-prefix of the grant's command. */
+function grantAllowedBy(grant: string, allowed: string[]): boolean {
+  const g = /^Bash\((.*?)(?::\*)?\)$/.exec(grant);
+  if (!g) return false;
+  const cmd = g[1]!;
+  return allowed.some((rule) => {
+    const m = /^Bash\((.*?)(:\*)?\)$/.exec(rule);
+    if (!m) return false;
+    const prefix = m[1]!;
+    return m[2] ? cmd === prefix || cmd.startsWith(`${prefix} `) : cmd === prefix && !grant.endsWith(":*)");
+  });
+}
+
+/** The allow rules a card's implementer already runs with, as WriteExecutor
+ *  builds them: the project's verification.allowedTools (else the base
+ *  list), the repo's own allow rules and the card's extra grants. */
+async function allowedForCard(task: TaskCard, merge: MergeContext): Promise<string[]> {
+  const verification = task.repo ? (await merge.settingsFor?.(task.repo))?.verification : undefined;
+  const project = task.repo ? await readProjectAllowRules(task.repo) : { allowed: [] };
+  return [...(verification?.allowedTools ?? DEFAULT_VERIFICATION.allowedTools), ...(task.extraAllowedTools ?? []), ...project.allowed];
+}
+
 /** The reviewer's grants worth offering: each one valid on its own
  *  (validateExtraAllowedTools) and not already on the card. `invalid`
  *  holds the refusal reason of every one that isn't valid. */
-export function grantsToSuggest(reviewGrants: string[] | undefined, task: TaskCard): { grants: string[]; invalid: string[] } {
-  const have = new Set(task.extraAllowedTools ?? []);
+export function grantsToSuggest(reviewGrants: string[] | undefined, task: TaskCard, allowed: string[] = []): { grants: string[]; invalid: string[] } {
+  const have = new Set([...(task.extraAllowedTools ?? []), ...allowed]);
   const grants: string[] = [];
   const invalid: string[] = [];
   for (const g of reviewGrants ?? []) {
     const v = validateExtraAllowedTools([g]);
     if (!v.ok) invalid.push(v.error);
-    else if (!have.has(g) && !grants.includes(g)) grants.push(g);
+    else if (!have.has(g) && !grantAllowedBy(g, [...have]) && !grants.includes(g)) grants.push(g);
   }
   return { grants, invalid };
 }
