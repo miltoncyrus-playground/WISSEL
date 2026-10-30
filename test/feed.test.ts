@@ -103,13 +103,29 @@ describe("needs-you", () => {
     expect(needsYouAction(card("a", { status: "failed", supersededBy: "b" }), none)).toBeNull();
   });
 
-  test("dated by the latest result; with none it sits at now, marked undated", () => {
+  test("always at now, so it opens the feed; since is the latest result, absent (undated) with none", () => {
     const results = new Map<string, ResultMeta>([["f", { agentId: "x", ok: false, finishedAt: hoursAgo(4) }]]);
     const items = byId(feed({ tasks: [card("f", { status: "failed" }), card("n", { status: "no-match" })], results }));
-    expect(items["needs-you:f"]!.at).toBe(hoursAgo(4));
+    expect(items["needs-you:f"]!.at).toBe(new Date(NOW).toISOString());
+    expect(items["needs-you:f"]!.since).toBe(hoursAgo(4));
     expect(items["needs-you:f"]!.undated).toBeUndefined();
+    expect(items["needs-you:n"]!.since).toBeUndefined();
     expect(items["needs-you:n"]!.at).toBe(new Date(NOW).toISOString());
     expect(items["needs-you:n"]!.undated).toBe(true);
+  });
+
+  test("a card waiting for days opens page 1 ahead of newer items, and is not repeated on page 2", () => {
+    const results = new Map<string, ResultMeta>([["old", { agentId: "x", ok: true, finishedAt: hoursAgo(240) }]]);
+    const tasks = [
+      card("old", { status: "review" }),
+      ...Array.from({ length: 5 }, (_, i) => card(`l${i}`, { status: "done", doneAt: hoursAgo(i + 1) })),
+    ];
+    const first = buildFeed({ tasks, results, now: NOW, limit: 3 });
+    expect(first.items[0]!.id).toBe("needs-you:old");
+    expect(first.items[0]!.since).toBe(hoursAgo(240));
+    const second = buildFeed({ tasks, results, now: NOW, limit: 3, before: parseCursor(first.next!)! });
+    expect(second.items.map((i) => i.id)).not.toContain("needs-you:old");
+    expect([...first.items, ...second.items].filter((i) => i.kind === "landed")).toHaveLength(5);
   });
 
   test("a failed pipeline step is told by its run's root, not on its own", () => {

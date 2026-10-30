@@ -35,6 +35,8 @@ describe("feed items", () => {
   test("an undated needs-you item reads Waiting, not a time", () => {
     expect(whenText({ at: ago(0), undated: true }, NOW)).toBe("Waiting");
     expect(whenText({ at: ago(5 * 60_000) }, NOW)).toBe("5 min ago");
+    // A needs-you item sits at now but reads as how long it has waited.
+    expect(whenText({ at: ago(0), since: ago(5 * 60_000) }, NOW)).toBe("5 min ago");
   });
 });
 

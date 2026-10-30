@@ -44,8 +44,13 @@ export interface FeedItem {
   links: FeedLink[];
   taskId?: string;
   runId?: string;
-  /** needs-you only: no recorded time, so `at` is the request's `now`. */
+  /** needs-you only: no recorded time, so `since` is absent. */
   undated?: boolean;
+  /** needs-you only: when the card started waiting (its latest result's
+   *  finish time). `at` is the request's `now`, so a card that has waited
+   *  ten days still opens the feed instead of sinking below newer items
+   *  (2026-10-30: five review cards had fallen to page 2). */
+  since?: string;
   /** podcast and checks. */
   show?: FeedShow;
   /** podcast: where the MP3 plays from. */
@@ -338,12 +343,12 @@ export function buildFeed(input: FeedInput): FeedPage {
     items.push({
       id: `needs-you:${t.id}`,
       kind: "needs-you",
-      at: iso(finished ?? now),
+      at: iso(now),
       title: t.title || t.id.slice(0, 8),
       detail: need.detail,
       links: [need.link],
       taskId: t.id,
-      ...(finished === undefined ? { undated: true } : {}),
+      ...(finished === undefined ? { undated: true } : { since: iso(finished) }),
     });
   }
 

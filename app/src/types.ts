@@ -122,6 +122,7 @@ export interface FeedItem {
   taskId?: string;
   runId?: string;
   undated?: boolean;
+  since?: string;
   show?: FeedShow;
   audioUrl?: string;
   durationSeconds?: number;

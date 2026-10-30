@@ -44,6 +44,7 @@
     "eval:memory-curation-quality": "bun run eval/memory-curation-quality.eval.ts",
     "eval:claude-cli-429-replay": "bun run eval/claude-cli-429-replay.eval.ts",
     "eval:fenced-block-replay": "bun run eval/fenced-block-replay.eval.ts",
+    "eval:feed-needs-you": "bun run eval/feed-needs-you.eval.ts",
     "usage:report": "bun run scripts/usage-report.ts",
     "models:refresh": "bun run scripts/models-refresh.ts",
     "eval:resume": "bun run eval/resume.eval.ts",

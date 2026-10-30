@@ -86,9 +86,15 @@ function ActionButton({ link, title, onNotice }: { link: FeedLink; title: string
   );
 }
 
-/** "Waiting" for a needs-you item with no recorded time, else "5 min ago". */
-export function whenText(item: Pick<FeedItem, "at" | "undated">, now: number): string {
-  return item.undated ? "Waiting" : timeAgo(item.at, now);
+/** "Waiting" for a needs-you item with no recorded time, else "5 min
+ *  ago": since when it has waited (`since`), or when it happened (`at`). */
+export function whenText(item: Pick<FeedItem, "at" | "undated" | "since">, now: number): string {
+  return item.undated ? "Waiting" : timeAgo(item.since ?? item.at, now);
+}
+
+/** The time whenText describes, for <time dateTime>. */
+export function whenAt(item: Pick<FeedItem, "at" | "since">): string {
+  return item.since ?? item.at;
 }
 
 /** One item in the feed list. */
@@ -99,7 +105,7 @@ export function FeedEntry({ item, now, onNotice }: { item: FeedItem; now: number
       <article className={`feed-item ${toneOf(item)}`} aria-labelledby={titleId} data-kind={item.kind} data-id={item.id}>
         <div className="feed-meta">
           <span className="feed-kind">{KIND_LABEL[item.kind]}</span>
-          <time dateTime={item.at}>{whenText(item, now)}</time>
+          <time dateTime={whenAt(item)}>{whenText(item, now)}</time>
         </div>
         <h2 className="feed-title" id={titleId}>
           {item.title}

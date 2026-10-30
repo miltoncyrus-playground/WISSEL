@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { step, type Story } from "../stories";
-import { FeedActions, KIND_LABEL, toneOf, whenText } from "./FeedEntry";
+import { FeedActions, KIND_LABEL, toneOf, whenAt, whenText } from "./FeedEntry";
 import { Icon } from "./Icon";
 
 interface StoryViewerProps {
@@ -131,7 +131,7 @@ export function StoryViewer({ stories, start, now, onClose, onSeen, onNotice }: 
           <article className={`story-card ${toneOf(item)}`} aria-live="polite" data-id={item.id}>
             <div className="feed-meta">
               <span className="feed-kind">{KIND_LABEL[item.kind]}</span>
-              <time dateTime={item.at}>{whenText(item, now)}</time>
+              <time dateTime={whenAt(item)}>{whenText(item, now)}</time>
             </div>
             <h2 className="story-title">{item.title}</h2>
             {item.detail && <p className="story-detail">{item.detail}</p>}
