@@ -106,6 +106,38 @@ function prLine(pr) {
   return bits.join(" · ");
 }
 
+// GET /ci as the rows the CI section shows: runs in progress or queued
+// (running first, oldest first), then runs that failed in the last day
+// (newest first). Errors stay per project.
+function ciView(answer, nameOf, now) {
+  var active = [];
+  var failed = [];
+  var errors = [];
+  var day = 24 * 3600 * 1000;
+  ((answer && answer.projects) || []).forEach(function (p) {
+    var name = nameOf ? nameOf(p.id) : p.id;
+    if (p.error) { errors.push({ project: name, error: p.error }); return; }
+    (p.runs || []).forEach(function (r) {
+      var row = { project: name, repo: p.repo, run: r };
+      if (r.state === "running" || r.state === "queued") active.push(row);
+      else if (r.state === "failed" && r.updatedAt && now - Date.parse(r.updatedAt) < day) failed.push(row);
+    });
+  });
+  var at = function (row) { return Date.parse(row.run.startedAt || row.run.updatedAt || "") || 0; };
+  active.sort(function (a, b) { return (a.run.state === b.run.state ? 0 : a.run.state === "running" ? -1 : 1) || at(a) - at(b); });
+  failed.sort(function (a, b) { return Date.parse(b.run.updatedAt) - Date.parse(a.run.updatedAt); });
+  return { active: active, failed: failed, errors: errors };
+}
+
+// "running 4m", "queued 20s", "failed 3h ago": text, never colour alone.
+function runLine(run, now) {
+  var since = Date.parse(run.state === "failed" ? run.updatedAt || "" : run.startedAt || "");
+  var secs = isNaN(since) ? null : Math.max(0, Math.round((now - since) / 1000));
+  var span = secs === null ? "" : secs < 90 ? secs + "s" : secs < 5400 ? Math.round(secs / 60) + "m" : Math.round(secs / 3600) + "h";
+  var head = run.state === "failed" ? "failed" + (span ? " " + span + " ago" : "") : run.state + (span ? " " + span : "");
+  return head + " · " + run.workflow + " · " + (run.branch || "?");
+}
+
 // GET /github as { projectId: { branch: pr } }, or the project's error.
 function prsByProject(answer) {
   var out = {};
@@ -216,5 +248,7 @@ if (typeof module !== "undefined" && module.exports) {
     featureFollowUps: featureFollowUps,
     ticketCardDraft: ticketCardDraft,
     prsByProject: prsByProject,
+    ciView: ciView,
+    runLine: runLine,
   };
 }

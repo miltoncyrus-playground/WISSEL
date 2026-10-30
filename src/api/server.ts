@@ -42,7 +42,7 @@ import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { getProjectGitOverview, groupWork } from "../services/project-git.ts";
-import { getProjectPrs, withPrCache } from "../services/github-status.ts";
+import { getProjectPrs, getProjectRuns, withPrCache } from "../services/github-status.ts";
 import { loadTicketProvider, type TicketsSetup } from "../services/integrations.ts";
 import { KEY_RE, TicketError } from "../services/ticket-provider.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
@@ -489,6 +489,7 @@ export function createApp(
   const appDist = opts.appDist ?? DEFAULT_APP_DIST;
   const commandRunner = opts.commandRunner ?? runViaBun;
   const prsOf = withPrCache((path) => getProjectPrs(path, commandRunner));
+  const runsOf = withPrCache((path) => getProjectRuns(path, commandRunner));
   // The merge path's context (docs/SDD-worktree-isolation.md §7): the
   // one every merge goes through, the Merge button, Ask's
   // merge and the orchestrator's auto-merge alike. The gate is the
@@ -1383,6 +1384,18 @@ export function createApp(
           (await projects.list()).map(async (project) => ({
             id: project.id,
             ...(await prsOf(project.path).catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }))),
+          })),
+        );
+        return json({ projects: entries });
+      }
+
+      // Workflow runs per project (what is running, queued or just failed
+      // in CI), read through `gh run list`. Same isolation as /github.
+      if (parts[0] === "ci" && parts.length === 1 && req.method === "GET") {
+        const entries = await Promise.all(
+          (await projects.list()).map(async (project) => ({
+            id: project.id,
+            ...(await runsOf(project.path).catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }))),
           })),
         );
         return json({ projects: entries });

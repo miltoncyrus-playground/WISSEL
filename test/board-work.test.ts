@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { cardTicketKey, filterWork, projectForRepo, cardsForTicket, epicGroups, featureFollowUps, prLine, ticketStarted, workByKey, prsByProject, ticketCardDraft, projectStateLine, ticketKeyOf, ticketSummary } from "../src/api/public/board-work.js";
+import { cardTicketKey, filterWork, projectForRepo, cardsForTicket, epicGroups, featureFollowUps, prLine, ciView, runLine, ticketStarted, workByKey, prsByProject, ticketCardDraft, projectStateLine, ticketKeyOf, ticketSummary } from "../src/api/public/board-work.js";
 import { attentionOf, groupWork, type ProjectGitOverview, type WorkView } from "../src/services/project-git.ts";
 import type { ProjectGitStatus } from "../src/services/project-status.ts";
 
@@ -186,4 +186,23 @@ test("featureFollowUps relates my tickets to a lane through the epic of the tick
   expect([bare.epics, bare.own, bare.followUps]).toEqual([[], [], []]);
   // A key the tracker does not know yields no epic, so nothing relates.
   expect(featureFollowUps([{ id: "4", title: "ABC-5: x", repo: "/a", status: "done" }], mine, known, projects).followUps).toEqual([]);
+});
+
+test("ciView lists active runs (running first, oldest first) and failures from the last day", () => {
+  const now = Date.parse("2026-10-30T12:00:00Z");
+  const r = (id: number, state: "running" | "queued" | "failed" | "passed", over: Record<string, unknown> = {}) => ({ id, workflow: "ci", title: "", branch: "main", event: "push", url: "u", state, ...over });
+  const view = ciView(
+    { projects: [
+      { id: "a", repo: "o/a", runs: [r(1, "queued", { startedAt: "2026-10-30T11:50:00Z" }), r(2, "running", { startedAt: "2026-10-30T11:55:00Z" }), r(3, "running", { startedAt: "2026-10-30T11:40:00Z" }), r(4, "failed", { updatedAt: "2026-10-30T09:00:00Z" }), r(5, "failed", { updatedAt: "2026-10-28T09:00:00Z" }), r(6, "passed")] },
+      { id: "b", error: "gh: nope" },
+    ] },
+    (id) => id.toUpperCase(),
+    now,
+  );
+  expect(view.active.map((x) => x.run.id)).toEqual([3, 2, 1]);
+  expect(view.active[0]!.project).toBe("A");
+  expect(view.failed.map((x) => x.run.id)).toEqual([4]);
+  expect(view.errors).toEqual([{ project: "B", error: "gh: nope" }]);
+  expect(runLine(view.active[0]!.run, now)).toBe("running 20m · ci · main");
+  expect(runLine(view.failed[0]!.run, now)).toBe("failed 3h ago · ci · main");
 });

@@ -34,3 +34,7 @@ export function workByKey(work: { tickets: { key: string | null; cardCount: numb
 export function ticketStarted(key: string, tasks: CardLike[], projects: Proj[], byKey?: Record<string, { cards: number; branches: number }>): boolean;
 export function epicGroups(tickets: MineTicket[]): { epic: { key: string; summary: string } | null; tickets: MineTicket[] }[];
 export function featureFollowUps(laneCards: CardLike[], mine: MineTicket[], known: Record<string, MineTicket>, projects: Proj[]): { implemented: boolean; epics: { key: string; summary: string }[]; own: MineTicket[]; followUps: MineTicket[] };
+export interface RunView { id: number; workflow: string; title: string; branch: string; event: string; state: "running" | "queued" | "failed" | "passed" | "other"; url: string; startedAt?: string; updatedAt?: string }
+export interface CiRow { project: string; repo?: string; run: RunView }
+export function ciView(answer: { projects: { id: string; repo?: string; runs?: RunView[]; error?: string }[] }, nameOf: ((id: string) => string) | undefined, now: number): { active: CiRow[]; failed: CiRow[]; errors: { project: string; error: string }[] };
+export function runLine(run: RunView, now: number): string;

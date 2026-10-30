@@ -187,6 +187,7 @@ linked to the feature. The logic is `featureFollowUps` and `epicGroups` in
 | `GET /work` | all projects merged by ticket, plus per-project attention |
 | `GET /tickets/mine` | open tickets assigned to the tracker account |
 | `GET /github` | pull requests and CI per project and branch, via `gh` |
+| `GET /ci` | workflow runs per project (any branch), via `gh run list`; feeds the Tickets tab's CI section |
 | `GET /tickets?keys=` | tracker details, `writeBack`, or why there is none |
 | `GET /tickets/:key/transitions` | allowed moves (write-back only) |
 | `POST /tickets/:key/comment` | `{confirm, text}` |

@@ -1096,6 +1096,10 @@
       <div class="panel-head"><h2>Checkouts</h2></div>
       <div id="tkProjects" class="tk-projects"></div>
     </section>
+    <section class="panel-flush section-gap" id="tkCiSection" hidden>
+      <div class="panel-head"><h2>CI</h2><span class="count" id="tkCiCount"></span></div>
+      <div id="tkCi"></div>
+    </section>
     <p class="muted" id="tkTracker" style="font-size: 12.5px; margin: 0 0 12px 0;"></p>
     <section class="panel-flush section-gap" id="tkMineSection" hidden>
       <div class="panel-head"><h2>Assigned to me</h2><span class="count" id="tkMineCount"></span></div>
@@ -6846,6 +6850,46 @@
     }).catch(function () { status.textContent = base + " · GitHub not read"; });
   }
 
+  // GET /ci: workflow runs in progress or queued, and failures from the
+  // last day, across the projects. Read on page load and on Refresh.
+  var ciAnswer = null;
+
+  function loadCi() {
+    return fetch("/ci").then(function (r) { return r.json(); }).then(function (answer) {
+      ciAnswer = answer;
+      renderCi();
+    }).catch(function () {});
+  }
+
+  function renderCi() {
+    var section = document.getElementById("tkCiSection");
+    var box = document.getElementById("tkCi");
+    box.textContent = "";
+    if (!ciAnswer || !ciAnswer.projects) { section.hidden = true; return; }
+    var names = {};
+    (ticketsWork ? ticketsWork.projects : []).forEach(function (p) { names[p.id] = p.name; });
+    var now = Date.now();
+    var view = ciView(ciAnswer, function (id) { return names[id] || id; }, now);
+    var running = view.active.filter(function (r) { return r.run.state === "running"; }).length;
+    section.hidden = view.active.length + view.failed.length + view.errors.length === 0 && !ciAnswer.projects.length;
+    document.getElementById("tkCiCount").textContent = running + " running · " + (view.active.length - running) + " queued · " + view.failed.length + " failed today";
+    function row(item) {
+      var line = document.createElement("a"); line.className = "tk-pr"; line.style.display = "block"; line.href = item.run.url; line.target = "_blank"; line.rel = "noopener";
+      line.textContent = item.project + " · " + runLine(item.run, now) + (item.run.title ? " · " + item.run.title : "");
+      box.appendChild(line);
+    }
+    view.active.forEach(row);
+    view.failed.forEach(row);
+    if (view.active.length + view.failed.length === 0) {
+      var none = document.createElement("p"); none.className = "muted"; none.style.margin = "8px 16px"; none.textContent = "Nothing running or failed in the last day.";
+      box.appendChild(none);
+    }
+    view.errors.forEach(function (e) {
+      var er = document.createElement("div"); er.className = "tk-branches"; er.textContent = e.project + ": " + e.error;
+      box.appendChild(er);
+    });
+  }
+
   function loadTicketsInfo() {
     var keys = ticketsWork ? ticketKeysOf(ticketsWork) : [];
     if (keys.length === 0) { ticketsInfo = { configured: false, writeBack: false, tickets: {} }; renderTicketsPage(); return Promise.resolve(); }
@@ -6910,6 +6954,7 @@
       renderTicketsPage();
       loadTicketsInfo();
       loadGithub();
+      loadCi();
     }).catch(function (err) {
       ticketsLoading = false;
       status.textContent = "Could not read: " + err.message;

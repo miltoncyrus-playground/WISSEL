@@ -148,14 +148,94 @@ export async function getProjectPrs(path: string, runner: CommandRunner): Promis
   return { repo, prs: [...newest.values()].sort((a, b) => b.number - a.number) };
 }
 
+export type RunState = "running" | "queued" | "failed" | "passed" | "other";
+
+export interface WorkflowRun {
+  id: number;
+  workflow: string;
+  title: string;
+  branch: string;
+  event: string;
+  state: RunState;
+  url: string;
+  /** When it started running (or was created, while still queued). */
+  startedAt?: string;
+  updatedAt?: string;
+}
+
+export interface ProjectRuns {
+  repo: string;
+  runs: WorkflowRun[];
+}
+
+interface RawRun {
+  databaseId?: number;
+  workflowName?: string;
+  displayTitle?: string;
+  headBranch?: string;
+  event?: string;
+  status?: string;
+  conclusion?: string;
+  url?: string;
+  createdAt?: string;
+  startedAt?: string;
+  updatedAt?: string;
+}
+
+const RUN_FIELDS = "databaseId,workflowName,displayTitle,headBranch,event,status,conclusion,url,createdAt,startedAt,updatedAt";
+export const RUN_LIMIT = 30;
+
+function runState(status: string | undefined, conclusion: string | undefined): RunState {
+  if (status === "in_progress") return "running";
+  if (status === "completed") return FAILED.has((conclusion ?? "").toUpperCase()) ? "failed" : PASSED.has((conclusion ?? "").toUpperCase()) ? "passed" : "other";
+  return status ? "queued" : "other";
+}
+
+/** The newest workflow runs of the repo behind `path`'s `origin`, on any
+ *  branch (so runs on `main` and on branches without a PR show too).
+ *  Read-only `gh run list` with fixed argv. */
+export async function getProjectRuns(path: string, runner: CommandRunner): Promise<ProjectRuns | { error: string }> {
+  const remote = await runner(["git", "remote", "get-url", "origin"], { cwd: path });
+  if (remote.exitCode !== 0) return { error: "no origin remote" };
+  const repo = parseGithubRemote(remote.stdout);
+  if (!repo) return { error: "origin is not a GitHub repository" };
+  const out = await runner(["gh", "run", "list", "--repo", repo, "--limit", String(RUN_LIMIT), "--json", RUN_FIELDS], { cwd: path });
+  if (out.exitCode !== 0) {
+    const reason = (out.stderr || out.stdout).trim().split("\n")[0] ?? "";
+    return { error: `gh: ${reason.slice(0, 200) || `exit ${out.exitCode}`}` };
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(out.stdout);
+  } catch {
+    return { error: "gh: unreadable answer" };
+  }
+  const runs: WorkflowRun[] = [];
+  for (const r of Array.isArray(raw) ? (raw as RawRun[]) : []) {
+    if (typeof r.databaseId !== "number") continue;
+    runs.push({
+      id: r.databaseId,
+      workflow: r.workflowName ?? "workflow",
+      title: r.displayTitle ?? "",
+      branch: r.headBranch ?? "",
+      event: r.event ?? "",
+      state: runState(r.status, r.conclusion),
+      url: r.url ?? "",
+      ...(r.startedAt || r.createdAt ? { startedAt: r.startedAt ?? r.createdAt } : {}),
+      ...(r.updatedAt ? { updatedAt: r.updatedAt } : {}),
+    });
+  }
+  return { runs, repo };
+}
+
 /** Per-path answers kept for `ttlMs`, so the Tickets page's Refresh does
  *  not call GitHub once per project every time. */
-export function withPrCache(
-  fetchPrs: (path: string) => Promise<ProjectPrs | { error: string }>,
+export function withPrCache<T extends object = ProjectPrs>(
+  fetchPrs: (path: string) => Promise<T | { error: string }>,
   ttlMs = 60_000,
   now: () => number = Date.now,
-): (path: string) => Promise<ProjectPrs | { error: string }> {
-  const cache = new Map<string, { at: number; value: ProjectPrs | { error: string } }>();
+): (path: string) => Promise<T | { error: string }> {
+  const cache = new Map<string, { at: number; value: T | { error: string } }>();
   return async (path) => {
     const hit = cache.get(path);
     if (hit && now() - hit.at < ttlMs) return hit.value;

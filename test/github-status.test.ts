@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { CommandRunner } from "../src/executors/claude-cli.ts";
-import { getProjectPrs, parseGithubRemote, summarizeChecks, withPrCache } from "../src/services/github-status.ts";
+import { getProjectPrs, getProjectRuns, parseGithubRemote, summarizeChecks, withPrCache } from "../src/services/github-status.ts";
 
 test("remote URLs in every form give org/repo", () => {
   expect(parseGithubRemote("https://github.com/acme/repo.git")).toBe("acme/repo");
@@ -82,4 +82,31 @@ test("the cache answers within the ttl and does not keep failures", async () => 
   t = 2000;
   await cached("/p");
   expect(n).toBe(4);
+});
+
+test("workflow runs map to running, queued, failed or passed, on any branch, with a fixed argv", async () => {
+  const run = (over: Record<string, unknown>) => ({ databaseId: 1, workflowName: "ci", displayTitle: "t", headBranch: "main", event: "push", url: "u", ...over });
+  const { runner, calls } = fakeRunner({
+    exitCode: 0,
+    stdout: JSON.stringify([
+      run({ databaseId: 1, status: "in_progress", startedAt: "2026-10-30T10:00:00Z" }),
+      run({ databaseId: 2, status: "queued", createdAt: "2026-10-30T10:01:00Z" }),
+      run({ databaseId: 3, status: "completed", conclusion: "failure" }),
+      run({ databaseId: 4, status: "completed", conclusion: "success" }),
+      run({ databaseId: 5, status: "completed", conclusion: "skipped" }),
+      { workflowName: "no id" },
+    ]),
+  });
+  const out = await getProjectRuns("/p", runner);
+  if ("error" in out) throw new Error(out.error);
+  expect(out.repo).toBe("acme/repo");
+  expect(out.runs.map((r) => [r.id, r.state])).toEqual([[1, "running"], [2, "queued"], [3, "failed"], [4, "passed"], [5, "passed"]]);
+  expect(out.runs[1]!.startedAt).toBe("2026-10-30T10:01:00Z");
+  expect(calls[1]!.slice(0, 5)).toEqual(["gh", "run", "list", "--repo", "acme/repo"]);
+});
+
+test("run errors are reported, never thrown", async () => {
+  expect(await getProjectRuns("/p", fakeRunner({ exitCode: 0, stdout: "[]" }, "").runner)).toEqual({ error: "no origin remote" });
+  expect(await getProjectRuns("/p", fakeRunner({ exitCode: 1, stdout: "", stderr: "HTTP 403: nope" }).runner)).toEqual({ error: "gh: HTTP 403: nope" });
+  expect(await getProjectRuns("/p", fakeRunner({ exitCode: 0, stdout: "x" }).runner)).toEqual({ error: "gh: unreadable answer" });
 });

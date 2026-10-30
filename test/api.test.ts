@@ -2251,6 +2251,32 @@ test("GET /github reports pull requests per project, and a project gh cannot rea
   }
 });
 
+test("GET /ci reports workflow runs per project, and a project gh cannot read does not hide the rest", async () => {
+  const a = await mkdtemp(join(tmpdir(), "wissel-api-ci-a-"));
+  const b = await mkdtemp(join(tmpdir(), "wissel-api-ci-b-"));
+  try {
+    gitInitWithCommit(a);
+    gitInitWithCommit(b);
+    const commandRunner: CommandRunner = async (cmd, opts) => {
+      if (cmd[0] === "git" && cmd[1] === "remote") return { stdout: opts.cwd === a ? "git@github-alias:acme/a.git" : "git@github-alias:acme/b.git", stderr: "", exitCode: 0 };
+      if (cmd[0] === "gh" && cmd[4] === "acme/b") return { stdout: "", stderr: "HTTP 403: SAML enforcement", exitCode: 1 };
+      if (cmd[0] === "gh" && cmd[1] === "run") return { stdout: JSON.stringify([{ databaseId: 9, workflowName: "ci", headBranch: "main", status: "in_progress" }]), stderr: "", exitCode: 0 };
+      return runViaBun(cmd, opts);
+    };
+    const app = await makeApp(new SqliteBoard(), { commandRunner });
+    for (const dir of [a, b]) await app(req("/projects/local", { method: "POST", body: JSON.stringify({ path: dir }) }));
+    const res = await app(req("/ci"));
+    expect(res.status).toBe(200);
+    const answer = (await res.json()) as { projects: { repo?: string; error?: string; runs?: { id: number; state: string }[] }[] };
+    expect(answer.projects).toHaveLength(2);
+    expect(answer.projects.find((p) => p.repo === "acme/a")?.runs?.[0]).toMatchObject({ id: 9, state: "running" });
+    expect(answer.projects.find((p) => p.error)?.error).toBe("gh: HTTP 403: SAML enforcement");
+  } finally {
+    await rm(a, { recursive: true, force: true });
+    await rm(b, { recursive: true, force: true });
+  }
+});
+
 test("GET /board-work.js serves the Tickets page helpers", async () => {
   const res = await (await makeApp())(req("/board-work.js"));
   expect(res.status).toBe(200);
