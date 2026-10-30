@@ -548,6 +548,17 @@
   .jt-strip h4 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-muted); }
   .jt-group { padding: 10px 16px; }
   .jt-group h3 { margin: 0 0 4px; font-size: 12px; }
+  .ci-run { padding: 10px 16px; border-bottom: 1px solid var(--line); display: grid; gap: 4px; font-size: 13px; }
+  .ci-run:last-child { border-bottom: 0; }
+  .ci-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+  .ci-head a { color: var(--ink); font-weight: 700; text-decoration: none; overflow-wrap: anywhere; }
+  .ci-head a:hover { text-decoration: underline; }
+  .ci-refs { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .ci-refs a { color: var(--ink); }
+  .ci-jobs { display: grid; gap: 2px; margin-left: 16px; }
+  .ci-jobs a { color: var(--ink-muted); text-decoration: none; overflow-wrap: anywhere; }
+  .ci-jobs a:hover { text-decoration: underline; }
+  .ci-jobs .ci-bad { color: var(--ink); font-weight: 600; }
   .tk-pr { font-size: 13px; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
   .tk-pr:hover { text-decoration: underline; }
   .tk-branches { font-size: 12px; color: var(--ink-muted); overflow-wrap: anywhere; }
@@ -942,6 +953,10 @@
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 5.5a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1V7a1.25 1.25 0 0 0 0 2.5V11a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V9.5A1.25 1.25 0 0 0 2 7z"/><path d="M6.5 6.5v3"/></svg></span>
       <span class="nav-label">Tickets</span>
     </a>
+    <a class="nav-item" href="#/ci" data-route="ci" title="CI">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 4.75V8l2.25 1.5"/></svg></span>
+      <span class="nav-label">CI</span>
+    </a>
     <a class="nav-item" href="#/pipelines" data-route="pipelines" title="Pipelines">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.75"/><circle cx="12.5" cy="3.75" r="1.75"/><circle cx="12.5" cy="12.25" r="1.75"/><path d="M5.25 8h2.5M7.75 8 10.75 4.5M7.75 8l3 3.5"/></svg></span>
       <span class="nav-label">Pipelines</span>
@@ -1096,10 +1111,6 @@
       <div class="panel-head"><h2>Checkouts</h2></div>
       <div id="tkProjects" class="tk-projects"></div>
     </section>
-    <section class="panel-flush section-gap" id="tkCiSection" hidden>
-      <div class="panel-head"><h2>CI</h2><span class="count" id="tkCiCount"></span></div>
-      <div id="tkCi"></div>
-    </section>
     <p class="muted" id="tkTracker" style="font-size: 12.5px; margin: 0 0 12px 0;"></p>
     <section class="panel-flush section-gap" id="tkMineSection" hidden>
       <div class="panel-head"><h2>Assigned to me</h2><span class="count" id="tkMineCount"></span></div>
@@ -1108,6 +1119,16 @@
     <div id="tkTickets"></div>
   </section>
 
+  <section id="ciPage" data-page hidden>
+    <p class="eyebrow">CI</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 16px;">What is running, queued or failed in GitHub Actions across your projects, job by job, with the card and ticket each run belongs to. Read only; it refreshes every 30 seconds while this page is open.</p>
+    <div class="tk-filters">
+      <select id="ciProject" aria-label="Project"><option value="">All projects</option></select>
+      <button type="button" class="harness-manage-btn" id="ciRefresh">Refresh</button>
+      <span class="muted" id="ciStatus" role="status"></span>
+    </div>
+    <div id="ciBody"></div>
+  </section>
   <section id="archivePanel" data-page hidden>
     <p class="eyebrow">Archive</p>
     <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Archived tasks, grouped the same lineage-root way Swimlanes groups live ones — a whole archived feature still reads as one lane. Unarchive a card to bring exactly it back to Board/Swimlanes.</p>
@@ -6810,6 +6831,7 @@
     if (runCanvasId) renderRunCanvas();
     if (route === "setup/projects") { loadProjectsTab(); renderProjectSummaryBox(); }
     if (route === "tickets") { loadTicketsPage(); if (!mineInfo) loadMine(); }
+    if (route === "ci") loadCi();
   }
 
   document.querySelectorAll("#boardViewToggle button").forEach(function (btn) {
@@ -6848,46 +6870,6 @@
       status.textContent = base + " · GitHub read " + new Date().toLocaleTimeString();
       renderTicketsPage();
     }).catch(function () { status.textContent = base + " · GitHub not read"; });
-  }
-
-  // GET /ci: workflow runs in progress or queued, and failures from the
-  // last day, across the projects. Read on page load and on Refresh.
-  var ciAnswer = null;
-
-  function loadCi() {
-    return fetch("/ci").then(function (r) { return r.json(); }).then(function (answer) {
-      ciAnswer = answer;
-      renderCi();
-    }).catch(function () {});
-  }
-
-  function renderCi() {
-    var section = document.getElementById("tkCiSection");
-    var box = document.getElementById("tkCi");
-    box.textContent = "";
-    if (!ciAnswer || !ciAnswer.projects) { section.hidden = true; return; }
-    var names = {};
-    (ticketsWork ? ticketsWork.projects : []).forEach(function (p) { names[p.id] = p.name; });
-    var now = Date.now();
-    var view = ciView(ciAnswer, function (id) { return names[id] || id; }, now);
-    var running = view.active.filter(function (r) { return r.run.state === "running"; }).length;
-    section.hidden = view.active.length + view.failed.length + view.errors.length === 0 && !ciAnswer.projects.length;
-    document.getElementById("tkCiCount").textContent = running + " running · " + (view.active.length - running) + " queued · " + view.failed.length + " failed today";
-    function row(item) {
-      var line = document.createElement("a"); line.className = "tk-pr"; line.style.display = "block"; line.href = item.run.url; line.target = "_blank"; line.rel = "noopener";
-      line.textContent = item.project + " · " + runLine(item.run, now) + (item.run.title ? " · " + item.run.title : "");
-      box.appendChild(line);
-    }
-    view.active.forEach(row);
-    view.failed.forEach(row);
-    if (view.active.length + view.failed.length === 0) {
-      var none = document.createElement("p"); none.className = "muted"; none.style.margin = "8px 16px"; none.textContent = "Nothing running or failed in the last day.";
-      box.appendChild(none);
-    }
-    view.errors.forEach(function (e) {
-      var er = document.createElement("div"); er.className = "tk-branches"; er.textContent = e.project + ": " + e.error;
-      box.appendChild(er);
-    });
   }
 
   function loadTicketsInfo() {
@@ -6954,7 +6936,6 @@
       renderTicketsPage();
       loadTicketsInfo();
       loadGithub();
-      loadCi();
     }).catch(function (err) {
       ticketsLoading = false;
       status.textContent = "Could not read: " + err.message;
@@ -7091,6 +7072,133 @@
   document.getElementById("tkProject").addEventListener("change", renderTicketsPage);
   document.getElementById("tkAttention").addEventListener("change", renderTicketsPage);
   document.getElementById("tkRefresh").addEventListener("click", loadTicketsPage);
+
+  // --- CI page -----------------------------------------------------------
+  //
+  // GET /ci: workflow runs per project with the jobs of live and failed
+  // ones (src/services/github-status.ts). Each run is tied to its ticket
+  // and cards by board-work.js runRefs. Read on each visit, on Refresh
+  // and every 30 s while the page is open; the server caches 60 s.
+  var ciAnswer = null;
+  var ciTickets = {};
+  var ciLoading = false;
+
+  function loadCi() {
+    if (ciLoading) return;
+    ciLoading = true;
+    var status = document.getElementById("ciStatus");
+    status.textContent = "Reading GitHub…";
+    fetch("/ci").then(function (r) { return r.json(); }).then(function (answer) {
+      ciAnswer = answer;
+      status.textContent = "Read " + new Date().toLocaleTimeString();
+      renderCi();
+      return loadCiTickets();
+    }).catch(function () { status.textContent = "Could not read GitHub"; }).then(function () { ciLoading = false; });
+  }
+
+  // Summary and link for the ticket keys the runs name, when a tracker is set up.
+  function loadCiTickets() {
+    var keys = {};
+    var view = ciView(ciAnswer, null, Date.now());
+    view.active.concat(view.failed).forEach(function (row) {
+      var k = runRefs(row.run, projects.filter(function (p) { return p.id === row.projectId; })[0], tasks, projects).key;
+      if (k) keys[k] = true;
+    });
+    var list = Object.keys(keys);
+    if (!list.length) return Promise.resolve();
+    return fetch("/tickets?keys=" + encodeURIComponent(list.join(","))).then(function (r) { return r.json(); }).then(function (info) {
+      ciTickets = (info && info.tickets) || {};
+      renderCi();
+    }).catch(function () {});
+  }
+
+  function renderCi() {
+    var body = document.getElementById("ciBody");
+    var sel = document.getElementById("ciProject");
+    var names = {};
+    projects.forEach(function (p) { names[p.id] = p.name || p.id; });
+    var chosen = sel.value;
+    sel.textContent = "";
+    var all = document.createElement("option"); all.value = ""; all.textContent = "All projects"; sel.appendChild(all);
+    projects.forEach(function (p) { var o = document.createElement("option"); o.value = p.id; o.textContent = p.name || p.id; sel.appendChild(o); });
+    sel.value = chosen;
+    body.textContent = "";
+    if (!ciAnswer || !ciAnswer.projects) return;
+    var now = Date.now();
+    var view = ciView(ciAnswer, function (id) { return names[id] || id; }, now);
+    var keep = function (row) { return !sel.value || row.projectId === sel.value; };
+    var running = view.active.filter(function (r) { return keep(r) && r.run.state === "running"; });
+    var queued = view.active.filter(function (r) { return keep(r) && r.run.state === "queued"; });
+    var failed = view.failed.filter(keep);
+
+    function run(row, host) {
+      var r = row.run;
+      var box = document.createElement("div"); box.className = "ci-run";
+      var head = document.createElement("div"); head.className = "ci-head";
+      var link = document.createElement("a"); link.href = r.url; link.target = "_blank"; link.rel = "noopener";
+      link.textContent = r.workflow + " · " + (r.branch || "?");
+      var when = document.createElement("span"); when.className = "muted"; when.textContent = runLine(r, now).split(" · ")[0];
+      var where = document.createElement("span"); where.className = "muted"; where.textContent = row.project + (r.event ? " · " + r.event : "");
+      head.appendChild(link); head.appendChild(when); head.appendChild(where);
+      box.appendChild(head);
+      if (r.title) { var t = document.createElement("div"); t.className = "muted"; t.textContent = r.title; box.appendChild(t); }
+      var refs = runRefs(r, projects.filter(function (p) { return p.id === row.projectId; })[0], tasks, projects);
+      if (refs.key || refs.cards.length) {
+        var line = document.createElement("div"); line.className = "ci-refs";
+        if (refs.key) {
+          var info = ciTickets[refs.key];
+          var tk = document.createElement(info && info.url ? "a" : "span");
+          if (info && info.url) { tk.href = info.url; tk.target = "_blank"; tk.rel = "noopener"; }
+          tk.textContent = refs.key + (info ? " · " + info.summary + " · " + info.status : "");
+          line.appendChild(tk);
+        }
+        refs.cards.forEach(function (c) {
+          var b = document.createElement("button"); b.type = "button"; b.className = "tk-share-card";
+          b.textContent = "Card: " + (c.title || c.id.slice(0, 8)) + " · " + c.status;
+          b.addEventListener("click", function () { openTaskDrawer(c.id); });
+          line.appendChild(b);
+        });
+        box.appendChild(line);
+      } else {
+        var none = document.createElement("div"); none.className = "muted"; none.textContent = "No card or ticket found for this branch";
+        box.appendChild(none);
+      }
+      if (r.jobs && r.jobs.length) {
+        var jobs = document.createElement("div"); jobs.className = "ci-jobs";
+        r.jobs.forEach(function (j) {
+          var a = document.createElement("a"); a.href = j.url || r.url; a.target = "_blank"; a.rel = "noopener";
+          if (j.state === "failed") a.className = "ci-bad";
+          a.textContent = jobLine(j, now);
+          jobs.appendChild(a);
+        });
+        box.appendChild(jobs);
+      }
+      host.appendChild(box);
+    }
+
+    function group(title, rows) {
+      var section = document.createElement("section"); section.className = "panel-flush section-gap";
+      var h = document.createElement("div"); h.className = "panel-head";
+      h.innerHTML = "<h2></h2><span class=\"count\"></span>";
+      h.querySelector("h2").textContent = title;
+      h.querySelector(".count").textContent = String(rows.length);
+      section.appendChild(h);
+      if (rows.length === 0) { var e = document.createElement("p"); e.className = "muted"; e.style.margin = "8px 16px"; e.textContent = "None."; section.appendChild(e); }
+      rows.forEach(function (row) { run(row, section); });
+      body.appendChild(section);
+    }
+    group("Running", running);
+    if (queued.length) group("Queued", queued);
+    group("Failed in the last day", failed);
+    view.errors.forEach(function (e) {
+      var er = document.createElement("div"); er.className = "tk-branches"; er.textContent = e.project + ": " + e.error;
+      body.appendChild(er);
+    });
+  }
+
+  document.getElementById("ciProject").addEventListener("change", renderCi);
+  document.getElementById("ciRefresh").addEventListener("click", loadCi);
+  setInterval(function () { if (currentRoute === "ci" && !document.hidden) loadCi(); }, 30000);
 
   // --- Memory tab ----------------------------------------------------
   function formatMemoryRunHead(run) {

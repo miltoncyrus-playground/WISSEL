@@ -161,6 +161,18 @@ export interface WorkflowRun {
   /** When it started running (or was created, while still queued). */
   startedAt?: string;
   updatedAt?: string;
+  /** The jobs of a run that is running, queued or failed today. */
+  jobs?: RunJob[];
+}
+
+export interface RunJob {
+  name: string;
+  state: RunState;
+  url: string;
+  startedAt?: string;
+  completedAt?: string;
+  /** The step in progress, or the one that failed. */
+  step?: string;
 }
 
 export interface ProjectRuns {
@@ -184,6 +196,42 @@ interface RawRun {
 
 const RUN_FIELDS = "databaseId,workflowName,displayTitle,headBranch,event,status,conclusion,url,createdAt,startedAt,updatedAt";
 export const RUN_LIMIT = 30;
+/** Runs per project whose jobs are read: one `gh run view` each. */
+export const JOB_RUNS = 8;
+const DAY_MS = 24 * 3600 * 1000;
+
+interface RawJob {
+  name?: string;
+  status?: string;
+  conclusion?: string;
+  url?: string;
+  startedAt?: string;
+  completedAt?: string;
+  steps?: { name?: string; status?: string; conclusion?: string }[];
+}
+
+async function readJobs(repo: string, id: number, path: string, runner: CommandRunner): Promise<RunJob[] | undefined> {
+  const out = await runner(["gh", "run", "view", String(id), "--repo", repo, "--json", "jobs"], { cwd: path });
+  if (out.exitCode !== 0) return undefined;
+  try {
+    const raw = (JSON.parse(out.stdout) as { jobs?: RawJob[] }).jobs;
+    if (!Array.isArray(raw)) return undefined;
+    return raw.map((j) => {
+      const state = runState(j.status?.toLowerCase(), j.conclusion?.toLowerCase());
+      const step = (j.steps ?? []).find((x) => (state === "failed" ? FAILED.has((x.conclusion ?? "").toUpperCase()) : x.status?.toLowerCase() === "in_progress"))?.name;
+      return {
+        name: j.name ?? "job",
+        state,
+        url: j.url ?? "",
+        ...(j.startedAt ? { startedAt: j.startedAt } : {}),
+        ...(j.completedAt ? { completedAt: j.completedAt } : {}),
+        ...(step ? { step } : {}),
+      };
+    });
+  } catch {
+    return undefined;
+  }
+}
 
 function runState(status: string | undefined, conclusion: string | undefined): RunState {
   if (status === "in_progress") return "running";
@@ -194,7 +242,7 @@ function runState(status: string | undefined, conclusion: string | undefined): R
 /** The newest workflow runs of the repo behind `path`'s `origin`, on any
  *  branch (so runs on `main` and on branches without a PR show too).
  *  Read-only `gh run list` with fixed argv. */
-export async function getProjectRuns(path: string, runner: CommandRunner): Promise<ProjectRuns | { error: string }> {
+export async function getProjectRuns(path: string, runner: CommandRunner, now: () => number = Date.now): Promise<ProjectRuns | { error: string }> {
   const remote = await runner(["git", "remote", "get-url", "origin"], { cwd: path });
   if (remote.exitCode !== 0) return { error: "no origin remote" };
   const repo = parseGithubRemote(remote.stdout);
@@ -225,6 +273,12 @@ export async function getProjectRuns(path: string, runner: CommandRunner): Promi
       ...(r.updatedAt ? { updatedAt: r.updatedAt } : {}),
     });
   }
+  // Jobs only for what is worth opening: live runs and today's failures.
+  const open = runs.filter((r) => r.state === "running" || r.state === "queued" || (r.state === "failed" && r.updatedAt && now() - Date.parse(r.updatedAt) < DAY_MS)).slice(0, JOB_RUNS);
+  await Promise.all(open.map(async (r) => {
+    const jobs = await readJobs(repo, r.id, path, runner);
+    if (jobs) r.jobs = jobs;
+  }));
   return { runs, repo };
 }
 

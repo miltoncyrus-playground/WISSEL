@@ -118,7 +118,7 @@ function ciView(answer, nameOf, now) {
     var name = nameOf ? nameOf(p.id) : p.id;
     if (p.error) { errors.push({ project: name, error: p.error }); return; }
     (p.runs || []).forEach(function (r) {
-      var row = { project: name, repo: p.repo, run: r };
+      var row = { projectId: p.id, project: name, repo: p.repo, run: r };
       if (r.state === "running" || r.state === "queued") active.push(row);
       else if (r.state === "failed" && r.updatedAt && now - Date.parse(r.updatedAt) < day) failed.push(row);
     });
@@ -136,6 +136,28 @@ function runLine(run, now) {
   var span = secs === null ? "" : secs < 90 ? secs + "s" : secs < 5400 ? Math.round(secs / 60) + "m" : Math.round(secs / 3600) + "h";
   var head = run.state === "failed" ? "failed" + (span ? " " + span + " ago" : "") : run.state + (span ? " " + span : "");
   return head + " · " + run.workflow + " · " + (run.branch || "?");
+}
+
+// What a run belongs to: the ticket key in its branch or title (by the
+// project's own patterns) and the live cards of that project that land on
+// the same branch or carry the same key.
+function runRefs(run, project, tasks, projects) {
+  var key = ticketKeyOf([run.branch, run.title], project && project.ticketPatterns);
+  var cards = project ? tasks.filter(function (t) {
+    if (t.archivedAt || projectForRepo(t.repo, projects) !== project) return false;
+    return (!!run.branch && t.mergeTarget === run.branch) || (!!key && cardTicketKey(t, projects) === key);
+  }) : [];
+  return { key: key, cards: cards };
+}
+
+// "build › Run tests · running 2m": one job as text.
+function jobLine(job, now) {
+  var from = Date.parse(job.state === "running" || job.state === "queued" ? job.startedAt || "" : job.completedAt || "");
+  var secs = isNaN(from) ? null : Math.max(0, Math.round((now - from) / 1000));
+  var span = secs === null ? "" : secs < 90 ? secs + "s" : secs < 5400 ? Math.round(secs / 60) + "m" : Math.round(secs / 3600) + "h";
+  var done = job.state === "failed" || job.state === "passed";
+  var head = job.state === "other" ? "skipped" : job.state;
+  return job.name + (job.step ? " › " + job.step : "") + " · " + head + (span ? (done ? " " + span + " ago" : " " + span) : "");
 }
 
 // GET /github as { projectId: { branch: pr } }, or the project's error.
@@ -250,5 +272,7 @@ if (typeof module !== "undefined" && module.exports) {
     prsByProject: prsByProject,
     ciView: ciView,
     runLine: runLine,
+    runRefs: runRefs,
+    jobLine: jobLine,
   };
 }

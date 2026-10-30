@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { cardTicketKey, filterWork, projectForRepo, cardsForTicket, epicGroups, featureFollowUps, prLine, ciView, runLine, ticketStarted, workByKey, prsByProject, ticketCardDraft, projectStateLine, ticketKeyOf, ticketSummary } from "../src/api/public/board-work.js";
+import { cardTicketKey, filterWork, projectForRepo, cardsForTicket, epicGroups, featureFollowUps, prLine, ciView, runLine, runRefs, jobLine, ticketStarted, workByKey, prsByProject, ticketCardDraft, projectStateLine, ticketKeyOf, ticketSummary } from "../src/api/public/board-work.js";
 import { attentionOf, groupWork, type ProjectGitOverview, type WorkView } from "../src/services/project-git.ts";
 import type { ProjectGitStatus } from "../src/services/project-status.ts";
 
@@ -205,4 +205,33 @@ test("ciView lists active runs (running first, oldest first) and failures from t
   expect(view.errors).toEqual([{ project: "B", error: "gh: nope" }]);
   expect(runLine(view.active[0]!.run, now)).toBe("running 20m · ci · main");
   expect(runLine(view.failed[0]!.run, now)).toBe("failed 3h ago · ci · main");
+});
+
+test("runRefs ties a run to its ticket key and to the cards that land on its branch or carry the key", () => {
+  const project = { id: "p", path: "/r/a", ticketPatterns: ["ABC-\\d+"] };
+  const other = { id: "q", path: "/r/b" };
+  const projects = [project, other];
+  const tasks = [
+    { id: "1", title: "ABC-7: do it", repo: "/r/a", status: "running" },
+    { id: "2", title: "unrelated", repo: "/r/a", mergeTarget: "feat/x", status: "review" },
+    { id: "3", title: "ABC-7: other repo", repo: "/r/b", status: "inbox" },
+    { id: "4", title: "ABC-7: archived", repo: "/r/a", archivedAt: "2026-10-01", status: "done" },
+    { id: "5", title: "nothing", repo: "/r/a", status: "inbox" },
+  ];
+  const run = (branch: string, title = "") => ({ id: 1, workflow: "ci", title, branch, event: "push", url: "u", state: "running" as const });
+  const a = runRefs(run("feat/abc-7-x", "ABC-7 thing"), project, tasks, projects);
+  expect(a.key).toBe("ABC-7");
+  expect(a.cards.map((c) => c.id)).toEqual(["1"]);
+  const b = runRefs(run("feat/x"), project, tasks, projects);
+  expect(b.key).toBeUndefined();
+  expect(b.cards.map((c) => c.id)).toEqual(["2"]);
+  expect(runRefs(run("main"), project, tasks, projects)).toEqual({ key: undefined, cards: [] });
+  expect(runRefs(run("main"), undefined, tasks, projects).cards).toEqual([]);
+});
+
+test("jobLine reads a job as text with its step and age", () => {
+  const now = Date.parse("2026-10-30T12:00:00Z");
+  expect(jobLine({ name: "build", state: "running", url: "", startedAt: "2026-10-30T11:56:00Z", step: "Test" }, now)).toBe("build › Test · running 4m");
+  expect(jobLine({ name: "lint", state: "failed", url: "", completedAt: "2026-10-30T09:00:00Z", step: "Run lint" }, now)).toBe("lint › Run lint · failed 3h ago");
+  expect(jobLine({ name: "docs", state: "queued", url: "" }, now)).toBe("docs · queued");
 });

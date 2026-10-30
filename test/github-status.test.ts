@@ -110,3 +110,39 @@ test("run errors are reported, never thrown", async () => {
   expect(await getProjectRuns("/p", fakeRunner({ exitCode: 1, stdout: "", stderr: "HTTP 403: nope" }).runner)).toEqual({ error: "gh: HTTP 403: nope" });
   expect(await getProjectRuns("/p", fakeRunner({ exitCode: 0, stdout: "x" }).runner)).toEqual({ error: "gh: unreadable answer" });
 });
+
+test("jobs are read for live runs and failures of the last day only, with the step in progress or failed", async () => {
+  const now = Date.parse("2026-10-30T12:00:00Z");
+  const run = (over: Record<string, unknown>) => ({ workflowName: "ci", headBranch: "main", url: "u", ...over });
+  const viewed: string[] = [];
+  const runner: CommandRunner = async (cmd) => {
+    if (cmd[0] === "git") return { exitCode: 0, stdout: "git@github-alias:acme/repo.git", stderr: "" };
+    if (cmd[1] === "run" && cmd[2] === "list") {
+      return { exitCode: 0, stderr: "", stdout: JSON.stringify([
+        run({ databaseId: 1, status: "in_progress", startedAt: "2026-10-30T11:55:00Z" }),
+        run({ databaseId: 2, status: "completed", conclusion: "failure", updatedAt: "2026-10-30T10:00:00Z" }),
+        run({ databaseId: 3, status: "completed", conclusion: "failure", updatedAt: "2026-10-27T10:00:00Z" }),
+        run({ databaseId: 4, status: "completed", conclusion: "success", updatedAt: "2026-10-30T10:00:00Z" }),
+      ]) };
+    }
+    viewed.push(cmd.join(" "));
+    if (cmd[3] === "2") return { exitCode: 1, stdout: "", stderr: "boom" };
+    return { exitCode: 0, stderr: "", stdout: JSON.stringify({ jobs: [
+      { name: "build", status: "in_progress", conclusion: "", url: "j1", startedAt: "2026-10-30T11:56:00Z", steps: [{ name: "Set up", status: "completed", conclusion: "success" }, { name: "Test", status: "in_progress", conclusion: "" }] },
+      { name: "lint", status: "completed", conclusion: "failure", url: "j2", steps: [{ name: "Run lint", status: "completed", conclusion: "failure" }] },
+      { name: "docs", status: "queued", conclusion: "", url: "j3" },
+    ] }) };
+  };
+  const out = await getProjectRuns("/p", runner, () => now);
+  if ("error" in out) throw new Error(out.error);
+  expect(viewed).toEqual(["gh run view 1 --repo acme/repo --json jobs", "gh run view 2 --repo acme/repo --json jobs"]);
+  expect(out.runs[0]!.jobs).toEqual([
+    { name: "build", state: "running", url: "j1", startedAt: "2026-10-30T11:56:00Z", step: "Test" },
+    { name: "lint", state: "failed", url: "j2", step: "Run lint" },
+    { name: "docs", state: "queued", url: "j3" },
+  ]);
+  // A failed `gh run view` leaves the run without jobs and is not an error.
+  expect(out.runs[1]!.jobs).toBeUndefined();
+  expect(out.runs[2]!.jobs).toBeUndefined();
+  expect(out.runs[3]!.jobs).toBeUndefined();
+});
