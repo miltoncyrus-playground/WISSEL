@@ -456,7 +456,7 @@ shares one refresh mechanism and one file format. `codex-cli` harnesses'
 entries come from a live `codex debug models` run under the harness's
 `CODEX_HOME` (§7, revised 2026-10-13), with the same keep-previous-entry
 rule on failure as `anthropic-api` below.
-`bun run models:refresh` (`scripts/refresh-models-once.ts`) runs one
+`bun run models:refresh` (`scripts/models-refresh.ts`) runs one
 tick against the real pool on demand and prints each harness's entry.
 `anthropic-api` harnesses' entries are refreshed by calling
 `client.models.list()` when `fetchedAt` is more than 24h old; a fetch
