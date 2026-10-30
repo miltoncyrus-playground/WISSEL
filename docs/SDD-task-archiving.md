@@ -78,14 +78,19 @@ undefined) **for the 24h-since-done trigger; cascading is what reaches
 everything else.** A non-root task reaching `done` on its own (e.g. one
 subtask of a still-in-progress feature) never independently
 auto-archives — only the feature's root does, once *it* has been done
-for 24h, and archiving the root cascades to every descendant regardless
-of each descendant's own age or even its own status (a child still
-sitting at `failed` or `escalated` when its root finally lands on
-`done`+24h archives right along with it). Rationale: the alternative —
-a child silently vanishing from the board while its still-active
-siblings remain — is more confusing than a rare early cascade. This is
-the one decision most worth a second look if it turns out to surprise
-anyone in practice.
+for 24h **and every descendant is settled** (done, superseded or already
+archived); archiving the root then cascades to the whole subtree. A
+child still queued, running, in review, failed or escalated holds its
+root on the board. Rationale: a child silently vanishing while its
+still-active siblings remain is confusing, so the tree goes together,
+and only once nothing in it needs work or a decision.
+
+*Revised 2026-10-30.* This section first said the cascade ran
+"regardless of each descendant's own status", flagged as the decision
+most worth a second look. It surprised on the first tick with
+WISSEL_AUTO_ARCHIVE on: planner roots are `done` minutes after they
+plan, so their 24h mark archived four live subtasks, two of them in
+review. Fixed in findArchivableRoots (src/core/archive-scheduler.ts).
 
 **3.5 — Manual archive works on any task, any status, from either
 view.** `POST /tasks/:id/archive` cascades to that task's own subtree

@@ -14,20 +14,54 @@ export const AUTO_ARCHIVE_AFTER_HOURS = 24;
  * Auto-archive only ever evaluates root tasks (no parentTaskId) — a
  * non-root task reaching `done` on its own never independently
  * auto-archives; only its lineage root does, once the root itself has
- * been done for 24h, and archiving the root cascades to every
- * descendant regardless of each descendant's own age or status. See
- * docs/SDD-task-archiving.md §3.4 for the full rationale (and why this
- * is the one decision most worth a second look).
+ * been done for 24h AND every descendant is settled (done, superseded
+ * or already archived). Archiving the root then cascades to the whole
+ * subtree. See docs/SDD-task-archiving.md §3.4.
+ *
+ * Why the settled check: a planner root is `done` minutes after it
+ * plans, while its subtasks run for days. Without the check, its 24h
+ * mark swept subtasks that were in review or queued off the board
+ * (2026-10-30: four live cards, two of them waiting on Milton's review,
+ * archived on the first tick after WISSEL_AUTO_ARCHIVE was turned on).
  */
 export function findArchivableRoots(tasks: TaskCard[], now: Date = new Date()): TaskCard[] {
+  const children = new Map<string, TaskCard[]>();
+  for (const t of tasks) {
+    if (!t.parentTaskId) continue;
+    const siblings = children.get(t.parentTaskId) ?? [];
+    siblings.push(t);
+    children.set(t.parentTaskId, siblings);
+  }
   return tasks.filter((t) => {
     if (t.parentTaskId) return false;
     if (t.status !== "done") return false;
     if (!t.doneAt) return false;
     if (t.archivedAt) return false;
     const elapsedMs = now.getTime() - new Date(t.doneAt).getTime();
-    return elapsedMs >= AUTO_ARCHIVE_AFTER_HOURS * 60 * 60 * 1000;
+    if (elapsedMs < AUTO_ARCHIVE_AFTER_HOURS * 60 * 60 * 1000) return false;
+    return subtreeSettled(t, children);
   });
+}
+
+/** A card the board no longer needs to show: done, replaced by a later
+ *  attempt, or already archived. Anything else (queued, running, in
+ *  review, failed, escalated) still has work or a decision pending. */
+function settled(t: TaskCard): boolean {
+  return t.status === "done" || !!t.supersededBy || !!t.archivedAt;
+}
+
+/** Every descendant of `root` (by parentTaskId) is settled. */
+function subtreeSettled(root: TaskCard, children: Map<string, TaskCard[]>): boolean {
+  const stack = [...(children.get(root.id) ?? [])];
+  const seen = new Set<string>([root.id]);
+  while (stack.length) {
+    const t = stack.pop()!;
+    if (seen.has(t.id)) continue;
+    seen.add(t.id);
+    if (!settled(t)) return false;
+    stack.push(...(children.get(t.id) ?? []));
+  }
+  return true;
 }
 
 /**

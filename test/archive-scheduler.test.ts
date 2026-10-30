@@ -81,6 +81,11 @@ test("runAutoArchiveTick: a real done root + a 2-card subtree, doneAt 25h in the
     const childA = await board.create({ title: "child a", body: "", labels: [], repo: "r", parentTaskId: root.id });
     const childB = await board.create({ title: "child b", body: "", labels: [], repo: "r", parentTaskId: childA.id });
     await board.move(root.id, "done");
+    // Settled children: an unsettled one holds the root (see the
+    // 2026-10-30 tests below). Their own doneAt is fresh on purpose:
+    // only the root's age counts.
+    await board.move(childA.id, "done");
+    await board.move(childB.id, "done");
     backdateDoneAt(dbPath, root.id, new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString());
 
     const archived = await runAutoArchiveTick(board);
@@ -131,6 +136,55 @@ test("startArchiveScheduler: ticks immediately and archives an eligible root wit
     } finally {
       scheduler.stop();
     }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// --- a root waits while anything under it is unsettled (2026-10-30) ---
+
+test("findArchivableRoots: a done planner root with a subtask in review or inbox stays (2026-10-30)", () => {
+  const now = new Date("2026-09-23T12:00:00.000Z");
+  const doneAt = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString();
+  const root = card({ id: "plan", status: "done", doneAt });
+  for (const status of ["review", "inbox", "running", "failed", "escalated", "pending-review", "no-match"] as const) {
+    const sub = card({ id: "sub", status, parentTaskId: "plan" });
+    expect(findArchivableRoots([root, sub], now)).toEqual([]);
+    // Two levels down counts too (a subtask's own reviewer or integrator).
+    const mid = card({ id: "mid", status: "done", doneAt, parentTaskId: "plan" });
+    const deep = card({ id: "deep", status, parentTaskId: "mid" });
+    expect(findArchivableRoots([root, mid, deep], now)).toEqual([]);
+  }
+});
+
+test("findArchivableRoots: done, superseded and archived descendants don't hold the root", () => {
+  const now = new Date("2026-09-23T12:00:00.000Z");
+  const doneAt = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
+  const root = card({ id: "plan", status: "done", doneAt });
+  const tasks = [
+    root,
+    card({ id: "a", status: "done", doneAt: now.toISOString(), parentTaskId: "plan" }),
+    card({ id: "b", status: "escalated", supersededBy: "c", parentTaskId: "plan" }),
+    card({ id: "d", status: "failed", archivedAt: doneAt, parentTaskId: "plan" }),
+  ];
+  expect(findArchivableRoots(tasks, now)).toEqual([root]);
+});
+
+test("runAutoArchiveTick: a live subtask under an old done root is not archived", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-archive-live-child-"));
+  const dbPath = join(dir, "board.sqlite");
+  try {
+    const board = new SqliteBoard(dbPath);
+    const root = await board.create({ title: "plan", body: "", labels: [], repo: "r" });
+    await board.move(root.id, "done");
+    backdateDoneAt(dbPath, root.id, new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString());
+    const sub = await board.create({ title: "sub", body: "", labels: [], repo: "r", parentTaskId: root.id });
+    await board.move(sub.id, "review");
+    expect(await runAutoArchiveTick(board)).toEqual([]);
+    expect((await board.get(sub.id))!.archivedAt).toBeUndefined();
+    // Once the subtask lands, the whole tree goes on the next tick.
+    await board.move(sub.id, "done");
+    expect((await runAutoArchiveTick(board)).map((t) => t.id).sort()).toEqual([root.id, sub.id].sort());
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
