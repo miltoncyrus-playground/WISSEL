@@ -25,7 +25,6 @@
     "test:e2e:affected": "bun run scripts/e2e-affected.ts --run",
     "seed:ai-news": "bun run scripts/seed-ai-news-pipeline.ts",
     "seed:schedules": "bun run scripts/seed-schedules.ts",
-    "models:refresh": "bun run scripts/refresh-models-once.ts",
     "check:news-run": "bun run scripts/check-news-run.ts",
     "eval:ai-news": "bun run eval/ai-news-podcast.eval.ts",
     "eval:world-news": "bun run eval/ai-news-podcast.eval.ts --world",
