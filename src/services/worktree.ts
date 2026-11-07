@@ -545,6 +545,8 @@ async function mergeLocked(
   const extra: Partial<Unlocked> = resolvedConflictBy ? { resolvedConflictBy } : {};
   const landNote = resolvedConflictBy ? ` (finished the conflict merge resolved by card ${resolvedConflictBy})` : "";
 
+  const stubs = await dropStubsWith(git, worktree.path);
+  if (stubs.length) console.log(`merge ${task.id}: removed ${stubs.length} sandbox stub file(s) before staging: ${stubs.join(", ")}`);
   const status = await git(worktree.path, ["status", "--porcelain"]);
   if (status.stdout.trim()) {
     await git(worktree.path, ["add", "-A"]);
@@ -752,6 +754,7 @@ async function finishResolvedMerge(git: Git, repo: string, worktree: TaskWorktre
     return refuse("conflict", `${integrator.reason}. Wissel only commits a resolution its integrator card finished; a manual one is finished with \`git add -A && git commit --no-edit\` there, then merge again.`);
   }
 
+  await dropStubsWith(git, worktree.path);
   const add = await git(worktree.path, ["add", "-A"]);
   if (!add.ok) return refuse("error", `\`git add -A\` failed while finishing the resolved merge: ${add.text}`);
   const commit = await git(worktree.path, ["commit", "--no-edit", "--cleanup=strip"]);
@@ -824,6 +827,80 @@ function blockedResult(repo: string, files: string[], gate: GateReport): Unlocke
 }
 
 type Git = (cwd: string, args: string[]) => Promise<{ ok: boolean; stdout: string; text: string }>;
+
+/**
+ * Paths Claude Code's Linux Bash sandbox (bwrap) creates in the working
+ * directory as empty mount points for the files it write-protects. They
+ * exist while a sandboxed Bash call runs and are normally gone when it
+ * ends, but an interrupted run (killed card, crash, timeout) can leave
+ * them behind as untracked empty files, and the merge's `git add -A` then
+ * committed them (seen on cards: `.bashrc`, `.gitconfig`, `.mcp.json`,
+ * `.claude/settings.local.json`, ...). Entries ending in "/" match
+ * everything under that directory. docs/SDD-write-tier-sandbox.md.
+ */
+export const SANDBOX_STUB_PATHS: readonly string[] = [
+  ".bashrc",
+  ".bash_profile",
+  ".zshrc",
+  ".zprofile",
+  ".profile",
+  ".gitconfig",
+  ".gitmodules",
+  ".ripgreprc",
+  ".mcp.json",
+  ".claude/settings.local.json",
+  ".claude/launch.json",
+  ".claude/loop.md",
+  ".claude/scheduled_tasks.json",
+  ".claude/agents/",
+  ".claude/commands/",
+  ".claude/hooks/",
+  ".claude/output-styles/",
+  ".claude/routines/",
+  ".claude/skills/",
+  ".claude/workflows/",
+  ".vscode/",
+  ".idea/",
+];
+
+/** True for a repo-relative path the sandbox uses as a mount point. */
+export function isSandboxStubPath(rel: string): boolean {
+  return SANDBOX_STUB_PATHS.some((p) => (p.endsWith("/") ? rel.startsWith(p) : rel === p));
+}
+
+/**
+ * Deletes sandbox mount-point leftovers from a worktree before a merge
+ * stages it: only paths that are untracked, on SANDBOX_STUB_PATHS, and an
+ * empty regular file. A stub-named file with content (an agent that
+ * really wrote `.mcp.json`) or any tracked file is never touched; empty
+ * directories need nothing, since git never stages them. Returns the
+ * repo-relative paths removed. A failing `git status` (not a repo, gone)
+ * removes nothing.
+ */
+export async function dropSandboxStubs(runner: CommandRunner, worktreePath: string): Promise<string[]> {
+  return dropStubsWith(gitIn(runner), worktreePath);
+}
+
+async function dropStubsWith(git: Git, worktreePath: string): Promise<string[]> {
+  const status = await git(worktreePath, ["status", "--porcelain", "--untracked-files=all", "-z"]);
+  if (!status.ok) return [];
+  const removed: string[] = [];
+  for (const entry of status.stdout.split("\0")) {
+    if (!entry.startsWith("?? ")) continue;
+    const rel = entry.slice(3);
+    if (!isSandboxStubPath(rel)) continue;
+    const abs = join(worktreePath, rel);
+    try {
+      const st = statSync(abs);
+      if (!st.isFile() || st.size !== 0) continue;
+      rmSync(abs);
+      removed.push(rel);
+    } catch {
+      // Vanished between status and stat: nothing to remove.
+    }
+  }
+  return removed;
+}
 
 function gitIn(runner: CommandRunner): Git {
   return async (cwd, args) => {
