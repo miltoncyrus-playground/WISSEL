@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -879,6 +880,67 @@ export function isSandboxStubPath(rel: string): boolean {
  */
 export async function dropSandboxStubs(runner: CommandRunner, worktreePath: string): Promise<string[]> {
   return dropStubsWith(gitIn(runner), worktreePath);
+}
+
+/**
+ * A fingerprint of everything a card has changed in its worktree: the
+ * tracked diff against HEAD plus each untracked file's path and blob id.
+ * Empty sandbox stubs (isSandboxStubPath) don't count. Null when there is
+ * no change at all, or when `path` isn't a git worktree. Read-only: it
+ * never touches the index. Used by the review guard
+ * (src/core/orchestrator.ts reviewGuardDecision).
+ */
+export async function worktreeDiffFingerprint(runner: CommandRunner, path: string): Promise<string | null> {
+  const git = gitIn(runner);
+  const diff = await git(path, ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff"]);
+  if (!diff.ok) return null;
+  const untracked = await git(path, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (!untracked.ok) return null;
+  const parts: string[] = [];
+  for (const rel of untracked.stdout.split("\0").filter(Boolean).sort()) {
+    const abs = join(path, rel);
+    try {
+      const st = statSync(abs);
+      if (!st.isFile()) continue;
+      if (st.size === 0 && isSandboxStubPath(rel)) continue;
+    } catch {
+      continue;
+    }
+    const blob = await git(path, ["hash-object", "--", rel]);
+    parts.push(`${rel}\0${blob.ok ? blob.stdout.trim() : "?"}`);
+  }
+  if (!diff.stdout && parts.length === 0) return null;
+  return createHash("sha256").update(diff.stdout).update("\0untracked\0").update(parts.join("\n")).digest("hex");
+}
+
+const REVIEWED_MARKER = "wissel-reviewed-diff";
+
+async function markerPath(runner: CommandRunner, path: string): Promise<string | undefined> {
+  const dir = await gitIn(runner)(path, ["rev-parse", "--absolute-git-dir"]);
+  return dir.ok ? join(dir.stdout.trim(), REVIEWED_MARKER) : undefined;
+}
+
+/** The fingerprint the last review of this worktree saw, if any. Kept in
+ *  the worktree's own git dir (like the setup marker), so it never shows
+ *  in `git status` and goes away with the worktree. */
+export async function readReviewedFingerprint(runner: CommandRunner, path: string): Promise<string | undefined> {
+  const file = await markerPath(runner, path);
+  if (!file || !existsSync(file)) return undefined;
+  try {
+    return readFileSync(file, "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function writeReviewedFingerprint(runner: CommandRunner, path: string, fingerprint: string): Promise<void> {
+  const file = await markerPath(runner, path);
+  if (!file) return;
+  try {
+    writeFileSync(file, `${fingerprint}\n`);
+  } catch {
+    // Unwritable git dir: the guard just can't spot an unchanged rework.
+  }
 }
 
 async function dropStubsWith(git: Git, worktreePath: string): Promise<string[]> {

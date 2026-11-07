@@ -10,8 +10,11 @@ import { runViaBun } from "../executors/claude-cli.ts";
 import {
   determineWorktreeMergeState,
   mergeTaskWorktree,
+  readReviewedFingerprint,
   removeTaskWorktree,
   toMergeContext,
+  worktreeDiffFingerprint,
+  writeReviewedFingerprint,
   type ConflictIntegratorState,
   type MergeContext,
   type MergeResult,
@@ -280,6 +283,33 @@ export async function finishResult(
     // review for — recordResult above already captured the result for
     // history; there's no card left to move or spawn a follow-up from.
     if (task) {
+      if (reviewGuardOn() && result.worktree) {
+        const path = result.worktree.path;
+        const decision = reviewGuardDecision({
+          fingerprint: await worktreeDiffFingerprint(runner.runner, path),
+          previous: await readReviewedFingerprint(runner.runner, path),
+          pushbackCount: task.pushbackCount ?? 0,
+        });
+        if (decision === "no-diff") {
+          // Nothing to review: a report-only card, or a run that changed
+          // nothing. A reviewer can only push back on it, and no rework
+          // can satisfy that, so it loops to the cap (7 Nov 2026: a
+          // report-only review card was rerun 4 times with the same
+          // feedback). The card goes to a human with its result instead.
+          console.log(`review guard: ${task.id} left no changes in its worktree; no reviewer spawned`);
+          await board.move(result.taskId, "review");
+          return;
+        }
+        if (decision === "unchanged") {
+          const lineageId = task.reviewLineageId ?? task.id;
+          const history = await buildEscalationContext(board, lineageId);
+          const note = `Escalated by the review guard: rework attempt ${task.pushbackCount} changed nothing since the last review, so another review would repeat the same verdict.`;
+          await board.escalate(task.id, history ? `${history}\n\n${note}` : note);
+          return;
+        }
+        const fingerprint = await worktreeDiffFingerprint(runner.runner, path);
+        if (fingerprint) await writeReviewedFingerprint(runner.runner, path, fingerprint);
+      }
       await board.move(result.taskId, "pending-review");
       await spawnReviewerTask(board, task, result, agent);
     }
@@ -502,6 +532,30 @@ export async function resumeAfterReviewVerdict(
 /** The pushback cap: a lineage gets this many re-attempts, whether a
  *  reviewer or the merge gate sent them back, then escalates. */
 export const MAX_PUSHBACKS = 5;
+
+/**
+ * Opt-in review guard (`WISSEL_REVIEW_GUARD=1`, off by default so existing
+ * lineages behave as before): before a write-tier result is handed to the
+ * reviewer, look at what it actually changed in its worktree.
+ */
+export function reviewGuardOn(env: Record<string, string | undefined> = process.env): boolean {
+  return ["1", "true", "on", "yes"].includes((env.WISSEL_REVIEW_GUARD ?? "").trim().toLowerCase());
+}
+
+export type ReviewGuardDecision = "review" | "no-diff" | "unchanged";
+
+/**
+ * `no-diff`: the worktree holds no change, so there is nothing to review.
+ * `unchanged`: a rework (pushbackCount > 0) whose diff is byte-identical
+ * to what the last review saw; another review would repeat its verdict.
+ * `review`: anything else. A first attempt is always reviewed when it has
+ * a diff, even if a stale marker happens to match.
+ */
+export function reviewGuardDecision(input: { fingerprint: string | null; previous: string | undefined; pushbackCount: number }): ReviewGuardDecision {
+  if (input.fingerprint === null) return "no-diff";
+  if (input.pushbackCount > 0 && input.previous === input.fingerprint) return "unchanged";
+  return "review";
+}
 
 /** Why a reviewer pushback-cap escalation stopped, plus the last thing
  *  the run said: the reviewer's own summary, else the implementer's last
