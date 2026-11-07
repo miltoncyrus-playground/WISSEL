@@ -6,7 +6,8 @@ import { TaskRow } from "./TaskRow";
 
 const SECTIONS: { lane: LaneId; title: string; empty: string }[] = [
   { lane: "running", title: "Running", empty: "Nothing running." },
-  { lane: "needs-you", title: "Needs you", empty: "Nothing waiting on you." },
+  { lane: "needs-you", title: "Needs a human", empty: "Nothing needs a human." },
+  { lane: "next-step", title: "Next step", empty: "Nothing waiting on a next step." },
   { lane: "done-today", title: "Landed today", empty: "Nothing landed yet today." },
 ];
 
@@ -14,7 +15,7 @@ const SECTIONS: { lane: LaneId; title: string; empty: string }[] = [
 const PER_SECTION = 6;
 
 /** Desktop only: the right-hand "Live" panel (agents at work, running,
- *  needs you, landed today), kept current by the shared /events stream.
+ *  needs a human, next step, landed today), kept current by the shared /events stream.
  *  The mini-player (SDD §3.3) sits at its top. */
 export function LivePanel({ lanes, connection, player, reload }: { lanes: Lanes; connection: ConnectionState; player?: ReactNode; reload?: () => Promise<void> }) {
   return (

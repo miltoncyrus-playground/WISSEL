@@ -411,19 +411,32 @@ export interface Project {
 }
 
 /** Which needs-me state a card is in. See NeedsYou. */
-export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "failed" | "no-match";
+export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "report" | "failed" | "no-match";
+
+/** Where a waiting card belongs. `human`: a decision only Milton can
+ *  make; it always carries `why` and a non-empty `checklist`. `next-step`:
+ *  finished work waiting on one mechanical step (an approved merge, a
+ *  dependency landing, closing a passed review report), no reading
+ *  needed. */
+export type NeedsYouLane = "human" | "next-step";
 
 /** What a card that needs Milton wants, and the one button that resolves
  *  it. Derived on read by deriveNeedsYou (src/services/needs-you.ts),
  *  never stored. */
 export interface NeedsYou {
   kind: NeedsYouKind;
+  lane: NeedsYouLane;
   /** Machine form: "merge", "merge-after:1a2b3c4d", "escalated",
    *  "mcp-approval", "grant-tools", "blocked-on:1a2b3c4d escalated",
-   *  "review", "failed", "no-match". */
+   *  "review", "report", "failed", "no-match". */
   value: string;
   /** One human line for the Needs me row. */
   line: string;
+  /** Why the card is waiting, in full sentences: what happened, and why
+   *  it can't move on its own. */
+  why: string;
+  /** human lane: the steps to resolve it, in order, each one a tick-box. */
+  checklist?: string[];
   /** escalated/grant-tools: the full reason text. */
   reason?: string;
   reasonSource?: "escalation" | "reviewer" | "implementer" | "none";

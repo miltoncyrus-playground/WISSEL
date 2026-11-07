@@ -194,6 +194,15 @@ function landedItem(t: TaskCard, at: number, result: ResultMeta | undefined): Fe
 export function needsYouAction(t: TaskCard, disabledHarnesses: ReadonlySet<string>): { detail: string; link: FeedLink } | null {
   if (t.archivedAt || t.supersededBy) return null;
   const open = { label: "Open", href: cardHref(t.id) };
+  // The server's derivation, when the card carries it: only a decision
+  // that needs a human is a Needs you item. Finished work waiting on a
+  // mechanical step (an approved merge, a passed review report) is not.
+  const ny = t.needsYou;
+  if (ny?.lane === "next-step") return null;
+  if (ny?.lane === "human") {
+    const link: FeedLink = ny.action.method === "POST" ? { label: ny.action.label, href: ny.action.href, method: "POST" } : { label: ny.action.label, href: ny.action.href };
+    return { detail: ny.line, link };
+  }
   if (t.pendingMcpApproval && t.status === "review") {
     return {
       detail: `Wants to call ${t.pendingMcpApproval.server} · ${t.pendingMcpApproval.tool}`,

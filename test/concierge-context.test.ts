@@ -198,7 +198,7 @@ describe("needsYou on each card (what a needs-me card wants)", () => {
   test("a merge-after card says which merge comes first, and keeps worktree and waitsFor", () => {
     expect(line("cccccccc")).toMatchObject({ worktree: true, waitsFor: ["dddddddd"] });
     expect(line("cccccccc").needsYou).toEqual({ value: "merge-after:dddddddd", line: "Merge Card dddddddd first", button: "Merge dddddddd" });
-    expect(line("dddddddd").needsYou).toEqual({ value: "merge", line: "Ready to merge", button: "Merge" });
+    expect(line("dddddddd").needsYou).toEqual({ value: "merge:unreviewed", line: "Changes nobody has reviewed", button: "Merge" });
   });
 
   test("a blocked-on card names its stuck dependency", () => {

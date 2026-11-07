@@ -178,10 +178,10 @@ test.describe("Board view", () => {
     await expect(page.locator("#boardPanel")).toBeVisible();
     await expect(page.locator("#newDrawer")).toBeHidden();
 
-    // Four lanes, in order, each header carrying its own count
+    // Five lanes, in order, each header carrying its own count
     // (docs/SDD-ui-cleanup.md §3.2). The row of count tiles is gone.
     await expect(page.locator("#kanbanBody .kcol .lane-label")).toHaveText([
-      /^Queued \(\d+\)$/, /^Working \(\d+\)$/, /^In review \(\d+\)$/, /^Done \(\d+( of \d+)?\)$/,
+      /^Queued \(\d+\)$/, /^Working \(\d+\)$/, /^In review \(\d+\)$/, /^Next step \(\d+\)$/, /^Done \(\d+( of \d+)?\)$/,
     ]);
     await expect(page.locator("#stats")).toHaveCount(0);
     await expect(page.locator(".stat")).toHaveCount(0);
@@ -306,7 +306,7 @@ test.describe("Board view", () => {
     // review is a human's queue, so the card is in Needs you, saying so.
     await page.goto("/board");
     const nyCard = page.locator(`#needsYou .kcard[data-task-id="${task.id}"]`);
-    await expect(nyCard.locator(".kreason")).toHaveText("review");
+    await expect(nyCard.locator(".kreason")).toHaveText("Result nobody has checked");
     await expect(page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`)).toHaveCount(0);
     await nyCard.click();
 
@@ -530,7 +530,7 @@ test.describe("Board view", () => {
 
     await page.goto("/board");
     const kcard = page.locator(`#needsYou .kcard[data-task-id="${implementerId}"]`);
-    await expect(kcard.locator(".kreason")).toHaveText("needs a grant");
+    await expect(kcard.locator(".kreason")).toContainText("to continue (round");
     await kcard.click();
     const drawer = page.locator("#taskDrawer");
     await expect(drawer.locator("#tdEscalation")).toContainText(`Needs a grant: the reviewer says the next attempt needs ${grant}`);
@@ -551,7 +551,7 @@ test.describe("Board view", () => {
 
     await page.goto("/board");
     // Needs you says why: six straight rejections.
-    await expect(page.locator(`#needsYou .kcard[data-task-id="${escalated.id}"] .kreason`)).toHaveText("escalated after 6 rejections");
+    await expect(page.locator(`#needsYou .kcard[data-task-id="${escalated.id}"] .kreason`)).toContainText("Escalated after 6 rounds");
     await page.locator(`#needsYou .kcard[data-task-id="${escalated.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
@@ -750,7 +750,7 @@ test.describe("Board view", () => {
     expect(pending.status).toBe("review");
 
     await page.goto("/board");
-    await expect(page.locator(`#needsYou .kcard[data-task-id="${pending.id}"] .kreason`)).toHaveText("MCP approval: slack · send_message");
+    await expect(page.locator(`#needsYou .kcard[data-task-id="${pending.id}"] .kreason`)).toHaveText("Wants to call slack · send_message");
     await page.locator(`#needsYou .kcard[data-task-id="${pending.id}"]`).click();
 
     const drawer = page.locator("#taskDrawer");
@@ -1277,11 +1277,11 @@ test.describe("Board view", () => {
     // A lane that does have cards never gets the dimmed treatment.
     const doneCol = page.locator('#kanbanBody .kcol[data-lane="done"]');
     await expect(doneCol).not.toHaveClass(/kcol-empty/);
-    // Empty lanes keep their width: all four lanes are the same width, so
+    // Empty lanes keep their width: all five lanes are the same width, so
     // the lone Done card doesn't stretch across the board (Milton,
     // 2026-10-07).
     const widths = await page.locator("#kanbanBody .kcol").evaluateAll((cols) => cols.map((c) => c.getBoundingClientRect().width));
-    expect(widths.length).toBe(4);
+    expect(widths.length).toBe(5);
     for (const w of widths) expect(Math.abs(w - widths[0]!)).toBeLessThan(1);
     const cardWidth = (await doneCol.locator(".kcard").first().boundingBox())!.width;
     expect(cardWidth).toBeLessThanOrEqual(widths[0]! + 1);
@@ -1290,7 +1290,7 @@ test.describe("Board view", () => {
     await expect(page.locator("#needsYou")).toBeHidden();
   });
 
-  test("a reviewer task actually running shows as Reviewing in the Working lane, not as generic Running", async ({ page, request }) => {
+  test("a reviewer task actually running folds into its card in In review, tagged Review in progress, and never shows in Working", async ({ page, request }) => {
     const title = `Reviewing column test ${Date.now()}`;
     const created = await request.post("/tasks", { data: { title, body: "x", labels: ["code"], repo: "/tmp/wissel-e2e-repo" } });
     const implementerId = (await created.json()).id as string;
@@ -1313,16 +1313,12 @@ test.describe("Board view", () => {
 
     await page.goto("/board");
 
-    // Exactly one card for it, in Working, tagged Reviewing (not Running).
-    const reviewerCards = page.locator(`#boardPanel .kcard[data-task-id="${reviewer.id}"]`);
-    await expect(reviewerCards).toHaveCount(1);
-    const inWorking = page.locator(`#kanbanBody .kcol[data-lane="working"] .kcard[data-task-id="${reviewer.id}"]`);
-    await expect(inWorking).toHaveAttribute("data-status", "reviewing");
-    await expect(inWorking.locator(".kstatus")).toHaveText("Reviewing");
-
-    // The implementer it's reviewing waits in In review, tagged Pending review.
+    // One piece of work, one card: the implementer's, in In review,
+    // tagged Review in progress. The reviewer's own card isn't drawn.
     const implCard = page.locator(`#kanbanBody .kcol[data-lane="in-review"] .kcard[data-task-id="${implementerId}"]`);
-    await expect(implCard.locator(".kstatus")).toHaveText("Pending review");
+    await expect(implCard).toHaveAttribute("data-status", "review-in-progress");
+    await expect(implCard.locator(".kstatus")).toHaveText("Review in progress");
+    await expect(page.locator(`#boardPanel .kcard[data-task-id="${reviewer.id}"]`)).toHaveCount(0);
   });
 });
 
@@ -1470,9 +1466,14 @@ test.describe("Archive tab", () => {
     await expect(page.locator(`#kanbanBody .kcard[data-task-id="${task.id}"]`)).toHaveCount(0);
 
     const realQueuedCount = async () => {
-      const allTasks = await (await request.get("/tasks")).json();
+      type T = { id: string; status: string; supersededBy?: string; archivedAt?: string; parentTaskId?: string; routedTo?: string; labels?: string[]; needsYou?: { lane?: string } };
+      const allTasks = (await (await request.get("/tasks")).json()) as T[];
+      // Not drawn in Queued: a card on Needs a human, and a queued
+      // reviewer whose pending-review card stands for it in In review.
+      const pending = new Set(allTasks.filter((t) => t.status === "pending-review" && !t.supersededBy && !t.archivedAt).map((t) => t.id));
+      const foldedReviewer = (t: T) => !!t.parentTaskId && (t.routedTo === "reviewer" || (t.labels ?? []).includes("review")) && pending.has(t.parentTaskId);
       return allTasks.filter(
-        (t: { status: string; supersededBy?: string; archivedAt?: string }) => (t.status === "inbox" || t.status === "ready") && !t.supersededBy && !t.archivedAt,
+        (t) => (t.status === "inbox" || t.status === "ready") && !t.supersededBy && !t.archivedAt && t.needsYou?.lane !== "human" && !foldedReviewer(t),
       ).length;
     };
     const queuedLabel = page.locator('#kanbanBody .kcol[data-lane="queued"] .lane-label');
@@ -1806,11 +1807,11 @@ test.describe("Account line", () => {
     }
   });
 
-  test("on a phone the four lanes stack full width instead of squeezing side by side", async ({ page }) => {
+  test("on a phone the five lanes stack full width instead of squeezing side by side", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/board");
     const boxes = await page.locator("#kanbanBody .kcol").evaluateAll((cols) => cols.map((c) => { const b = c.getBoundingClientRect(); return { x: b.x, w: b.width, y: b.y }; }));
-    expect(boxes.length).toBe(4);
+    expect(boxes.length).toBe(5);
     for (const b of boxes) {
       expect(Math.abs(b.x - boxes[0]!.x)).toBeLessThan(1);
       expect(b.w).toBeGreaterThan(250);
@@ -1824,7 +1825,7 @@ test.describe("Account line", () => {
 // needing a human in one place), measured at 1440x900 as §2 asks.
 test.describe("Needs you and four lanes", () => {
   const NEEDS_YOU_STATUSES = ["review", "escalated", "failed", "no-match"];
-  type ApiTask = { id: string; title: string; status: string; supersededBy?: string; archivedAt?: string; pipelineRunId?: string };
+  type ApiTask = { id: string; title: string; status: string; supersededBy?: string; archivedAt?: string; pipelineRunId?: string; needsYou?: { lane?: string } };
 
   test.describe("at 1440x900", () => {
     test.use({ viewport: { width: 1440, height: 900 } });
@@ -1858,7 +1859,10 @@ test.describe("Needs you and four lanes", () => {
         const byId = new Map(all.map((t) => [t.id, t]));
         const out = new Set<string>();
         for (const t of all) {
-          if (!NEEDS_YOU_STATUSES.includes(t.status) || t.supersededBy || t.archivedAt) continue;
+          // The server's lane decides when it gave one: only "human" is
+          // in the strip; a "next-step" card sits in its lane.
+          const human = t.needsYou?.lane ? t.needsYou.lane === "human" : NEEDS_YOU_STATUSES.includes(t.status);
+          if (!human || t.supersededBy || t.archivedAt) continue;
           const root = t.pipelineRunId ? byId.get(t.pipelineRunId) : undefined;
           out.add(root && !root.archivedAt ? root.id : t.id);
         }
@@ -1876,10 +1880,14 @@ test.describe("Needs you and four lanes", () => {
       expect(inLanes.filter((id) => ids.includes(id))).toEqual([]);
 
       const reason = (id: string) => page.locator(`#needsYou .kcard[data-task-id="${id}"] .kreason`);
-      await expect(reason(reviewId)).toHaveText("review");
-      await expect(reason(mcpId)).toHaveText("MCP approval: slack · send_message");
-      await expect(reason(failedId)).toHaveText("failed");
-      await expect(reason(noMatchId)).toHaveText("no agent matched");
+      await expect(reason(reviewId)).toHaveText("Result nobody has checked");
+      await expect(reason(mcpId)).toHaveText("Wants to call slack · send_message");
+      await expect(reason(failedId)).toHaveText("Failed");
+      await expect(reason(noMatchId)).toHaveText("No agent matched");
+      // A human card says why and lists its steps as tick-boxes, under the card.
+      const more = page.locator(`#needsYou .ny-item:has(.kcard[data-task-id="${failedId}"]) .ny-more`);
+      await expect(more.locator(".ny-why")).toContainText("never retried on its own");
+      await expect(more.locator('input[type="checkbox"]')).toHaveCount(3);
       await expect(page.locator(`#needsYou .kcard[data-task-id="${failedId}"] .kstatus`)).toHaveText("Failed");
 
       // Clicking a Needs you card opens the existing task drawer.
@@ -1931,6 +1939,47 @@ test.describe("Needs you and four lanes", () => {
       // length of a normal card title fits.
       expect(clipped.filter((t) => t.text.length <= 60)).toEqual([]);
     });
+  });
+
+  // A review in flight is one piece of work: the pending-review card in
+  // In review, tagged "Review in progress", and no reviewer card in
+  // Working. A next-step card (approved merge) sits in Next step with
+  // its one button; a human one in the strip with why and tick-boxes.
+  test("a review in flight shows once, in In review; next-step and human cards land in their own places", async ({ page }) => {
+    const t = (id: string, status: string, extra: Record<string, unknown> = {}) => ({
+      id, title: `Lanes ${id}`, body: "x", labels: [], status, repo: "/tmp/wissel-e2e-repo", ...extra,
+    });
+    const action = { label: "Merge", href: "/tasks/approved/merge", method: "POST" };
+    await serveBoardTasks(page, [
+      t("impl", "pending-review", { routedTo: "implementer" }),
+      t("rev", "running", { routedTo: "reviewer", parentTaskId: "impl", labels: ["review"] }),
+      t("approved", "review", { routedTo: "implementer", needsYou: { kind: "merge", lane: "next-step", value: "merge", line: "Approved, ready to merge into main", why: "The reviewer approved it.", action } }),
+      t("report", "review", { routedTo: "fixer", needsYou: { kind: "report", lane: "human", value: "report:fail", line: "Review failed: 0 HIGH / 2 MED", why: "This card made a report, not a change.", checklist: ["Read the findings", "Decide on a fix round", "Close this card"], action: { label: "Open", href: "/app#/board/report", method: "GET" } } }),
+    ]);
+    await page.goto("/board");
+    const ids = (sel: string) => page.locator(sel).evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.taskId!));
+    await expect(page.locator('#kanbanBody .kcol[data-lane="in-review"] .kcard')).toHaveCount(1);
+    expect(await ids('#kanbanBody .kcol[data-lane="working"] .kcard')).toEqual([]);
+    expect(await ids('#kanbanBody .kcol[data-lane="in-review"] .kcard')).toEqual(["impl"]);
+    await expect(page.locator('.kcard[data-task-id="impl"] .kstatus')).toHaveText("Review in progress");
+    await expect(page.locator('.kcard[data-task-id="rev"]')).toHaveCount(0);
+
+    expect(await ids('#kanbanBody .kcol[data-lane="next-step"] .kcard')).toEqual(["approved"]);
+    await expect(page.locator('#kanbanBody .kcol[data-lane="next-step"] .ny-act button')).toHaveText("Merge");
+    await expect(page.locator('#kanbanBody .kcol[data-lane="next-step"] input[type="checkbox"]')).toHaveCount(0);
+
+    expect(await ids("#needsYou .kcard")).toEqual(["report"]);
+    await expect(page.locator("#needsYouTitle")).toContainText("Needs a human");
+    const more = page.locator('#needsYou .ny-item:has(.kcard[data-task-id="report"]) .ny-more');
+    await expect(more.locator(".ny-why")).toHaveText("This card made a report, not a change.");
+    const boxes = more.locator('input[type="checkbox"]');
+    await expect(boxes).toHaveCount(3);
+    // A tick survives a reload, and ticking never opens the drawer.
+    await more.getByText("Read the findings").click();
+    await expect(boxes.first()).toBeChecked();
+    await expect(page.locator("#taskDrawer")).not.toHaveClass(/open/);
+    await page.reload();
+    await expect(page.locator('#needsYou .ny-item:has(.kcard[data-task-id="report"]) input[type="checkbox"]').first()).toBeChecked();
   });
 
   // A known board with one card of every status, plus the edge cases
@@ -1987,7 +2036,7 @@ test.describe("Needs you and four lanes", () => {
     await expect(reason("nomatch")).toHaveText("no agent matched");
 
     // Counts live in the lane headers.
-    await expect(page.locator("#kanbanBody .kcol .lane-label")).toHaveText(["Queued (2)", "Working (3)", "In review (1)", "Done (1 of 2)"]);
+    await expect(page.locator("#kanbanBody .kcol .lane-label")).toHaveText(["Queued (2)", "Working (3)", "In review (1)", "Next step (0)", "Done (1 of 2)"]);
     await expect(page.locator("#needsYouCount")).toHaveText("(5)");
     // Bulk clear only for the terminal Needs you statuses, never review/escalated.
     await expect(page.locator("#needsYou .ny-head .col-clear")).toHaveText("Clear failed / no match (2)");

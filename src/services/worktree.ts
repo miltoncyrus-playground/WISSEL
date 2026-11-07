@@ -913,6 +913,26 @@ export async function worktreeDiffFingerprint(runner: CommandRunner, path: strin
   return createHash("sha256").update(diff.stdout).update("\0untracked\0").update(parts.join("\n")).digest("hex");
 }
 
+/**
+ * Whether the worktree at `path` holds anything a merge would land: an
+ * uncommitted or untracked change (worktreeDiffFingerprint), or a commit
+ * past `base`. false only when both are provably empty; undefined when
+ * either can't be read (not a git worktree, `base` unknown), so a caller
+ * never mistakes "can't tell" for "empty". Read-only.
+ */
+export async function worktreeHasChanges(runner: CommandRunner, path: string, base: string | undefined): Promise<boolean | undefined> {
+  // A missing cwd makes the spawn itself throw.
+  if (!existsSync(path)) return undefined;
+  const git = gitIn(runner);
+  const inside = await git(path, ["rev-parse", "--is-inside-work-tree"]);
+  if (!inside.ok) return undefined;
+  if ((await worktreeDiffFingerprint(runner, path)) !== null) return true;
+  if (!base) return undefined;
+  const ahead = await git(path, ["rev-list", "--count", `${base}..HEAD`]);
+  if (!ahead.ok) return undefined;
+  return Number(ahead.stdout.trim()) > 0;
+}
+
 const REVIEWED_MARKER = "wissel-reviewed-diff";
 
 async function markerPath(runner: CommandRunner, path: string): Promise<string | undefined> {

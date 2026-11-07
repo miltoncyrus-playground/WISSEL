@@ -205,3 +205,38 @@ describe("postAction", () => {
     expect(fetchMock).toHaveBeenCalledWith(`/tasks/${ID}/merge`, { method: "POST" });
   });
 });
+
+describe("Needs a human and Next step rows", () => {
+  const human: NeedsYou = {
+    kind: "report",
+    lane: "human",
+    value: "report:fail",
+    line: "Review failed: 0 HIGH / 2 MED / 3 LOW",
+    why: "This card made a report, not a change: its worktree is empty, so Merge would land nothing.",
+    checklist: ["Read the findings in the card's result", "Decide: start a fix round for them, or accept the work as it is", "Close this card"],
+    action: { label: "Open", href: `/app#/board/${ID}`, method: "GET" },
+  };
+  const next: NeedsYou = {
+    kind: "merge",
+    lane: "next-step",
+    value: "merge",
+    line: "Approved, ready to merge into main",
+    why: "The reviewer approved it.",
+    action: { label: "Merge", href: `/tasks/${ID}/merge`, method: "POST" },
+  };
+
+  test("Needs a human shows why and every step as a tick-box", () => {
+    const html = renderToStaticMarkup(<TaskRow task={card({ needsYou: human })} lane="needs-you" />);
+    expect(html).toContain(human.why!);
+    expect(html.match(/type="checkbox"/g)).toHaveLength(3);
+    for (const step of human.checklist!) expect(html).toContain(step.replace(/'/g, "&#x27;"));
+  });
+
+  test("Next step shows the line and the button, no why and no tick-boxes", () => {
+    const html = renderToStaticMarkup(<TaskRow task={card({ needsYou: next })} lane="next-step" />);
+    expect(html).toContain(next.line);
+    expect(html).toMatch(/<button[^>]*>Merge<\/button>/);
+    expect(html).not.toContain(next.why!);
+    expect(html).not.toContain("checkbox");
+  });
+});

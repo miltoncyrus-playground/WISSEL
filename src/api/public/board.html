@@ -249,6 +249,22 @@
   .ny-head .col-clear { margin-left: auto; }
   .ny-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0 10px; max-height: 222px; overflow-y: auto; }
   .kcard .kreason { font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
+  /* Needs a human: why the card waits, the steps to resolve it as
+     tick-boxes, and its one button. Next step cards carry the button
+     only. Clicks here never open the drawer. */
+  .needs-you .ny-body { max-height: none; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0 12px; }
+  .ny-item { margin-bottom: 8px; }
+  .ny-item > .kcard { margin-bottom: 0; }
+  .ny-more { padding: 6px 10px 2px 12px; border-left: 2px solid var(--border); margin: 0 0 0 8px; }
+  .ny-more .ny-why { font-size: 11.5px; line-height: 1.45; color: var(--ink-2); margin: 2px 0 6px; overflow-wrap: anywhere; }
+  .ny-more .ny-checks { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 3px; }
+  .ny-more .ny-checks label { display: flex; align-items: flex-start; gap: 6px; font-size: 11.5px; line-height: 1.4; color: var(--ink); cursor: pointer; }
+  .ny-more .ny-checks input { margin: 2px 0 0; flex: none; accent-color: var(--accent); }
+  .ny-more .ny-checks input:checked + span { color: var(--ink-muted); text-decoration: line-through; }
+  .ny-more .ny-act { display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; flex-wrap: wrap; }
+  .ny-more .ny-act button { font: inherit; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--on-accent); cursor: pointer; }
+  .ny-more .ny-act button:disabled { opacity: 0.6; cursor: default; }
+  .ny-more .ny-act .ny-err { font-size: 11px; color: var(--critical); }
   /* The card's exact status, as a small tag in its meta row. */
   .kcard .kstatus {
     display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 9.5px; font-weight: 700;
@@ -1024,7 +1040,7 @@
       <!-- Every card waiting on a human (docs/SDD-ui-cleanup.md §3.2);
            renderNeedsYou keeps it hidden while empty. -->
       <section class="needs-you" id="needsYou" aria-labelledby="needsYouTitle" hidden>
-        <div class="ny-head"><h2 id="needsYouTitle">Needs you <span id="needsYouCount"></span></h2></div>
+        <div class="ny-head"><h2 id="needsYouTitle">Needs a human <span id="needsYouCount"></span></h2></div>
         <div class="ny-body" id="needsYouBody"></div>
       </section>
       <section class="panel-flush" id="lanesPanel">
@@ -3976,9 +3992,14 @@
   // run: it adds "n/m steps · now: <step>" and the step bar, and opens
   // the run drawer. `expandId` is the step that drawer opens on (the one
   // a Needs you card is there for).
+  // Pending-review card id → its live reviewer's state, from the last
+  // partitionBoard: such a card's tag reads "Review in progress" while
+  // the reviewer runs, and the reviewer's own card isn't drawn.
+  var boardReviewsInFlight = {};
+
   function buildKanbanCard(t, reason, expandId) {
     var agent = t.routedTo ? agentsById[t.routedTo] : undefined;
-    var displayStatus = taskDisplayStatus(t);
+    var displayStatus = boardDisplayStatus(t, boardReviewsInFlight);
     var label = statusLabel(displayStatus);
     var run = isRunRootCard(t) ? runOf(t) : null;
 
@@ -4256,11 +4277,99 @@
     h3.appendChild(label);
     (actions || []).forEach(function (a) { h3.appendChild(a); });
     col.appendChild(h3);
-    cards.forEach(function (t) { col.appendChild(buildKanbanCard(t)); });
+    cards.forEach(function (t) {
+      if (id !== "next-step") { col.appendChild(buildKanbanCard(t)); return; }
+      // Finished work waiting on one step: the line says which, and the
+      // button takes it. No checklist: nothing here needs reading.
+      var card = buildKanbanCard(t, needsYouLine(t));
+      if (t.needsYou && t.needsYou.why) card.title = t.needsYou.why;
+      col.appendChild(withNeedsYouBlock(card, t.needsYou && t.needsYou.action ? needsYouActionRow(t) : null));
+    });
     return col;
   }
 
-  var LANE_COLOR = { queued: "--sig-inbox", working: "--sig-running", "in-review": "--sig-running", done: "--sig-done" };
+  var LANE_COLOR = { queued: "--sig-inbox", working: "--sig-running", "in-review": "--sig-running", "next-step": "--sig-ready", done: "--sig-done" };
+
+  // A Needs a human card's ticks, per card and per needsYou.value, so a
+  // tick survives a refresh but not a change in what the card wants.
+  // Browser-only convenience: storage can be missing or throw.
+  var NY_CHECKS_KEY = "wissel.needsYouChecks";
+  function readNyChecks() {
+    try { return JSON.parse(localStorage.getItem(NY_CHECKS_KEY) || "{}") || {}; } catch (e) { return {}; }
+  }
+  function writeNyCheck(key, index, on) {
+    var all = readNyChecks();
+    var list = (all[key] || []).filter(function (i) { return i !== index; });
+    if (on) list.push(index);
+    if (list.length) all[key] = list; else delete all[key];
+    try { localStorage.setItem(NY_CHECKS_KEY, JSON.stringify(all)); } catch (e) { /* not kept */ }
+  }
+
+  // The card stays a plain click target for its drawer; what Needs you
+  // adds (why, tick-boxes, the button) sits right under it, outside it.
+  function withNeedsYouBlock(card, extra) {
+    if (!extra) return card;
+    var item = document.createElement("div"); item.className = "ny-item";
+    var more = document.createElement("div"); more.className = "ny-more";
+    more.appendChild(extra);
+    item.appendChild(card); item.appendChild(more);
+    return item;
+  }
+
+  function stopClicks(el) {
+    el.addEventListener("click", function (ev) { ev.stopPropagation(); });
+    el.addEventListener("keydown", function (ev) { ev.stopPropagation(); });
+  }
+
+  // The card's one button (needsYou.action). Open opens the drawer here
+  // rather than following the app link; a POST runs, then the board
+  // refetches. A refusal shows next to the button.
+  function needsYouActionRow(t) {
+    var action = t.needsYou.action;
+    var row = document.createElement("div"); row.className = "ny-act";
+    stopClicks(row);
+    var btn = document.createElement("button"); btn.type = "button"; btn.textContent = action.label;
+    var err = document.createElement("span"); err.className = "ny-err";
+    btn.addEventListener("click", function () {
+      if (action.method !== "POST") { openTaskDrawer(t.id); return; }
+      btn.disabled = true; err.textContent = "";
+      fetch(action.href, { method: "POST" }).then(function (r) {
+        if (r.ok) return refetchTasks();
+        return r.json().catch(function () { return {}; }).then(function (e) {
+          return refetchTasks().then(function () { throw new Error(e.error || ("HTTP " + r.status)); });
+        });
+      }).catch(function (e) { btn.disabled = false; err.textContent = e.message; });
+    });
+    row.appendChild(btn); row.appendChild(err);
+    return row;
+  }
+
+  // Why the card needs a human, the steps as tick-boxes, the button.
+  function needsYouDetail(t) {
+    var ny = t.needsYou;
+    var frag = document.createDocumentFragment();
+    if (ny.why) {
+      var why = document.createElement("div"); why.className = "ny-why"; why.textContent = ny.why;
+      frag.appendChild(why);
+    }
+    if (ny.checklist && ny.checklist.length) {
+      var key = t.id + "|" + ny.value;
+      var done = readNyChecks()[key] || [];
+      var ul = document.createElement("ul"); ul.className = "ny-checks";
+      stopClicks(ul);
+      ny.checklist.forEach(function (text, i) {
+        var li = document.createElement("li");
+        var label = document.createElement("label");
+        var box = document.createElement("input"); box.type = "checkbox"; box.checked = done.indexOf(i) >= 0;
+        box.addEventListener("change", function () { writeNyCheck(key, i, box.checked); });
+        var span = document.createElement("span"); span.textContent = text;
+        label.appendChild(box); label.appendChild(span); li.appendChild(label); ul.appendChild(li);
+      });
+      frag.appendChild(ul);
+    }
+    if (ny.action) frag.appendChild(needsYouActionRow(t));
+    return frag;
+  }
 
   // Needs you strip plus the four lanes (docs/SDD-ui-cleanup.md §3.2).
   // partitionBoard (board-lanes.js) decides where every card goes:
@@ -4277,6 +4386,7 @@
   // you (docs/SDD-ui-cleanup.md §4.1, target T5).
   function renderKanban() {
     var parts = partitionRunBoard(tasks, allTasks, { now: Date.now(), showAllDone: showAllDone, showSuperseded: showSuperseded });
+    boardReviewsInFlight = parts.reviewsInFlight || {};
     renderNeedsYou(parts.needsYou);
 
     var body = document.getElementById("kanbanBody");
@@ -4320,7 +4430,10 @@
     document.getElementById("needsYouCount").textContent = "(" + list.length + ")";
     body.textContent = "";
     list.forEach(function (t) {
-      if (!isRunRootCard(t)) { body.appendChild(buildKanbanCard(t, needsYouReason(t))); return; }
+      if (!isRunRootCard(t)) {
+        body.appendChild(withNeedsYouBlock(buildKanbanCard(t, needsYouLine(t)), t.needsYou ? needsYouDetail(t) : null));
+        return;
+      }
       // A run: the reason names the step, and the drawer opens on it.
       var run = runOf(t);
       var needing = runNeedsYouSteps(run.steps);

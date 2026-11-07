@@ -19,7 +19,7 @@ import { setHarnessEnabled, setHarnessModel } from "../core/harness-manifest.ts"
 import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import { validateNotBefore } from "../core/not-before.ts";
-import { mergeTaskWorktree, removeTaskWorktree, type MergeContext } from "./worktree.ts";
+import { mergeTaskWorktree, removeTaskWorktree, worktreeHasChanges, type MergeContext } from "./worktree.ts";
 import { afterMergeAttempt, MAX_CONFLICT_INTEGRATORS, MAX_PUSHBACKS, withConflictIntegratorCheck } from "../core/orchestrator.ts";
 import { Registry } from "../core/registry.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
@@ -134,6 +134,24 @@ export async function discardTask(board: Board, id: string, runner: CommandRunne
   await removeTaskWorktree(task.repo!, result!.worktree!, runner);
   const moved = await board.move(task.id, "failed");
   return ok({ discarded: true as const, task: moved });
+}
+
+/** `POST /tasks/:id/close`: closes a review card whose worktree holds no
+ *  change (a review report, Needs you kind "report"): removes the empty
+ *  worktree and moves the card to done. Refused for a worktree with any
+ *  change, or one that can't be read, since that must go through Merge
+ *  or Discard instead. A review card with no worktree just moves to done. */
+export async function closeReport(board: Board, id: string, runner: CommandRunner): Promise<Outcome<TaskCard>> {
+  const task = await board.get(id);
+  if (!task) return no(404, "not found");
+  if (task.status !== "review") return no(409, `task is ${task.status}, not review`);
+  const result = await board.getResult(id);
+  if (result?.worktree) {
+    const changed = await worktreeHasChanges(runner, result.worktree.path, task.mergeTarget);
+    if (changed !== false) return no(409, changed ? "the worktree has changes: Merge or Discard it instead" : "can't tell whether the worktree is empty: Merge or Discard it instead");
+    await removeTaskWorktree(task.repo!, result.worktree, runner);
+  }
+  return ok(await board.move(task.id, "done"));
 }
 
 /** `POST /tasks/:id/escalation/abandon`: gives up on an escalated card. */

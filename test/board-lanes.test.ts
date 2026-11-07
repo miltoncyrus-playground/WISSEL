@@ -8,6 +8,8 @@ import { HarnessPool } from "../src/core/harness-pool.ts";
 import type { TaskCard } from "../src/core/types.ts";
 import {
   BOARD_LANES,
+  boardDisplayStatus,
+  needsYouLine,
   DONE_WINDOW_MS,
   NEEDS_YOU,
   STATUS_DISPLAY,
@@ -76,7 +78,7 @@ test("every TaskCard.status value maps to exactly one lane or to Needs you", asy
 test("STATUS_DISPLAY has no entry beyond TaskCard.status except the display-only 'reviewing'", async () => {
   const statuses = new Set(await taskStatusValues());
   const extra = Object.keys(STATUS_DISPLAY).filter((s) => !statuses.has(s));
-  expect(extra).toEqual(["reviewing"]);
+  expect(extra).toEqual(["reviewing", "review-in-progress"]);
 });
 
 test("the lanes and Needs you statuses match the SDD's table", () => {
@@ -84,6 +86,7 @@ test("the lanes and Needs you statuses match the SDD's table", () => {
     ["queued", "Queued"],
     ["working", "Working"],
     ["in-review", "In review"],
+    ["next-step", "Next step"],
     ["done", "Done"],
   ]);
   const byLane: Record<string, string[]> = {};
@@ -92,7 +95,7 @@ test("the lanes and Needs you statuses match the SDD's table", () => {
   expect(byLane).toEqual({
     queued: ["inbox", "ready"],
     working: ["dispatched", "reviewing", "running"],
-    "in-review": ["pending-review"],
+    "in-review": ["pending-review", "review-in-progress"],
     done: ["done"],
     [NEEDS_YOU]: ["escalated", "failed", "no-match", "review"],
   });
@@ -105,6 +108,42 @@ test("a reviewer's running task displays as 'reviewing'; everything else display
   expect(statusLabel("reviewing")).toBe("Reviewing");
   expect(statusLabel("pending-review")).toBe("Pending review");
   expect(statusColor("failed")).toBe("--critical");
+});
+
+test("the server's needsYou lane decides: human to Needs you, a finished next step to Next step, a queued one stays queued", () => {
+  const ny = (lane: "human" | "next-step", line = "l") => ({ kind: "merge" as const, lane, value: "merge", line, why: "w", action: { label: "Merge", href: "/x", method: "POST" as const } });
+  expect(taskPlacement(card("review", { needsYou: ny("next-step") }))).toBe("next-step");
+  expect(taskPlacement(card("review", { needsYou: ny("human") }))).toBe(NEEDS_YOU);
+  expect(taskPlacement(card("inbox", { needsYou: ny("next-step") }))).toBe("queued");
+  expect(taskPlacement(card("inbox", { needsYou: ny("human") }))).toBe(NEEDS_YOU);
+  // An older server: the status table decides.
+  expect(taskPlacement(card("review"))).toBe(NEEDS_YOU);
+  expect(needsYouLine(card("review", { needsYou: ny("next-step", "Approved, ready to merge into main") }))).toBe("Approved, ready to merge into main");
+  expect(needsYouLine(card("review"))).toBe("review");
+  const parts = partitionBoard([card("review", { id: "a", needsYou: ny("next-step") }), card("review", { id: "b", needsYou: ny("human") })]);
+  expect(parts.lanes["next-step"].map((t) => t.id)).toEqual(["a"]);
+  expect(parts.needsYou.map((t) => t.id)).toEqual(["b"]);
+});
+
+test("a review in flight draws once: the pending-review card, tagged Review in progress, and no reviewer card in Working", () => {
+  const impl = card("pending-review", { id: "impl" });
+  const rev = card("running", { id: "rev", routedTo: "reviewer", parentTaskId: "impl", labels: ["review"] });
+  const parts = partitionBoard([impl, rev]);
+  expect(parts.lanes.working).toEqual([]);
+  expect(parts.lanes["in-review"].map((t) => t.id)).toEqual(["impl"]);
+  expect(parts.reviewsInFlight).toEqual({ impl: "running" });
+  expect(boardDisplayStatus(impl, parts.reviewsInFlight)).toBe("review-in-progress");
+  expect(statusLabel("review-in-progress")).toBe("Review in progress");
+
+  // Queued reviewer: folded, but the tag stays Pending review.
+  const queued = partitionBoard([impl, card("ready", { id: "rev", routedTo: "reviewer", parentTaskId: "impl" })]);
+  expect(queued.lanes.queued).toEqual([]);
+  expect(boardDisplayStatus(impl, queued.reviewsInFlight)).toBe("pending-review");
+
+  // No pending-review parent on the board: the reviewer shows as before.
+  expect(partitionBoard([rev]).lanes.working.map((t) => t.id)).toEqual(["rev"]);
+  // A failed reviewer is not folded.
+  expect(partitionBoard([impl, card("failed", { id: "rev", routedTo: "reviewer", parentTaskId: "impl" })]).needsYou.map((t) => t.id)).toEqual(["rev"]);
 });
 
 test("an unknown status goes to Needs you instead of vanishing", () => {

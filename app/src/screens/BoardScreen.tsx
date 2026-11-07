@@ -11,7 +11,8 @@ import { ProjectsSection } from "../components/ProjectsSection";
 
 const EMPTY: Record<string, string> = {
   running: "Nothing running.",
-  "needs-you": "Nothing waiting on you.",
+  "needs-you": "Nothing needs a human.",
+  "next-step": "Nothing waiting on a next step.",
   review: "Nothing in review.",
   "done-today": "Nothing done yet today.",
 };

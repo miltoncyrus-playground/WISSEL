@@ -16,7 +16,7 @@ import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
 import { Orchestrator, carriedCardSettings, grantAndRetry, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts, reconcileLandedMerges } from "../core/crash-recovery.ts";
-import type { MergeContext } from "../services/worktree.ts";
+import { worktreeHasChanges, type MergeContext } from "../services/worktree.ts";
 import { validateMergeGate } from "../services/merge-gate.ts";
 import { validateProjectSettings } from "../services/project-settings.ts";
 import { PipelineNotFoundError, PipelineRepoRequiredError, resumePipelineStep, runPipelineNow, type PipelineRunDeps } from "../core/pipeline-runner.ts";
@@ -56,6 +56,7 @@ import {
   disableHarness,
   disableMcpServer,
   discardTask,
+  closeReport,
   enableHarness,
   enableMcpServer,
   mergeTask,
@@ -89,7 +90,7 @@ import { SqliteConversationStore } from "../services/conversations.ts";
 import { DEFAULT_STT_MODEL, DEFAULT_STT_URL, SttClient, SttError, transcribeVoiceRequest } from "../services/stt.ts";
 import { createReplyAudio, ReplyAudioError } from "../services/reply-audio.ts";
 import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
-import { needsYouFor, needsYouLogLine } from "../services/needs-you.ts";
+import { needsYouFor, needsYouLogLine, type NeedsYouOptions } from "../services/needs-you.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -502,8 +503,24 @@ export function createApp(
     ...(telemetry ? { telemetry } : {}),
     ...opts.mergeContext,
   };
+  // Needs you's "does this worktree change anything" check
+  // (src/services/needs-you.ts): a few git calls per review card, so
+  // each answer is kept for 30s. Nothing runs in a worktree while its
+  // card waits in review, so a short-lived answer stays true.
+  const worktreeChangedCache = new Map<string, { at: number; value: boolean | undefined }>();
+  const needsYouOpts: NeedsYouOptions = {
+    async worktreeChanged(task, worktree) {
+      const key = `${worktree.path}\0${task.mergeTarget ?? ""}`;
+      const hit = worktreeChangedCache.get(key);
+      if (hit && Date.now() - hit.at < 30_000) return hit.value;
+      const value = await worktreeHasChanges(mergeContext.runner, worktree.path, task.mergeTarget);
+      worktreeChangedCache.set(key, { at: Date.now(), value });
+      return value;
+    },
+  };
   const feed = createFeedSource({
     board: board as Board,
+    needsYou: (tasks) => needsYouFor(board, tasks, needsYouOpts),
     pipelines,
     telemetryPath: telemetry?.filePath,
     audioDir,
@@ -1525,7 +1542,7 @@ export function createApp(
           // Dependencies can sit outside a filtered list, so derive
           // against the whole board when a filter is set.
           const all = status || repo ? await board.list() : tasks;
-          const needs = await needsYouFor(board, all);
+          const needs = await needsYouFor(board, all, needsYouOpts);
           console.log(needsYouLogLine(needs));
           // `?live=1`: only cards that still count: not archived and not
           // replaced by a later attempt (docs/SDD-card-edit.md §3).
@@ -1557,7 +1574,7 @@ export function createApp(
           const task = await board.get(parts[1]!);
           if (!task) return notFound();
           const deps = await Promise.all((task.dependsOn ?? []).map((id) => board.get(id)));
-          const needs = await needsYouFor(board, [task, ...deps.filter((d): d is TaskCard => d !== undefined)]);
+          const needs = await needsYouFor(board, [task, ...deps.filter((d): d is TaskCard => d !== undefined)], needsYouOpts);
           return json(withNeedsYou(task, needs));
         }
 
@@ -1726,6 +1743,12 @@ export function createApp(
         // removes the worktree and its branch without merging anything,
         // and moves the task to "failed" (closest existing status for
         // "reviewed, rejected").
+        // A review report's Close (Needs you kind "report"): an empty
+        // worktree goes away and the card moves to done.
+        if (parts.length === 3 && parts[2] === "close" && req.method === "POST") {
+          return outcome(await closeReport(board as Board, parts[1]!, runViaBun));
+        }
+
         if (parts.length === 3 && parts[2] === "discard" && req.method === "POST") {
           return outcome(await discardTask(board as Board, parts[1]!, runViaBun));
         }

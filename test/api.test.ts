@@ -891,21 +891,22 @@ test("GET /tasks and GET /tasks/:id attach needsYou: merge for a review card wit
 
     const tasks = (await (await app(req("/tasks"))).json()) as TaskCard[];
     const byId = new Map(tasks.map((t) => [t.id, t]));
-    expect(byId.get(ready.id)!.needsYou).toEqual({
+    expect(byId.get(ready.id)!.needsYou).toMatchObject({
       kind: "merge",
-      value: "merge",
-      line: "Ready to merge",
+      lane: "human",
+      value: "merge:unreviewed",
+      line: "Changes nobody has reviewed",
       action: { label: "Merge", href: `/tasks/${ready.id}/merge`, method: "POST" },
     });
     expect(byId.get(idle.id)!.needsYou).toBeUndefined();
     expect(byId.get(blocked.id)!.needsYou!.value).toBe(`blocked-on:${ready.id.slice(0, 8)} review`);
-    expect(log).toHaveBeenCalledWith("needs-you: blocked-on=1 merge=1");
+    expect(log).toHaveBeenCalledWith("needs-you: blocked-on=1 merge=1 (human=1 next-step=1)");
 
     const inbox = (await (await app(req("/tasks?status=inbox"))).json()) as TaskCard[];
     expect(inbox.find((t) => t.id === blocked.id)!.needsYou!.kind).toBe("blocked-on");
 
     const one = (await (await app(req(`/tasks/${ready.id}`))).json()) as TaskCard;
-    expect(one.needsYou!.value).toBe("merge");
+    expect(one.needsYou!.value).toBe("merge:unreviewed");
     const dependent = (await (await app(req(`/tasks/${blocked.id}`))).json()) as TaskCard;
     expect(dependent.needsYou!.value).toBe(`blocked-on:${ready.id.slice(0, 8)} review`);
 
