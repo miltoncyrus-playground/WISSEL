@@ -27,6 +27,31 @@ export interface NewTaskDeps {
    *  run on (Project.harness), if any. Filled in when the card names
    *  none. docs/SDD-project-harness.md. */
   projectHarnessFor?: (repo: string) => Promise<string | undefined>;
+  /** `PATCH /tasks/:id`: the card being edited, so keeping its own
+   *  `key` doesn't count as a duplicate of itself. */
+  editingTaskId?: string;
+}
+
+/** docs/SDD-coordinator.md §3.3: the shape of `key`, `round`, `pr` and
+ *  `workstreamId`, and that `key` is unique within a workstream. A key on
+ *  a card with no workstream is not checked. Returns the refusal, or
+ *  undefined when the fields are fine. */
+export async function checkCardFields(body: NewTask, board: Board, editingTaskId?: string): Promise<string | undefined> {
+  const { key, round, pr, workstreamId } = body as Record<string, unknown>;
+  if (key !== undefined && (typeof key !== "string" || key.trim() === "")) return "key must be a non-empty string";
+  if (round !== undefined && (!Number.isInteger(round) || (round as number) < 1)) return "round must be a whole number from 1";
+  if (pr !== undefined) {
+    const p = pr as { number?: unknown; url?: unknown; head?: unknown } | null;
+    if (p === null || typeof p !== "object" || Array.isArray(p) || !Number.isInteger(p.number) || (p.number as number) < 1 || typeof p.url !== "string" || typeof p.head !== "string") {
+      return "pr must be { number: whole number from 1, url: string, head: string }";
+    }
+  }
+  if (workstreamId !== undefined && (typeof workstreamId !== "string" || workstreamId.trim() === "")) return "workstreamId must be a non-empty string";
+  if (typeof key === "string" && typeof workstreamId === "string") {
+    const taken = (await board.list()).find((t) => t.id !== editingTaskId && t.workstreamId === workstreamId && t.key === key);
+    if (taken) return `key "${key}" is already used in workstream "${workstreamId}" by task ${taken.id}`;
+  }
+  return undefined;
 }
 
 export type NewTaskCheck = { ok: true; task: NewTask } | { ok: false; error: string };
@@ -54,6 +79,11 @@ export async function validateNewTask(input: NewTask, deps: NewTaskDeps): Promis
   const mergeTarget = validateMergeTarget(body.mergeTarget);
   if (!mergeTarget.ok) return { ok: false, error: mergeTarget.error };
   body.mergeTarget = mergeTarget.target;
+  // Card key, round, PR and workstream (docs/SDD-coordinator.md §3.3).
+  // `null` means "none", as for `notBefore` above.
+  for (const k of ["key", "round", "pr", "workstreamId"] as const) if (body[k] === null) body[k] = undefined;
+  const fieldsError = await checkCardFields(body, deps.board, deps.editingTaskId);
+  if (fieldsError) return { ok: false, error: fieldsError };
   // `harnessOverride` is validated eagerly, at creation time,
   // because we already know exactly which harness it names.
   // `model` with no `harnessOverride` is deliberately NOT

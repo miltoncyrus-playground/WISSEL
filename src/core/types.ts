@@ -687,6 +687,19 @@ export interface TaskCard {
    *  (every task before this field existed) adds nothing to
    *  `allowedTools` — byte-identical argv to today. */
   extraAllowedTools?: string[];
+  /** A short name for the card inside its workstream, such as `A4`
+   *  (docs/SDD-coordinator.md §3.3). Unique per `workstreamId`: `POST
+   *  /tasks` and `PATCH /tasks/:id` refuse a second card with the same
+   *  key in the same workstream (checkCardFields, src/services/task-input.ts).
+   *  A key on a card with no workstream is not checked. */
+  key?: string;
+  /** The attempt within this card's review lineage, counting from 1. */
+  round?: number;
+  /** The pull request this card's work was delivered as (§4.5): its
+   *  number, web URL and head branch. */
+  pr?: { number: number; url: string; head: string };
+  /** The Workstream (§3.1) this card belongs to, if any. */
+  workstreamId?: string;
   /** What this card wants from Milton, when it needs him. Derived on
    *  read (GET /tasks, GET /tasks/:id) by needsYouFor
    *  (src/services/needs-you.ts) and never stored: Board never writes

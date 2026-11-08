@@ -236,8 +236,9 @@ export function editRefusal(task: Pick<TaskCard, "status" | "routedTo" | "archiv
 }
 
 /** `PATCH /tasks/:id` (docs/SDD-card-edit.md): changes title, body,
- *  labels, repo, model, harnessOverride, mergeTarget, extraAllowedTools or
- *  extraAllowedDirs on a card that hasn't started. The result is checked
+ *  labels, repo, model, harnessOverride, mergeTarget, extraAllowedTools,
+ *  extraAllowedDirs, key, round, pr or workstreamId on a card that hasn't
+ *  started. The result is checked
  *  by the very rules a new card meets (validateNewTask), so an edit can't
  *  make a card that creation would have refused. A key set to null
  *  clears it. Anything else in the body is refused by name. */
@@ -266,9 +267,13 @@ export async function editTask(board: Board, task: TaskCard, patch: unknown, dep
     mergeTarget: task.mergeTarget,
     extraAllowedTools: task.extraAllowedTools,
     extraAllowedDirs: task.extraAllowedDirs,
+    key: task.key,
+    round: task.round,
+    pr: task.pr,
+    workstreamId: task.workstreamId,
     ...Object.fromEntries(keys.map((k) => [k, given[k] === null ? undefined : given[k]])),
   };
-  const check = await validateNewTask(candidate, deps);
+  const check = await validateNewTask(candidate, { ...deps, editingTaskId: task.id });
   if (!check.ok) return no(400, check.error);
   const fields: CardEdit = {};
   for (const k of keys) (fields as Record<string, unknown>)[k] = (check.task as Record<string, unknown>)[k];
@@ -276,6 +281,8 @@ export async function editTask(board: Board, task: TaskCard, patch: unknown, dep
 }
 
 function editTypeError(given: Record<string, unknown>): string | undefined {
+  // key, round, pr and workstreamId are shape-checked by checkCardFields
+  // (src/services/task-input.ts), the same for a new card and an edit.
   for (const k of ["title", "body", "repo", "model", "harnessOverride", "mergeTarget"]) {
     const v = given[k];
     if (k in given && v !== null && typeof v !== "string") return `${k} must be a string (or null to clear it)`;
