@@ -76,6 +76,11 @@ In:
 
 Out:
 
+- **Descoped by the owner (2026-11-08):** no Artifact decisions board, no
+  Slack or other team chat. The owner reads progress in the Claude
+  session that runs the build. The channel interface and message
+  protocol (§4.9) stay, with a log and that session as their only sink;
+  spike S1, the board adapter and the chat adapter (§4.10) are not built.
 - Any production environment. The hard limits (§6) deny it by default.
 - Multi-host federation beyond the message protocol: a decider Wissel
   talks to other coordinators only through the decisions channel.
@@ -409,7 +414,11 @@ Message kinds: `claim`, `release`, `ready-to-merge` (with the full head
 sha), `question` (options and a lean), `answer`, `decision`, `status`,
 `handover`. One message per event, linked to the card, PR or ticket.
 
-First adapter: a claude.ai Artifact board with `topics`, `log` and a
+**Descoped:** the first and only adapter is a log plus the owner's
+Claude session (questions with a default and a lean are put there).
+The Artifact board below is kept as a record of the idea, not built.
+
+First adapter (not built): a claude.ai Artifact board with `topics`, `log` and a
 `ready` collection (compare-and-set claims by version). **Known
 constraint, to check first (§9, phase 0):** such a board can be written
 only by a Claude session through `ArtifactData`, not by a server with a
@@ -429,7 +438,7 @@ and chat threads. The protocol does not change.
   rules: a ticket before a workstream's first card, "in progress" at the
   first card, "in review" when the last PR is open, "done" when its
   acceptance is merged, with one comment per move naming the merged PRs.
-- Chat: a new adapter (Slack first) with a bot token read from an
+- Chat (not built, descoped): a new adapter (Slack first) with a bot token read from an
   environment variable whose name is configured, like the tracker's.
   Posts only to the workstream's channel: digests, and lines for urgent
   owner tasks.
@@ -632,7 +641,7 @@ answers the questions that could change the design.
 
 **Phase 0: spikes (read-only, a day)**
 
-- S1 Channel writes: can a server write the Artifact board, or only a
+- ~~S1~~ (descoped, no board) Channel writes: can a server write the Artifact board, or only a
   Claude session? Build the smallest scribe card that posts one log entry
   to a test board and returns its id.
 - S2 Code host: the minimum token scopes for push, PR and auto-merge;
@@ -664,8 +673,8 @@ answers the questions that could change the design.
 14. Policy gate with audit log and the property test (§4.2).
 15. Executor, outbound queue, quiet hours (§4.3, §4.11).
 16. Decision cards: `plan-batch`, `decide-default`, `triage-red` (§4.4).
-17. Channel adapter (board, via the S1 result) and message protocol (§4.9).
-18. Tracker rules and chat adapter (§4.10).
+17. Channel interface, message protocol and log/session sink (§4.9).
+18. Tracker rules (§4.10); no chat adapter.
 19. Digests (§4.11).
 20. Duty switches, Shadow and the shadow report (§4.13).
 21. Import (§7).
@@ -702,8 +711,8 @@ answers the questions that could change the design.
 
 ## 11. Open questions
 
-1. Which channel adapter first: an Artifact board, code-host reviews or
-   chat threads?
+1. ~~Which channel adapter first?~~ Answered: the log and the owner's
+   session; no board, no chat.
 2. Whose identity does Wissel act under on the code host: a service
    account or app per team (auditable), or a person's login?
 3. One workstream per host or several sharing the cap, quiet hours and
