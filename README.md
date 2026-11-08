@@ -711,6 +711,7 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_MERGE_HEALTH` | off | Detect repos left mid-merge (`.git/MERGE_HEAD`) and show a banner. Never auto-resolves. |
 | `WISSEL_MERGE_HEALTH_INTERVAL_HOURS` | 1 | Merge-health check interval. |
 | `WISSEL_PORT` | 8787 | HTTP port. |
+| `WISSEL_HOME` | `~/.wissel` | Root for this instance's state: worktrees, scratch, projects, task output, audio, the models cache, and the default board database and telemetry log. Set it to run a second instance on the same host without sharing any of them. |
 | `WISSEL_DB_PATH` | `~/.wissel/board.sqlite` | Board database. |
 | `WISSEL_TELEMETRY_PATH` | `~/.wissel/telemetry.jsonl` | Per-run cost and outcome log. |
 | `WISSEL_HARNESSES_PATH` | `harnesses.yaml` | Harness manifest. |

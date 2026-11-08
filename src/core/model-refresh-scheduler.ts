@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { wisselHome } from "./wissel-home.ts";
 import { dirname, join } from "node:path";
 import type { HarnessPool } from "./harness-pool.ts";
 import type { Harness } from "./types.ts";
@@ -17,7 +17,7 @@ export const DEFAULT_MODEL_REFRESH_INTERVAL_HOURS = 24;
  *  bootstrap entrypoint, the same place `WISSEL_DB_PATH`/
  *  `WISSEL_TELEMETRY_PATH`/`WISSEL_MEMORY_PATH` are — this module never
  *  reads `process.env` itself. */
-export const DEFAULT_MODELS_CACHE_PATH = join(homedir(), ".wissel", "models-cache.json");
+export const DEFAULT_MODELS_CACHE_PATH = join(wisselHome(), "models-cache.json");
 
 export interface ModelCacheEntry {
   models: string[];

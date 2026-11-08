@@ -1,5 +1,5 @@
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { wisselHome } from "../core/wissel-home.ts";
 import { dirname, join } from "node:path";
 import type { AgentDef, Executor, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -75,8 +75,8 @@ export function inKokoroQueue<T>(baseUrl: string, fn: () => Promise<T>, maxWaitM
   });
 }
 
-export function defaultAudioDir(home = homedir()): string {
-  return join(home, ".wissel", "audio");
+export function defaultAudioDir(home?: string): string {
+  return join(wisselHome(home), "audio");
 }
 
 /** Where a run's audio lives. The one place the file name is decided:

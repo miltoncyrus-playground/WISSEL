@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
+import { wisselHome } from "../core/wissel-home.ts";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { TaskCard, TaskResult } from "../core/types.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
@@ -316,7 +316,7 @@ export function lineageRoot(byId: ReadonlyMap<string, TaskCard>): (c: TaskCard) 
 
 /** `~/.wissel/worktrees`, where task worktrees live. */
 export function defaultWorktreesRoot(): string {
-  return join(homedir(), ".wissel", "worktrees");
+  return join(wisselHome(), "worktrees");
 }
 
 /** The real repos `cards` work in, sorted. A worktree path maps to the

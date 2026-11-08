@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
+import { wisselHome } from "../core/wissel-home.ts";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { TaskCard } from "../core/types.ts";
@@ -95,7 +95,7 @@ export const SETUP_DONE_MARKER = ".wissel-setup-done";
 export const SETUP_PENDING_MARKER = ".wissel-setup-pending";
 
 function worktreesRoot(homeDir?: string): string {
-  return join(homeDir ?? homedir(), ".wissel", "worktrees");
+  return join(wisselHome(homeDir), "worktrees");
 }
 
 /** Where a write-tier run of `task` works: the same `reviewLineageId ??

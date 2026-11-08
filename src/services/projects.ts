@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
+import { wisselHome } from "../core/wissel-home.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { Project } from "../core/types.ts";
@@ -115,7 +115,7 @@ export function seedMergeGateFor(path: string): string[][] | undefined {
  *  src/services/worktree.ts) — same `~/.wissel/` root, same injectable
  *  `homeDir` for tests. */
 function projectsRoot(homeDir?: string): string {
-  return join(homeDir ?? homedir(), ".wissel", "projects");
+  return join(wisselHome(homeDir), "projects");
 }
 
 /** Matches bare `org/repo` shorthand only: no scheme, no `.git` suffix,

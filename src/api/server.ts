@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { homedir, tmpdir } from "node:os";
+import { wisselHome } from "../core/wissel-home.ts";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Board, BoardEvent } from "../services/board.ts";
 import { SqliteBoard } from "../services/board.ts";
@@ -2090,8 +2091,8 @@ if (import.meta.main) {
   // docs/SDD-crash-recovery.md §10.
   installShutdownHandlers();
   const port = Number(process.env.WISSEL_PORT ?? 8787);
-  const dbPath = process.env.WISSEL_DB_PATH ?? join(homedir(), ".wissel", "board.sqlite");
-  const telemetryPath = process.env.WISSEL_TELEMETRY_PATH ?? join(homedir(), ".wissel", "telemetry.jsonl");
+  const dbPath = process.env.WISSEL_DB_PATH ?? join(wisselHome(), "board.sqlite");
+  const telemetryPath = process.env.WISSEL_TELEMETRY_PATH ?? join(wisselHome(), "telemetry.jsonl");
   const board = new SqliteBoard(dbPath);
   const registry = await Registry.load();
   const telemetry = new TelemetryLog(telemetryPath);
@@ -2296,7 +2297,7 @@ if (import.meta.main) {
   );
   console.log(
     modelRefreshEnabled
-      ? `model catalog refreshing every ${modelRefreshIntervalHours}h into ${modelsCachePath ?? join(homedir(), ".wissel", "models-cache.json")} (WISSEL_MODEL_REFRESH=1)`
+      ? `model catalog refreshing every ${modelRefreshIntervalHours}h into ${modelsCachePath ?? join(wisselHome(), "models-cache.json")} (WISSEL_MODEL_REFRESH=1)`
       : "model catalog refresh not started — set WISSEL_MODEL_REFRESH=1 to refresh known model lists daily",
   );
   console.log(

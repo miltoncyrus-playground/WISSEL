@@ -1,12 +1,12 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { wisselHome } from "../core/wissel-home.ts";
 import { EventEmitter } from "node:events";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 /** Same "~/.wissel/<subdir>" convention worktreesRoot/board.sqlite
  *  already use (see src/services/worktree.ts) — deliberately outside
  *  any repo directory. */
-export const DEFAULT_TASK_OUTPUT_DIR = join(homedir(), ".wissel", "task-output");
+export const DEFAULT_TASK_OUTPUT_DIR = join(wisselHome(), "task-output");
 
 /** Same 256KB cap agetor's own terminals.ts ring buffer uses, and for
  *  the same reason (see docs/SDD-live-task-output.md §3.2) — plenty for

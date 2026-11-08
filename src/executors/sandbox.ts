@@ -21,6 +21,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TaskResult } from "../core/types.ts";
+import { wisselHome } from "../core/wissel-home.ts";
 
 /** What the telemetry `result` event records per claude-cli run:
  *  "on" = sandboxed, "off" = the allowlist mode (readonly runs, tests,
@@ -97,7 +98,10 @@ export interface SandboxSettingsInput {
  *  at Claude Code's default: the cwd (the worktree), the per-user temp
  *  dir and `--add-dir` (TaskCard.extraAllowedDirs), nothing more. */
 export function buildSandboxSettings(input: SandboxSettingsInput): Record<string, unknown> {
-  const denyRead = [...SANDBOX_DENY_READ, ...(input.extraDenyRead ?? [])].filter((p, i, all) => p && all.indexOf(p) === i);
+  // A second instance (WISSEL_HOME set) keeps its board database there,
+  // so deny that one too; unset, the fixed list already covers it.
+  const instanceBoard = process.env.WISSEL_HOME ? [join(wisselHome(), "board.sqlite*")] : [];
+  const denyRead = [...SANDBOX_DENY_READ, ...instanceBoard, ...(input.extraDenyRead ?? [])].filter((p, i, all) => p && all.indexOf(p) === i);
   return {
     sandbox: {
       enabled: true,

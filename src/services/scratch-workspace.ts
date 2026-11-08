@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { wisselHome } from "../core/wissel-home.ts";
 import { join } from "node:path";
 
 /**
@@ -26,7 +26,7 @@ import { join } from "node:path";
  * (Subtask 5).
  */
 export async function resolveScratchWorkspace(taskId: string, homeDir?: string): Promise<string> {
-  const path = join(homeDir ?? homedir(), ".wissel", "scratch", taskId);
+  const path = join(wisselHome(homeDir), "scratch", taskId);
   mkdirSync(path, { recursive: true });
   return path;
 }
