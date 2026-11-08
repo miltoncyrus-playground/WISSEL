@@ -56,7 +56,7 @@ export interface TaskCard {
 
 /** Mirrors src/core/types.ts NeedsYouKind; test/app-shell.test.ts
  *  checks it matches. */
-export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "report" | "failed" | "no-match";
+export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "report" | "failed" | "no-match" | "owner-task" | "held";
 
 /** Mirrors src/core/types.ts NeedsYouLane. */
 export type NeedsYouLane = "human" | "next-step";
