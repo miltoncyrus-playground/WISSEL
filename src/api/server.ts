@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { wisselHome } from "../core/wissel-home.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Board, BoardEvent } from "../services/board.ts";
@@ -12,6 +11,7 @@ import { TelemetryLog } from "../services/telemetry.ts";
 import { HarnessPool, validateAgentHarnesses } from "../core/harness-pool.ts";
 import { McpServerPool, checkMcpServerReachable, parseMcpServerCreateInput, type CheckMcpServerReachableOptions } from "../core/mcp-server-pool.ts";
 import { addMcpServer } from "../core/mcp-manifest.ts";
+import { wisselHome } from "../core/wissel-home.ts";
 import { Registry } from "../core/registry.ts";
 import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";

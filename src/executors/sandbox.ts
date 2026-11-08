@@ -19,7 +19,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { TaskResult } from "../core/types.ts";
 import { wisselHome } from "../core/wissel-home.ts";
 
@@ -100,7 +100,11 @@ export interface SandboxSettingsInput {
 export function buildSandboxSettings(input: SandboxSettingsInput): Record<string, unknown> {
   // A second instance (WISSEL_HOME set) keeps its board database there,
   // so deny that one too; unset, the fixed list already covers it.
-  const instanceBoard = process.env.WISSEL_HOME ? [join(wisselHome(), "board.sqlite*")] : [];
+  // An explicit WISSEL_DB_PATH is denied as well, wherever it points.
+  const instanceBoard = [
+    ...(process.env.WISSEL_HOME ? [join(wisselHome(), "board.sqlite*")] : []),
+    ...(process.env.WISSEL_DB_PATH ? [`${resolve(process.env.WISSEL_DB_PATH)}*`] : []),
+  ];
   const denyRead = [...SANDBOX_DENY_READ, ...instanceBoard, ...(input.extraDenyRead ?? [])].filter((p, i, all) => p && all.indexOf(p) === i);
   return {
     sandbox: {

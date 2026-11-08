@@ -15,8 +15,9 @@ export const DEFAULT_MODEL_REFRESH_INTERVAL_HOURS = 24;
  *  Overridable per-call via `ModelRefreshSchedulerOptions.cachePath`;
  *  `WISSEL_MODELS_CACHE_PATH` is read once at the `src/api/server.ts`
  *  bootstrap entrypoint, the same place `WISSEL_DB_PATH`/
- *  `WISSEL_TELEMETRY_PATH`/`WISSEL_MEMORY_PATH` are — this module never
- *  reads `process.env` itself. */
+ *  `WISSEL_TELEMETRY_PATH`/`WISSEL_MEMORY_PATH` are — this module reads
+ *  no env var itself except, through `wisselHome()`, `WISSEL_HOME`, once
+ *  at import. */
 export const DEFAULT_MODELS_CACHE_PATH = join(wisselHome(), "models-cache.json");
 
 export interface ModelCacheEntry {

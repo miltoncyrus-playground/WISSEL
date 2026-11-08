@@ -177,7 +177,7 @@ interface OwnerTask {              // §4.14
   title: string;
   why: string;
   steps: string[];                 // shown as tick-boxes
-  check?: string[];                // argv Wissel runs after Done
+  check?: string[];                // argv run after Done, in the sandbox, with a timeout
   blocks: string[];                // card ids waiting on it
   status: "open" | "done" | "dismissed";
 }
@@ -228,14 +228,19 @@ instance is in Shadow. Rules apply in this order, first match wins:
 2. the project's `never` list matches: `deny`;
 3. the duty for this action is owned by an external coordinator: `deny`
    (no double posts during migration, §7);
-4. the role is `shadow`, or the instance is in Shadow: `allow` in shadow
-   mode only (the executor records, does not act);
-5. quiet hours and the action is outward: `queue`;
-6. the action kind is in `mustAsk`: `ask-decider` (role `follow`) or
-   `ask-owner` (role `decide`);
-7. the role allows the action kind (table in §4.13) and, for decisions,
+4. quiet hours and the action is outward: `queue`;
+5. the action kind is in `mustAsk`: `ask-decider` (role `follow`) or
+   `ask-owner` (any other role);
+6. the role allows the action kind (table in §4.13) and, for decisions,
    the kind is in `decideAlone`: `allow`;
-8. anything else: `ask-owner`.
+7. anything else: `ask-owner`.
+
+Shadow (role `shadow` or an instance in Shadow) does not short-circuit
+the rules: they all run, and the verdict is then marked `mode: "shadow"`
+so the executor records a "would" entry instead of acting. A shadow
+record therefore carries the verdict the live gate would have given,
+which is what the shadow report (§4.13) and the policy acceptance in §1
+compare against.
 
 Every evaluation writes a `GateRecord`. `ask-*` verdicts become a
 question on the channel or an item in the window; `deny` verdicts with a
@@ -331,7 +336,7 @@ conflict integrator handles a conflict at step 3, unchanged.
 ```ts
 interface ReviewPolicy {
   tiers: { id: string; when: string; reviewers: ReviewerSpec[]; maxRounds: number }[];
-  blocks: ("HIGH" | "MED" | "MED-with-scenario")[];  // what stops a merge
+  blocks: ("HIGH" | "MED" | "MED-with-scenario")[];  // `scenario` is a field on each finding in the verdict contract, not parsed from text  // what stops a merge
   carryForward: "ticket" | "card" | "drop";          // where non-blocking findings go
   atCap: "ask-decider" | "spec-question" | "accept";
 }
@@ -368,7 +373,7 @@ then a narrow re-review if the resolution touched product code. Arming is
 only allowed (§4.13) when the base is the main branch, the head is the
 reviewed sha and every check passed or was skipped; after any push the
 watcher re-checks and re-arms. A card's lifecycle extends past `done`:
-`landed` (PR open), `ready` (review passed, checks green), `merged`.
+`landed` (PR open), `ready` (review passed on the head sha, checks green on that sha), `merged`.
 
 Polling interval: 60 s per project with the existing PR cache, or the
 code host's webhooks when an adapter supports them.
@@ -604,6 +609,8 @@ Gate lane (part of the build, `bun test`):
 - Templates: required placeholders, size limit.
 - Restart when idle: no dispatch while draining, exit code 75 after the
   last card.
+- Instance isolation: with `WISSEL_HOME` set, no state path resolves under
+  `~/.wissel`, and the sandbox read-denies the instance's database.
 
 Eval lane (periodic, `eval/`):
 
@@ -675,7 +682,7 @@ answers the questions that could change the design.
   board, every channel post costs a card run. Batch posts per interval
   and keep the read path cheap.
 - **Gate holes.** An action kind added without a gate rule falls through
-  to `ask-owner` (rule 8), never to `allow`. Keep it that way.
+  to `ask-owner` (rule 7), never to `allow`. Keep it that way.
 - **Two coordinators acting.** During migration, the duty switches are the
   only guard. The external coordinator must stop its own script when a
   duty moves; the shadow report shows double activity.
@@ -684,7 +691,8 @@ answers the questions that could change the design.
   that allows text-only deltas.
 - **Restart without a supervisor.** Exit code 75 with nothing to restart
   the process leaves the team without Wissel. The admin route refuses
-  when no supervisor is configured.
+  when no supervisor is configured, detected by `WISSEL_SUPERVISED=1`
+  set in the start script or unit.
 - **Cost.** Decision cards are cheap only if they stay short and
   single-use. Spend ceiling (`WISSEL_SWEEP_SPEND_CEILING_USD`) must be set
   for any workstream with role `decide`.
@@ -710,7 +718,9 @@ answers the questions that could change the design.
 ## 12. Handover notes for the builder
 
 - Build on a **separate Wissel instance**: its own checkout, its own
-  `WISSEL_PORT`, `WISSEL_DB_PATH`, `WISSEL_TELEMETRY_PATH`,
+  `WISSEL_HOME` (065c396; moves worktrees, scratch, projects, task
+  output, audio, the models cache and the default database and telemetry
+  paths), its own `WISSEL_PORT`, `WISSEL_DB_PATH`, `WISSEL_TELEMETRY_PATH`,
   `WISSEL_MEMORY_PATH` and worktree location, and its own test
   repositories. Do not point it at a Wissel or a board that coordinates
   live work.
