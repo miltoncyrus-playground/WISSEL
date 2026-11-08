@@ -91,7 +91,9 @@ import { SqliteConversationStore } from "../services/conversations.ts";
 import { DEFAULT_STT_MODEL, DEFAULT_STT_URL, SttClient, SttError, transcribeVoiceRequest } from "../services/stt.ts";
 import { createReplyAudio, ReplyAudioError } from "../services/reply-audio.ts";
 import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
-import { needsYouFor, needsYouLogLine, type NeedsYouOptions } from "../services/needs-you.ts";
+import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
+import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
+import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -329,6 +331,10 @@ export interface CreateAppOptions {
   /** The ticker's clock, timers and logger, for tests. `now` is also the
    *  schedule store's and the preview's clock, so all agree on what is due. */
   scheduleClock?: Pick<ScheduleRunnerOptions, "now" | "setInterval" | "clearInterval" | "setTimeout" | "clearTimeout" | "logger">;
+  /** Runs an owner task's `check` on `POST /owner-tasks/:id/done`
+   *  (src/services/owner-tasks.ts). Defaults to the merge gate's runner;
+   *  tests pass a fake so nothing is spawned. */
+  ownerTaskCheckRunner?: GateCommandRunner;
 }
 
 /** The bit of Bun's Server that createApp's fetch uses: lifting the idle
@@ -509,7 +515,11 @@ export function createApp(
   // each answer is kept for 30s. Nothing runs in a worktree while its
   // card waits in review, so a short-lived answer stays true.
   const worktreeChangedCache = new Map<string, { at: number; value: boolean | undefined }>();
+  // Owner tasks (docs/SDD-coordinator.md §3.4): Needs a human items that
+  // hold the cards they block.
+  const ownerTasks = new SqliteOwnerTaskStore((board as SqliteBoard).db);
   const needsYouOpts: NeedsYouOptions = {
+    openOwnerTasks: async () => (await ownerTasks.list()).filter((t) => t.status === "open"),
     async worktreeChanged(task, worktree) {
       const key = `${worktree.path}\0${task.mergeTarget ?? ""}`;
       const hit = worktreeChangedCache.get(key);
@@ -630,6 +640,7 @@ export function createApp(
       maxConcurrentTasks: opts.maxConcurrentTasks,
       spendCeilingUsd: opts.spendCeilingUsd,
       memoryPath: opts.memoryPath,
+      heldCardIds: () => ownerTasks.heldCardIds(),
       // A rate-limited pipeline step resumes on the same context POST
       // /pipelines/:id/run starts it with (docs/SDD-pipelines.md §3.8).
       resumePipelineStep: (task) =>
@@ -1530,6 +1541,23 @@ export function createApp(
             return json({ error: `unknown harness "${check.patch.harness}"` }, 400);
           }
           return json(await projects.setSettings(project.id, check.patch));
+        }
+      }
+
+      // Owner tasks (docs/SDD-coordinator.md §5): each open one carries
+      // its Needs a human entry; Done runs the check first.
+      if (parts[0] === "owner-tasks") {
+        const withNeeds = (t: OwnerTask) => (t.status === "open" ? { ...t, needsYou: ownerTaskNeedsYou(t) } : t);
+        if (parts.length === 1 && req.method === "GET") return json((await ownerTasks.list()).map(withNeeds));
+        if (parts.length === 1 && req.method === "POST") {
+          const check = validateNewOwnerTask(await req.json().catch(() => undefined));
+          if (!check.ok) return json({ error: check.error }, 400);
+          return json(withNeeds(await ownerTasks.create(check.task)), 201);
+        }
+        if (parts.length === 3 && parts[2] === "done" && req.method === "POST") {
+          const done = await completeOwnerTask(ownerTasks, parts[1]!, { runner: opts.ownerTaskCheckRunner });
+          if (done.ok) return json(done.value);
+          return done.status === 404 ? notFound() : json({ error: done.error, output: done.output }, done.status);
         }
       }
 
