@@ -146,7 +146,7 @@ export interface ResultMeta {
 }
 
 /** What `PATCH /tasks/:id` may change on a card that hasn't started. */
-export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs"] as const;
+export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs", "key", "round", "pr", "workstreamId"] as const;
 export type CardEdit = Partial<Pick<TaskCard, (typeof EDITABLE_CARD_FIELDS)[number]>>;
 
 export type BoardEvent =
@@ -202,6 +202,10 @@ interface TaskRow {
   pendingMcpApproval: string | null;
   extraAllowedDirs: string | null;
   extraAllowedTools: string | null;
+  key: string | null;
+  round: number | null;
+  pr: string | null;
+  workstreamId: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -243,6 +247,10 @@ function rowToCard(row: TaskRow): TaskCard {
     pendingMcpApproval: row.pendingMcpApproval ? (JSON.parse(row.pendingMcpApproval) as McpApprovalRequest) : undefined,
     extraAllowedDirs: row.extraAllowedDirs ? (JSON.parse(row.extraAllowedDirs) as string[]) : undefined,
     extraAllowedTools: row.extraAllowedTools ? (JSON.parse(row.extraAllowedTools) as string[]) : undefined,
+    key: row.key ?? undefined,
+    round: row.round ?? undefined,
+    pr: row.pr ? (JSON.parse(row.pr) as TaskCard["pr"]) : undefined,
+    workstreamId: row.workstreamId ?? undefined,
   };
 }
 
@@ -298,7 +306,11 @@ export class SqliteBoard implements Board {
         extraAllowedTools TEXT,
         notBefore TEXT,
         scheduleId TEXT,
-        mergeTarget TEXT
+        mergeTarget TEXT,
+        key TEXT,
+        round INTEGER,
+        pr TEXT,
+        workstreamId TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -338,6 +350,11 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN scheduleId TEXT;",
       // docs/SDD-merge-target.md: the branch this card lands on.
       "ALTER TABLE tasks ADD COLUMN mergeTarget TEXT;",
+      // docs/SDD-coordinator.md §3.3: card key, round, PR, workstream.
+      "ALTER TABLE tasks ADD COLUMN key TEXT;",
+      "ALTER TABLE tasks ADD COLUMN round INTEGER;",
+      "ALTER TABLE tasks ADD COLUMN pr TEXT;",
+      "ALTER TABLE tasks ADD COLUMN workstreamId TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -548,7 +565,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget, key, round, pr, workstreamId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -575,6 +592,10 @@ export class SqliteBoard implements Board {
         full.notBefore ?? null,
         full.scheduleId ?? null,
         full.mergeTarget ?? null,
+        full.key ?? null,
+        full.round ?? null,
+        full.pr ? JSON.stringify(full.pr) : null,
+        full.workstreamId ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
@@ -628,8 +649,8 @@ export class SqliteBoard implements Board {
     const existing = await this.get(id);
     if (!existing) throw new Error(`task not found: ${id}`);
     const sets: string[] = [];
-    const params: (string | null)[] = [];
-    const set = (column: string, value: string | null) => {
+    const params: (string | number | null)[] = [];
+    const set = (column: string, value: string | number | null) => {
       sets.push(`${column} = ?`);
       params.push(value);
     };
@@ -643,6 +664,10 @@ export class SqliteBoard implements Board {
     if ("mergeTarget" in fields) set("mergeTarget", fields.mergeTarget ?? null);
     if ("extraAllowedTools" in fields) set("extraAllowedTools", fields.extraAllowedTools?.length ? JSON.stringify(fields.extraAllowedTools) : null);
     if ("extraAllowedDirs" in fields) set("extraAllowedDirs", fields.extraAllowedDirs?.length ? JSON.stringify(fields.extraAllowedDirs) : null);
+    if ("key" in fields) set("key", fields.key ?? null);
+    if ("round" in fields) set("round", fields.round ?? null);
+    if ("pr" in fields) set("pr", fields.pr ? JSON.stringify(fields.pr) : null);
+    if ("workstreamId" in fields) set("workstreamId", fields.workstreamId ?? null);
     if (sets.length === 0) return existing;
     this.db.run(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`, [...params, id]);
     const updated = (await this.get(id))!;
