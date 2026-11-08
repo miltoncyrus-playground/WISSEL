@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { wisselHome } from "../core/wissel-home.ts";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { TaskCard } from "../core/types.ts";
 import type { TelemetryEvent } from "./telemetry.ts";
@@ -548,9 +548,9 @@ async function mergeLocked(
 
   const stubs = await dropStubsWith(git, worktree.path);
   if (stubs.length) console.log(`merge ${task.id}: removed ${stubs.length} sandbox stub file(s) before staging: ${stubs.join(", ")}`);
-  const status = await git(worktree.path, ["status", "--porcelain"]);
-  if (status.stdout.trim()) {
-    await git(worktree.path, ["add", "-A"]);
+  const staged = await stageWith(git, worktree.path);
+  if (!staged.ok) return fail("error", `failed to stage worktree changes: ${staged.error}`);
+  if (staged.paths.length) {
     const commit = await git(worktree.path, ["commit", "-m", `${task.title}\n\ntask: ${task.id}`]);
     if (!commit.ok) return fail("error", `failed to commit worktree changes: ${commit.text}`);
   }
@@ -756,8 +756,8 @@ async function finishResolvedMerge(git: Git, repo: string, worktree: TaskWorktre
   }
 
   await dropStubsWith(git, worktree.path);
-  const add = await git(worktree.path, ["add", "-A"]);
-  if (!add.ok) return refuse("error", `\`git add -A\` failed while finishing the resolved merge: ${add.text}`);
+  const add = await stageWith(git, worktree.path);
+  if (!add.ok) return refuse("error", `staging the resolved paths failed while finishing the resolved merge: ${add.error}`);
   const commit = await git(worktree.path, ["commit", "--no-edit", "--cleanup=strip"]);
   if (!commit.ok) return refuse("error", `\`git commit --no-edit\` failed while finishing the resolved merge: ${commit.text}`);
   return { ok: true, cardId: integrator.cardId };
@@ -960,6 +960,97 @@ export async function writeReviewedFingerprint(runner: CommandRunner, path: stri
     writeFileSync(file, `${fingerprint}\n`);
   } catch {
     // Unwritable git dir: the guard just can't spot an unchanged rework.
+  }
+}
+
+/**
+ * The repo-relative paths a card changed in its worktree, sorted: every
+ * file git reports as modified, added or deleted against HEAD, in the
+ * index or not (a rename appears as its old and its new path; staged
+ * together they land as one rename), plus every untracked file except
+ * the junk a worktree picks up that no card wrote: empty sandbox
+ * mount-point stubs (isSandboxStubPath, the 97f3dca filter) and an
+ * untracked `node_modules` symlink (linkNodeModules, in a repo that
+ * doesn't ignore it). Gitignored files never appear, as under `git add
+ * -A`. Throws when `git status` fails (not a repo, gone).
+ */
+export async function cardChangedPaths(runner: CommandRunner, worktreePath: string): Promise<string[]> {
+  const listed = await changedPathsWith(gitIn(runner), worktreePath);
+  if (!listed.ok) throw new Error(listed.error);
+  return listed.paths;
+}
+
+type StageResult = { ok: true; paths: string[] } | { ok: false; error: string };
+
+/**
+ * Stages cardChangedPaths explicitly, never `git add -A`, so what lands
+ * is exactly the card's work: the sandbox's leftovers and other junk
+ * stay untracked instead of riding into the commit (docs/SDD-coordinator.md
+ * §4.5 step 2). Deletions stage through `git add` as well (git ≥ 2.0).
+ * Pathspecs are literal, so a `*` or `[` in a file name is just a name.
+ * `paths` is what was staged; empty means nothing to commit.
+ */
+export async function stageCardChanges(runner: CommandRunner, worktreePath: string): Promise<StageResult> {
+  return stageWith(gitIn(runner), worktreePath);
+}
+
+const STAGE_CHUNK = 500;
+
+async function stageWith(git: Git, worktreePath: string): Promise<StageResult> {
+  const listed = await changedPathsWith(git, worktreePath);
+  if (!listed.ok) return listed;
+  for (let i = 0; i < listed.toAdd.length; i += STAGE_CHUNK) {
+    const chunk = listed.toAdd.slice(i, i + STAGE_CHUNK);
+    const add = await git(worktreePath, ["--literal-pathspecs", "add", "--", ...chunk]);
+    if (!add.ok) return { ok: false, error: `\`git add\` of ${chunk.length} path(s) failed: ${add.text}` };
+  }
+  return { ok: true, paths: listed.paths };
+}
+
+/** `paths`: everything changed; `toAdd`: the subset with a worktree-side
+ *  change still to stage. A change only in the index (`M `, `D `) is
+ *  already staged, and `git add` on a staged deletion would fail since
+ *  the path is neither on disk nor in the index. */
+type Listed = { ok: true; paths: string[]; toAdd: string[] } | { ok: false; error: string };
+
+async function changedPathsWith(git: Git, worktreePath: string): Promise<Listed> {
+  // --no-renames: a rename is listed as its deletion and its addition,
+  // so every entry is one `XY path` field.
+  const status = await git(worktreePath, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
+  if (!status.ok) return { ok: false, error: `\`git status\` failed in ${worktreePath}: ${status.text}` };
+  const paths = new Set<string>();
+  const toAdd = new Set<string>();
+  const fields = status.stdout.split("\0");
+  for (let i = 0; i < fields.length; i++) {
+    const f = fields[i]!;
+    if (f.length < 4) continue;
+    const rel = f.slice(3);
+    if (f.startsWith("??")) {
+      if (isUntrackedJunk(worktreePath, rel)) continue;
+      paths.add(rel);
+      toAdd.add(rel);
+      continue;
+    }
+    paths.add(rel);
+    if (f[1] !== " ") toAdd.add(rel);
+    if (f[0] === "R" || f[0] === "C") {
+      // Not expected under --no-renames; consumed so it can't be read as an entry.
+      const orig = fields[++i];
+      if (orig) paths.add(orig);
+    }
+  }
+  return { ok: true, paths: [...paths].sort(), toAdd: [...toAdd].sort() };
+}
+
+/** An untracked path a merge must not stage: an empty sandbox stub, a
+ *  `node_modules` symlink, or a file gone since `git status` ran. */
+function isUntrackedJunk(worktreePath: string, rel: string): boolean {
+  try {
+    const st = lstatSync(join(worktreePath, rel));
+    if (st.isSymbolicLink()) return basename(rel) === "node_modules";
+    return st.isFile() && st.size === 0 && isSandboxStubPath(rel);
+  } catch {
+    return true;
   }
 }
 
