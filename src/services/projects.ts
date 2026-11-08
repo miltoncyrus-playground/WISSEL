@@ -70,6 +70,8 @@ interface ProjectRow {
   harness?: string | null;
   ticketPatterns?: string | null;
   referencePatterns?: string | null;
+  cardRules?: string | null;
+  cardTemplates?: string | null;
 }
 
 /** The settings columns: each a nullable JSON TEXT column named after
@@ -95,6 +97,8 @@ function rowToProject(row: ProjectRow): Project {
     ...(row.harness ? { harness: JSON.parse(row.harness) as string } : {}),
     ...(row.ticketPatterns ? { ticketPatterns: JSON.parse(row.ticketPatterns) as string[] } : {}),
     ...(row.referencePatterns ? { referencePatterns: JSON.parse(row.referencePatterns) as string[] } : {}),
+    ...(row.cardRules ? { cardRules: JSON.parse(row.cardRules) as string } : {}),
+    ...(row.cardTemplates ? { cardTemplates: JSON.parse(row.cardTemplates) as NonNullable<Project["cardTemplates"]> } : {}),
   };
 }
 

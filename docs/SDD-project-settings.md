@@ -35,6 +35,8 @@ Optional fields on `Project` (`src/core/types.ts`):
 | `verification` | `{ commands: string[][]; allowedTools: string[] }` | Argv the implementer must run, and the command-scoped Bash grants that let it |
 | `worktreeSetup` | `string[][]` | Argv run once in a new worktree |
 | `protectedPaths` | `string[]` | Repo-relative globs agents may not modify |
+| `cardRules` | `string` | Markdown appended to every templated card body (SDD-coordinator §3.2); at most 4,000 characters |
+| `cardTemplates` | `Partial<Record<CardTemplateKind, string>>` | Card body templates by kind, `{placeholder}` markdown, each at most 2,500 characters (SDD-coordinator §4.16, `src/services/card-templates.ts`) |
 
 Absent means today's behaviour. A project with none set serialises
 exactly as before (no keys, not `null`s).

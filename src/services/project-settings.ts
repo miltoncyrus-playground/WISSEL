@@ -13,15 +13,29 @@
 import type { Project } from "../core/types.ts";
 import { grantError, MAX_EXTRA_ALLOWED_TOOLS } from "../core/allowed-tools.ts";
 import { MAX_REF_PATTERNS, patternError } from "./ticket-refs.ts";
+import { cardRulesError, cardTemplatesError } from "./card-templates.ts";
 
 export const MAX_SANDBOX_DOMAINS = 20;
 export const MAX_SETTING_COMMANDS = 20;
 export const MAX_PROTECTED_PATHS = 50;
 
 /** The settings, as stored on Project. */
-export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns">;
+export type ProjectSettings = Pick<
+  Project,
+  "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates"
+>;
 export type ProjectSettingKey = keyof Required<ProjectSettings>;
-export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness", "ticketPatterns", "referencePatterns"];
+export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = [
+  "sandboxAllowedDomains",
+  "verification",
+  "worktreeSetup",
+  "protectedPaths",
+  "harness",
+  "ticketPatterns",
+  "referencePatterns",
+  "cardRules",
+  "cardTemplates",
+];
 
 /** A partial update: a key that's absent is left alone, `null` clears
  *  it. An empty list (or a verification with no commands and no tools)
@@ -170,6 +184,30 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
       if (error) return { ok: false, error };
       const patterns = dedupe(v as string[]);
       patch[key] = patterns.length > 0 ? patterns : null;
+    }
+  }
+
+  // Card rules and templates (src/services/card-templates.ts). Rules are
+  // trimmed; blank rules and an empty template map are stored as cleared.
+  if ("cardRules" in raw) {
+    const v = raw.cardRules;
+    if (v === null) patch.cardRules = null;
+    else {
+      const error = cardRulesError(v);
+      if (error) return { ok: false, error };
+      const rules = (v as string).trim();
+      patch.cardRules = rules === "" ? null : rules;
+    }
+  }
+
+  if ("cardTemplates" in raw) {
+    const v = raw.cardTemplates;
+    if (v === null) patch.cardTemplates = null;
+    else {
+      const error = cardTemplatesError(v);
+      if (error) return { ok: false, error };
+      const templates = v as NonNullable<Project["cardTemplates"]>;
+      patch.cardTemplates = Object.keys(templates).length > 0 ? templates : null;
     }
   }
 

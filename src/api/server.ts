@@ -1517,8 +1517,9 @@ export function createApp(
 
         // Per-project execution settings (src/services/project-settings.ts):
         // a partial body of sandboxAllowedDomains, verification,
-        // worktreeSetup, protectedPaths, harness; an absent key is kept, null
-        // clears it. Stored only; nothing reads them yet.
+        // worktreeSetup, protectedPaths, harness, ticketPatterns,
+        // referencePatterns, cardRules, cardTemplates; an absent key is
+        // kept, null clears it.
         if (parts.length === 3 && parts[2] === "settings" && req.method === "POST") {
           const project = (await projects.list()).find((p) => p.id === parts[1]);
           if (!project) return notFound();
