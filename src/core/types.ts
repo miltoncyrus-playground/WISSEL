@@ -408,7 +408,19 @@ export interface Project {
   /** Patterns for references that are not tickets (a decision or spec
    *  id): shown as plain labels next to a branch, never linked. */
   referencePatterns?: string[];
+  /** Markdown appended to every card body rendered from one of this
+   *  project's templates (docs/SDD-coordinator.md §3.2, §4.16). Not
+   *  counted against the template size limit. */
+  cardRules?: string;
+  /** Card body templates by kind, markdown with `{placeholder}`s
+   *  (src/services/card-templates.ts). A kind that is unset has no
+   *  template; renderCardTemplateFor refuses rather than inventing one. */
+  cardTemplates?: Partial<Record<CardTemplateKind, string>>;
 }
+
+/** The kinds of card a project may hold a body template for
+ *  (docs/SDD-coordinator.md §4.16). */
+export type CardTemplateKind = "coder" | "review" | "fix-round" | "split-only" | "merge-forward";
 
 /** Which needs-me state a card is in. See NeedsYou. */
 export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "report" | "failed" | "no-match";
