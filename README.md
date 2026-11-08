@@ -800,6 +800,7 @@ walked through under "Git and tickets".
 - `docs/SDD-write-tier-sandbox.md`: write-tier Bash in Claude Code's OS sandbox, denial counting, project allow rules.
 - `docs/SDD-git-jira-visibility.md`: git state and tickets on the board, the Jira integration and write-back.
 - `docs/SDD-schedules.md`: schedules for pipelines and tasks, and "Start at" for a card; §7 is the switch-over from systemd.
+- `docs/SDD-coordinator.md` (draft): Wissel as a team's coordinator: workstreams, roles per project, a policy gate, the coordinator window.
 
 ## License
 
