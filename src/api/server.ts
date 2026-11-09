@@ -99,8 +99,9 @@ import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions }
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
 import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch } from "../services/workstreams.ts";
 import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions } from "../services/inbox.ts";
-import { SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
+import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
+import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, gateContextFor, type ExecutorOptions } from "../services/coordinator-executor.ts";
 import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -176,6 +177,8 @@ export interface CreateAppOptions {
   gateLog?: GateLog;
   /** §6 hard limits, read once at start from hard-limits.yaml (`WISSEL_HARD_LIMITS_PATH`). */
   hardLimits?: HardLimits;
+  /** The executor's injected parts (src/services/coordinator-executor.ts, §4.3): outward-kind handlers, the push re-check, the fix-round callback, a clock. */
+  executor?: Partial<Pick<ExecutorOptions, "handlers" | "pushStillGreen" | "startFixRound" | "now">>;
   /** Used only by `POST /mcp-servers/:id/enable`'s re-validation check —
    *  injectable so tests never hit a real filesystem PATH lookup or
    *  network probe. Defaults to the real environment/fetch. */
@@ -753,6 +756,29 @@ export function createApp(
     releaseDispatch: () => orchestrator.releaseDispatch("restart"),
     running: async () => [...new Set([...(await board.list({ status: "running" })).map((t) => t.id), ...orchestrator.inFlightTaskIds()])],
     events: board.events,
+  });
+  // The executor and its quiet-hours queue (docs/SDD-coordinator.md §4.3, §4.11): every action
+  // passes the gate; the main branch is "main" until a project setting names it; duties and Shadow are later cards.
+  const executor = new CoordinatorExecutor({
+    gate: new PolicyGate(gateLog),
+    queue: new SqliteOutboundQueue((board as SqliteBoard).db),
+    context: async (a) => {
+      const ws = await workstreams.get(a.workstreamId);
+      if (!ws) throw new Error(`workstream not found: ${a.workstreamId}`);
+      return gateContextFor(ws, a.projectId, { limits: opts.hardLimits ?? DEFAULT_HARD_LIMITS, mainBranch: "main", shadow: false });
+    },
+    quietHours: async (id) => (await workstreams.get(id))?.quietHours,
+    ...opts.executor,
+    handlers: {
+      ...builtinHandlers({
+        board: board as Board, projects, ownerTasks,
+        holdDispatch: (reason) => orchestrator.holdDispatch("executor", reason),
+        releaseDispatch: () => orchestrator.releaseDispatch("executor"),
+        requestRestart: () => restartWhenIdle.request(),
+        stopCard: (id) => discardTask(board as Board, id, commandRunner),
+      }),
+      ...opts.executor?.handlers,
+    },
   });
   // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
   // subtask set should get its integrator card queued the moment it
@@ -1676,6 +1702,7 @@ export function createApp(
             if (!check.ok) return json({ error: check.error }, 400);
             return json(await channelLog.adapter(ws.id).post(check.message), 201);
           }
+          if (parts.length === 3 && parts[2] === "outbound" && req.method === "GET") return json(await executor.status(ws.id));
           if (parts.length === 2 && req.method === "PATCH") {
             const check = validateWorkstreamPatch(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
