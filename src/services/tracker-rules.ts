@@ -55,6 +55,9 @@ export interface TrackerInput {
    *  or empty: every card's PR must be merged. */
   acceptance?: readonly string[];
   names?: StageNames;
+  /** The target stage when the caller already knows it (a ticket with no
+   *  cards on the board); otherwise computed from the cards. */
+  stage?: TicketStage;
 }
 
 export interface TicketSyncResult {
@@ -68,6 +71,9 @@ export interface TicketSyncResult {
   writes: TicketWrite[];
   /** Why nothing, or not everything, was written. */
   reason?: string;
+  /** The move could not be made (unknown ticket, no transition, a write
+   *  threw), as opposed to there being nothing to move. */
+  failed?: true;
 }
 
 const STARTED: ReadonlySet<TaskCard["status"]> = new Set(["running", "dispatched", "review", "done", "failed", "pending-review", "escalated"]);
@@ -134,11 +140,11 @@ export const providerWriter = (provider: TicketProvider): TicketWriter => async 
  *  stages agree, the tracker is ahead, no transition reaches the stage,
  *  or write-back is off (the would-be writes come back instead). */
 export async function syncTicket(input: TrackerInput, provider: TicketProvider, write: TicketWriter = providerWriter(provider)): Promise<TicketSyncResult> {
-  const to = ticketStage(input.cards, input.acceptance);
+  const to = input.stage ?? ticketStage(input.cards, input.acceptance);
   const key = input.ticket;
   if (!key) return { to, written: false, writes: [], reason: "the workstream has no ticket" };
   const ticket = (await provider.lookup([key]))[key];
-  if (!ticket) return { ticket: key, to, written: false, writes: [], reason: `the tracker does not know ${key}` };
+  if (!ticket) return { ticket: key, to, written: false, writes: [], reason: `the tracker does not know ${key}`, failed: true };
   const from = stageOfTicket(ticket, input.names);
   const base = { ticket: key, from, to };
   const gap = STAGE_ORDER.indexOf(to) - STAGE_ORDER.indexOf(from);
@@ -148,7 +154,7 @@ export async function syncTicket(input: TrackerInput, provider: TicketProvider, 
   let transition: TicketTransition | undefined;
   if (provider.writeBack) {
     transition = transitionTo(to, await provider.transitions(key), input.names);
-    if (!transition) return { ...base, written: false, writes: [], reason: `no transition from ${ticket.status} reaches ${namesFor(to, input.names)[0]}` };
+    if (!transition) return { ...base, written: false, writes: [], reason: `no transition from ${ticket.status} reaches ${namesFor(to, input.names)[0]}`, failed: true };
   }
   const toName = transition?.to ?? namesFor(to, input.names)[0]!;
   const writes: TicketWrite[] = [
@@ -160,7 +166,7 @@ export async function syncTicket(input: TrackerInput, provider: TicketProvider, 
     try {
       await write(w);
     } catch (e) {
-      return { ...base, written: false, writes, reason: `${w.kind} on ${key} failed: ${e instanceof Error ? e.message : String(e)}` };
+      return { ...base, written: false, writes, reason: `${w.kind} on ${key} failed: ${e instanceof Error ? e.message : String(e)}`, failed: true };
     }
   }
   return { ...base, written: true, writes };

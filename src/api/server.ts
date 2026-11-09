@@ -109,6 +109,7 @@ import { createCoordinatorDriver } from "../services/coordinator-driver.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
 import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, startOutboundFlusher, gateContextFor, type ExecutorOptions } from "../services/coordinator-executor.ts";
+import { SqliteTrackerMemory, createTrackerSync } from "../services/ticket-actions.ts";
 import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -806,6 +807,12 @@ export function createApp(
   // rule 3; Shadow comes from the project's role.
   const duties = new SqliteDutyStore((board as SqliteBoard).db);
   const outboundQueue = new SqliteOutboundQueue((board as SqliteBoard).db);
+  // Tracker write-back (§4.10, src/services/ticket-actions.ts): the ticket.* handlers write through the
+  // configured provider only with writeBack on; board events propose the move the cards call for.
+  const trackerSync = createTrackerSync({
+    memory: new SqliteTrackerMemory((board as SqliteBoard).db), provider: () => opts.tickets?.provider, board: board as Board, workstreams, projects,
+    executor: { execute: (a) => executor.execute(a) }, inbox: (e) => inboxDispatcher.ingest(e),
+  });
   const executor = new CoordinatorExecutor({
     gate: new PolicyGate(gateLog, opts.executor?.now),
     queue: outboundQueue,
@@ -824,9 +831,12 @@ export function createApp(
         requestRestart: () => restartWhenIdle.request(),
         stopCard: (id) => discardTask(board as Board, id, commandRunner),
       }),
+      ...trackerSync.handlers,
       ...opts.executor?.handlers,
     },
   });
+  if (board.events) onShutdown(trackerSync.subscribe(board.events));
+  if (opts.schedulesEnabled && opts.tickets?.provider) onShutdown(trackerSync.startPoll().stop);
   // The coordinator driver (§4.1, §4.3): inbox events become gated actions. Decision
   // cards are not wired to a runner yet, so the hook only logs; a startup pass
   // dispatches every row left unhandled by an earlier run, once.
@@ -834,7 +844,7 @@ export function createApp(
     Object.assign(driverHandlers, createCoordinatorDriver({
       executor, board: board as Board, workstreams, projects,
       openDecisionCard: async (kind, event) => console.log(`inbox: ${event.kind} (${event.id}) wants a ${kind} decision card; not opened (decision cards are not wired to a runner yet)`),
-    }).handlers);
+    }).handlers, trackerSync.inboxHandlers);
     void (async () => { for (const e of inbox.list({ unhandled: true })) await inboxDispatcher.dispatch(e); })();
   }
   // The coordinator window (§4.14): the same hold, restart and queue the admin routes and the executor use.
