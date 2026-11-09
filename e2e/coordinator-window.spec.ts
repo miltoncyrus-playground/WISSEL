@@ -294,6 +294,65 @@ test("the dock starts at the cards and leaves the whole top menu visible and cli
   expect(geo.links.filter((l) => !l.reachable), "a top-menu link is covered").toEqual([]);
 });
 
+// docs/SDD-coordinator-dock.md R1-R3, checks 1 and 2: the lanes area gives
+// up width to the dock instead of being covered by it.
+const BOARD_LANE_IDS = ["queued", "working", "in-review", "next-step", "done"];
+
+/** Where the dock and the lanes area sit, and for each lane whether the
+ *  point at the centre of its header reaches that header (nothing over
+ *  it). With scrollTo, each header is first scrolled into view, which
+ *  only the lanes area's own box may do. */
+async function dockGeometry(page: Page, scrollTo: boolean) {
+  return page.evaluate(({ lanes, scrollTo }) => {
+    const dock = document.getElementById("coordDock")!.getBoundingClientRect();
+    const area = document.getElementById("lanesPanel")!.getBoundingClientRect();
+    const kanban = document.getElementById("kanbanBody")!;
+    const headers = lanes.map((lane) => {
+      const h = document.querySelector(`.kcol[data-lane="${lane}"] h3`) as HTMLElement | null;
+      if (!h) return { lane, hit: false, right: NaN };
+      if (scrollTo) h.scrollIntoView({ block: "nearest", inline: "nearest" });
+      const r = h.getBoundingClientRect();
+      const el = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return { lane, hit: el === h || h.contains(el), right: r.right };
+    });
+    return {
+      dockLeft: dock.left, dockWidth: dock.width, lanesRight: area.right, headers,
+      lanesScroll: kanban.scrollWidth > kanban.clientWidth,
+      pageScrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth,
+    };
+  }, { lanes: BOARD_LANE_IDS, scrollTo });
+}
+
+async function openDockOnBoard(page: Page, width: number, height: number) {
+  await page.setViewportSize({ width, height });
+  await page.goto("/board");
+  await expect(page.locator('.kcol[data-lane="done"] h3')).toBeVisible();
+  await page.locator("#coordBtn").click();
+  await expect(page.locator("#coordDock")).toBeVisible();
+}
+
+test("at 1280 x 800 the five lanes sit beside the 380 px dock, none under it, no scrolling needed", async ({ page }) => {
+  await openDockOnBoard(page, 1280, 800);
+  const geo = await dockGeometry(page, false);
+  expect(Math.round(geo.dockWidth)).toBe(380);
+  expect(geo.dockLeft).toBeGreaterThanOrEqual(geo.lanesRight - 0.5); // the lanes area ends where the dock starts
+  expect(geo.headers.filter((h) => !h.hit).map((h) => h.lane), "a lane header is covered").toEqual([]);
+  expect(geo.headers.filter((h) => h.right > geo.dockLeft + 0.5).map((h) => h.lane), "a lane header runs under the dock").toEqual([]);
+  expect(geo.lanesScroll, "the lanes area scrolls at 1280").toBe(false);
+  expect(geo.pageScrollWidth).toBeLessThanOrEqual(geo.innerWidth);
+});
+
+test("at 1024 x 768 the lanes area scrolls inside its own box; the page does not, and the dock covers none of it", async ({ page }) => {
+  await openDockOnBoard(page, 1024, 768);
+  const geo = await dockGeometry(page, true);
+  expect(geo.dockLeft).toBeGreaterThanOrEqual(geo.lanesRight - 0.5);
+  expect(geo.headers.filter((h) => !h.hit).map((h) => h.lane), "a lane header is covered").toEqual([]);
+  expect(geo.headers.filter((h) => h.right > geo.dockLeft + 0.5).map((h) => h.lane), "a lane header runs under the dock").toEqual([]);
+  expect(geo.pageScrollWidth).toBeLessThanOrEqual(geo.innerWidth); // the page itself never scrolls sideways
+  // Each lane keeps at least 160px: five of them do not fit in what 1024 leaves, so the lanes area is the one that scrolls.
+  expect(geo.lanesScroll).toBe(true);
+});
+
 test("+ New has a Coordinator tab that creates a workstream and docks its window", async ({ page, request }) => {
   const dir = await mkdtemp(join(tmpdir(), "wissel-e2e-new-coord-"));
   execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "pipe" });
