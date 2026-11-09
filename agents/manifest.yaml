@@ -1318,6 +1318,20 @@ agents:
     toolAccess: []
     costProfile: { model: claude-fable-5-1, estUsdPerTask: 0.10 }
 
+  - id: decision-maker
+    name: Decision maker
+    kind: skill
+    tier: readonly
+    description: Runs a coordinator decision card (docs/SDD-coordinator.md §4.4) — reads the fenced event in the card body and answers with one JSON block matching the kind's schema. No repo, no tools; the output is parsed by src/services/decision-runtime.ts and only the policy gate acts on it.
+    whenToUse: Only cards the coordinator opens itself, labelled decision-card plus the kind (plan-batch, decide-default, triage-red). Never for a human's question.
+    tags: [decision-card]
+    executor: readonly
+    inputs: [decision-card-body]
+    outputs: [decision-json]
+    trustLevel: low
+    toolAccess: []
+    costProfile: { model: claude-fable-5-1, estUsdPerTask: 0.10 }
+
   - id: lint-fixer
     name: Lint fixer
     kind: skill

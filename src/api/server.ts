@@ -103,7 +103,8 @@ import { createCoordinatorWindow, validateWindowMessage } from "../services/coor
 import { importWorkstream } from "../services/workstream-import.ts";
 import { SqliteDutyStore, isDuty, validateDutyChange } from "../services/duties.ts";
 import { shadowReport } from "../services/shadow-report.ts";
-import { SqliteDecisionStore } from "../services/decision-cards.ts";
+import { DECISION_CARD_KINDS, SqliteDecisionStore } from "../services/decision-cards.ts";
+import { createDecisionRuntime, type DecisionRuntime } from "../services/decision-runtime.ts";
 import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions, type InboxHandler } from "../services/inbox.ts";
 import { createCoordinatorDriver } from "../services/coordinator-driver.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
@@ -594,7 +595,13 @@ export function createApp(
   // exists below (the dispatcher reads this map per event); opts.inbox
   // replaces them in tests.
   const driverHandlers: Record<string, InboxHandler> = {};
-  const inboxDispatcher = new InboxDispatcher({ inbox, handlers: driverHandlers, ...opts.inbox });
+  // Decision cards (§4.4) run on the board through this runtime, built once the executor exists below.
+  let decisionRuntime: DecisionRuntime | undefined;
+  const inboxDispatcher = new InboxDispatcher({
+    inbox, handlers: driverHandlers, decisionKinds: DECISION_CARD_KINDS,
+    openDecisionCard: (e) => { if (!decisionRuntime) throw new Error("decision cards are not ready yet"); return decisionRuntime.openForEvent(e); },
+    ...opts.inbox,
+  });
   if (board.events) onShutdown(subscribeBoardEvents({ events: board.events }, inboxDispatcher));
   // The policy gate's audit log (§4.2); the executor that writes to it is a later card.
   const gateLog: GateLog = opts.gateLog ?? new SqliteGateLog((board as SqliteBoard).db);
@@ -832,14 +839,22 @@ export function createApp(
       ...opts.executor?.handlers,
     },
   });
-  // The coordinator driver (§4.1, §4.3): inbox events become gated actions. Decision
-  // cards are not wired to a runner yet, so the hook only logs; a startup pass
-  // dispatches every row left unhandled by an earlier run, once.
+  // Decision cards (§4.4, src/services/decision-runtime.ts): a card on the board for the
+  // decision-maker agent, its output read back from the board's events. The route is
+  // checked against decisionAgentError before any card is created.
+  decisionRuntime = createDecisionRuntime({
+    db: (board as SqliteBoard).db, board: board as Board & { events: import("node:events").EventEmitter }, workstreams, projects, executor, ownerTasks, decisions,
+    routeAgent: async (card) => {
+      const d = await router.route({ ...card, id: "decision-card", status: "inbox" });
+      return d.selected ? registry.get(d.selected) : undefined;
+    },
+  });
+  onShutdown(decisionRuntime.stop);
+  // The coordinator driver (§4.1, §4.3): inbox events become gated actions; judgment
+  // opens a decision card. A startup pass dispatches every row left unhandled by an
+  // earlier run, once.
   if (!opts.inbox) {
-    Object.assign(driverHandlers, createCoordinatorDriver({
-      executor, board: board as Board, workstreams, projects,
-      openDecisionCard: async (kind, event) => console.log(`inbox: ${event.kind} (${event.id}) wants a ${kind} decision card; not opened (decision cards are not wired to a runner yet)`),
-    }).handlers);
+    Object.assign(driverHandlers, createCoordinatorDriver({ executor, board: board as Board, workstreams, projects, openDecisionCard: decisionRuntime.open }).handlers);
     void (async () => { for (const e of inbox.list({ unhandled: true })) await inboxDispatcher.dispatch(e); })();
   }
   // The coordinator window (§4.14): the same hold, restart and queue the admin routes and the executor use.
