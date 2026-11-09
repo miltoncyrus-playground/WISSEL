@@ -97,6 +97,7 @@ import { HostGuard, hostThresholdsFromEnv, type HostGuardOptions } from "../serv
 import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
 import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch } from "../services/workstreams.ts";
+import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions } from "../services/inbox.ts";
 import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -354,6 +355,10 @@ export interface CreateAppOptions {
    *  (src/services/owner-tasks.ts). Defaults to the merge gate's runner;
    *  tests pass a fake so nothing is spawned. */
   ownerTaskCheckRunner?: GateCommandRunner;
+  /** Handlers for the event inbox (src/services/inbox.ts, docs/SDD-coordinator.md
+   *  §4.1), by event kind, plus the decision-card hook. None are built in:
+   *  without them every entry is persisted and left unhandled. */
+  inbox?: Pick<InboxDispatcherOptions, "handlers" | "decisionKinds" | "openDecisionCard">;
 }
 
 /** The bit of Bun's Server that createApp's fetch uses: lifting the idle
@@ -539,6 +544,13 @@ export function createApp(
   const ownerTasks = new SqliteOwnerTaskStore((board as SqliteBoard).db);
   // Workstreams and roles (docs/SDD-coordinator.md §3.1, §4.13).
   const workstreams = new SqliteWorkstreamStore((board as SqliteBoard).db);
+  // The event inbox (docs/SDD-coordinator.md §4.1): board and PR-watcher
+  // events are persisted here with source-stable ids before any handler.
+  const inbox = new SqliteInbox((board as SqliteBoard).db);
+  // Until handlers are injected every entry is unhandled by design, so
+  // the dispatcher's per-event warning would only be noise here.
+  const inboxDispatcher = new InboxDispatcher({ inbox, handlers: {}, ...opts.inbox, ...(opts.inbox ? {} : { logger: { warn() {} } }) });
+  if (board.events) onShutdown(subscribeBoardEvents({ events: board.events }, inboxDispatcher));
   const needsYouOpts: NeedsYouOptions = {
     openOwnerTasks: async () => (await ownerTasks.list()).filter((t) => t.status === "open"),
     async worktreeChanged(task, worktree) {
@@ -1636,6 +1648,7 @@ export function createApp(
           const ws = await workstreams.get(parts[1]!);
           if (!ws) return notFound();
           if (parts.length === 2 && req.method === "GET") return json(ws);
+          if (parts.length === 3 && parts[2] === "inbox" && req.method === "GET") return json(inbox.list({ workstreamId: ws.id, unhandled: url.searchParams.get("unhandled") === "1" }));
           if (parts.length === 2 && req.method === "PATCH") {
             const check = validateWorkstreamPatch(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
