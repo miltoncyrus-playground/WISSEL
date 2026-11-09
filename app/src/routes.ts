@@ -2,10 +2,13 @@
 // `#/board`, `#/board/<task id>`, `#/listen`, `#/you`. No router
 // dependency; App listens to `hashchange` and calls parseRoute.
 
-export type ScreenId = "feed" | "ask" | "board" | "listen" | "you";
+/** `window` is the coordinator window (docs/SDD-coordinator.md §4.14):
+ *  `#/window/<workstream id>`, reached from the board's dock, not a tab. */
+export type ScreenId = "feed" | "ask" | "board" | "listen" | "you" | "window";
 
 export interface Screen {
-  id: ScreenId;
+  /** The tabs; the window has no tab or icon. */
+  id: Exclude<ScreenId, "window">;
   label: string;
 }
 
@@ -27,12 +30,14 @@ export interface Route {
   screen: ScreenId;
   /** `#/board/<id>`: a card opened from the Board tab or the palette. */
   taskId?: string;
+  /** `#/window/<id>`: one workstream's coordinator window. */
+  workstreamId?: string;
   /** False when the hash named nothing we know and we fell back. */
   known: boolean;
 }
 
 function isScreen(s: string): s is ScreenId {
-  return SCREENS.some((x) => x.id === s);
+  return s === "window" || SCREENS.some((x) => x.id === s);
 }
 
 export function parseRoute(hash: string): Route {
@@ -41,17 +46,18 @@ export function parseRoute(hash: string): Route {
   const [head, ...rest] = path.split("/");
   if (!head || !isScreen(head)) return { screen: DEFAULT_SCREEN, known: false };
   if (rest.length === 0) return { screen: head, known: true };
-  if (head === "board" && rest.length === 1) {
+  if ((head === "board" || head === "window") && rest.length === 1) {
     try {
-      const taskId = decodeURIComponent(rest[0]!);
-      if (taskId) return { screen: "board", taskId, known: true };
+      const id = decodeURIComponent(rest[0]!);
+      if (id) return head === "board" ? { screen: "board", taskId: id, known: true } : { screen: "window", workstreamId: id, known: true };
     } catch {
-      // Bad percent-encoding: fall through to the plain Board tab.
+      // Bad percent-encoding: fall through to the plain tab.
     }
   }
   return { screen: head, known: false };
 }
 
-export function routeHash(route: { screen: ScreenId; taskId?: string }): string {
-  return route.taskId ? `#/${route.screen}/${encodeURIComponent(route.taskId)}` : `#/${route.screen}`;
+export function routeHash(route: { screen: ScreenId; taskId?: string; workstreamId?: string }): string {
+  const id = route.taskId ?? route.workstreamId;
+  return id ? `#/${route.screen}/${encodeURIComponent(id)}` : `#/${route.screen}`;
 }

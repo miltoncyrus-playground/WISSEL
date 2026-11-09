@@ -1,7 +1,7 @@
 // The server endpoints the shell reads. Same origin: the server that
 // serves /app also serves the API.
 
-import type { AgentInfo, AskResult, Conversation, ConversationDetail, FeedPage, PendingResult, PipelineDef, PodcastEpisode, ProjectGit, ProjectInfo, Schedule, TaskCard, Wrapped } from "./types";
+import type { AgentInfo, AskResult, Conversation, ConversationDetail, Decision, FeedPage, PendingResult, PipelineDef, PodcastEpisode, ProjectGit, ProjectInfo, ProjectRole, QuickAction, Schedule, TaskCard, WindowDocument, WindowMessageResult, Workstream, Wrapped } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -162,6 +162,36 @@ export async function fetchConversation(id: string): Promise<ConversationDetail 
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(await errorOf(res));
   return (await res.json()) as ConversationDetail;
+}
+
+/** POST with a JSON body (or none); throws the server's message. */
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, { method: "POST", headers: { "content-type": "application/json", accept: "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  if (!res.ok) throw new Error(await errorOf(res));
+  return (await res.json()) as T;
+}
+
+const enc = encodeURIComponent;
+
+/** The coordinator window (docs/SDD-coordinator.md §4.14, §5). */
+export const fetchWorkstreams = () => getJson<Workstream[]>("/workstreams");
+export const fetchWindow = (workstreamId: string) => getJson<WindowDocument>(`/workstreams/${enc(workstreamId)}/window`);
+/** A quick action or free text; `log` writes the answer to the channel. */
+export const postWindowMessage = (workstreamId: string, input: { action?: QuickAction; text?: string; log: boolean }) => postJson<WindowMessageResult>(`/workstreams/${enc(workstreamId)}/window/messages`, input);
+/** The window's own Confirm or Cancel of a policy change. */
+export const resolveWindowAction = (workstreamId: string, pendingId: string, verb: "confirm" | "cancel") => postJson<PendingResult>(`/workstreams/${enc(workstreamId)}/window/actions/${enc(pendingId)}/${verb}`);
+/** POST /decisions/:id/flip: takes the alternative. */
+export const flipDecision = (id: string) => postJson<Decision>(`/decisions/${enc(id)}/flip`);
+/** A role change is the owner's and goes with confirm: true, after the window's confirm click. */
+export const setProjectRole = (workstreamId: string, projectId: string, role: ProjectRole) => postJson<Workstream>(`/workstreams/${enc(workstreamId)}/projects/${enc(projectId)}/role`, { confirm: true, role });
+
+/** POST /owner-tasks/:id/done runs the task's check; a failing check
+ *  answers 409 with the check's output, and the task stays open. */
+export async function ownerTaskDone(id: string): Promise<{ ok: true } | { ok: false; error: string; output?: string }> {
+  const res = await fetch(`/owner-tasks/${enc(id)}/done`, { method: "POST", headers: { accept: "application/json" } });
+  if (res.ok) return { ok: true };
+  const body = (await res.json().catch(() => ({}))) as { error?: string; output?: string };
+  return { ok: false, error: body.error ?? `HTTP ${res.status}`, ...(body.output ? { output: body.output } : {}) };
 }
 
 /** The notice for a settled run, from the root card's status. */

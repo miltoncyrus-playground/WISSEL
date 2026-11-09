@@ -61,6 +61,9 @@ export default defineConfig({
       "/voice": api,
       "/wrapped": api,
       "/board": api,
+      "/workstreams": api,
+      "/decisions": api,
+      "/owner-tasks": api,
     },
   },
 });

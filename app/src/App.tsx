@@ -10,6 +10,7 @@ import { Rail, TabBar, TopBar } from "./components/Nav";
 import { Palette } from "./components/Palette";
 import { AskScreen } from "./screens/AskScreen";
 import { BoardScreen, CardDetail } from "./screens/BoardScreen";
+import { CoordinatorWindow } from "./screens/CoordinatorWindowScreen";
 import { FeedScreen } from "./screens/FeedScreen";
 import { ListenScreen } from "./screens/ListenScreen";
 import { YouScreen } from "./screens/YouScreen";
@@ -26,6 +27,10 @@ export const DESKTOP_QUERY = "(min-width: 1024px)";
 /** Re-partition at least this often so "Done today" rolls over at
  *  midnight without an event. */
 const CLOCK_TICK_MS = 60_000;
+
+/** `/app?dock=1`: the board's coordinator dock (docs/SDD-coordinator.md
+ *  §4.14) loads the window screen alone, no rail, tabs or Live panel. */
+const DOCK = new URLSearchParams(location.search).has("dock");
 
 export function App() {
   const route = useHashRoute();
@@ -80,7 +85,7 @@ export function App() {
     }
   }, []);
 
-  const title = SCREENS.find((s) => s.id === route.screen)?.label ?? "";
+  const title = route.screen === "window" ? "Coordinator" : (SCREENS.find((s) => s.id === route.screen)?.label ?? "");
 
   useEffect(() => {
     document.title = `${title} · wissel`;
@@ -95,8 +100,20 @@ export function App() {
     screen = <ListenScreen now={now} />;
   } else if (route.screen === "ask") {
     screen = <AskScreen ask={ask} tasks={data.tasks} tasksLoaded={data.loaded} pipelines={data.pipelines} now={now} />;
+  } else if (route.screen === "window") {
+    screen = <CoordinatorWindow workstreamId={route.workstreamId} now={now} dock={DOCK} />;
   } else {
     screen = <YouScreen running={lanes.running} />;
+  }
+
+  if (DOCK) {
+    return (
+      <div className="shell is-dock">
+        <main className="content" id="main" data-screen={route.screen}>
+          {route.screen === "window" ? screen : <CoordinatorWindow now={now} dock />}
+        </main>
+      </div>
+    );
   }
 
   // The one <audio> (SDD §3.3) sits outside everything that changes

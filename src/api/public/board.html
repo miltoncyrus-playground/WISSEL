@@ -182,6 +182,19 @@
   }
   .new-btn:hover { opacity: 0.92; }
   .new-btn[aria-expanded="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* The coordinator window docked beside the board (docs/SDD-coordinator.md
+     §4.14): the app's own window screen in a frame, so the board and the
+     app share one component. Not modal; the page makes room for it. */
+  .coord-btn {
+    appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-1); font: inherit; font-size: 13px; font-weight: 700;
+    padding: 5px 12px; border-radius: 7px; cursor: pointer; flex: none;
+  }
+  .coord-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+  .drawer.coord-dock { width: min(520px, 100vw); transform: none; box-shadow: none; z-index: 30; }
+  .coord-dock .drawer-head { align-items: center; }
+  .coord-dock select { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--page); color: var(--ink-1); }
+  .coord-dock iframe { flex: 1; width: 100%; border: 0; background: var(--page); }
+  body.coord-docked { padding-right: min(520px, 100vw); }
   .main { padding: 10px 20px 32px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   /* Below 1100px the header keeps only its icons. Labels are clipped
      rather than display:none so each link keeps its accessible name;
@@ -1029,6 +1042,7 @@
     <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
     <span class="version-badge" id="versionBadge"></span>
     <a class="app-link" id="appLink" href="/app">Try the new app</a>
+    <button type="button" class="coord-btn" id="coordBtn" aria-expanded="false" aria-controls="coordDock" title="The coordinator window, docked beside the board">Coordinator</button>
     <button type="button" class="new-btn" id="newBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="newDrawer">+ New</button>
   </header>
 
@@ -1700,6 +1714,18 @@
   </div>
 </aside>
 <datalist id="schedTzList"></datalist>
+
+<!-- The coordinator window dock (docs/SDD-coordinator.md §4.14): one
+     workstream's window, the same screen as /app#/window/<id>, in a frame
+     with ?dock=1 so the app draws it without its own nav. -->
+<aside class="drawer coord-dock" id="coordDock" aria-label="Coordinator window" hidden>
+  <div class="drawer-head">
+    <select id="coordWorkstream" aria-label="Workstream"></select>
+    <a class="app-link" id="coordOpenApp" href="/app#/window">Open in the app</a>
+    <button type="button" class="drawer-close" id="coordClose" aria-label="Close coordinator window">×</button>
+  </div>
+  <iframe id="coordFrame" title="Coordinator window" src="about:blank"></iframe>
+</aside>
 
 <script src="/render-task-output.js"></script>
 <script src="/render-merge-health.js"></script>
@@ -7655,6 +7681,47 @@
       b.setAttribute("aria-pressed", b.getAttribute("data-theme-choice") === stored ? "true" : "false");
       b.addEventListener("click", function () { applyTheme(b.getAttribute("data-theme-choice")); });
     });
+  })();
+
+  // Coordinator window dock (docs/SDD-coordinator.md §4.14). Opening it
+  // fills the workstream select from GET /workstreams and points the
+  // frame at the app's window screen; the frame reads the theme choice
+  // above from localStorage, so the toggle applies inside it too.
+  (function () {
+    var dock = document.getElementById("coordDock");
+    var btn = document.getElementById("coordBtn");
+    var select = document.getElementById("coordWorkstream");
+    var frame = document.getElementById("coordFrame");
+    var openApp = document.getElementById("coordOpenApp");
+    function show(id) {
+      var hash = id ? "#/window/" + encodeURIComponent(id) : "#/window";
+      frame.src = "/app/?dock=1" + hash;
+      openApp.href = "/app" + hash;
+    }
+    function setOpen(open) {
+      dock.hidden = !open;
+      document.body.classList.toggle("coord-docked", open);
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+    btn.addEventListener("click", function () {
+      var open = dock.hidden;
+      setOpen(open);
+      if (!open) return;
+      fetch("/workstreams").then(function (r) { return r.json(); }).then(function (list) {
+        var current = select.value;
+        select.textContent = "";
+        list.forEach(function (ws) {
+          var o = document.createElement("option");
+          o.value = ws.id;
+          o.textContent = ws.name;
+          select.appendChild(o);
+        });
+        if (list.some(function (ws) { return ws.id === current; })) select.value = current;
+        show(select.value);
+      }).catch(function () { show(""); });
+    });
+    select.addEventListener("change", function () { show(select.value); });
+    document.getElementById("coordClose").addEventListener("click", function () { setOpen(false); });
   })();
 })();
 </script>

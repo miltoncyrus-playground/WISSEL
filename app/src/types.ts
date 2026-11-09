@@ -327,6 +327,82 @@ export interface ProjectInfo {
   ticketPatterns?: string[];
 }
 
+/** The coordinator window (docs/SDD-coordinator.md §4.14). Mirrors
+ *  src/services/coordinator-window.ts (WindowHeader, WindowItem,
+ *  WindowDocument, WindowMessageResult, QuickAction),
+ *  decision-cards.ts (Decision), owner-tasks.ts (OwnerTask),
+ *  channel.ts (ChannelEntry, the fields the window shows) and
+ *  workstreams.ts (ProjectRole, Workstream's header slice). */
+export type ProjectRole = "shadow" | "follow" | "decide" | "decide-over";
+export const PROJECT_ROLES: readonly ProjectRole[] = ["shadow", "follow", "decide", "decide-over"];
+export type QuickAction = "status-now" | "waiting-on-me" | "pause-new-cards" | "resume-new-cards" | "restart-when-idle";
+
+export interface Workstream {
+  id: string;
+  name: string;
+  ticket?: string;
+  projects: { projectId: string; role: ProjectRole; decider?: string }[];
+}
+
+export interface Decision {
+  id: string;
+  workstreamId: string;
+  text: string;
+  alternative: string;
+  by: "wissel" | "decider" | "owner";
+  status: "taken" | "flipped";
+  channelRef?: string;
+  at: string;
+}
+
+export interface OwnerTask {
+  id: string;
+  title: string;
+  why: string;
+  steps: string[];
+  check?: string[];
+  blocks: string[];
+  status: "open" | "done" | "dismissed";
+}
+
+export interface ChannelEntry {
+  ref: string;
+  at: string;
+  workstreamId: string;
+  message: { kind: string; from: string; text?: string; [field: string]: unknown };
+}
+
+export type WindowItem =
+  | { kind: "status"; at: string; from: string; text: string }
+  | { kind: "decision"; decision: Decision; flip: boolean }
+  | { kind: "owner-task"; task: OwnerTask; hasCheck: boolean }
+  | { kind: "plan"; card: { id: string; key?: string; title: string; status: TaskStatus }; held?: string };
+
+export interface WindowHeader {
+  workstream: { id: string; name: string; ticket?: string };
+  roles: { projectId: string; role: ProjectRole; decider?: string }[];
+  live: { dispatchHold?: string; restartPending: boolean; running: number };
+  cards: { live: number; cap: number | null };
+  channelLastWrittenAt?: string;
+  quietHours?: { start: string; end: string; timezone: string; quiet: boolean };
+  outbound: { queued: number; flushAt?: string };
+}
+
+export interface WindowDocument {
+  header: WindowHeader;
+  items: WindowItem[];
+  decisions: Decision[];
+  log: ChannelEntry[];
+  conversation?: { conversation: Conversation; messages: ChatMessage[] };
+}
+
+/** POST /workstreams/:id/window/messages. */
+export interface WindowMessageResult {
+  conversation: Conversation;
+  user: ChatMessage;
+  assistant: ChatMessage;
+}
+
 /** GET /projects/:id/git. Mirrors src/services/project-git.ts. */
 export interface ProjectGit {
   status: {

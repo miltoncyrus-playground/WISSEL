@@ -18,6 +18,25 @@ tokens.id = "wissel-tokens";
 tokens.textContent = tokensToCss();
 document.head.prepend(tokens);
 
+// The board's Light/Dark/Auto choice (src/api/public/board.html, key
+// wissel-theme) applies here too, so the coordinator window docked
+// beside the board follows its toggle; `storage` fires in this document
+// when the board changes it. No stored choice: the OS decides.
+function applyBoardTheme() {
+  let theme: string | null = null;
+  try {
+    theme = localStorage.getItem("wissel-theme");
+  } catch {
+    // Storage blocked: Auto.
+  }
+  if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+}
+applyBoardTheme();
+window.addEventListener("storage", (e) => {
+  if (e.key === null || e.key === "wissel-theme") applyBoardTheme();
+});
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />

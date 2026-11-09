@@ -367,8 +367,9 @@ function ResultView({ result, resolve }: { result: ResultChip; resolve: Resolve 
 }
 
 /** A Tier B action waiting for Milton's tap. Nothing happens until he
- *  taps Confirm; a message saying "yes" does not count (§3.7). */
-function ConfirmCard({ pending, resolve }: { pending: PendingView; resolve: Resolve }) {
+ *  taps Confirm; a message saying "yes" does not count (§3.7). The
+ *  coordinator window's policy changes wait in the same card. */
+export function ConfirmCard({ pending, resolve }: { pending: PendingView; resolve: Resolve }) {
   const { busy, error, tap } = useTap(resolve);
   const open = pending.state === "open";
   return (
