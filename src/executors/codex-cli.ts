@@ -2,7 +2,7 @@ import type { AgentDef, TaskCard, TaskResult } from "../core/types.ts";
 import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { buildAgentPrompt } from "../core/prompt.ts";
 import type { Verification } from "../core/verification.ts";
-import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
+import { DEFAULT_MEMORY_PATH, readPromptMemory } from "../services/memory.ts";
 import type { CommandResult, CommandRunner } from "./claude-cli.ts";
 import { resolveMcpGrants } from "./mcp-config.ts";
 import { resolveScratchWorkspace } from "../services/scratch-workspace.ts";
@@ -183,7 +183,8 @@ export async function runCodex(opts: RunCodexOptions): Promise<TaskResult> {
     );
   }
 
-  const memory = injectMemory ? await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH) : undefined;
+  // Scoped lessons (docs/SDD-coordinator.md §4.15) never reach the prompt.
+  const memory = injectMemory ? await readPromptMemory(memoryPath ?? DEFAULT_MEMORY_PATH) : undefined;
   const cmd = ["codex", "exec", "--json", "-s", sandbox];
   if (model) cmd.push("-m", model);
   // `prompt` is deliberately never an argv element — mirrors runClaude's
