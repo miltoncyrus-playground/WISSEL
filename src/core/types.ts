@@ -525,6 +525,35 @@ export type StartCondition =
   | { kind: "pr-merged"; repo: string; number: number }
   | { kind: "path-on-main"; repo: string; path: string };
 
+/** A card's lifecycle past `done` (docs/SDD-coordinator.md §4.7): landed
+ *  (PR open), ready (review passed on the head sha and checks green on
+ *  that sha), merged. Derived by the PR watcher; `status` is untouched. */
+export type PrLifecycle = "landed" | "ready" | "merged";
+
+/** What the PR watcher last saw of a card's PR (§4.7). */
+export interface PrWatch {
+  /** The head sha `checks` ran on. */
+  sha: string;
+  checks: "pending" | "passing" | "failing" | "none";
+  mergeable: "clean" | "dirty" | "blocked" | "unknown";
+  /** armed: auto-merge is on. merged and closed are terminal. */
+  state: "open" | "armed" | "merged" | "closed";
+  at: string;
+}
+
+/** The pull request a card was delivered as (§4.5) and its watched
+ *  state (§4.7). The delivery writes the first three fields; the review
+ *  path writes `reviewedSha` when a review passes on that sha; the
+ *  watcher writes `lifecycle` and `watch`. */
+export interface PrRef {
+  number: number;
+  url: string;
+  head: string;
+  reviewedSha?: string;
+  lifecycle?: PrLifecycle;
+  watch?: PrWatch;
+}
+
 export interface TaskCard {
   id: string;
   title: string;
@@ -773,8 +802,9 @@ export interface TaskCard {
   /** The attempt within this card's review lineage, counting from 1. */
   round?: number;
   /** The pull request this card's work was delivered as (§4.5): its
-   *  number, web URL and head branch. */
-  pr?: { number: number; url: string; head: string };
+   *  number, web URL and head branch, plus what the PR watcher (§4.7)
+   *  last saw of it. */
+  pr?: PrRef;
   /** The Workstream (§3.1) this card belongs to, if any. */
   workstreamId?: string;
   /** Start conditions (docs/SDD-coordinator.md §4.8): the sweep skips

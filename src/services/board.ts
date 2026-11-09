@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { McpApprovalRequest, RoutingDecision, StartCondition, TaskCard, TaskResult } from "../core/types.ts";
+import type { McpApprovalRequest, PrWatch, RoutingDecision, StartCondition, TaskCard, TaskResult } from "../core/types.ts";
 import type { OverlapWarning } from "../core/start-conditions.ts";
 
 /** What `escalate` stores when a caller passes an empty or whitespace-only
@@ -172,7 +172,13 @@ export type BoardEvent =
    *  refetchTasks just re-pulls the full task list on any event anyway,
    *  so there's nothing an N-event version would buy a listener. */
   | { type: "task.archived"; tasks: TaskCard[] }
-  | { type: "task.unarchived"; task: TaskCard };
+  | { type: "task.unarchived"; task: TaskCard }
+  /** From the PR watcher (docs/SDD-coordinator.md §4.7), for the inbox:
+   *  the card's checks finished on `sha`; its PR became DIRTY; it merged.
+   *  `task.pr` carries the state these were derived from. */
+  | { type: "pr.checks"; task: TaskCard; checks: PrWatch["checks"]; sha: string }
+  | { type: "pr.dirty"; task: TaskCard }
+  | { type: "pr.merged"; task: TaskCard };
 
 interface TaskRow {
   id: string;

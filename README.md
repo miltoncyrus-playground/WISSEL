@@ -710,6 +710,7 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_MODELS_CACHE_PATH` | `~/.wissel/models-cache.json` | Model catalog cache. |
 | `WISSEL_MERGE_HEALTH` | off | Detect repos left mid-merge (`.git/MERGE_HEAD`) and show a banner. Never auto-resolves. |
 | `WISSEL_MERGE_HEALTH_INTERVAL_HOURS` | 1 | Merge-health check interval. |
+| `WISSEL_PR_WATCHER` | on | Poll the code host every 60s for every card delivered as a pull request: checks, mergeability, merged or closed, as `pr.*` board events (`docs/SDD-coordinator.md` §4.7). `0` turns it off. |
 | `WISSEL_PORT` | 8787 | HTTP port. |
 | `WISSEL_SUPERVISED` | off | Set by a start script or systemd unit (`Restart=on-failure`) that restarts wissel on exit code 75. Lets `POST /admin/restart-when-idle` hold new cards, wait for running ones and exit 75; `DELETE` cancels, `GET` reports. Refused with 409 when unset. `docs/SDD-coordinator.md` §4.12. |
 | `WISSEL_HOME` | `~/.wissel` | Root for this instance's state: worktrees, scratch, projects, task output, audio, the models cache, and the default board database and telemetry log. Set it to run a second instance on the same host without sharing any of them. |

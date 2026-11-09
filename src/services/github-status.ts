@@ -1,4 +1,7 @@
+import type { EventEmitter } from "node:events";
+import type { PrLifecycle, PrRef, PrWatch, TaskCard } from "../core/types.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
+import type { Board, BoardEvent } from "./board.ts";
 
 /** Pull-request and CI state of a project's branches, read from GitHub
  *  through `gh`. Read-only: `gh pr list` with fixed argv, no shell string,
@@ -24,6 +27,12 @@ export interface PullRequest {
   review?: string;
   /** MERGEABLE, CONFLICTING or UNKNOWN; only meaningful while open. */
   mergeable?: string;
+  /** GitHub's mergeStateStatus: CLEAN, DIRTY, BLOCKED, BEHIND, UNSTABLE, ... */
+  mergeStateStatus?: string;
+  /** The head commit `checks` ran on. */
+  headSha?: string;
+  /** Auto-merge is on (§4.7 "armed"). */
+  armed?: boolean;
   checks: PrChecks;
   updatedAt?: string;
 }
@@ -98,6 +107,9 @@ interface RawPr {
   isDraft?: boolean;
   reviewDecision?: string;
   mergeable?: string;
+  mergeStateStatus?: string;
+  headRefOid?: string;
+  autoMergeRequest?: unknown;
   updatedAt?: string;
   statusCheckRollup?: unknown;
 }
@@ -113,12 +125,15 @@ function toPullRequest(raw: RawPr): PullRequest | undefined {
     state,
     ...(raw.reviewDecision ? { review: raw.reviewDecision } : {}),
     ...(raw.mergeable ? { mergeable: raw.mergeable } : {}),
+    ...(raw.mergeStateStatus ? { mergeStateStatus: raw.mergeStateStatus } : {}),
+    ...(raw.headRefOid ? { headSha: raw.headRefOid } : {}),
+    ...(raw.autoMergeRequest && typeof raw.autoMergeRequest === "object" ? { armed: true } : {}),
     checks: summarizeChecks(raw.statusCheckRollup),
     ...(raw.updatedAt ? { updatedAt: raw.updatedAt } : {}),
   };
 }
 
-const FIELDS = "number,title,url,headRefName,state,isDraft,reviewDecision,mergeable,updatedAt,statusCheckRollup";
+const FIELDS = "number,title,url,headRefName,state,isDraft,reviewDecision,mergeable,mergeStateStatus,headRefOid,autoMergeRequest,updatedAt,statusCheckRollup";
 
 /** The newest PRs (any state) of the repo behind `path`'s `origin`. For a
  *  branch with several PRs the newest wins. */
@@ -298,4 +313,116 @@ export function withPrCache<T extends object = ProjectPrs>(
     if (!("error" in value)) cache.set(path, { at: now(), value });
     return value;
   };
+}
+
+// --- PR watcher (docs/SDD-coordinator.md §4.7) ---------------------------
+
+/** A change the watcher saw, for the board events of the same names. */
+export type PrWatchEvent = { kind: "pr.checks"; checks: PrWatch["checks"]; sha: string } | { kind: "pr.dirty" } | { kind: "pr.merged" };
+
+function mergeableOf(pr: PullRequest): PrWatch["mergeable"] {
+  if (pr.mergeable === "CONFLICTING" || pr.mergeStateStatus === "DIRTY") return "dirty";
+  if (pr.mergeStateStatus === "BLOCKED") return "blocked";
+  return pr.mergeable === "MERGEABLE" ? "clean" : "unknown";
+}
+
+function lifecycleOf(ref: PrRef, watch: PrWatch): PrLifecycle {
+  if (watch.state === "merged") return "merged";
+  const open = watch.state === "open" || watch.state === "armed";
+  return open && watch.checks === "passing" && ref.reviewedSha !== undefined && ref.reviewedSha === watch.sha ? "ready" : "landed";
+}
+
+/** The watch state of `card.pr` after seeing `pr`, with the events the
+ *  difference to the last look warrants. Pure. Undefined when nothing
+ *  changed (so nothing is written): `at` alone never counts as a change.
+ *  pr.checks fires when a finished run (passing or failing) differs from
+ *  the last one, by state or by sha; pr.dirty and pr.merged fire on the
+ *  transition into those states. */
+export function watchPr(card: Pick<TaskCard, "pr">, pr: PullRequest, at: string): { pr: PrRef; events: PrWatchEvent[] } | undefined {
+  const ref = card.pr;
+  if (!ref) return undefined;
+  const prev = ref.watch;
+  const watch: PrWatch = {
+    sha: pr.headSha ?? prev?.sha ?? "",
+    checks: pr.checks.state,
+    mergeable: mergeableOf(pr),
+    state: pr.state === "merged" ? "merged" : pr.state === "closed" ? "closed" : pr.armed ? "armed" : "open",
+    at,
+  };
+  const lifecycle = lifecycleOf(ref, watch);
+  const same = (k: keyof PrWatch) => prev !== undefined && prev[k] === watch[k];
+  if (prev && same("sha") && same("checks") && same("mergeable") && same("state") && ref.lifecycle === lifecycle) return undefined;
+  const events: PrWatchEvent[] = [];
+  if ((watch.checks === "passing" || watch.checks === "failing") && !(same("sha") && same("checks"))) events.push({ kind: "pr.checks", checks: watch.checks, sha: watch.sha });
+  if (watch.mergeable === "dirty" && !same("mergeable")) events.push({ kind: "pr.dirty" });
+  if (watch.state === "merged" && !same("state")) events.push({ kind: "pr.merged" });
+  return { pr: { ...ref, lifecycle, watch }, events };
+}
+
+export const PR_WATCH_INTERVAL_MS = 60_000;
+
+export interface PrWatcherOptions {
+  board: Pick<Board, "list" | "updateFields"> & { events: EventEmitter };
+  /** The project's PRs by repo path: `withPrCache(getProjectPrs)` in the
+   *  server, so a tick and the Tickets page share one `gh` call. */
+  prsOf: (path: string) => Promise<ProjectPrs | { error: string }>;
+  intervalMs?: number;
+  now?: () => number;
+  setInterval?: (fn: () => void, ms: number) => unknown;
+  clearInterval?: (handle: unknown) => void;
+  logger?: Pick<Console, "warn">;
+}
+
+export interface PrWatcher {
+  /** One poll of every repo with a card whose PR is still open. */
+  tick(): Promise<void>;
+  stop(): void;
+}
+
+function terminal(ref: PrRef | undefined): boolean {
+  return ref?.watch?.state === "merged" || ref?.watch?.state === "closed";
+}
+
+/** Polls the code host for every card with `pr` set (§4.7): once per
+ *  repo per tick, every `intervalMs` (60 s). A change is persisted on
+ *  the card's `pr` (through `updateFields`, so a `task.updated` event
+ *  follows as for any edit) and then emitted as the pr.* board events
+ *  the inbox consumes. A repo whose read fails is retried next tick; a
+ *  PR the host no longer lists is left as it was. Cards whose PR is
+ *  merged or closed are not polled again. Arming is not done here. */
+export function startPrWatcher(opts: PrWatcherOptions): PrWatcher {
+  const now = opts.now ?? Date.now;
+  const log = opts.logger ?? console;
+  let running: Promise<void> | undefined;
+  const tick = async (): Promise<void> => {
+    const cards = (await opts.board.list()).filter((c) => c.pr && c.repo && !c.archivedAt && !terminal(c.pr));
+    const byRepo = new Map<string, TaskCard[]>();
+    for (const c of cards) byRepo.set(c.repo!, [...(byRepo.get(c.repo!) ?? []), c]);
+    for (const [repo, mine] of byRepo) {
+      const answer = await opts.prsOf(repo).catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }));
+      if ("error" in answer) {
+        log.warn(`pr-watcher: ${repo}: ${answer.error}`);
+        continue;
+      }
+      const at = new Date(now()).toISOString();
+      for (const card of mine) {
+        const pr = answer.prs.find((p) => p.number === card.pr!.number);
+        const change = pr ? watchPr(card, pr, at) : undefined;
+        if (!change) continue;
+        const task = await opts.board.updateFields(card.id, { pr: change.pr });
+        for (const e of change.events) {
+          const event: BoardEvent = e.kind === "pr.checks" ? { type: "pr.checks", task, checks: e.checks, sha: e.sha } : { type: e.kind, task };
+          opts.board.events.emit("event", event);
+        }
+      }
+    }
+  };
+  // Ticks never overlap: a slow `gh` answer must not start a second poll.
+  const guarded = (): Promise<void> => {
+    if (!running) running = tick().catch((e) => log.warn(`pr-watcher: tick failed: ${(e as Error).message}`)).finally(() => (running = undefined));
+    return running;
+  };
+  const handle = (opts.setInterval ?? setInterval)(() => void guarded(), opts.intervalMs ?? PR_WATCH_INTERVAL_MS);
+  const stop = opts.clearInterval ?? ((h: unknown) => clearInterval(h as ReturnType<typeof setInterval>));
+  return { tick: guarded, stop: () => stop(handle) };
 }
