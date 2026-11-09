@@ -195,5 +195,7 @@ export function createCoordinatorDriver(deps: DriverDeps): { handlers: Record<st
     }),
   };
   for (const kind of ["claim", "release", "ready-to-merge", "question", "answer", "decision", "status", "handover"]) handlers[`channel.${kind}`] = channelHandler;
+  // The owner's window messages (channel-sinks.ts, §4.14) are recorded for the record; the window itself runs the quick actions.
+  handlers["owner.message"] = async () => {};
   return { handlers };
 }
