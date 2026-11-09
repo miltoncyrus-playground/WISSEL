@@ -23,9 +23,9 @@ import type { ProjectRole, Workstream, WorkstreamStore } from "./workstreams.ts"
  * owner goes to the channel log for an answer, and for a change when it
  * happens. No UI here.
  */
-export const QUICK_ACTIONS = ["status-now", "waiting-on-me", "pause-new-cards", "resume-new-cards", "restart-when-idle"] as const;
+export const QUICK_ACTIONS = ["status-now", "waiting-on-me", "pause-new-cards", "resume-new-cards", "restart-when-idle", "plan-from-spec"] as const;
 export type QuickAction = (typeof QUICK_ACTIONS)[number];
-const QUICK_TEXT: Record<QuickAction, string> = { "status-now": "Status now", "waiting-on-me": "What is waiting on me", "pause-new-cards": "Pause new cards", "resume-new-cards": "Resume new cards", "restart-when-idle": "Restart when idle" };
+const QUICK_TEXT: Record<QuickAction, string> = { "status-now": "Status now", "waiting-on-me": "What is waiting on me", "pause-new-cards": "Pause new cards", "resume-new-cards": "Resume new cards", "restart-when-idle": "Restart when idle", "plan-from-spec": "Plan from spec" };
 const POLICY: Record<"pause-new-cards" | "resume-new-cards" | "restart-when-idle", WindowAction["type"]> = { "pause-new-cards": "window.pause-new-cards", "resume-new-cards": "window.resume-new-cards", "restart-when-idle": "window.restart-when-idle" };
 /** Counted as live against the cap, as the digest counts them. */
 const LIVE: ReadonlySet<TaskCard["status"]> = new Set(["running", "dispatched"]);
@@ -39,6 +39,8 @@ export type WindowItem =
 
 export interface WindowHeader {
   workstream: { id: string; name: string; ticket?: string };
+  /** Whether the workstream has a spec: the "Plan from spec" quick action shows only then (plan-from-spec.ts). */
+  hasSpec: boolean;
   /** `pendingRole`: a confirmed change waiting for an arm in flight (role-changes.ts, §4.13). */
   roles: { projectId: string; role: ProjectRole; decider?: string; pendingRole?: ProjectRole }[];
   live: { dispatchHold?: string; restartPending: boolean; running: number };
@@ -85,6 +87,8 @@ export interface WindowDeps {
   now?: () => Date;
   /** Every owner message, once stored: the inbox takes it as an owner.message event (channel-sinks.ts, §4.1). */
   onOwnerMessage?: (ws: Workstream, message: ChatMessage, input: WindowMessageInput) => Promise<unknown> | void;
+  /** The same plan as POST /workstreams/:id/plan (plan-from-spec.ts), from the workstream's spec; absent, the quick action says so. */
+  plan?: (ws: Workstream) => Promise<{ ok: true; path: string; duplicate: boolean } | { ok: false; error: string }>;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -108,6 +112,7 @@ export function validateWindowMessage(body: unknown): { ok: true; input: WindowM
 /** Free text onto a quick action by its words; undefined when none fits. */
 function quickActionOf(text: string): QuickAction | undefined {
   const t = text.toLowerCase();
+  if (/\bplan\b/.test(t)) return "plan-from-spec";
   if (/restart/.test(t)) return "restart-when-idle";
   if (/resume|unpause/.test(t)) return "resume-new-cards";
   if (/pause/.test(t)) return "pause-new-cards";
@@ -144,6 +149,7 @@ export function createCoordinatorWindow(deps: WindowDeps) {
     const resolvedAsks = allAsks.filter((a) => a.status !== "open").sort((a, b) => (a.resolvedAt ?? "").localeCompare(b.resolvedAt ?? ""));
     const header: WindowHeader = {
       workstream: { id: ws.id, name: ws.name, ...(ws.ticket ? { ticket: ws.ticket } : {}) },
+      hasSpec: ws.spec !== undefined,
       roles: ws.projects.map((p) => {
         const held = deps.pendingRoles?.(ws.id).find((r) => r.projectId === p.projectId);
         return { projectId: p.projectId, role: p.role, ...(p.decider ? { decider: p.decider } : {}), ...(held ? { pendingRole: held.change.role } : {}) };
@@ -248,6 +254,11 @@ export function createCoordinatorWindow(deps: WindowDeps) {
       if (action === "status-now" || action === "waiting-on-me") {
         reply = action === "status-now" ? statusText(ws, b) : waitingText(cid, b);
         if (input.log) await deps.channelLog.adapter(ws.id).post({ kind: "status", from: "owner", about: about(ws), text: `${user.text}: ${reply}` });
+      } else if (action === "plan-from-spec") {
+        // The same route as POST /workstreams/:id/plan: a plan-batch event, a decision card, then the cards appear on the board as this workstream's.
+        const r = !ws.spec ? { ok: false as const, error: `${ws.name} has no spec to plan from; set spec on the workstream first.` } : deps.plan ? await deps.plan(ws) : { ok: false as const, error: "planning from a spec is not wired here." };
+        reply = r.ok ? `Planning from ${r.path}${r.duplicate ? " (already under way: the same spec was handed over moments ago)" : ""}. The proposed cards will appear as this workstream's cards on the board.` : `Did not plan: ${r.error}`;
+        if (r.ok && !r.duplicate && input.log) await deps.channelLog.adapter(ws.id).post({ kind: "status", from: "owner", about: about(ws), text: `Plan from spec: planning from ${r.path}` });
       } else if (action) {
         const type = POLICY[action];
         const c = change(ws, type, b);

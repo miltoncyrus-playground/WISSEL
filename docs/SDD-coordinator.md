@@ -562,6 +562,11 @@ New routes (in `src/api/server.ts`, logic in services):
 - `GET/POST /owner-tasks`, `POST /owner-tasks/:id/done`
 - `POST /admin/restart-when-idle`, `DELETE /admin/restart-when-idle`
 - `POST /workstreams/:id/import` (§7)
+- `POST /workstreams/:id/plan` (owner only; `src/services/plan-from-spec.ts`):
+  reads the workstream's spec (or the body's `{repo, path}`, inside the
+  repo, at most 40000 characters) and ingests one `plan-batch` event with
+  a source-stable id; a double click is one event, a later re-plan a
+  second. The window's "Plan from spec" quick action posts the same.
 - `POST /projects/:id/settings` accepts the §3.2 fields
 
 `GET /tasks` adds `key`, `round`, `pr` and `workstreamId` to each card.
