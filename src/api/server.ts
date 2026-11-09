@@ -94,7 +94,8 @@ import { SqliteConversationStore } from "../services/conversations.ts";
 import { DEFAULT_STT_MODEL, DEFAULT_STT_URL, SttClient, SttError, transcribeVoiceRequest } from "../services/stt.ts";
 import { createReplyAudio, ReplyAudioError } from "../services/reply-audio.ts";
 import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
-import { HostGuard, hostThresholdsFromEnv, type HostGuardOptions } from "../services/host-guard.ts";
+import { HostGuard, hostThresholdsFromEnv, realHostProbes, type HostGuardOptions } from "../services/host-guard.ts";
+import { SqliteDigestLog, createDigestRun } from "../services/digests.ts";
 import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
 import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch } from "../services/workstreams.ts";
@@ -521,6 +522,9 @@ export function createApp(
     runPipelineNow: (pipelineId, repo, input, o) => runPipelineNow(pipelineRunDeps, pipelineId, repo, input, o),
     validateTaskTemplate,
     telemetry,
+    // Digests (docs/SDD-coordinator.md §4.11), driven by Workstream.digests;
+    // the stores are made below and only read once the ticker runs.
+    digests: { workstreams: { list: () => workstreams.list() }, run: (ws, now) => digestRun(ws, now) },
     ...opts.scheduleClock,
   });
   const scheduleControl: ScheduleControlDeps = { schedules, runner: scheduleRunner, now: opts.scheduleClock?.now };
@@ -560,6 +564,19 @@ export function createApp(
   if (board.events) onShutdown(subscribeBoardEvents({ events: board.events }, inboxDispatcher));
   // The policy gate's audit log (§4.2); the executor that writes to it is a later card.
   const gateLog: GateLog = opts.gateLog ?? new SqliteGateLog((board as SqliteBoard).db);
+  // A digest (§4.11) reads the board, the gate log, the owner tasks and the
+  // host guard's probes, and lands in the digest log plus a log line: no model, no chat.
+  const digestRun = createDigestRun(
+    {
+      board: board as Board,
+      ownerTasks,
+      gateLog,
+      probes: opts.hostGuard?.probes ?? realHostProbes,
+      maxConcurrentTasks: opts.maxConcurrentTasks,
+      diskPaths: async () => [process.cwd(), ...(await projects.list()).flatMap((p) => (p.env?.TMPDIR ? [p.env.TMPDIR] : []))],
+    },
+    new SqliteDigestLog((board as SqliteBoard).db),
+  );
   const needsYouOpts: NeedsYouOptions = {
     openOwnerTasks: async () => (await ownerTasks.list()).filter((t) => t.status === "open"),
     async worktreeChanged(task, worktree) {
