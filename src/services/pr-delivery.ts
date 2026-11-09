@@ -26,10 +26,11 @@ export interface PrDeliveryContext {
   ticketPatterns?: string[];
 }
 
-/** `branch` is the PR head; `pushed` says whether it reached the remote. */
+/** `branch` is the PR head; `pushed` says whether it reached the remote. `pushed` and `checked` are
+ *  pushToPullRequestBranch's green outcomes (the latter a dry run that stopped after the gates). */
 export interface PrDeliveryResult {
   ok: boolean;
-  outcome: "opened" | "gate-failed" | "conflict" | "nothing" | "error";
+  outcome: "opened" | "pushed" | "checked" | "gate-failed" | "conflict" | "nothing" | "error";
   message: string;
   branch: string;
   pr?: NonNullable<TaskCard["pr"]>;
@@ -105,13 +106,31 @@ async function gateWithRetry(gate: MergeGateConfig | undefined, cwd: string, ret
   return { ...second, runs: [...first.runs, ...second.runs], durationMs: first.durationMs + second.durationMs };
 }
 
+/** Where the card's work goes: a new PR branch from where the card left main (`open`), or an existing PR branch as
+ *  origin has it (`push`, a fix round's commits; `dryRun` stops after the gates). */
+type LandTarget = { kind: "open" } | { kind: "push"; branch: string; dryRun: boolean };
+
 export async function deliverAsPullRequest(repo: string, worktree: TaskWorktree, task: TaskCard, delivery: PullRequestDelivery, ctx: PrDeliveryContext): Promise<PrDeliveryResult> {
+  return land(repo, worktree, task, delivery, ctx, { kind: "open" });
+}
+
+/**
+ * A fix round's new commits onto an existing PR branch (§4.3 branch.push): the card's diff applied on the branch as
+ * fetched from origin, the base merged forward, Project.mergeGate then `hostGates`, and only when green a plain push
+ * of HEAD to the branch. Never a force push: a branch that moved on the remote meanwhile is rejected by git itself.
+ * `dryRun` is the executor's pushStillGreen re-check before a queued push flushes: the same steps, no push.
+ */
+export async function pushToPullRequestBranch(repo: string, worktree: TaskWorktree, task: TaskCard, branch: string, delivery: PullRequestDelivery, ctx: PrDeliveryContext, opts: { dryRun?: boolean } = {}): Promise<PrDeliveryResult> {
+  return land(repo, worktree, task, delivery, ctx, { kind: "push", branch, dryRun: opts.dryRun ?? false });
+}
+
+async function land(repo: string, worktree: TaskWorktree, task: TaskCard, delivery: PullRequestDelivery, ctx: PrDeliveryContext, target: LandTarget): Promise<PrDeliveryResult> {
   const git = gitIn(ctx.runner);
   const host = ctx.host ?? ctx.runner;
   const hostPath = join(wisselHome(ctx.homeDir), "deliveries", task.id);
   // The PR branch must not be the card's own branch, which the card worktree has checked out.
   const named = deliveryBranchName(delivery.branchPattern, task, ctx.ticketPatterns);
-  const branch = named === worktree.branch ? `${named}-pr` : named;
+  const branch = target.kind === "push" ? target.branch : named === worktree.branch ? `${named}-pr` : named;
   const commitMessage = `${task.title}\n\ntask: ${task.id}`;
   let [gate, hostGate, pushed] = [NO_GATE, NO_GATE, false];
   const fail = (outcome: PrDeliveryResult["outcome"], message: string): PrDeliveryResult => ({ ok: false, outcome, message, branch, gate, hostGate, pushed });
@@ -135,19 +154,27 @@ export async function deliverAsPullRequest(repo: string, worktree: TaskWorktree,
   const hasBranch = async (name: string) => (await git(repo, ["rev-parse", "--verify", "-q", `refs/heads/${name}^{commit}`])).ok;
   // The card's merge target when it names one that exists, else main, else master.
   const main = task.mergeTarget && validateMergeTarget(task.mergeTarget).ok && (await hasBranch(task.mergeTarget)) ? task.mergeTarget : (await hasBranch("main")) ? "main" : "master";
-  const baseRes = await git(repo, ["merge-base", main, `refs/heads/${worktree.branch}`]);
-  if (!baseRes.ok) return fail("error", `couldn't find where ${worktree.branch} branched from ${main}: ${baseRes.text}`);
+  // A push starts from the PR branch as origin has it, so a commit someone else pushed is built on, never overwritten.
+  let startSha = "";
+  if (target.kind === "push") {
+    const fetched = await host(["git", "fetch", "-q", "origin", branch], { cwd: repo });
+    if (fetched.exitCode !== 0) return fail("error", `couldn't fetch ${branch} from origin: ${(fetched.stderr || fetched.stdout).trim()}`);
+    startSha = (await git(repo, ["rev-parse", "FETCH_HEAD"])).stdout.trim();
+  }
+  const from = target.kind === "push" ? startSha : main;
+  const baseRes = await git(repo, ["merge-base", from, `refs/heads/${worktree.branch}`]);
+  if (!baseRes.ok) return fail("error", `couldn't find where ${worktree.branch} branched from ${target.kind === "push" ? branch : main}: ${baseRes.text}`);
   const baseSha = baseRes.stdout.trim();
   const diff = await git(repo, ["diff", "--binary", "--no-color", "--no-ext-diff", baseSha, `refs/heads/${worktree.branch}`]);
   if (!diff.ok) return fail("error", `couldn't read the card's diff: ${diff.text}`);
-  if (diff.stdout === "") return fail("nothing", `nothing to deliver: ${worktree.branch} has no change past ${main}`);
+  if (diff.stdout === "") return fail("nothing", `nothing to deliver: ${worktree.branch} has no change past ${target.kind === "push" ? branch : main}`);
 
-  // 1. A fresh host worktree on the PR branch, from the card's base.
+  // 1. A fresh host worktree: on a new PR branch from the card's base, or detached at the PR branch's fetched tip.
   await cleanup(true); // a stale host worktree from an earlier attempt; branches are never touched here
-  if (await hasBranch(branch)) return fail("error", `the branch ${branch} already exists in ${repo}; delete it or change delivery.branchPattern. Nothing was pushed.`);
-  const add = await git(repo, ["worktree", "add", "-q", "-b", branch, hostPath, baseSha]);
+  if (target.kind === "open" && (await hasBranch(branch))) return fail("error", `the branch ${branch} already exists in ${repo}; delete it or change delivery.branchPattern. Nothing was pushed.`);
+  const add = await git(repo, ["worktree", "add", "-q", ...(target.kind === "open" ? ["-b", branch, hostPath, baseSha] : ["--detach", hostPath, startSha])]);
   if (!add.ok) return fail("error", `couldn't create the delivery worktree for ${branch}: ${add.text}`);
-  created = true;
+  created = target.kind === "open";
   try {
     // 2. The card's diff, staged by explicit path, as its own commit.
     const applied = await git(hostPath, ["apply", "--binary", "--whitespace=nowarn"], diff.stdout);
@@ -174,10 +201,13 @@ export async function deliverAsPullRequest(repo: string, worktree: TaskWorktree,
     hostGate = await gateWithRetry({ commands: delivery.hostGates, timeoutMs, ...(ctx.mergeGate?.env ? { env: ctx.mergeGate.env } : {}) }, hostPath, delivery.gateRetries, ctx.gateRunner);
     if (hostGate.status === "failed") return fail("gate-failed", hostGate.feedback ?? "host gate failed; nothing was pushed");
 
-    // 5. All green: push, then the PR.
-    const push = await host(["git", "push", "-u", "origin", branch], { cwd: hostPath });
-    if (push.exitCode !== 0) return fail("error", `\`git push -u origin ${branch}\` failed: ${(push.stderr || push.stdout).trim()}`);
+    // 5. All green: push, then the PR. A push onto an existing branch is HEAD to that ref, never forced, and opens nothing.
+    if (target.kind === "push" && target.dryRun) return { ok: true, outcome: "checked", message: `${branch} is still green after merging ${main}; nothing was pushed`, branch, gate, hostGate, pushed };
+    const pushArgs = target.kind === "open" ? ["-u", "origin", branch] : ["origin", `HEAD:refs/heads/${branch}`];
+    const push = await host(["git", "push", ...pushArgs], { cwd: hostPath });
+    if (push.exitCode !== 0) return fail("error", `\`git push ${pushArgs.join(" ")}\` failed: ${(push.stderr || push.stdout).trim()}`);
     pushed = true;
+    if (target.kind === "push") return { ok: true, outcome: "pushed", message: `pushed ${task.title} to ${branch} with ${main} merged forward`, branch, gate, hostGate, pushed };
     const body = renderPrBody(delivery.prTemplate, task, ctx.ticketPatterns);
     const created = await host(["gh", "pr", "create", "--head", branch, "--base", main, "--title", task.title, "--body", body, ...(delivery.draft ? ["--draft"] : [])], { cwd: hostPath });
     if (created.exitCode !== 0) return fail("error", `\`gh pr create\` failed after pushing ${branch}: ${(created.stderr || created.stdout).trim()}`);

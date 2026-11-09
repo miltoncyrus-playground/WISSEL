@@ -112,6 +112,7 @@ import { channelHandlers, ownerMessageEvent, startChannelReader } from "../servi
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
 import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, startOutboundFlusher, gateContextFor, type ExecutorOptions } from "../services/coordinator-executor.ts";
 import { SqliteTrackerMemory, createTrackerSync } from "../services/ticket-actions.ts";
+import { hostHandlers } from "../services/host-actions.ts";
 import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -824,6 +825,9 @@ export function createApp(
     memory: new SqliteTrackerMemory((board as SqliteBoard).db), provider: () => opts.tickets?.provider, board: board as Board, workstreams, projects,
     executor: { execute: (a) => executor.execute(a) }, inbox: (e) => inboxDispatcher.ingest(e),
   });
+  // The code-host actions (§4.3, host-actions.ts): pr.open, branch.push, pr.arm, plus the queued-push re-check and
+  // its fix round. A fix round goes back through the executor's card.start, hence the late binding.
+  const hostActions = hostHandlers({ board: board as Board, projects, settingsFor, merge: mergeContext, execute: (a) => executor.execute(a) });
   const executor = new CoordinatorExecutor({
     gate: new PolicyGate(gateLog, opts.executor?.now),
     queue: outboundQueue,
@@ -833,6 +837,8 @@ export function createApp(
       return gateContextFor(ws, a.projectId, { limits: opts.hardLimits ?? DEFAULT_HARD_LIMITS, mainBranch: "main", shadow: false, duties: duties.map(ws.id) });
     },
     quietHours: async (id) => (await workstreams.get(id))?.quietHours,
+    pushStillGreen: hostActions.pushStillGreen,
+    startFixRound: hostActions.startFixRound,
     ...opts.executor,
     handlers: {
       ...builtinHandlers({
@@ -844,6 +850,7 @@ export function createApp(
       }),
       ...channelHandlers({ channelLog, workstreams }), // channel.post and chat.post: the log plus a console line (§4.9 as descoped)
       ...trackerSync.handlers,
+      ...hostActions.handlers,
       ...opts.executor?.handlers,
     },
   });
