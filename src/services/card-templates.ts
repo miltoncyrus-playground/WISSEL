@@ -29,6 +29,10 @@ export type RenderedTemplate = { ok: true; body: string } | { ok: false; error: 
 export interface RenderOptions {
   /** Appended after a blank line; blank means none. */
   cardRules?: string;
+  /** `path:`-scoped lessons matching the card's planned files
+   *  (briefLessonsFor, src/services/memory.ts; docs/SDD-coordinator.md
+   *  §4.15). Appended after cardRules, not counted against the limit. */
+  lessons?: string;
   /** Placeholders that may be empty or absent; they render as "". */
   optional?: readonly string[];
   /** Overrides DEFAULT_TEMPLATE_LIMIT. */
@@ -68,8 +72,11 @@ export function renderCardTemplate(template: string, vars: Record<string, string
     return { ok: false, error: `rendered template is ${rendered.length} characters; at most ${limit} before cardRules` };
   }
 
-  const rules = opts.cardRules?.trim() ?? "";
-  return { ok: true, body: rules === "" ? rendered : `${rendered.trimEnd()}\n\n${rules}` };
+  let body = rendered;
+  for (const extra of [opts.cardRules?.trim() ?? "", opts.lessons?.trim() ?? ""]) {
+    if (extra !== "") body = `${body.trimEnd()}\n\n${extra}`;
+  }
+  return { ok: true, body };
 }
 
 /**
