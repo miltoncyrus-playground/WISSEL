@@ -11,6 +11,7 @@ import { resolveHandoffAllowlist } from "../core/orchestrator.ts";
 import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import { validateNotBefore } from "../core/not-before.ts";
+import { validateWaitsFor } from "../core/start-conditions.ts";
 import { validateMergeTarget } from "./worktree.ts";
 import type { ScheduleTaskTemplate, TaskCard } from "../core/types.ts";
 
@@ -51,6 +52,11 @@ export async function checkCardFields(body: NewTask, board: Board, editingTaskId
     const taken = (await board.list()).find((t) => t.id !== editingTaskId && t.workstreamId === workstreamId && t.key === key);
     if (taken) return `key "${key}" is already used in workstream "${workstreamId}" by task ${taken.id}`;
   }
+  // Start conditions (§4.8), stored normalized.
+  const waits = validateWaitsFor(body.waitsFor);
+  if (!waits.ok) return waits.error;
+  if (editingTaskId && waits.waitsFor?.some((c) => c.kind === "card-done" && c.cardId === editingTaskId)) return "a card can't wait for itself";
+  body.waitsFor = waits.waitsFor;
   return undefined;
 }
 
@@ -81,7 +87,7 @@ export async function validateNewTask(input: NewTask, deps: NewTaskDeps): Promis
   body.mergeTarget = mergeTarget.target;
   // Card key, round, PR and workstream (docs/SDD-coordinator.md §3.3).
   // `null` means "none", as for `notBefore` above.
-  for (const k of ["key", "round", "pr", "workstreamId"] as const) if (body[k] === null) body[k] = undefined;
+  for (const k of ["key", "round", "pr", "workstreamId", "waitsFor"] as const) if (body[k] === null) body[k] = undefined;
   const fieldsError = await checkCardFields(body, deps.board, deps.editingTaskId);
   if (fieldsError) return { ok: false, error: fieldsError };
   // `harnessOverride` is validated eagerly, at creation time,

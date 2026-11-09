@@ -271,6 +271,7 @@ export async function editTask(board: Board, task: TaskCard, patch: unknown, dep
     round: task.round,
     pr: task.pr,
     workstreamId: task.workstreamId,
+    waitsFor: task.waitsFor,
     ...Object.fromEntries(keys.map((k) => [k, given[k] === null ? undefined : given[k]])),
   };
   const check = await validateNewTask(candidate, { ...deps, editingTaskId: task.id });

@@ -25,6 +25,7 @@ import { handlePipelineStepResult } from "./pipeline-runner.ts";
 import { readProjectAllowRules, validateExtraAllowedTools } from "./allowed-tools.ts";
 import { DEFAULT_VERIFICATION } from "./verification.ts";
 import { formatMcpTranscript } from "../services/mcp-transcript.ts";
+import { findOverlaps, firstUnmetStartCondition, type OverlapWarning, type StartConditionChecker } from "./start-conditions.ts";
 import type { AgentDef, Executor, Harness, HarnessTool, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
 
 /** What finishResult needs to drive a pipeline step's own follow-up work
@@ -1493,6 +1494,10 @@ export interface OrchestratorOptions {
    *  docs/SDD-coordinator.md §3.4): sweep() holds them until the task is
    *  done. Read once per sweep. Undefined means nothing is held. */
   heldCardIds?: () => Promise<ReadonlySet<string>>;
+  /** Answers a card's `pr-merged` and `path-on-main` start conditions
+   *  (TaskCard.waitsFor, docs/SDD-coordinator.md §4.8). Undefined holds
+   *  any card with such a condition; `card-done` needs no checker. */
+  startConditions?: StartConditionChecker;
 }
 
 /** Midnight UTC on `now`'s calendar day — the window `spendCeilingUsd`
@@ -1699,6 +1704,11 @@ export class Orchestrator {
       // forever doesn't block its dependents forever too.
       const blocked = deps.some((depId) => resolveLiveTip(byId.get(depId), byId)?.status !== "done");
       if (blocked) continue;
+      // Start conditions (§4.8): the same wait, on a card, a PR or a path.
+      if (task.waitsFor?.length) {
+        const cardDone = (id: string) => resolveLiveTip(byId.get(id), byId)?.status === "done";
+        if (await firstUnmetStartCondition(task.waitsFor, { cardDone, checker: this.opts.startConditions })) continue;
+      }
 
       if (this.atConcurrencyCap()) continue;
       if (overSpendCeiling) continue;
@@ -1785,8 +1795,21 @@ export class Orchestrator {
     void this.process(toRun, { executors, forceExecute: true }).finally(() => this.inFlight.delete(taskId));
   }
 
+  /** Overlap check (§4.8), run as a card starts: the files its text names
+   *  that another open card or PR also names. Warns through a
+   *  `task.overlap` board event and the log; never blocks the start. */
+  async warnOverlaps(task: TaskCard): Promise<OverlapWarning[]> {
+    const warnings = findOverlaps(task, await this.board.list());
+    if (warnings.length > 0) {
+      console.warn(`orchestrator: task ${task.id} overlaps ${warnings.map((w) => `${w.file} (${w.pr ? `PR #${w.pr}` : `task ${w.taskId.slice(0, 8)}`})`).join(", ")}`);
+      this.board.events.emit("event", { type: "task.overlap", task, warnings } satisfies BoardEvent);
+    }
+    return warnings;
+  }
+
   private async process(task: TaskCard, override?: { executors: Executor[]; forceExecute: boolean }): Promise<void> {
     try {
+      await this.warnOverlaps(task).catch((e) => console.warn(`orchestrator: overlap check for ${task.id} failed: ${e instanceof Error ? e.message : String(e)}`));
       let decision: RoutingDecision;
       try {
         const allowIds = await resolveHandoffAllowlist(this.board, this.registry, task.parentTaskId);

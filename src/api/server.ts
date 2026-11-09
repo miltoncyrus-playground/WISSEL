@@ -50,6 +50,7 @@ import { generateProjectEli5 } from "../services/project-eli5.ts";
 import { taskTemplateValidator, validateNewTask, type NewTask } from "../services/task-input.ts";
 import type { AnthropicMessagesClient } from "../executors/anthropic-api.ts";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
+import { createCommandStartConditionChecker, validateWaitsFor } from "../core/start-conditions.ts";
 import {
   abandonEscalation,
   approveMcpRequest,
@@ -657,6 +658,8 @@ export function createApp(
         ? new HostGuard({ ...opts.hostGuard, paths: async () => (await projects.list()).flatMap((p) => (p.env?.TMPDIR ? [p.env.TMPDIR] : [])) })
         : undefined,
       heldCardIds: () => ownerTasks.heldCardIds(),
+      // Start conditions (§4.8): gh and git through the same runner tests fake.
+      startConditions: createCommandStartConditionChecker(commandRunner),
       // A rate-limited pipeline step resumes on the same context POST
       // /pipelines/:id/run starts it with (docs/SDD-pipelines.md §3.8).
       resumePipelineStep: (task) =>
@@ -1659,6 +1662,17 @@ export function createApp(
           const { dependsOn } = (await req.json()) as { dependsOn: string[] };
           const task = await board.setDependencies(parts[1]!, dependsOn);
           return json(task);
+        }
+
+        // Start conditions (docs/SDD-coordinator.md §4.8), set like depends-on; null clears.
+        if (parts.length === 3 && parts[2] === "waits-for" && req.method === "POST") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          const { waitsFor } = (await req.json().catch(() => ({}))) as { waitsFor?: unknown };
+          const check = validateWaitsFor(waitsFor ?? undefined);
+          if (!check.ok) return json({ error: check.error }, 400);
+          if (check.waitsFor?.some((c) => c.kind === "card-done" && c.cardId === task.id)) return json({ error: "a card can't wait for itself" }, 400);
+          return json(await board.updateFields(task.id, { waitsFor: check.waitsFor }));
         }
 
         if (parts.length === 3 && parts[2] === "decision" && req.method === "POST") {

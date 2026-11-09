@@ -464,6 +464,13 @@ export interface NeedsYou {
   action: { label: string; href: string; method: "GET" | "POST" };
 }
 
+/** A start condition on a card (TaskCard.waitsFor, docs/SDD-coordinator.md
+ *  §4.8). `repo` is the repository's local path, as in TaskCard.repo. */
+export type StartCondition =
+  | { kind: "card-done"; cardId: string }
+  | { kind: "pr-merged"; repo: string; number: number }
+  | { kind: "path-on-main"; repo: string; path: string };
+
 export interface TaskCard {
   id: string;
   title: string;
@@ -491,7 +498,8 @@ export interface TaskCard {
    *  `escalationContext`. */
   status: "inbox" | "ready" | "running" | "dispatched" | "review" | "done" | "failed" | "no-match" | "pending-review" | "escalated";
   routedTo?: string;
-  /** Task ids this one is blocked on. Absent/empty means unblocked. */
+  /** Task ids this one is blocked on. Absent/empty means unblocked.
+   *  See `waitsFor` for conditions on PRs and files (§4.8). */
   dependsOn?: string[];
   /** Set when this task is a follow-up spawned by another — distinct
    *  from dependsOn, which only means "blocked until." When present,
@@ -715,6 +723,10 @@ export interface TaskCard {
   pr?: { number: number; url: string; head: string };
   /** The Workstream (§3.1) this card belongs to, if any. */
   workstreamId?: string;
+  /** Start conditions (docs/SDD-coordinator.md §4.8): the sweep skips
+   *  this card until every one holds, as for `dependsOn` and `notBefore`.
+   *  Validated by validateWaitsFor (src/core/start-conditions.ts). */
+  waitsFor?: StartCondition[];
   /** What this card wants from Milton, when it needs him. Derived on
    *  read (GET /tasks, GET /tasks/:id) by needsYouFor
    *  (src/services/needs-you.ts) and never stored: Board never writes

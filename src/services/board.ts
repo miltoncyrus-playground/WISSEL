@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { McpApprovalRequest, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
+import type { McpApprovalRequest, RoutingDecision, StartCondition, TaskCard, TaskResult } from "../core/types.ts";
+import type { OverlapWarning } from "../core/start-conditions.ts";
 
 /** What `escalate` stores when a caller passes an empty or whitespace-only
  *  reason, so an escalated card never shows a blank escalation panel. */
@@ -146,7 +147,7 @@ export interface ResultMeta {
 }
 
 /** What `PATCH /tasks/:id` may change on a card that hasn't started. */
-export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs", "key", "round", "pr", "workstreamId"] as const;
+export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs", "key", "round", "pr", "workstreamId", "waitsFor"] as const;
 export type CardEdit = Partial<Pick<TaskCard, (typeof EDITABLE_CARD_FIELDS)[number]>>;
 
 export type BoardEvent =
@@ -159,6 +160,9 @@ export type BoardEvent =
   | { type: "task.superseded"; task: TaskCard }
   | { type: "task.allowed-tools"; task: TaskCard }
   | { type: "task.not-before"; task: TaskCard }
+  /** A card is starting while another open card or PR names the same
+   *  files (docs/SDD-coordinator.md §4.8). A warning, not a block. */
+  | { type: "task.overlap"; task: TaskCard; warnings: OverlapWarning[] }
   | { type: "task.decided"; decision: RoutingDecision }
   | { type: "task.result"; result: TaskResult }
   | { type: "task.override"; taskId: string; routerPick: string; humanPick: string; actor?: string; reason?: string; at: string }
@@ -206,6 +210,7 @@ interface TaskRow {
   round: number | null;
   pr: string | null;
   workstreamId: string | null;
+  waitsFor: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -251,6 +256,7 @@ function rowToCard(row: TaskRow): TaskCard {
     round: row.round ?? undefined,
     pr: row.pr ? (JSON.parse(row.pr) as TaskCard["pr"]) : undefined,
     workstreamId: row.workstreamId ?? undefined,
+    waitsFor: row.waitsFor ? (JSON.parse(row.waitsFor) as StartCondition[]) : undefined,
   };
 }
 
@@ -310,7 +316,8 @@ export class SqliteBoard implements Board {
         key TEXT,
         round INTEGER,
         pr TEXT,
-        workstreamId TEXT
+        workstreamId TEXT,
+        waitsFor TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -355,6 +362,8 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN round INTEGER;",
       "ALTER TABLE tasks ADD COLUMN pr TEXT;",
       "ALTER TABLE tasks ADD COLUMN workstreamId TEXT;",
+      // docs/SDD-coordinator.md §4.8: start conditions.
+      "ALTER TABLE tasks ADD COLUMN waitsFor TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -565,7 +574,7 @@ export class SqliteBoard implements Board {
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget, key, round, pr, workstreamId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget, key, round, pr, workstreamId, waitsFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -596,6 +605,7 @@ export class SqliteBoard implements Board {
         full.round ?? null,
         full.pr ? JSON.stringify(full.pr) : null,
         full.workstreamId ?? null,
+        full.waitsFor?.length ? JSON.stringify(full.waitsFor) : null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
@@ -668,6 +678,7 @@ export class SqliteBoard implements Board {
     if ("round" in fields) set("round", fields.round ?? null);
     if ("pr" in fields) set("pr", fields.pr ? JSON.stringify(fields.pr) : null);
     if ("workstreamId" in fields) set("workstreamId", fields.workstreamId ?? null);
+    if ("waitsFor" in fields) set("waitsFor", fields.waitsFor?.length ? JSON.stringify(fields.waitsFor) : null);
     if (sets.length === 0) return existing;
     this.db.run(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`, [...params, id]);
     const updated = (await this.get(id))!;
