@@ -96,6 +96,7 @@ import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
 import { HostGuard, hostThresholdsFromEnv, type HostGuardOptions } from "../services/host-guard.ts";
 import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
+import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch } from "../services/workstreams.ts";
 import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -536,6 +537,8 @@ export function createApp(
   // Owner tasks (docs/SDD-coordinator.md §3.4): Needs a human items that
   // hold the cards they block.
   const ownerTasks = new SqliteOwnerTaskStore((board as SqliteBoard).db);
+  // Workstreams and roles (docs/SDD-coordinator.md §3.1, §4.13).
+  const workstreams = new SqliteWorkstreamStore((board as SqliteBoard).db);
   const needsYouOpts: NeedsYouOptions = {
     openOwnerTasks: async () => (await ownerTasks.list()).filter((t) => t.status === "open"),
     async worktreeChanged(task, worktree) {
@@ -1614,6 +1617,40 @@ export function createApp(
           const done = await completeOwnerTask(ownerTasks, parts[1]!, { runner: opts.ownerTaskCheckRunner });
           if (done.ok) return json(done.value);
           return done.status === 404 ? notFound() : json({ error: done.error, output: done.output }, done.status);
+        }
+      }
+
+      // Workstreams (docs/SDD-coordinator.md §5): every listed project
+      // must exist; a role change is the owner's and needs confirm:true.
+      if (parts[0] === "workstreams") {
+        if (parts.length === 1 && req.method === "GET") return json(await workstreams.list());
+        if (parts.length === 1 && req.method === "POST") {
+          const check = validateNewWorkstream(await req.json().catch(() => undefined));
+          if (!check.ok) return json({ error: check.error }, 400);
+          const known = new Set((await projects.list()).map((p) => p.id));
+          const missing = check.workstream.projects.find((p) => !known.has(p.projectId));
+          if (missing) return json({ error: `unknown project ${missing.projectId}` }, 400);
+          return json(await workstreams.create(check.workstream), 201);
+        }
+        if (parts.length >= 2) {
+          const ws = await workstreams.get(parts[1]!);
+          if (!ws) return notFound();
+          if (parts.length === 2 && req.method === "GET") return json(ws);
+          if (parts.length === 2 && req.method === "PATCH") {
+            const check = validateWorkstreamPatch(await req.json().catch(() => undefined));
+            if (!check.ok) return json({ error: check.error }, 400);
+            return json(await workstreams.update(ws.id, check.patch));
+          }
+          if (parts.length === 2 && req.method === "DELETE") {
+            await workstreams.delete(ws.id);
+            return new Response(null, { status: 204 });
+          }
+          if (parts.length === 5 && parts[2] === "projects" && parts[4] === "role" && req.method === "POST") {
+            if (!ws.projects.some((p) => p.projectId === parts[3])) return notFound();
+            const check = validateRoleChange(await req.json().catch(() => undefined));
+            if (!check.ok) return json({ error: check.error }, 400);
+            return json(await workstreams.setRole(ws.id, parts[3]!, check.change));
+          }
         }
       }
 
