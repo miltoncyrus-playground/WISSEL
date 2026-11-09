@@ -426,7 +426,7 @@ export interface Project {
 export type CardTemplateKind = "coder" | "review" | "fix-round" | "split-only" | "merge-forward";
 
 /** Which needs-me state a card is in. See NeedsYou. */
-export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "report" | "failed" | "no-match";
+export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "report" | "failed" | "no-match" | "owner-task" | "held";
 
 /** Where a waiting card belongs. `human`: a decision only Milton can
  *  make; it always carries `why` and a non-empty `checklist`. `next-step`:

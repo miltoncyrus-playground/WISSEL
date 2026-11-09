@@ -81,6 +81,7 @@ import {
 } from "../services/board-actions.ts";
 import { SqlitePendingActionStore } from "../services/pending-actions.ts";
 import { getVersionInfo } from "../core/version.ts";
+import { RESTART_EXIT_CODE, RestartWhenIdle } from "../core/restart-when-idle.ts";
 import { installShutdownHandlers, onShutdown } from "../executors/child-processes.ts";
 import { DEFAULT_APP_DIST, isAppPath, serveAppAsset } from "./serve-app.ts";
 import { createFeedSource } from "../services/feed-sources.ts";
@@ -91,8 +92,10 @@ import { SqliteConversationStore } from "../services/conversations.ts";
 import { DEFAULT_STT_MODEL, DEFAULT_STT_URL, SttClient, SttError, transcribeVoiceRequest } from "../services/stt.ts";
 import { createReplyAudio, ReplyAudioError } from "../services/reply-audio.ts";
 import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
-import { needsYouFor, needsYouLogLine, type NeedsYouOptions } from "../services/needs-you.ts";
 import { HostGuard, hostThresholdsFromEnv, type HostGuardOptions } from "../services/host-guard.ts";
+import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
+import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
+import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -332,6 +335,18 @@ export interface CreateAppOptions {
   /** The ticker's clock, timers and logger, for tests. `now` is also the
    *  schedule store's and the preview's clock, so all agree on what is due. */
   scheduleClock?: Pick<ScheduleRunnerOptions, "now" | "setInterval" | "clearInterval" | "setTimeout" | "clearTimeout" | "logger">;
+  /** WISSEL_SUPERVISED=1: the start script or unit restarts wissel on
+   *  exit code 75, so `POST /admin/restart-when-idle` may be honoured
+   *  (docs/SDD-coordinator.md §4.12, §10). Off by default: refused. */
+  supervised?: boolean;
+  /** How restart-when-idle leaves the process. Defaults to
+   *  process.exit; tests record the code instead. */
+  exit?: (code: number) => void;
+
+  /** Runs an owner task's `check` on `POST /owner-tasks/:id/done`
+   *  (src/services/owner-tasks.ts). Defaults to the merge gate's runner;
+   *  tests pass a fake so nothing is spawned. */
+  ownerTaskCheckRunner?: GateCommandRunner;
 }
 
 /** The bit of Bun's Server that createApp's fetch uses: lifting the idle
@@ -512,7 +527,11 @@ export function createApp(
   // each answer is kept for 30s. Nothing runs in a worktree while its
   // card waits in review, so a short-lived answer stays true.
   const worktreeChangedCache = new Map<string, { at: number; value: boolean | undefined }>();
+  // Owner tasks (docs/SDD-coordinator.md §3.4): Needs a human items that
+  // hold the cards they block.
+  const ownerTasks = new SqliteOwnerTaskStore((board as SqliteBoard).db);
   const needsYouOpts: NeedsYouOptions = {
+    openOwnerTasks: async () => (await ownerTasks.list()).filter((t) => t.status === "open"),
     async worktreeChanged(task, worktree) {
       const key = `${worktree.path}\0${task.mergeTarget ?? ""}`;
       const hit = worktreeChangedCache.get(key);
@@ -637,6 +656,7 @@ export function createApp(
       hostGuard: opts.hostGuard
         ? new HostGuard({ ...opts.hostGuard, paths: async () => (await projects.list()).flatMap((p) => (p.env?.TMPDIR ? [p.env.TMPDIR] : [])) })
         : undefined,
+      heldCardIds: () => ownerTasks.heldCardIds(),
       // A rate-limited pipeline step resumes on the same context POST
       // /pipelines/:id/run starts it with (docs/SDD-pipelines.md §3.8).
       resumePipelineStep: (task) =>
@@ -683,6 +703,18 @@ export function createApp(
     console.log(`crash recovery: recovered ${recoveredCount} interrupted review verdict(s)`);
   })();
   if (opts.orchestratorEnabled || autoChain) void crashRecoveryReady.then(() => orchestrator.start());
+  // /admin/restart-when-idle (docs/SDD-coordinator.md §4.12): holds the
+  // orchestrator, waits for every card running on the board or in
+  // flight here, exits 75. Cards handed off (`dispatched`) run
+  // elsewhere and are not waited for.
+  const restartWhenIdle = new RestartWhenIdle({
+    supervised: opts.supervised ?? false,
+    exit: opts.exit,
+    holdDispatch: (reason) => orchestrator.holdDispatch("restart", reason),
+    releaseDispatch: () => orchestrator.releaseDispatch("restart"),
+    running: async () => [...new Set([...(await board.list({ status: "running" })).map((t) => t.id), ...orchestrator.inFlightTaskIds()])],
+    events: board.events,
+  });
   // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
   // subtask set should get its integrator card queued the moment it
   // completes, the same way spawnReviewerTask always queues a reviewer
@@ -774,6 +806,19 @@ export function createApp(
 
       // No auth, same as /health — nothing in VersionInfo is sensitive.
       if (url.pathname === "/version") return json({ ...getVersionInfo(), writeSandbox });
+
+      // Restart when idle (docs/SDD-coordinator.md §4.12). 202: the exit
+      // happens later, once the last running card finishes.
+      if (url.pathname === "/admin/restart-when-idle") {
+        if (req.method === "POST") {
+          const r = restartWhenIdle.request();
+          if (!r.ok) return json({ error: r.error }, 409);
+          return json(await restartWhenIdle.status(), 202);
+        }
+        if (req.method === "DELETE") restartWhenIdle.cancel();
+        if (req.method === "GET" || req.method === "DELETE") return json(await restartWhenIdle.status());
+        return json({ error: "method not allowed" }, 405);
+      }
 
       if ((url.pathname === "/" || url.pathname === "/board") && req.method === "GET") {
         return new Response(Bun.file(new URL("board.html", PUBLIC_DIR)));
@@ -1540,6 +1585,23 @@ export function createApp(
         }
       }
 
+      // Owner tasks (docs/SDD-coordinator.md §5): each open one carries
+      // its Needs a human entry; Done runs the check first.
+      if (parts[0] === "owner-tasks") {
+        const withNeeds = (t: OwnerTask) => (t.status === "open" ? { ...t, needsYou: ownerTaskNeedsYou(t) } : t);
+        if (parts.length === 1 && req.method === "GET") return json((await ownerTasks.list()).map(withNeeds));
+        if (parts.length === 1 && req.method === "POST") {
+          const check = validateNewOwnerTask(await req.json().catch(() => undefined));
+          if (!check.ok) return json({ error: check.error }, 400);
+          return json(withNeeds(await ownerTasks.create(check.task)), 201);
+        }
+        if (parts.length === 3 && parts[2] === "done" && req.method === "POST") {
+          const done = await completeOwnerTask(ownerTasks, parts[1]!, { runner: opts.ownerTaskCheckRunner });
+          if (done.ok) return json(done.value);
+          return done.status === 404 ? notFound() : json({ error: done.error, output: done.output }, done.status);
+        }
+      }
+
       if (parts[0] === "tasks") {
         if (parts.length === 1 && req.method === "GET") {
           const status = url.searchParams.get("status") as TaskCard["status"] | null;
@@ -2219,6 +2281,11 @@ if (import.meta.main) {
   // since nothing real runs (docs/SDD-wissel-app.md §4.2). Unset in real
   // use: the real ReadOnlyExecutor and harness pool.
   const conciergeScript = process.env.WISSEL_CONCIERGE_SCRIPT || undefined;
+
+  // Set by the start script or systemd unit that restarts wissel on exit
+  // code 75; without it `POST /admin/restart-when-idle` is refused
+  // (docs/SDD-coordinator.md §4.12, §10).
+  const supervised = ["1", "true"].includes(process.env.WISSEL_SUPERVISED ?? "");
   const scripted = conciergeScript
     ? {
         conciergeExecutor: new ReadOnlyExecutor({ runner: await loadScriptedConciergeRunner(conciergeScript) }),
@@ -2259,13 +2326,19 @@ if (import.meta.main) {
       audioDir,
       stt,
       schedulesEnabled: true,
+      supervised,
       ...scripted,
     }),
   });
   if (conciergeScript) console.log(`ask: scripted concierge from ${conciergeScript} (WISSEL_CONCIERGE_SCRIPT), no model calls`);
   console.log(`wissel board api on :${port} (db: ${dbPath})`);
   const v = getVersionInfo();
-  console.log(`version: ${v.commitShort}${v.dirty ? "+dirty" : ""} (${v.branch})`);
+  console.log(`version: ${v.commitShort}${v.dirty ? "+dirty" : ""} (${v.branch}), package ${v.packageVersion}, started ${v.startedAt}`);
+  console.log(
+    supervised
+      ? `restart when idle: available — POST /admin/restart-when-idle exits ${RESTART_EXIT_CODE} once running cards finish (WISSEL_SUPERVISED=1)`
+      : `restart when idle: unavailable — set WISSEL_SUPERVISED=1 in a start script or unit that restarts wissel on exit code ${RESTART_EXIT_CODE}`,
+  );
   for (const line of sandboxStartupLines(writeSandbox)) (writeSandbox.state === "unavailable" ? console.error : console.log)(line);
   console.log(
     orchestratorEnabled

@@ -1,6 +1,8 @@
 import type { NeedsYou, TaskCard, TaskResult } from "../core/types.ts";
 import type { Board } from "./board.ts";
 import { cardHref } from "./feed.ts";
+import { shellWords } from "./merge-gate.ts";
+import type { OwnerTask } from "./owner-tasks.ts";
 
 /**
  * What a card that needs Milton wants, and the one button that resolves
@@ -20,6 +22,7 @@ import { cardHref } from "./feed.ts";
  *   report        review + worktree that changed nothing          PASS: next-step, else human
  *   merge-after   review + worktree + a dependency not done yet   next-step
  *   merge         review + worktree                               approved: next-step, else human
+ *   held          inbox/ready + an open owner task blocks it       next-step (the owner task is the human item)
  *   blocked-on    inbox/ready + a dependency that is stuck        missing: human, else next-step
  *   review        review (no worktree)                            human
  *   failed                                                        human
@@ -42,6 +45,21 @@ export interface NeedsYouContext {
   /** review + worktree: the card's own result summary, for a report's
    *  "VERDICT: PASS|FAIL" line. */
   summary?: string;
+  /** inbox/ready: owner tasks (src/services/owner-tasks.ts) whose
+   *  `blocks` names this card; only the open ones hold it. */
+  heldBy?: OwnerTask[];
+}
+
+function ownerTaskDone(task: OwnerTask): NeedsYou["action"] {
+  return { label: "Done", href: `/owner-tasks/${encodeURIComponent(task.id)}/done`, method: "POST" };
+}
+
+/** An open owner task as a Needs a human item: its why in full, its
+ *  steps as tick-boxes, and Done as the one button. */
+export function ownerTaskNeedsYou(task: OwnerTask): NeedsYou {
+  const checklist = task.steps.length > 0 ? [...task.steps] : ["Do it, then press Done"];
+  if (task.check && task.check.length > 0) checklist.push(`Done runs: ${shellWords(task.check)}`);
+  return { kind: "owner-task", lane: "human", value: `owner-task:${task.id}`, line: task.title, why: task.why, checklist, action: ownerTaskDone(task) };
 }
 
 const LINE_MAX = 160;
@@ -222,6 +240,17 @@ export function deriveNeedsYou(task: TaskCard, ctx: NeedsYouContext): NeedsYou |
   }
 
   if (task.status === "inbox" || task.status === "ready") {
+    const holder = ctx.heldBy?.find((o) => o.status === "open" && o.blocks.includes(task.id));
+    if (holder) {
+      return {
+        kind: "held",
+        lane: "next-step",
+        value: `held:${holder.id}`,
+        line: `Waiting for you: ${holder.title}`,
+        why: `It waits on something only you can do: ${holder.title}. ${holder.why} It starts once that task is done.`,
+        action: ownerTaskDone(holder),
+      };
+    }
     for (const depId of deps) {
       const dep = ctx.byId.get(depId);
       if (dep && !STUCK_STATUSES.has(dep.status)) continue;
@@ -347,6 +376,8 @@ export interface NeedsYouOptions {
    *  it would land nothing. undefined (or no checker) means unknown, and
    *  the card is treated as one with changes. */
   worktreeChanged?(task: TaskCard, worktree: NonNullable<TaskResult["worktree"]>): Promise<boolean | undefined>;
+  /** The open owner tasks; a card one of them blocks reads as `held`. */
+  openOwnerTasks?(): Promise<OwnerTask[]>;
 }
 
 /** needsYou for every card in `tasks` that needs Milton, keyed by id.
@@ -362,10 +393,11 @@ export async function needsYouFor(
   const wanted = tasks.filter((t) => !t.archivedAt && RESULT_STATUSES.has(t.status));
   await Promise.all(wanted.map(async (t) => results.set(t.id, await board.getResult(t.id))));
   const hasWorktree = (id: string) => results.get(id)?.worktree !== undefined;
+  const heldBy = opts.openOwnerTasks && tasks.some((t) => t.status === "inbox" || t.status === "ready") ? await opts.openOwnerTasks() : undefined;
 
   const out = new Map<string, NeedsYou>();
   for (const task of tasks) {
-    const extra: Partial<NeedsYouContext> = {};
+    const extra: Partial<NeedsYouContext> = heldBy ? { heldBy } : {};
     if (!task.archivedAt && !task.supersededBy) {
       if (task.status === "escalated" && !nonEmpty(task.escalationContext)) {
         extra.fallbackReason = await escalationFallback(board, task, results);

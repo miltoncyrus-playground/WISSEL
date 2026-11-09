@@ -1489,6 +1489,10 @@ export interface OrchestratorOptions {
    *  asked once per sweep: not ok holds every new dispatch this round (pipeline
    *  retries too); running cards continue. runNow bypasses it like every gate. */
   hostGuard?: { check(): Promise<{ ok: boolean }> };
+  /** Cards an open owner task blocks (OwnerTaskStore.heldCardIds,
+   *  docs/SDD-coordinator.md §3.4): sweep() holds them until the task is
+   *  done. Read once per sweep. Undefined means nothing is held. */
+  heldCardIds?: () => Promise<ReadonlySet<string>>;
 }
 
 /** Midnight UTC on `now`'s calendar day — the window `spendCeilingUsd`
@@ -1532,6 +1536,32 @@ export class Orchestrator {
 
   private started = false;
   private onBoardEvent = () => void this.sweep();
+  /** Reasons no new card may start, by holder: "restart" while a restart
+   *  is pending (src/core/restart-when-idle.ts); the host guard will add
+   *  its own. Running cards continue; the sweep and runNow start nothing
+   *  while any hold is set. */
+  private holds = new Map<string, string>();
+
+  /** The first hold's reason, or undefined when dispatch is open. */
+  get dispatchHold(): string | undefined {
+    return this.holds.values().next().value;
+  }
+
+  holdDispatch(holder: string, reason: string): void {
+    this.holds.set(holder, reason);
+  }
+
+  /** Sweeps right away once the last hold is gone, so a card that waited
+   *  in inbox during the hold starts without waiting for a board event. */
+  releaseDispatch(holder: string): void {
+    this.holds.delete(holder);
+    if (this.holds.size === 0 && this.started) void this.sweep();
+  }
+
+  /** Ids of the cards this process is running or dispatching now. */
+  inFlightTaskIds(): string[] {
+    return [...this.inFlight];
+  }
   /** The one pending wake-up for the earliest future time a waiting card
    *  becomes eligible: its `retryAfter` (rescheduled after a 429) or its
    *  `notBefore` (a person's start time). Board events alone never fire
@@ -1608,6 +1638,9 @@ export class Orchestrator {
     const tasks = await this.board.list();
     const byId = new Map(tasks.map((t) => [t.id, t]));
     this.scheduleRetryWake(tasks);
+    // Held (a restart pending, §4.12): nothing new starts. The wake
+    // timer above is still armed, so a released hold catches up.
+    if (this.holds.size > 0) return;
     const pending: Promise<void>[] = [];
 
     // Computed once per sweep() call, not per task — see
@@ -1618,8 +1651,12 @@ export class Orchestrator {
     const overSpendCeiling = spentToday !== undefined && this.opts.spendCeilingUsd !== undefined && spentToday >= this.opts.spendCeilingUsd;
     // Host guard (§4.12): one probe per sweep, not per task.
     const hostShort = this.opts.hostGuard ? !(await this.opts.hostGuard.check()).ok : false;
+    const held = this.opts.heldCardIds ? await this.opts.heldCardIds() : undefined;
 
     for (const task of tasks) {
+      // Waiting on the owner (an open owner task names it): same wait as
+      // a dependency, resolved by the person instead of another card.
+      if (held?.has(task.id)) continue;
       if (this.inFlight.has(task.id)) continue;
       if (task.routedTo) continue; // already routed — a human or a prior run owns it now
       if (task.status !== "inbox" && task.status !== "ready") continue;
@@ -1724,6 +1761,7 @@ export class Orchestrator {
    */
   async runNow(taskId: string, executors: Executor[]): Promise<void> {
     if (this.inFlight.has(taskId)) throw new Error(`task ${taskId} is already running`);
+    if (this.holds.size > 0) throw new Error(`not starting task ${taskId}: ${this.dispatchHold}`);
     const task = await this.board.get(taskId);
     if (!task) throw new Error(`task not found: ${taskId}`);
     if (task.supersededBy) {
