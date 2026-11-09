@@ -353,6 +353,81 @@ test("at 1024 x 768 the lanes area scrolls inside its own box; the page does not
   expect(geo.lanesScroll).toBe(true);
 });
 
+// docs/SDD-coordinator-dock.md R4, check 3: the handle on the dock's left
+// edge resizes it between 320 and 560 px, by pointer and by keyboard, and
+// the width is kept in localStorage.
+const resizeHandle = (page: Page) => page.getByRole("separator", { name: "Resize coordinator window" });
+const dockWidth = (page: Page) => page.locator("#coordDock").evaluate((el) => Math.round(el.getBoundingClientRect().width));
+
+/** Drags the handle by dx (negative: left, so the dock grows). */
+async function dragHandle(page: Page, dx: number) {
+  const box = (await resizeHandle(page).boundingBox())!;
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx / 2, y);
+  await page.mouse.move(x + dx, y);
+  await page.mouse.up();
+}
+
+test("dragging the handle 100 px left widens the dock by 100 px; the width survives a reload; arrow keys step 16 px, Home and End hit the limits", async ({ page }) => {
+  await openDockOnBoard(page, 1280, 800);
+  const handle = resizeHandle(page);
+  await expect(handle).toHaveAttribute("aria-valuemin", "320");
+  await expect(handle).toHaveAttribute("aria-valuemax", "560");
+  await expect(handle).toHaveAttribute("aria-valuenow", "380");
+  expect(await dockWidth(page)).toBe(380);
+
+  await dragHandle(page, -100);
+  expect(await dockWidth(page)).toBe(480);
+  await expect(handle).toHaveAttribute("aria-valuenow", "480");
+  const geo = await dockGeometry(page, false);
+  expect(geo.dockLeft).toBeGreaterThanOrEqual(geo.lanesRight - 0.5); // the lanes area gave up the 100px
+  expect(geo.pageScrollWidth).toBeLessThanOrEqual(geo.innerWidth);
+
+  await page.reload();
+  await expect(page.locator('.kcol[data-lane="done"] h3')).toBeVisible();
+  await page.locator("#coordBtn").click();
+  await expect(page.locator("#coordDock")).toBeVisible();
+  expect(await dockWidth(page)).toBe(480); // restored from localStorage
+  await expect(handle).toHaveAttribute("aria-valuenow", "480");
+
+  await handle.focus();
+  await page.keyboard.press("ArrowLeft");
+  expect(await dockWidth(page)).toBe(496);
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
+  expect(await dockWidth(page)).toBe(464);
+  await expect(handle).toHaveAttribute("aria-valuenow", "464");
+  await page.keyboard.press("End");
+  expect(await dockWidth(page)).toBe(560);
+  await page.keyboard.press("ArrowLeft"); // already at the limit: stays
+  expect(await dockWidth(page)).toBe(560);
+  await page.keyboard.press("Home");
+  expect(await dockWidth(page)).toBe(320);
+  await expect(handle).toHaveAttribute("aria-valuenow", "320");
+
+  await dragHandle(page, -400); // past the limit: clamps
+  expect(await dockWidth(page)).toBe(560);
+  await dragHandle(page, 400);
+  expect(await dockWidth(page)).toBe(320);
+  expect(await page.evaluate(() => localStorage.getItem("wissel-coord-width"))).toBe("320");
+});
+
+test("with storage blocked the dock still opens at 380 px and the handle still resizes it", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", { get() { throw new Error("storage blocked"); } });
+  });
+  await openDockOnBoard(page, 1280, 800);
+  expect(await dockWidth(page)).toBe(380);
+  await resizeHandle(page).focus();
+  await page.keyboard.press("ArrowLeft");
+  expect(await dockWidth(page)).toBe(396);
+  await dragHandle(page, -50);
+  expect(await dockWidth(page)).toBe(446);
+});
+
 test("+ New has a Coordinator tab that creates a workstream and docks its window", async ({ page, request }) => {
   const dir = await mkdtemp(join(tmpdir(), "wissel-e2e-new-coord-"));
   execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "pipe" });
