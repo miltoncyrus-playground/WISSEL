@@ -554,6 +554,10 @@ New routes (in `src/api/server.ts`, logic in services):
 - `GET /workstreams/:id/inbox`, `GET /workstreams/:id/gate-log`
 - `GET /workstreams/:id/decisions`, `POST /decisions/:id/flip`
 - `GET /workstreams/:id/outbound` (the quiet-hours queue)
+- `GET /workstreams/:id/asks?status=open`,
+  `POST /workstreams/:id/asks/:askId/approve` and `/reject` (the owner's
+  answer to an `ask-*` verdict, `src/services/asks.ts`; approve re-checks
+  the hard limits, runs the action once and logs it as owner-approved)
 - `GET /workstreams/:id/shadow-report`
 - `GET/POST /owner-tasks`, `POST /owner-tasks/:id/done`
 - `POST /admin/restart-when-idle`, `DELETE /admin/restart-when-idle`

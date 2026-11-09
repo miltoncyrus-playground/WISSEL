@@ -45,7 +45,7 @@ test("allow executes through the injected handler; deny and ask-* never reach on
   const { ran, executor } = setup();
   expect(await executor.execute(act("channel.post", { post: "claim" }))).toMatchObject({ outcome: "done", verdict: { verdict: "allow", mode: "live" } });
   expect((await executor.execute(act("ticket.transition"))).outcome).toBe("refused"); // never
-  expect(await executor.execute(act("pr.arm", { base: "main", checks: "green" }))).toMatchObject({ outcome: "refused", verdict: { verdict: "ask-owner", rule: "5:must-ask" } });
+  expect(await executor.execute(act("pr.arm", { base: "main", checks: "green" }))).toMatchObject({ outcome: "refused", verdict: { verdict: "ask-owner", rule: "5:must-ask" } }); // no asks wired here; with them it is "asked" (test/asks.test.ts)
   expect((await executor.execute(act("branch.push", { base: "release" }))).verdict.verdict).toBe("deny");
   expect((await executor.execute(act("channel.post", { post: "decision", decision: "schema" }))).outcome).toBe("refused"); // not in decideAlone
   expect(ran).toEqual(["post:claim"]);
