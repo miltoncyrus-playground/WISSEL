@@ -111,6 +111,7 @@ import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts
 import { channelHandlers, ownerMessageEvent, startChannelReader } from "../services/channel-sinks.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
 import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, startOutboundFlusher, gateContextFor, type ExecutorOptions } from "../services/coordinator-executor.ts";
+import { SqliteAsks, createAskService, isAskStatus } from "../services/asks.ts";
 import { SqliteTrackerMemory, createTrackerSync } from "../services/ticket-actions.ts";
 import { hostHandlers } from "../services/host-actions.ts";
 import type { GateCommandRunner } from "../services/merge-gate.ts";
@@ -828,14 +829,21 @@ export function createApp(
   // The code-host actions (§4.3, host-actions.ts): pr.open, branch.push, pr.arm, plus the queued-push re-check and
   // its fix round. A fix round goes back through the executor's card.start, hence the late binding.
   const hostActions = hostHandlers({ board: board as Board, projects, settingsFor, merge: mergeContext, execute: (a) => executor.execute(a) });
+  const policyGate = new PolicyGate(gateLog, opts.executor?.now);
+  const gateContext: ExecutorOptions["context"] = async (a) => {
+    const ws = await workstreams.get(a.workstreamId);
+    if (!ws) throw new Error(`workstream not found: ${a.workstreamId}`);
+    return gateContextFor(ws, a.projectId, { limits: opts.hardLimits ?? DEFAULT_HARD_LIMITS, mainBranch: "main", shadow: false, duties: duties.map(ws.id) });
+  };
+  // Asks (§4.2 rules 5 and 7, src/services/asks.ts): an ask-* verdict reaches the owner (an owner task) or the decider (a
+  // channel question); approve re-checks the gate and runs the handler through the executor, hence the late binding.
+  const askStore = new SqliteAsks((board as SqliteBoard).db);
+  const asks = createAskService({ store: askStore, ownerTasks, channelLog, workstreams, gate: policyGate, gateLog, context: gateContext, run: (a) => executor.runApproved(a), now: opts.executor?.now });
   const executor = new CoordinatorExecutor({
-    gate: new PolicyGate(gateLog, opts.executor?.now),
+    gate: policyGate,
     queue: outboundQueue,
-    context: async (a) => {
-      const ws = await workstreams.get(a.workstreamId);
-      if (!ws) throw new Error(`workstream not found: ${a.workstreamId}`);
-      return gateContextFor(ws, a.projectId, { limits: opts.hardLimits ?? DEFAULT_HARD_LIMITS, mainBranch: "main", shadow: false, duties: duties.map(ws.id) });
-    },
+    asks,
+    context: gateContext,
     quietHours: async (id) => (await workstreams.get(id))?.quietHours,
     pushStillGreen: hostActions.pushStillGreen,
     startFixRound: hostActions.startFixRound,
@@ -871,12 +879,12 @@ export function createApp(
   // opens a decision card. A startup pass dispatches every row left unhandled by an
   // earlier run, once.
   if (!opts.inbox) {
-    Object.assign(driverHandlers, createCoordinatorDriver({ executor, board: board as Board, workstreams, projects, openDecisionCard: decisionRuntime.open }).handlers, trackerSync.inboxHandlers);
+    Object.assign(driverHandlers, createCoordinatorDriver({ executor, board: board as Board, workstreams, projects, openDecisionCard: decisionRuntime.open, asks }).handlers, trackerSync.inboxHandlers);
     void (async () => { for (const e of inbox.list({ unhandled: true })) await inboxDispatcher.dispatch(e); })();
   }
   // The coordinator window (§4.14): the same hold, restart and queue the admin routes and the executor use.
   const coordinatorWindow = createCoordinatorWindow({
-    db: (board as SqliteBoard).db, board: board as Board, workstreams, ownerTasks, decisions, channelLog, conversations, pending: pendingActions,
+    db: (board as SqliteBoard).db, board: board as Board, workstreams, ownerTasks, decisions, channelLog, asks: askStore, conversations, pending: pendingActions,
     outbound: (id) => executor.status(id),
     live: async () => ({ dispatchHold: orchestrator.dispatchHold, restartPending: restartWhenIdle.pending }),
     holdDispatch: (reason) => orchestrator.holdDispatch("owner", reason),
@@ -947,7 +955,7 @@ export function createApp(
 
   // Queued outward actions leave once their workstream's quiet hours end (§4.3, §4.11).
   if (opts.schedulesEnabled) {
-    const outboundFlusher = startOutboundFlusher({ executor, workstreams });
+    const outboundFlusher = startOutboundFlusher({ executor, workstreams, asks, now: opts.executor?.now });
     onShutdown(() => outboundFlusher.stop());
   }
 
@@ -1827,6 +1835,16 @@ export function createApp(
             return json(posted, 201);
           }
           if (parts.length === 3 && parts[2] === "outbound" && req.method === "GET") return json(await executor.status(ws.id));
+          // Asks (§4.2): the owner lists them (?status=open) and approves or rejects one; approve runs the action.
+          if (parts.length === 3 && parts[2] === "asks" && req.method === "GET") {
+            const status = url.searchParams.get("status");
+            if (status !== null && !isAskStatus(status)) return json({ error: "status must be open, approved, rejected or expired" }, 400);
+            return json(askStore.list(ws.id, status ?? undefined));
+          }
+          if (parts.length === 5 && parts[2] === "asks" && (parts[4] === "approve" || parts[4] === "reject") && req.method === "POST") {
+            const r = await asks[parts[4]](ws.id, parts[3]!, "owner", "api");
+            return r.ok ? json(r) : r.status === 404 ? notFound() : json({ error: r.error }, r.status);
+          }
           // Duty switches and the shadow report (§4.13): a switch is the owner's and needs confirm:true, like a role change.
           if (parts.length === 3 && parts[2] === "duties" && req.method === "GET") return json(duties.list(ws.id));
           if (parts.length === 4 && parts[2] === "duties" && req.method === "POST") {

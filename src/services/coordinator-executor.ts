@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { CardTemplateKind, Project, TaskCard } from "../core/types.ts";
+import type { Ask } from "./asks.ts";
 import type { Board } from "./board.ts";
 import { renderCardTemplateFor } from "./card-templates.ts";
 import type { NewOwnerTask, OwnerTask } from "./owner-tasks.ts";
@@ -15,7 +16,9 @@ import type { Workstream } from "./workstreams.ts";
  * outward actions wait in the persisted outbound queue and flush in order
  * when the window ends; a queued push is re-checked first and becomes a
  * fix round when no longer green. Shadow records a "would" entry with
- * the live verdict and never acts or queues.
+ * the live verdict and never acts or queues. A live ask-owner or
+ * ask-decider opens an ask (asks.ts) and returns it; the person's
+ * approve comes back through runApproved.
  */
 export type QuietHours = NonNullable<Workstream["quietHours"]>;
 /** The gate reads the Action fields; `payload` is what the handler needs. */
@@ -100,6 +103,7 @@ export function gateContextFor(ws: Workstream, projectId: string, opts: { limits
 export type ExecuteOutcome =
   | { outcome: "done"; verdict: GateVerdict; result: unknown }
   | { outcome: "queued" | "would"; verdict: GateVerdict; entry: OutboundEntry }
+  | { outcome: "asked"; verdict: GateVerdict; ask: Ask }
   | { outcome: "refused"; verdict: GateVerdict }
   | { outcome: "failed"; verdict: GateVerdict; error: string };
 
@@ -110,6 +114,8 @@ export interface ExecutorOptions {
   /** The gate context minus `quiet`, which the executor sets from the workstream's quiet hours. */
   context: (action: Action) => Promise<Omit<GateContext, "quiet">>;
   quietHours: (workstreamId: string) => Promise<QuietHours | undefined>;
+  /** Where a live ask-* verdict goes (asks.ts); without it such a verdict is refused, as before the asks existed. */
+  asks?: { open(action: ExecutableAction, verdict: GateVerdict, at: Date): Promise<Ask> };
   /** Before a queued push flushes: merge main forward and re-run the gates; a red push becomes a fix round (a later card's callback). */
   pushStillGreen?: (action: ExecutableAction) => Promise<{ green: boolean; reason?: string }>;
   startFixRound?: (action: ExecutableAction, reason: string) => Promise<void>;
@@ -132,15 +138,22 @@ export class CoordinatorExecutor {
     }
   }
 
-  /** Gate, then act, queue, record or refuse. Never acts on anything but a live `allow`. */
+  /** Gate, then act, queue, ask, record or refuse. Never acts on anything but a live `allow`. */
   async execute(action: ExecutableAction): Promise<ExecuteOutcome> {
     const now = this.now();
     const ctx: GateContext = { ...(await this.opts.context(action)), quiet: inQuietHours(await this.opts.quietHours(action.workstreamId), now) };
     const verdict = await this.opts.gate.evaluate(action, ctx);
     if (verdict.mode === "shadow") return { outcome: "would", verdict, entry: this.opts.queue.add(action, verdict, "would", now.toISOString()) };
     if (verdict.verdict === "queue") return { outcome: "queued", verdict, entry: this.opts.queue.add(action, verdict, "queued", now.toISOString()) };
+    if ((verdict.verdict === "ask-owner" || verdict.verdict === "ask-decider") && this.opts.asks) return { outcome: "asked", verdict, ask: await this.opts.asks.open(action, verdict, now) };
     if (verdict.verdict !== "allow") return { outcome: "refused", verdict };
     return this.run(action, verdict);
+  }
+
+  /** Runs an action a person approved (asks.ts): the approve re-checked the gate's denies and wrote the owner-approved record; this only reaches the handler. */
+  async runApproved(action: ExecutableAction): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
+    const r = await this.run(action, { verdict: "allow", rule: "owner-approved", mode: "live" });
+    return r.outcome === "done" ? { ok: true, result: r.result } : { ok: false, error: r.outcome === "failed" ? r.error : r.outcome };
   }
 
   /** Flushes the workstream's queue in order once its quiet hours are over; each entry is gated again first. A handler failure settles that entry and leaves the rest queued. */
@@ -191,15 +204,18 @@ export class CoordinatorExecutor {
 export interface OutboundFlusherOptions {
   executor: Pick<CoordinatorExecutor, "flush">;
   workstreams: { list(): Promise<{ id: string }[]> };
+  /** The asks' sweep (asks.ts): open asks past their 7 days expire on the same tick. */
+  asks?: { expire(at: Date): Promise<Ask[]> };
   /** How often to look for queues whose quiet hours have ended. */
   intervalMs?: number;
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
   logger?: (message: string) => void;
+  now?: () => Date;
 }
 
 /** The trigger for `CoordinatorExecutor.flush` (§4.3, §4.11): on every tick each workstream's queue is flushed, which does
- *  nothing while its quiet hours last and sends the queued actions in order once they are over. */
+ *  nothing while its quiet hours last and sends the queued actions in order once they are over; then stale asks expire. */
 export function startOutboundFlusher(opts: OutboundFlusherOptions): { tick: () => Promise<void>; stop: () => void } {
   const log = opts.logger ?? ((m: string) => console.log(m));
   let busy = false;
@@ -207,6 +223,8 @@ export function startOutboundFlusher(opts: OutboundFlusherOptions): { tick: () =
     if (busy) return;
     busy = true;
     try {
+      const expired = await opts.asks?.expire((opts.now ?? (() => new Date()))());
+      if (expired?.length) log(`asks: ${expired.length} ask(s) expired unanswered after 7 days`);
       for (const ws of await opts.workstreams.list()) {
         try {
           const settled = await opts.executor.flush(ws.id);

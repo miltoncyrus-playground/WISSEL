@@ -1,4 +1,5 @@
 import type { Project, ReviewPolicy, ReviewVerdict, TaskCard } from "../core/types.ts";
+import type { AskService } from "./asks.ts";
 import type { Board } from "./board.ts";
 import type { CoordinatorExecutor, ExecutableAction } from "./coordinator-executor.ts";
 import type { DecisionCardKind } from "./decision-cards.ts";
@@ -38,6 +39,8 @@ export interface DriverDeps {
   projects: { list(): Promise<Project[]> };
   /** Opens a §4.4 decision card for the event (triage-red, decide-default). */
   openDecisionCard: (kind: DecisionCardKind, event: InboxEvent, ctx: { projectId: string; decision?: string }) => Promise<unknown>;
+  /** The asks (asks.ts): a decider's answer to an ask's question approves or rejects it. */
+  asks?: Pick<AskService, "byQuestionRef" | "approve" | "reject">;
   /** The structured verdict a card in review got; defaults to the latest
    *  result row of the card or of a child card that carries one. */
   reviewVerdictFor?: (card: TaskCard) => Promise<ReviewVerdict | undefined>;
@@ -162,8 +165,18 @@ export function createCoordinatorDriver(deps: DriverDeps): { handlers: Record<st
     const card = about.card && event.workstreamId ? (await deps.board.list()).find((t) => t.workstreamId === event.workstreamId && t.key === about.card) : undefined;
     const scope = await scopeFor(event, card);
     if (!scope) return;
-    if (scope.decider && from !== scope.decider) return;
     const ref = text(p.ref) ?? event.id;
+    // An answer to an ask's question (asks.ts): only the asked project's decider resolves it; the text is read for its first word, never obeyed.
+    const ask = m.kind === "answer" && deps.asks && text(m.questionRef) ? deps.asks.byQuestionRef(scope.ws.id, m.questionRef as string) : undefined;
+    if (ask) {
+      if (from !== scope.ws.projects.find((e) => e.projectId === ask.action.projectId)?.decider) return;
+      const word = (text(m.text) ?? "").trim().toLowerCase();
+      const r = word.startsWith("approve") ? await deps.asks!.approve(ask.workstreamId, ask.id, from, "channel") : word.startsWith("reject") ? await deps.asks!.reject(ask.workstreamId, ask.id, from, "channel") : undefined;
+      if (!r) log.warn(`driver: answer ${ref} to ask ${ask.id} starts with neither approve nor reject; the ask stays open`);
+      else if (!r.ok) log.warn(`driver: answer ${ref} to ask ${ask.id}: ${r.error}`);
+      return;
+    }
+    if (scope.decider && from !== scope.decider) return;
     const aboutOrId = Object.keys(about).length ? about : { card: event.id };
     if (m.kind === "question") {
       await deps.openDecisionCard("decide-default", event, { projectId: scope.projectId, decision: "default" });

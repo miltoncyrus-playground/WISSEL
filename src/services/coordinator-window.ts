@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { TaskCard } from "../core/types.ts";
+import { describeAction, type Ask, type SqliteAsks } from "./asks.ts";
 import type { Board } from "./board.ts";
 import type { About, ChannelEntry, SqliteChannelLog } from "./channel.ts";
 import type { ChatMessage, Conversation, PendingView, SqliteConversationStore, WindowExecuted } from "./conversations.ts";
@@ -33,6 +34,7 @@ export type WindowItem =
   | { kind: "status"; at: string; from: string; text: string }
   | { kind: "decision"; decision: Decision; flip: boolean }
   | { kind: "owner-task"; task: OwnerTask; hasCheck: boolean }
+  | { kind: "ask"; ask: Ask }
   | { kind: "plan"; card: { id: string; key?: string; title: string; status: TaskCard["status"] }; held?: string };
 
 export interface WindowHeader {
@@ -64,6 +66,8 @@ export interface WindowDeps {
   ownerTasks: Pick<OwnerTaskStore, "list">;
   decisions: Pick<SqliteDecisionStore, "list">;
   channelLog: Pick<SqliteChannelLog, "list" | "adapter">;
+  /** Open asks (asks.ts) show as items and count in "what is waiting on me". */
+  asks?: Pick<SqliteAsks, "list">;
   conversations: SqliteConversationStore;
   pending: SqlitePendingActionStore;
   /** The executor's quiet-hours view (GET /workstreams/:id/outbound). */
@@ -130,6 +134,7 @@ export function createCoordinatorWindow(deps: WindowDeps) {
     const open = tasks.filter((t) => t.status === "open" && (t.blocks.length === 0 || t.blocks.some((id) => ourIds.has(id))));
     const log = deps.channelLog.list(ws.id);
     const decisions = deps.decisions.list(ws.id);
+    const asks = deps.asks?.list(ws.id, "open") ?? [];
     const header: WindowHeader = {
       workstream: { id: ws.id, name: ws.name, ...(ws.ticket ? { ticket: ws.ticket } : {}) },
       roles: ws.projects.map((p) => ({ projectId: p.projectId, role: p.role, ...(p.decider ? { decider: p.decider } : {}) })),
@@ -143,13 +148,14 @@ export function createCoordinatorWindow(deps: WindowDeps) {
       ...log.flatMap((e): WindowItem[] => (e.message.kind === "status" ? [{ kind: "status", at: e.at, from: e.message.from, text: e.message.text }] : [])),
       ...decisions.map((decision): WindowItem => ({ kind: "decision", decision, flip: decision.status === "taken" })),
       ...open.map((task): WindowItem => ({ kind: "owner-task", task, hasCheck: Boolean(task.check?.length) })),
+      ...asks.map((ask): WindowItem => ({ kind: "ask", ask })),
       ...ours.filter((c) => c.status === "inbox").map((c): WindowItem => {
         const holder = open.find((t) => t.blocks.includes(c.id));
         const held = holder ? `owner task: ${holder.title}` : live.dispatchHold;
         return { kind: "plan", card: { id: c.id, ...(c.key ? { key: c.key } : {}), title: c.title, status: c.status }, ...(held ? { held } : {}) };
       }),
     ];
-    return { header, items, decisions, log, open };
+    return { header, items, decisions, log, open, asks };
   }
 
   const statusText = (ws: Workstream, b: Awaited<ReturnType<typeof build>>): string => {
@@ -160,6 +166,7 @@ export function createCoordinatorWindow(deps: WindowDeps) {
       `Roles: ${h.roles.map((r) => `${r.projectId} ${r.role}${r.decider ? ` (${r.decider})` : ""}`).join(", ") || "no projects"}`,
       `Cards: ${h.cards.live} live${h.cards.cap === null ? ", no cap" : ` of cap ${h.cards.cap}`}; ${h.live.running} running on the board; new cards ${h.live.dispatchHold ? `paused: ${h.live.dispatchHold}` : "start"}${h.live.restartPending ? "; restart pending" : ""}`,
       `Owner tasks: ${b.open.length} open owner task${b.open.length === 1 ? "" : "s"}${b.open.length ? `: ${b.open.map((t) => t.title).join("; ")}` : ""}`,
+      `Asks: ${b.asks.length} open`,
       `Decisions: ${b.decisions.length} recorded, ${flippable} can be flipped`,
       `Channel: ${h.channelLastWrittenAt ? `last written ${h.channelLastWrittenAt}` : "never written"}`,
       `Quiet hours: ${h.quietHours ? `${h.quietHours.start} to ${h.quietHours.end} ${h.quietHours.timezone}, ${h.quietHours.quiet ? `on now, ${h.outbound.queued} queued${h.outbound.flushAt ? `, flush at ${h.outbound.flushAt}` : ""}` : "off now"}` : "none"}`,
@@ -170,6 +177,7 @@ export function createCoordinatorWindow(deps: WindowDeps) {
     const lines = [
       ...b.open.map((t) => `- Owner task: ${t.title} (${t.why})${t.steps.length ? ` steps: ${t.steps.join("; ")}` : ""}${t.check?.length ? "; Done runs its check" : ""}`),
       ...b.decisions.filter((d) => d.status === "taken").map((d) => `- Decision taken: ${d.text} (flip to: ${d.alternative})`),
+      ...b.asks.map((a) => `- Ask: ${describeAction(a.action)} (${a.verdict === "ask-decider" ? "the decider was asked on the channel" : "asked you"}, rule ${a.rule}); approve or reject with POST /workstreams/${a.workstreamId}/asks/${a.id}/approve or /reject`),
       ...(conversationId ? deps.conversations.messages(conversationId).flatMap((m) => deps.pending.forMessage(m.id)).filter((p) => pendingView(p, now()).state === "open").map((p) => `- Waiting for your Confirm: ${p.lines.join("; ")}`) : []),
     ];
     return lines.length ? `Waiting on you:\n${lines.join("\n")}` : "Nothing is waiting on you.";
