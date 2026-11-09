@@ -43,7 +43,7 @@ import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { getProjectGitOverview, groupWork } from "../services/project-git.ts";
-import { getProjectPrs, getProjectRuns, startPrWatcher, withPrCache } from "../services/github-status.ts";
+import { getProjectPrs, getProjectRuns, startPrWatcher, withPrCache, type PullRequest } from "../services/github-status.ts";
 import { startMergeForward, touchedFilesWith } from "../services/merge-forward.ts";
 import { loadTicketProvider, type TicketsSetup } from "../services/integrations.ts";
 import { KEY_RE, TicketError } from "../services/ticket-provider.ts";
@@ -98,7 +98,9 @@ import { HostGuard, hostThresholdsFromEnv, realHostProbes, type HostGuardOptions
 import { SqliteDigestLog, createDigestRun } from "../services/digests.ts";
 import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
-import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch } from "../services/workstreams.ts";
+import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch, type Workstream } from "../services/workstreams.ts";
+import { SqliteDutyStore, isDuty, validateDutyChange } from "../services/duties.ts";
+import { shadowReport } from "../services/shadow-report.ts";
 import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions } from "../services/inbox.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
@@ -375,6 +377,10 @@ export interface CreateAppOptions {
    *  served by GET/POST /workstreams/:id/channel. Defaults to the board
    *  database with a console line per message; tests capture the lines. */
   channelLog?: SqliteChannelLog;
+  /** The PR list GET /workstreams/:id/shadow-report compares would-entries
+   *  with (src/services/shadow-report.ts, §4.13). Defaults to `gh pr list`
+   *  over the workstream's projects; tests inject a list. */
+  shadowPrs?: (ws: Workstream) => Promise<PullRequest[]>;
 }
 
 /** The bit of Bun's Server that createApp's fetch uses: lifting the idle
@@ -541,6 +547,16 @@ export function createApp(
   const commandRunner = opts.commandRunner ?? runViaBun;
   const prsOf = withPrCache((path) => getProjectPrs(path, commandRunner));
   const runsOf = withPrCache((path) => getProjectRuns(path, commandRunner));
+  /** The shadow report's default PR list: every PR of the workstream's projects; a project `gh` cannot read contributes none. */
+  const shadowPrsOf = async (ws: Workstream): Promise<PullRequest[]> => {
+    const known = await projects.list();
+    const lists = await Promise.all(ws.projects.map(async (p) => {
+      const path = known.find((x) => x.id === p.projectId)?.path;
+      const r = path ? await prsOf(path).catch(() => undefined) : undefined;
+      return r && "prs" in r ? r.prs : [];
+    }));
+    return lists.flat();
+  };
   // The merge path's context (docs/SDD-worktree-isolation.md §7): the
   // one every merge goes through, the Merge button, Ask's
   // merge and the orchestrator's auto-merge alike. The gate is the
@@ -775,14 +791,17 @@ export function createApp(
     events: board.events,
   });
   // The executor and its quiet-hours queue (docs/SDD-coordinator.md §4.3, §4.11): every action
-  // passes the gate; the main branch is "main" until a project setting names it; duties and Shadow are later cards.
+  // passes the gate; the main branch is "main" until a project setting names it; the duty switches (§4.13) feed
+  // rule 3; Shadow comes from the project's role.
+  const duties = new SqliteDutyStore((board as SqliteBoard).db);
+  const outboundQueue = new SqliteOutboundQueue((board as SqliteBoard).db);
   const executor = new CoordinatorExecutor({
     gate: new PolicyGate(gateLog),
-    queue: new SqliteOutboundQueue((board as SqliteBoard).db),
+    queue: outboundQueue,
     context: async (a) => {
       const ws = await workstreams.get(a.workstreamId);
       if (!ws) throw new Error(`workstream not found: ${a.workstreamId}`);
-      return gateContextFor(ws, a.projectId, { limits: opts.hardLimits ?? DEFAULT_HARD_LIMITS, mainBranch: "main", shadow: false });
+      return gateContextFor(ws, a.projectId, { limits: opts.hardLimits ?? DEFAULT_HARD_LIMITS, mainBranch: "main", shadow: false, duties: duties.map(ws.id) });
     },
     quietHours: async (id) => (await workstreams.get(id))?.quietHours,
     ...opts.executor,
@@ -1720,6 +1739,18 @@ export function createApp(
             return json(await channelLog.adapter(ws.id).post(check.message), 201);
           }
           if (parts.length === 3 && parts[2] === "outbound" && req.method === "GET") return json(await executor.status(ws.id));
+          // Duty switches and the shadow report (§4.13): a switch is the owner's and needs confirm:true, like a role change.
+          if (parts.length === 3 && parts[2] === "duties" && req.method === "GET") return json(duties.list(ws.id));
+          if (parts.length === 4 && parts[2] === "duties" && req.method === "POST") {
+            if (!isDuty(parts[3]!)) return notFound();
+            const check = validateDutyChange(await req.json().catch(() => undefined));
+            if (!check.ok) return json({ error: check.error }, 400);
+            return json(duties.set(ws.id, parts[3]!, check.owner));
+          }
+          if (parts.length === 3 && parts[2] === "shadow-report" && req.method === "GET") {
+            const prs = await (opts.shadowPrs ?? shadowPrsOf)(ws);
+            return json(shadowReport(ws.id, outboundQueue.list(ws.id, "would"), { channel: channelLog.list(ws.id), prs }, (line) => console.log(line)));
+          }
           if (parts.length === 2 && req.method === "PATCH") {
             const check = validateWorkstreamPatch(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
