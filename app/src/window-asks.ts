@@ -1,4 +1,9 @@
-import type { CoordinatorAsk } from "./types";
+import type { CoordinatorAsk, WindowHeader } from "./types";
+
+/** The header's role line when a confirmed change waits for the arm in flight (§4.13): "follow, becoming decide after the current arm". */
+export function pendingRoleText(r: Pick<WindowHeader["roles"][number], "role" | "pendingRole">): string {
+  return r.pendingRole ? `${r.role}, becoming ${r.pendingRole} after the current arm` : r.role;
+}
 
 // The words the coordinator window uses for an ask (docs/SDD-coordinator.md
 // §4.14): what wissel wants to do in plain words, why the gate asked, the
@@ -77,7 +82,7 @@ export const askConfirmLine = (ask: CoordinatorAsk): string => `Change: wissel w
 
 /** A resolved ask as a Log row: who answered, how, and whether anything ran. */
 export function resolvedAskLine(ask: CoordinatorAsk): { from: string; kind: string; text: string } {
-  const how = ask.status === "expired" ? "after 7 days" : ask.via === "channel" ? "answered on the channel" : "from the window";
+  const how = ask.status === "expired" ? "after 7 days" : ask.status === "withdrawn" ? "the role changed" : ask.via === "channel" ? "answered on the channel" : "from the window";
   const ran = ask.status === "approved" ? "it ran once" : "nothing ran";
   return { from: ask.resolvedBy ?? "owner", kind: `ask ${ask.status}`, text: `${describeAction(ask.action)} (${how}; ${ran})` };
 }

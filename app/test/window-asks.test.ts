@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { askConfirmLine, describeAsk, resolvedAskLine } from "../src/window-asks";
+import { askConfirmLine, describeAsk, pendingRoleText, resolvedAskLine } from "../src/window-asks";
 import type { CoordinatorAsk } from "../src/types";
 
 // The window's ask items (docs/SDD-coordinator.md §4.14, §4.2 rules 5 and
@@ -51,10 +51,18 @@ describe("askConfirmLine", () => {
   });
 });
 
+describe("pendingRoleText", () => {
+  test("names the role, and the one a confirmed change becomes once the arm in flight settles", () => {
+    expect(pendingRoleText({ role: "follow", pendingRole: "decide" })).toBe("follow, becoming decide after the current arm");
+    expect(pendingRoleText({ role: "decide" })).toBe("decide");
+  });
+});
+
 describe("resolvedAskLine", () => {
   test("says who answered and how", () => {
     expect(resolvedAskLine({ ...arm, status: "approved", resolvedBy: "owner", via: "api", resolvedAt: "2026-11-09T13:00:00.000Z" })).toEqual({ from: "owner", kind: "ask approved", text: "arm PR #12 to merge into main (from the window; it ran once)" });
     expect(resolvedAskLine({ ...decision, status: "rejected", resolvedBy: "Ana", via: "channel" })).toMatchObject({ from: "Ana", kind: "ask rejected", text: expect.stringContaining("(answered on the channel; nothing ran)") });
     expect(resolvedAskLine({ ...decision, status: "expired", resolvedBy: "sweep", via: "sweep" })).toMatchObject({ from: "sweep", kind: "ask expired", text: expect.stringContaining("(after 7 days; nothing ran)") });
+    expect(resolvedAskLine({ ...decision, status: "withdrawn", resolvedBy: "role-change", via: "role-change" })).toMatchObject({ from: "role-change", kind: "ask withdrawn", text: expect.stringContaining("(the role changed; nothing ran)") });
   });
 });

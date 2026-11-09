@@ -57,11 +57,11 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 const text = (v: unknown): string | undefined => (typeof v === "string" && v.trim() !== "" ? v : undefined);
 const payloadOf = (event: InboxEvent): Record<string, unknown> => (isRecord(event.payload) ? event.payload : {});
 const checksOf = (pr: NonNullable<TaskCard["pr"]>): "green" | "red" | "pending" => (pr.watch?.checks === "passing" ? "green" : pr.watch?.checks === "failing" ? "red" : "pending");
-const label = (card: TaskCard): string => card.key ?? card.id;
+const label = (card: Pick<TaskCard, "id" | "key">): string => card.key ?? card.id;
 
 /** The §4.6 fix round as one card.start from the FULL `review` text, or an owner task when the project cannot render
  *  one. The one path for a review that blocked (onReview) and a push whose gates went red (host-actions.ts). */
-export function fixRoundActions(project: Pick<Project, "cardRules" | "cardTemplates"> | undefined, card: TaskCard, review: string, round: number, ticket: string | undefined): Draft[] {
+export function fixRoundActions(project: Pick<Project, "cardRules" | "cardTemplates"> | undefined, card: Pick<TaskCard, "id" | "key" | "title">, review: string, round: number, ticket: string | undefined): Draft[] {
   const built = buildFixRoundBody(project ?? {}, { round, review, key: card.key, ticket });
   if (!built.ok) {
     return [{ kind: "owner.task", payload: { title: `Fix round for ${label(card)} could not be built`, why: built.error, steps: ["Set the project's fix-round card template", "Re-run the review"], blocks: [card.id] } }];

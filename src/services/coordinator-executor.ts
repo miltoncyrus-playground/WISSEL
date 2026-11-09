@@ -1,12 +1,13 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { CardTemplateKind, Project, TaskCard } from "../core/types.ts";
-import type { Ask } from "./asks.ts";
+import { aboutOf, describeAction, type Ask } from "./asks.ts";
 import type { Board } from "./board.ts";
 import { renderCardTemplateFor } from "./card-templates.ts";
+import type { SqliteChannelLog } from "./channel.ts";
 import type { NewOwnerTask, OwnerTask } from "./owner-tasks.ts";
-import type { Action, ActionKind, GateContext, GateVerdict, HardLimits, PolicyGate, Verdict } from "./policy-gate.ts";
-import type { Workstream } from "./workstreams.ts";
+import { OUTWARD_KINDS, type Action, type ActionKind, type GateContext, type GateVerdict, type HardLimits, type PolicyGate, type Verdict } from "./policy-gate.ts";
+import type { Workstream, WorkstreamStore } from "./workstreams.ts";
 
 /**
  * The executor (docs/SDD-coordinator.md §4.3, §4.11): every action passes
@@ -18,7 +19,11 @@ import type { Workstream } from "./workstreams.ts";
  * fix round when no longer green. Shadow records a "would" entry with
  * the live verdict and never acts or queues. A live ask-owner or
  * ask-decider opens an ask (asks.ts) and returns it; the person's
- * approve comes back through runApproved.
+ * approve comes back through runApproved. A handler that throws is a
+ * `failed` outcome and a row in the same table (status "failed", the
+ * error as its note); `onFailure` (reportFailures in the server) posts a
+ * status line from wissel on the channel, which the window shows, and
+ * raises an owner task once per action id when the action is outward.
  */
 export type QuietHours = NonNullable<Workstream["quietHours"]>;
 /** The gate reads the Action fields; `payload` is what the handler needs. */
@@ -54,10 +59,16 @@ export class SqliteOutboundQueue {
     this.db.run(`CREATE TABLE IF NOT EXISTS outbound_queue (id TEXT PRIMARY KEY, workstreamId TEXT NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL, verdict TEXT NOT NULL, rule TEXT NOT NULL, queuedAt TEXT NOT NULL, flushedAt TEXT, note TEXT)`);
   }
 
-  add(action: ExecutableAction, v: GateVerdict, status: "queued" | "would", at: string): OutboundEntry {
+  add(action: ExecutableAction, v: GateVerdict, status: "queued" | "would" | "failed", at: string, note?: string): OutboundEntry {
     const id = randomUUID();
-    this.db.query(`INSERT INTO outbound_queue (id, workstreamId, action, status, verdict, rule, queuedAt) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(id, action.workstreamId, JSON.stringify(action), status, v.verdict, v.rule, at);
+    this.db.query(`INSERT INTO outbound_queue (id, workstreamId, action, status, verdict, rule, queuedAt, flushedAt, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, action.workstreamId, JSON.stringify(action), status, v.verdict, v.rule, at, status === "failed" ? at : null, note ?? null);
     return this.get(id)!;
+  }
+
+  /** The failed entries for a source-stable action id (an owner task is raised on the first only). */
+  failures(workstreamId: string, actionId: string): OutboundEntry[] {
+    return this.db.query<Row, [string, string]>(`SELECT * FROM outbound_queue WHERE workstreamId = ? AND status = 'failed' AND json_extract(action, '$.id') = ? ORDER BY rowid ASC`).all(workstreamId, actionId).map(rowToEntry);
   }
 
   get(id: string): OutboundEntry | undefined {
@@ -119,7 +130,27 @@ export interface ExecutorOptions {
   /** Before a queued push flushes: merge main forward and re-run the gates; a red push becomes a fix round (a later card's callback). */
   pushStillGreen?: (action: ExecutableAction) => Promise<{ green: boolean; reason?: string }>;
   startFixRound?: (action: ExecutableAction, reason: string) => Promise<void>;
+  /** Told of every handler failure once its row is written; `first` is false when the action id failed before. */
+  onFailure?: (action: ExecutableAction, error: string, info: { first: boolean; outward: boolean }) => Promise<void>;
   now?: () => Date;
+}
+
+export interface FailureReportDeps {
+  channelLog: Pick<SqliteChannelLog, "adapter">;
+  ownerTasks: { create(task: NewOwnerTask): Promise<OwnerTask> };
+  workstreams: Pick<WorkstreamStore, "get">;
+}
+
+/** The server's `onFailure`: a status line from wissel on the channel (the window's status item), plus an owner task on the first failure of an outward action. */
+export function reportFailures(deps: FailureReportDeps): NonNullable<ExecutorOptions["onFailure"]> {
+  return async (action, error, { first, outward }) => {
+    const ws = await deps.workstreams.get(action.workstreamId);
+    const what = describeAction(action);
+    if (ws) await deps.channelLog.adapter(ws.id).post({ kind: "status", from: "wissel", about: aboutOf(action, ws), text: `${what} failed: ${error}` });
+    if (!outward || !first) return;
+    const taskId = typeof action.payload?.taskId === "string" ? [action.payload.taskId] : [];
+    await deps.ownerTasks.create({ title: `Failed: ${what}`, why: `The handler for ${what} on ${ws?.name ?? action.workstreamId} failed: ${error}`, steps: ["Read the error and fix its cause", "Replay the event, or drop it"], blocks: taskId });
+  };
 }
 
 export class CoordinatorExecutor {
@@ -141,7 +172,19 @@ export class CoordinatorExecutor {
     return new Promise((resolve) => this.armWaiters.push({ workstreamId, resolve }));
   }
 
-  private async run(action: ExecutableAction, verdict: GateVerdict): Promise<ExecuteOutcome> {
+  /** Runs the handler; a failure is persisted (a new failed row, or the queued `entry` settled as failed) and reported. */
+  private async run(action: ExecutableAction, verdict: GateVerdict, entry?: OutboundEntry): Promise<ExecuteOutcome> {
+    const out = await this.callHandler(action, verdict);
+    if (out.outcome !== "failed") return out;
+    const at = this.now().toISOString();
+    if (entry) this.opts.queue.settle(entry.id, "failed", at, out.error);
+    else this.opts.queue.add(action, verdict, "failed", at, out.error);
+    const first = action.id === undefined || this.opts.queue.failures(action.workstreamId, action.id).length <= 1;
+    await this.opts.onFailure?.(action, out.error, { first, outward: OUTWARD_KINDS.has(action.kind) }).catch(() => undefined);
+    return out;
+  }
+
+  private async callHandler(action: ExecutableAction, verdict: GateVerdict): Promise<ExecuteOutcome> {
     const handler = this.opts.handlers[action.kind as ActionKind];
     if (!handler) return { outcome: "failed", verdict, error: `no executor for ${action.kind}` };
     const arming = action.kind === "pr.arm";
@@ -215,8 +258,8 @@ export class CoordinatorExecutor {
         settled.push(this.opts.queue.settle(entry.id, "fix-round", at, reason));
         continue;
       }
-      const outcome = await this.run(entry.action, verdict);
-      settled.push(this.opts.queue.settle(entry.id, outcome.outcome === "failed" ? "failed" : "flushed", at, outcome.outcome === "failed" ? outcome.error : undefined));
+      const outcome = await this.run(entry.action, verdict, entry);
+      settled.push(outcome.outcome === "failed" ? this.opts.queue.get(entry.id)! : this.opts.queue.settle(entry.id, "flushed", at));
       if (outcome.outcome === "failed") break;
     }
     return settled;

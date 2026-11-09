@@ -6,7 +6,10 @@
  * round's commits on an existing PR branch from a fresh host worktree,
  * with the base merged forward and both gates green, never force-pushed;
  * pr.arm turns auto-merge on only after re-reading the PR and finding its
- * head at the reviewed sha with green checks. Every git and gh call goes
+ * head at the reviewed sha with green checks; a head that moved after the
+ * review is not armed, and the coordinator starts the re-review of the
+ * new head itself (§4.7, one review card per head sha, through
+ * merge-forward's startReReview) so the card is never left stuck. Every git and gh call goes
  * through the merge context's `host` runner (tests fake it and use a bare
  * repository as origin). pushStillGreen and startFixRound are the
  * executor's callbacks for a queued push (§4.3): the same merge-and-gate
@@ -19,6 +22,7 @@ import type { Board } from "./board.ts";
 import { fixRoundActions } from "./coordinator-driver.ts";
 import type { ActionHandlers, ExecutableAction, ExecuteOutcome } from "./coordinator-executor.ts";
 import { summarizeChecks } from "./github-status.ts";
+import { startReReview } from "./merge-forward.ts";
 import { pushToPullRequestBranch, type PrDeliveryResult } from "./pr-delivery.ts";
 import type { ProjectSettings } from "./project-settings.ts";
 import { ticketKeyOf } from "./ticket-refs.ts";
@@ -123,7 +127,21 @@ export function hostHandlers(deps: HostActionDeps): HostActions {
       }
       if (raw.state !== undefined && raw.state !== "OPEN") throw new Error(`PR #${number} is ${raw.state.toLowerCase()}, not open; not armed`);
       if (action.base && raw.baseRefName && raw.baseRefName !== action.base) throw new Error(`PR #${number} targets ${raw.baseRefName}, not ${action.base}; not armed`);
-      if (raw.headRefOid !== reviewed) throw new Error(`PR #${number} head ${raw.headRefOid ?? "unknown"} is not the reviewed ${reviewed}; it needs a new review before arming`);
+      if (raw.headRefOid !== reviewed) {
+        // §4.7: the head moved after the review. Not armed; the re-review of the new head is started here, once per head sha.
+        const head = raw.headRefOid ?? "unknown";
+        const re = await startReReview(deps.board, {
+          key: `${card.id}@${head}`,
+          title: `Re-review PR #${number} at ${head.slice(0, 12)}: ${card.title}`,
+          from: card,
+          lines: [
+            `PR #${number} (${card.pr.url}) for "${card.title}" (card ${card.id}) moved to head ${head} after the review passed on ${reviewed}, so that review no longer covers it.`,
+            `Review the pull request as it stands at ${head}: the full diff of branch \`${card.pr.head}\` against its base.`,
+          ],
+        });
+        log(`arm ${card.id}: PR #${number} head ${head} is not the reviewed ${reviewed}; not armed, re-review ${re.id} ${re.created ? "started" : "already open"}`);
+        return { armed: false, number, head, reviewed, reReview: re.id };
+      }
       const checks = summarizeChecks(raw.statusCheckRollup);
       if (checks.state !== "passing") throw new Error(`PR #${number} checks are ${checks.state}${checks.failing.length ? ` (${checks.failing.join(", ")})` : ""} on ${reviewed}; not armed`);
       const armed = await host(["gh", "pr", "merge", String(number), "--auto", "--squash"], { cwd: card.repo! });

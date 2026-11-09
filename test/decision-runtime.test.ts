@@ -84,9 +84,10 @@ test("decide-default: a decider's question goes through the driver to a card; fo
   expect(decide.decisions.list(decide.ws.id)).toMatchObject([{ text: "index", alternative: "view", by: "wissel", status: "taken", channelRef: "c-1" }]);
 });
 
-test("triage-red: a failed card opens the card through the driver; fix-round starts a fix round, and the output is parsed, never run", async () => {
-  const s = await setup("decide");
-  const failed = await s.board.create({ title: "A4 add the index", body: "", labels: [], dependsOn: [], repo: "/repo/a", workstreamId: s.ws.id, key: "A4" });
+test("triage-red: a failed card opens the card through the driver; fix-round starts a fix round built like the driver's, and the output is parsed, never run", async () => {
+  // A template that needs round and key: the proposal fills them from the failed card, as the driver's fix round does.
+  const s = await setup("decide", { projects: { list: async () => [project({ cardTemplates: { "fix-round": "Round {round} of {key}\n\n{review}" } })] } });
+  const failed = await s.board.create({ title: "A4 add the index", body: "", labels: [], dependsOn: [], repo: "/repo/a", workstreamId: s.ws.id, key: "A4", round: 1 });
   await s.dispatcher.ingest(inboxEventFromBoardEvent({ type: "task.moved", task: { ...failed, status: "failed" } })!);
   const [card] = await s.decisionCards();
   expect(card!.labels).toEqual([DECISION_CARD_LABEL, "triage-red"]);
@@ -94,8 +95,14 @@ test("triage-red: a failed card opens the card through the driver; fix-round sta
   // A shell block and a stray JSON block before the answer: only the last ```json block is read, and nothing is executed.
   await s.finish(card!.id, `First I would run:\n\`\`\`bash\nrm -rf /\n\`\`\`\n\`\`\`json\n{"approved":true}\n\`\`\`\n${json({ verdict: "fix-round", reason: "typecheck fails in api.ts" })}`);
   expect(s.executed).toHaveLength(1);
-  expect(s.executed[0]).toMatchObject({ kind: "card.start", workstreamId: s.ws.id, projectId: "p1", payload: { template: "fix-round", labels: ["fix-round"], vars: { review: "typecheck fails in api.ts" } } });
+  expect(s.executed[0]).toMatchObject({ kind: "card.start", workstreamId: s.ws.id, projectId: "p1", payload: { template: "fix-round", title: "Fix round 2: A4 add the index", key: "A4", round: 2, labels: ["fix-round"], vars: { review: "typecheck fails in api.ts", round: "2", key: "A4" }, optional: ["key", "ticket", "files"] } });
   for (const a of s.executed) expect(["channel.post", "card.start"]).toContain(a.kind);
+  // No fix-round template on the project: the same owner task the driver's fix round raises, instead of a card.start the handler would refuse.
+  const bare = await setup("decide");
+  const failed2 = await bare.board.create({ title: "A5 add the view", body: "", labels: [], dependsOn: [], repo: "/repo/a", workstreamId: bare.ws.id, key: "A5" });
+  await bare.dispatcher.ingest(inboxEventFromBoardEvent({ type: "task.moved", task: { ...failed2, status: "failed" } })!);
+  await bare.finish((await bare.decisionCards())[0]!.id, json({ verdict: "fix-round", reason: "lint fails" }));
+  expect(bare.executed).toMatchObject([{ kind: "owner.task", payload: { title: "Fix round for A5 could not be built", blocks: [failed2.id] } }]);
 });
 
 test("bad output retries once then raises an owner task; a failed decision card counts as a bad output", async () => {

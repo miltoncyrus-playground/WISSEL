@@ -1,10 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { AgentDef, TaskCard } from "../core/types.ts";
+import type { AgentDef, Project, TaskCard } from "../core/types.ts";
 import { renderCardTemplate } from "./card-templates.ts";
+import { fixRoundActions } from "./coordinator-driver.ts";
 import type { CoordinatorExecutor, ExecutableAction, ExecuteOutcome } from "./coordinator-executor.ts";
 import { fenceUntrustedPayload, type InboxEvent } from "./inbox.ts";
 import type { NewOwnerTask, OwnerTask } from "./owner-tasks.ts";
+import { ticketKeyOf } from "./ticket-refs.ts";
 import type { ProjectRole } from "./workstreams.ts";
 
 /**
@@ -130,7 +132,13 @@ export function validateDecisionOutput(kind: DecisionCardKind, raw: unknown): Ch
   }
 }
 
-export interface ProposalContext extends CardContext { event: InboxEvent; workstreamId: string }
+export interface ProposalContext extends CardContext {
+  event: InboxEvent;
+  workstreamId: string;
+  /** The card the event names and its project, for a fix round: the same builder as the driver's (fixRoundActions), so the project's template needs the same placeholders either way. */
+  card?: Pick<TaskCard, "id" | "key" | "title" | "round">;
+  project?: Pick<Project, "cardRules" | "cardTemplates" | "ticketPatterns">;
+}
 
 const about = (event: InboxEvent): Record<string, string> => {
   const p = isRecord(event.payload) ? event.payload : {};
@@ -142,7 +150,7 @@ const about = (event: InboxEvent): Record<string, string> => {
 const post = (c: ProposalContext, message: Record<string, unknown>, more: Partial<ExecutableAction> = {}): ExecutableAction =>
   ({ kind: "channel.post", workstreamId: c.workstreamId, projectId: c.projectId, post: message.kind as string, ...more, payload: { message: { from: "wissel", about: about(c.event), ...message } } });
 
-/** What a valid output proposes. Only channel.post and card.start ever come out; `retry` proposes nothing (the caller re-runs the gates). */
+/** What a valid output proposes: channel.post and card.start, or the owner task a fix round the project cannot render becomes (fixRoundActions); `retry` proposes nothing (the caller re-runs the gates). */
 export function proposeActions(kind: DecisionCardKind, output: DecisionOutput, c: ProposalContext): ExecutableAction[] {
   if (kind === "decide-default") {
     const o = output as DecideDefaultOutput;
@@ -153,7 +161,12 @@ export function proposeActions(kind: DecisionCardKind, output: DecisionOutput, c
   if (kind === "triage-red") {
     const o = output as TriageRedOutput;
     if (o.verdict === "spec-question") return [post(c, { kind: "question", text: o.reason, options: ["clarify the spec", "proceed as built"], lean: "clarify the spec" })];
-    if (o.verdict === "fix-round") return [{ kind: "card.start", workstreamId: c.workstreamId, projectId: c.projectId, payload: { template: "fix-round", title: `Fix round: ${o.reason}`, vars: { review: o.reason }, labels: ["fix-round"] } }];
+    if (o.verdict === "fix-round") {
+      const p = isRecord(c.event.payload) ? c.event.payload : {};
+      const card = c.card ?? { id: isText(p.taskId) ? p.taskId : c.event.id, title: o.reason };
+      const ticket = ticketKeyOf([card.title], c.project?.ticketPatterns);
+      return fixRoundActions(c.project, card, o.reason, (card.round ?? 0) + 1, ticket).map((d) => ({ ...d, workstreamId: c.workstreamId, projectId: c.projectId }));
+    }
     return [];
   }
   if (kind === "plan-batch") {
@@ -208,6 +221,9 @@ export interface DecisionCardDeps {
   ownerTasks: { create(task: NewOwnerTask): Promise<OwnerTask> };
   decisions: SqliteDecisionStore;
   roleFor: (workstreamId: string, projectId: string) => Promise<ProjectRole>;
+  /** The card an event names and the project's templates, so a fix round is built like the driver's. */
+  cardFor?: (taskId: string) => Promise<ProposalContext["card"] | undefined>;
+  projectFor?: (projectId: string) => Promise<ProposalContext["project"] | undefined>;
   logger?: { warn(message: string): void };
 }
 export type CompleteOutcome =
@@ -254,7 +270,10 @@ export class DecisionCards {
       const task = await this.deps.ownerTasks.create({ title: `Decide by hand: ${kind} for ${event.kind}`, why: `Two ${kind} cards produced output failing the schema (${check.error}); event ${event.id}.`, steps: ["Read the event in the inbox", "Decide and post it on the channel"], blocks: [] });
       return { outcome: "owner-task", error: check.error, task };
     }
-    const actions = proposeActions(kind, check.output, { ...ctx, event, workstreamId });
+    const taskId = isRecord(event.payload) && isText(event.payload.taskId) ? event.payload.taskId : undefined;
+    const card = taskId ? await this.deps.cardFor?.(taskId) : undefined;
+    const project = await this.deps.projectFor?.(ctx.projectId);
+    const actions = proposeActions(kind, check.output, { ...ctx, event, workstreamId, ...(card ? { card } : {}), ...(project ? { project } : {}) });
     const outcomes: ExecuteOutcome[] = [];
     for (const action of actions) {
       const r = await this.deps.executor.execute(action);

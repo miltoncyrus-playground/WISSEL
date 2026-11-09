@@ -77,6 +77,50 @@ test("ask-owner: a decide-role decision in mustAsk becomes one ask and one owner
   expect(s.store.list(s.ws.id, "open")).toHaveLength(2);
 });
 
+test("a role change re-routes the project's open asks (§4.13): asked the other way is handed over, still asked the same way is kept, denied or Shadow is withdrawn; one handover note per change", async () => {
+  const s = await setup("decide");
+  const decision = (await s.executor.execute(s.decide("evt-1")) as { ask: Ask }).ask; // 5:must-ask asks the owner under decide
+  const stop = (await s.executor.execute({ id: "evt-2", kind: "card.stop", workstreamId: s.ws.id, projectId: "p1", payload: { taskId: "t-1" } }) as { ask: Ask }).ask; // 7:default: the owner in any role
+  expect([decision.verdict, stop.verdict]).toEqual(["ask-owner", "ask-owner"]);
+  expect((await s.ownerTasks.list()).map((t) => t.status)).toEqual(["open", "open"]);
+  await s.workstreams.setRole(s.ws.id, "p1", { role: "follow" });
+  const r = await s.asks.onRoleChange(s.ws.id, "p1", "decide", "follow");
+  expect(r.moved.map((a) => a.id)).toEqual([decision.id]);
+  expect(r.kept.map((a) => a.id)).toEqual([stop.id]);
+  expect(r.withdrawn).toEqual([]);
+  const moved = s.store.get(decision.id)!;
+  expect(moved).toMatchObject({ status: "open", verdict: "ask-decider", rule: "5:must-ask", ownerTaskId: decision.ownerTaskId, questionRef: expect.any(String) });
+  expect(Object.fromEntries((await s.ownerTasks.list()).map((t) => [t.id, t.status]))).toEqual({ [decision.ownerTaskId!]: "dismissed", [stop.ownerTaskId!]: "open" });
+  const posts = s.channelLog.list(s.ws.id).map((e) => e.message);
+  expect(posts).toMatchObject([
+    { kind: "question", from: "wissel", options: ["approve", "reject"], text: expect.stringContaining(`ask ${decision.id}`) },
+    { kind: "handover", from: "wissel", to: "Ana", about: { ticket: "WS-7" }, text: `Role of p1 changed from decide to follow: 1 ask(s) handed over (${decision.id}: channel.post decision (schema): one table), 0 withdrawn, 1 unchanged.` },
+  ]);
+  expect(s.asks.byQuestionRef(s.ws.id, s.store.get(decision.id)!.questionRef!)?.id).toBe(decision.id); // the decider's answer on the channel now resolves it
+  expect(s.executed).toEqual([]); // a role change runs nothing
+
+  // Back the other way: the question stays on the channel as the record; the owner gets a task again.
+  await s.workstreams.setRole(s.ws.id, "p1", { role: "decide" });
+  const back = await s.asks.onRoleChange(s.ws.id, "p1", "follow", "decide");
+  expect(back.moved.map((a) => a.id)).toEqual([decision.id]);
+  expect(s.store.get(decision.id)).toMatchObject({ verdict: "ask-owner" });
+  expect((await s.ownerTasks.list()).filter((t) => t.status === "open")).toHaveLength(2);
+  expect(s.channelLog.list(s.ws.id).slice(-1)[0]!.message).toMatchObject({ kind: "handover", to: "owner" });
+
+  // Shadow: both withdrawn, their owner tasks dismissed, nothing runs; a project with no open asks posts no note.
+  await s.workstreams.setRole(s.ws.id, "p1", { role: "shadow" });
+  const shadow = await s.asks.onRoleChange(s.ws.id, "p1", "decide", "shadow");
+  expect(shadow.withdrawn.map((a) => a.id).sort()).toEqual([decision.id, stop.id].sort());
+  expect(s.store.list(s.ws.id, "open")).toEqual([]);
+  expect(s.store.get(stop.id)).toMatchObject({ status: "withdrawn", resolvedBy: "role-change", via: "role-change" });
+  expect((await s.ownerTasks.list()).filter((t) => t.status === "open")).toEqual([]);
+  expect(s.channelLog.list(s.ws.id).slice(-1)[0]!.message).toMatchObject({ kind: "handover", text: expect.stringContaining("2 withdrawn") });
+  const quiet = s.channelLog.list(s.ws.id).length;
+  await s.asks.onRoleChange(s.ws.id, "p1", "shadow", "decide");
+  expect(s.channelLog.list(s.ws.id)).toHaveLength(quiet);
+  expect(s.executed).toEqual([]);
+});
+
 test("approve runs the handler exactly once through an owner-approved gate record; a second approve is a 409; reject never executes", async () => {
   const s = await setup("decide");
   const ask = (await s.executor.execute(s.decide()) as { ask: Ask }).ask;

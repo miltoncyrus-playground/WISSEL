@@ -136,8 +136,8 @@ beforeAll(async () => {
   projectId = added.project.id;
   await projects.setSettings(projectId, {
     ticketPatterns: ["WS-\\d+"],
-    // Only {review}: the driver's fix round fills round and key, triage-red's proposal does not (§4.16 would refuse an empty one).
-    cardTemplates: { "fix-round": "Fix what the review below says, nothing else.\n\n{review}" },
+    // Needs round and key as well as review: the driver's fix round and triage-red's proposal go through the same builder (§4.16 refuses an empty placeholder).
+    cardTemplates: { "fix-round": "Fix round {round} for {key}: fix what the review below says, nothing else.\n\n{review}" },
     delivery: { mode: "pull-request", branchPattern: "feat/{ticket}-{key}-{slug}", hostGates: [], gateRetries: 0, draft: true },
   });
   ws = await new SqliteWorkstreamStore(board.db).create({
@@ -179,6 +179,11 @@ test("2. the PR head moved after the review: the arm is refused on re-read, noth
   await until(() => ghCalls("view").length === 2, "the re-read before arming");
   await settle();
   expect(ghCalls("merge")).toHaveLength(1); // still only A4's
+  // §4.7: the coordinator started the re-review of the new head itself, once, instead of leaving A5 stuck; a refused arm is not a failure.
+  const reviews = (await cards()).filter((t) => t.body.startsWith(`re-review: ${a5.id}@${moved}`));
+  expect(reviews).toMatchObject([{ labels: ["review"], repo, parentTaskId: a5.id, status: "inbox" }]);
+  expect((await outbound()).queued).toEqual([]);
+  expect(await wisselPosts()).toHaveLength(0);
   // The watcher sees the new head green: the driver arms nothing, the head needs a new review.
   const seen = await board.updateFields(a5.id, { pr: pr(13, { lifecycle: "landed", watch: { ...pr(13).watch!, sha: moved } }) });
   board.events.emit("event", { type: "pr.checks", task: seen, checks: "passing", sha: moved } satisfies BoardEvent);
@@ -205,8 +210,8 @@ test("3. a failed card opens a triage-red decision card; its stubbed output is v
   await answerDecisionCard(dc!, { verdict: "fix-round", reason: "typecheck fails in api.ts" });
   await until(async () => (await fixRounds()).length === 1, "the fix round");
   const [fix] = await fixRounds();
-  expect(fix).toMatchObject({ title: "Fix round: typecheck fails in api.ts", repo, workstreamId: ws.id, status: "inbox" });
-  expect(fix!.body).toBe("Fix what the review below says, nothing else.\n\ntypecheck fails in api.ts");
+  expect(fix).toMatchObject({ title: "Fix round 2: A6 add the index (WS-7)", key: "A6", round: 2, repo, workstreamId: ws.id, status: "inbox" });
+  expect(fix!.body).toBe("Fix round 2 for A6: fix what the review below says, nothing else.\n\ntypecheck fails in api.ts");
   expect((await gateLog()).filter((r) => r.action.kind === "card.start").map((r) => `${r.verdict}/${r.rule}`)).toEqual(["allow/6:role-table"]);
 });
 
@@ -325,6 +330,29 @@ test("9. a role change requested during an arm waits for the arm to settle; the 
   await until(async () => (await workstream()).projects[0]!.role === "shadow", "the role change after the arm");
   expect((await get<WindowDocument>(`/workstreams/${ws.id}/window`)).header.roles).toEqual([{ projectId, role: "shadow", decider: "Ana" }]);
   expect((await setRole("decide")).status).toBe(200); // nothing in flight: applied at once
+});
+
+test("9b. a role change re-routes the project's open asks with a handover note: a must-ask decision asked of the owner under decide is asked of the decider under follow; Shadow withdraws it", async () => {
+  await app(req(`/workstreams/${ws.id}/channel`, "POST", { kind: "decision", from: "Ana", about: { card: "A4" }, decision: "schema", text: "two tables" }));
+  await until(async () => (await openAsks()).length === 1, "the ask");
+  const [ask] = await openAsks();
+  expect(ask).toMatchObject({ verdict: "ask-owner", rule: "5:must-ask" });
+  const openTasks = async () => (await get<{ id: string; status: string }[]>("/owner-tasks")).filter((t) => t.status === "open").map((t) => t.id);
+  expect(await openTasks()).toEqual([ask!.ownerTaskId!]);
+  const postsBefore = (await wisselPosts()).length;
+  expect((await setRole("follow")).status).toBe(200);
+  await until(async () => (await openAsks())[0]?.verdict === "ask-decider", "the handover");
+  const moved = (await openAsks())[0]!;
+  expect(moved).toMatchObject({ id: ask!.id, rule: "5:must-ask", questionRef: expect.any(String) });
+  expect(await openTasks()).toEqual([]); // the owner task was dismissed; the decider has the question now
+  const posts = (await wisselPosts()).slice(postsBefore).map((e) => e.message);
+  expect(posts).toMatchObject([{ kind: "question", options: ["approve", "reject"] }, { kind: "handover", to: "Ana", text: expect.stringContaining(`changed from decide to follow: 1 ask(s) handed over (${ask!.id}`) }]);
+  expect(lines.some((l) => l.startsWith("coordinator> checkout: Role of") && l.includes("1 ask(s) handed over"))).toBe(true);
+  expect((await setRole("shadow")).status).toBe(200);
+  await until(async () => (await openAsks()).length === 0, "the withdrawal");
+  expect((await get<Ask[]>(`/workstreams/${ws.id}/asks`)).find((a) => a.id === ask!.id)).toMatchObject({ status: "withdrawn", resolvedBy: "role-change", via: "role-change" });
+  expect((await wisselPosts()).slice(-1)[0]!.message).toMatchObject({ kind: "handover", text: expect.stringContaining("1 withdrawn") });
+  expect((await setRole("decide")).status).toBe(200);
 });
 
 test("10. idempotence: replaying the day's inbox events changes nothing; no push and no force push happened all day", async () => {
