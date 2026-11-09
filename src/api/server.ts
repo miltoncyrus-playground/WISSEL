@@ -103,10 +103,12 @@ import { createCoordinatorWindow, validateWindowMessage } from "../services/coor
 import { importWorkstream } from "../services/workstream-import.ts";
 import { SqliteDutyStore, isDuty, validateDutyChange } from "../services/duties.ts";
 import { shadowReport } from "../services/shadow-report.ts";
-import { SqliteDecisionStore } from "../services/decision-cards.ts";
+import { DECISION_CARD_KINDS, SqliteDecisionStore } from "../services/decision-cards.ts";
+import { createDecisionRuntime, type DecisionRuntime } from "../services/decision-runtime.ts";
 import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions, type InboxHandler } from "../services/inbox.ts";
 import { createCoordinatorDriver } from "../services/coordinator-driver.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
+import { channelHandlers, ownerMessageEvent, startChannelReader } from "../services/channel-sinks.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
 import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, startOutboundFlusher, gateContextFor, type ExecutorOptions } from "../services/coordinator-executor.ts";
 import { SqliteTrackerMemory, createTrackerSync } from "../services/ticket-actions.ts";
@@ -594,12 +596,21 @@ export function createApp(
   // exists below (the dispatcher reads this map per event); opts.inbox
   // replaces them in tests.
   const driverHandlers: Record<string, InboxHandler> = {};
-  const inboxDispatcher = new InboxDispatcher({ inbox, handlers: driverHandlers, ...opts.inbox });
+  // Decision cards (§4.4) run on the board through this runtime, built once the executor exists below.
+  let decisionRuntime: DecisionRuntime | undefined;
+  const inboxDispatcher = new InboxDispatcher({
+    inbox, handlers: driverHandlers, decisionKinds: DECISION_CARD_KINDS,
+    openDecisionCard: (e) => { if (!decisionRuntime) throw new Error("decision cards are not ready yet"); return decisionRuntime.openForEvent(e); },
+    ...opts.inbox,
+  });
   if (board.events) onShutdown(subscribeBoardEvents({ events: board.events }, inboxDispatcher));
   // The policy gate's audit log (§4.2); the executor that writes to it is a later card.
   const gateLog: GateLog = opts.gateLog ?? new SqliteGateLog((board as SqliteBoard).db);
   // The decisions channel's one adapter (§4.9, descoped): an append-only log.
   const channelLog = opts.channelLog ?? new SqliteChannelLog((board as SqliteBoard).db);
+  // Its read half (§4.1, channel-sinks.ts): new entries become inbox events; the cursor persists, so a restart does not replay.
+  const channelReader = startChannelReader({ db: (board as SqliteBoard).db, channelLog, workstreams, dispatcher: inboxDispatcher });
+  onShutdown(() => channelReader.stop());
   // A digest (§4.11) reads the board, the gate log, the owner tasks and the
   // host guard's probes, and lands in the digest log plus a log line: no model, no chat.
   const digestRun = createDigestRun(
@@ -831,20 +842,29 @@ export function createApp(
         requestRestart: () => restartWhenIdle.request(),
         stopCard: (id) => discardTask(board as Board, id, commandRunner),
       }),
+      ...channelHandlers({ channelLog, workstreams }), // channel.post and chat.post: the log plus a console line (§4.9 as descoped)
       ...trackerSync.handlers,
       ...opts.executor?.handlers,
     },
   });
+  // Decision cards (§4.4, src/services/decision-runtime.ts): a card on the board for the
+  // decision-maker agent, its output read back from the board's events. The route is
+  // checked against decisionAgentError before any card is created.
+  decisionRuntime = createDecisionRuntime({
+    db: (board as SqliteBoard).db, board: board as Board & { events: import("node:events").EventEmitter }, workstreams, projects, executor, ownerTasks, decisions,
+    routeAgent: async (card) => {
+      const d = await router.route({ ...card, id: "decision-card", status: "inbox" });
+      return d.selected ? registry.get(d.selected) : undefined;
+    },
+  });
+  onShutdown(decisionRuntime.stop);
   if (board.events) onShutdown(trackerSync.subscribe(board.events));
   if (opts.schedulesEnabled && opts.tickets?.provider) onShutdown(trackerSync.startPoll().stop);
-  // The coordinator driver (§4.1, §4.3): inbox events become gated actions. Decision
-  // cards are not wired to a runner yet, so the hook only logs; a startup pass
-  // dispatches every row left unhandled by an earlier run, once.
+  // The coordinator driver (§4.1, §4.3): inbox events become gated actions; judgment
+  // opens a decision card. A startup pass dispatches every row left unhandled by an
+  // earlier run, once.
   if (!opts.inbox) {
-    Object.assign(driverHandlers, createCoordinatorDriver({
-      executor, board: board as Board, workstreams, projects,
-      openDecisionCard: async (kind, event) => console.log(`inbox: ${event.kind} (${event.id}) wants a ${kind} decision card; not opened (decision cards are not wired to a runner yet)`),
-    }).handlers, trackerSync.inboxHandlers);
+    Object.assign(driverHandlers, createCoordinatorDriver({ executor, board: board as Board, workstreams, projects, openDecisionCard: decisionRuntime.open }).handlers, trackerSync.inboxHandlers);
     void (async () => { for (const e of inbox.list({ unhandled: true })) await inboxDispatcher.dispatch(e); })();
   }
   // The coordinator window (§4.14): the same hold, restart and queue the admin routes and the executor use.
@@ -856,6 +876,7 @@ export function createApp(
     releaseDispatch: () => orchestrator.releaseDispatch("owner"),
     requestRestart: () => restartWhenIdle.request(),
     maxConcurrentTasks: opts.maxConcurrentTasks,
+    onOwnerMessage: (ws, message, input) => inboxDispatcher.ingest(ownerMessageEvent(ws.id, message, input)),
   });
   // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
   // subtask set should get its integrator card queued the moment it
@@ -1794,7 +1815,9 @@ export function createApp(
           if (parts.length === 3 && parts[2] === "channel" && req.method === "POST") {
             const check = validateChannelMessage(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
-            return json(await channelLog.adapter(ws.id).post(check.message), 201);
+            const posted = await channelLog.adapter(ws.id).post(check.message);
+            void channelReader.tick(); // the inbox sees a decider's entry now, not at the next poll
+            return json(posted, 201);
           }
           if (parts.length === 3 && parts[2] === "outbound" && req.method === "GET") return json(await executor.status(ws.id));
           // Duty switches and the shadow report (§4.13): a switch is the owner's and needs confirm:true, like a role change.

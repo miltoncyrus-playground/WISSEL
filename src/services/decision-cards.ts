@@ -190,9 +190,19 @@ export class SqliteDecisionStore {
   }
 }
 
+/** An open card's state: what to validate its output against and how to retry or escalate it. */
+export interface OpenDecisionCard { kind: DecisionCardKind; event: InboxEvent; ctx: CardContext; attempt: number }
+/** Where the open set lives between restarts (decision-runtime.ts persists it); absent, cards are kept in memory only. */
+export interface OpenDecisionCardStore {
+  set(cardId: string, open: OpenDecisionCard): void;
+  delete(cardId: string): void;
+  entries(): [string, OpenDecisionCard][];
+}
+
 export interface DecisionCardDeps {
   /** Starts the rendered card (the board's create); routing lands it on an agent decisionAgentError accepts. */
-  startCard: (card: Omit<TaskCard, "id" | "status">) => Promise<{ id: string }>;
+  startCard: (card: Omit<TaskCard, "id" | "status">, ctx: CardContext) => Promise<{ id: string }>;
+  openCards?: OpenDecisionCardStore;
   executor: Pick<CoordinatorExecutor, "execute">;
   /** Raised directly, not through the gate: an owner task is inward and is itself the ask (owner.task falls to the gate's ask-owner default). */
   ownerTasks: { create(task: NewOwnerTask): Promise<OwnerTask> };
@@ -200,24 +210,31 @@ export interface DecisionCardDeps {
   roleFor: (workstreamId: string, projectId: string) => Promise<ProjectRole>;
   logger?: { warn(message: string): void };
 }
-type Open = { kind: DecisionCardKind; event: InboxEvent; ctx: CardContext; attempt: number };
 export type CompleteOutcome =
   | { outcome: "acted"; actions: ExecutableAction[]; outcomes: ExecuteOutcome[] }
   | { outcome: "retried"; cardId: string; error: string }
   | { outcome: "owner-task"; error: string; task: OwnerTask }
   | { outcome: "unknown-card" };
 
-/** Opens decision cards and turns their output into gated actions. Open cards are kept in memory: they are short-lived. */
+/** Opens decision cards and turns their output into gated actions. The open set is mirrored to `openCards` when given, so a restart reloads it. */
 export class DecisionCards {
-  private readonly open_ = new Map<string, Open>();
-  constructor(private readonly deps: DecisionCardDeps) {}
+  private readonly open_: Map<string, OpenDecisionCard>;
+  constructor(private readonly deps: DecisionCardDeps) {
+    this.open_ = new Map(deps.openCards?.entries() ?? []);
+  }
+
+  openIds(): string[] {
+    return [...this.open_.keys()];
+  }
 
   /** Starts the card for an event; returns the card id. */
   async open(kind: DecisionCardKind, event: InboxEvent, ctx: Omit<CardContext, "role">, attempt = 1): Promise<string> {
     const workstreamId = event.workstreamId ?? "";
     const full: CardContext = { ...ctx, role: await this.deps.roleFor(workstreamId, ctx.projectId) };
-    const { id } = await this.deps.startCard(renderDecisionCard(kind, event, full));
-    this.open_.set(id, { kind, event, ctx: full, attempt });
+    const { id } = await this.deps.startCard(renderDecisionCard(kind, event, full), full);
+    const open: OpenDecisionCard = { kind, event, ctx: full, attempt };
+    this.open_.set(id, open);
+    this.deps.openCards?.set(id, open);
     return id;
   }
 
@@ -226,6 +243,7 @@ export class DecisionCards {
     const open = this.open_.get(cardId);
     if (!open) return { outcome: "unknown-card" };
     this.open_.delete(cardId);
+    this.deps.openCards?.delete(cardId);
     const { kind, event, ctx } = open;
     const workstreamId = event.workstreamId ?? "";
     const parsed = parseDecisionOutput(text);
