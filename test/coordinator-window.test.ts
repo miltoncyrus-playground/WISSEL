@@ -184,3 +184,17 @@ test("API: GET the window, POST a message, confirm a change through the window's
   const failed = (await (await app(req(`/workstreams/${ws.id}/window/actions/${restart.assistant.pending![0]!.id}/confirm`, "POST"))).json()) as { message: { actions: { ok: boolean; error?: string }[] } };
   expect(failed.message.actions.at(-1)).toMatchObject({ ok: false, error: expect.stringContaining("WISSEL_SUPERVISED") });
 });
+
+test("API: the owner records a decision from the window; it shows in the document and flips", async () => {
+  const board = new SqliteBoard();
+  const ws = await new SqliteWorkstreamStore(board.db).create({ name: "w", projects: [] });
+  const app = createApp(board, await Registry.load(), undefined, { channelLog: new SqliteChannelLog(board.db, { log() {} }) });
+  expect((await app(req(`/workstreams/${ws.id}/decisions`, "POST", { text: "SQLite" }))).status).toBe(400);
+  const made = await app(req(`/workstreams/${ws.id}/decisions`, "POST", { text: " SQLite ", alternative: "Postgres" }));
+  expect(made.status).toBe(201);
+  const d = (await made.json()) as { id: string; by: string; status: string; text: string };
+  expect(d).toMatchObject({ by: "owner", status: "taken", text: "SQLite", workstreamId: ws.id });
+  const doc = (await (await app(req(`/workstreams/${ws.id}/window`))).json()) as WindowDocument;
+  expect(doc.items).toEqual([{ kind: "decision", decision: expect.objectContaining({ id: d.id }), flip: true }]);
+  expect(((await (await app(req(`/decisions/${d.id}/flip`, "POST"))).json()) as { text: string }).text).toBe("Postgres");
+});

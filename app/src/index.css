@@ -658,6 +658,37 @@ a.result-text:hover { text-decoration: underline; }
 }
 .at-work-row:hover { text-decoration: underline; }
 
+/* ---------- Coordinator window (docs/SDD-coordinator.md §4.14) ----------
+   One component for the app screen and the board's dock (`.is-dock`:
+   the screen alone in a frame beside the board). Tokens only, so the
+   board's Light/Dark choice (main.tsx mirrors it) applies. */
+.cw-head { padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 4px; font-size: 14px; }
+.cw-head dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; }
+.cw-head dt { color: var(--muted); font-weight: 600; }
+.cw-head dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.cw-role { display: inline-flex; align-items: center; gap: 6px; margin: 0 12px 4px 0; }
+.cw-role select { min-height: 32px; padding: 0 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--ground); color: var(--text); font: 600 14px var(--font-body); }
+.cw-change { display: grid; gap: 8px; padding: 12px 14px; border-left: 4px solid var(--coral); background: var(--surface); font-size: 14px; }
+.cw-change p { margin: 0; }
+.cw-tabs { justify-self: start; }
+.cw-items, .cw-steps, .cw-log { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.cw-entry { display: grid; min-width: 0; }
+.cw-item { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); font-size: 14px; }
+.cw-item p { margin: 0; overflow-wrap: anywhere; }
+.cw-kind { margin-right: 8px; color: var(--muted); font: 12px var(--font-mono); text-transform: uppercase; }
+.cw-from { font-weight: 700; }
+.cw-status { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; font-size: 14px; color: var(--muted); }
+.cw-status .cw-text { color: var(--text); flex-basis: 100%; }
+.cw-steps { gap: 2px; }
+.cw-steps label { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.cw-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.cw-output { margin: 0; padding: 8px 10px; max-height: 12em; overflow: auto; background: var(--surface-2); border-radius: 4px; font: 12px var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cw-log { gap: 0; border-top: 1px solid var(--line); }
+.cw-log li { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.cw-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; }
+.muted { color: var(--muted); }
+.shell.is-dock .content { padding: 12px 14px; }
+
 /* ---------- You: Wissel Wrapped (SDD §3.6) ---------- */
 
 .segmented { display: inline-flex; padding: 3px; gap: 2px; border-radius: 4px; background: var(--surface); border: 1px solid var(--line); }

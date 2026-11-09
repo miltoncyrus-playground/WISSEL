@@ -88,10 +88,14 @@ function colorLines(set: Record<string, string>, indent: string): string[] {
 }
 
 /** The CSS custom properties: the light set on `:root`, the dark set
- *  under `prefers-color-scheme: dark`, and `--font-display`,
- *  `--font-body`, `--font-mono`. */
+ *  under `prefers-color-scheme: dark` and under an explicit
+ *  `data-theme="dark"` (the board's toggle, which main.tsx mirrors, so
+ *  the window docked beside the board follows it; an explicit light
+ *  choice beats a dark OS), and `--font-display`, `--font-body`,
+ *  `--font-mono`. */
 export function tokensToCss(): string {
   const fonts = Object.entries(FONTS).map(([name, value]) => `  --font-${name}: ${value};`);
+  const dark = ["  color-scheme: dark;", ...colorLines(DARK_COLORS, "  ")];
   return [
     ":root {",
     "  color-scheme: light;",
@@ -99,10 +103,12 @@ export function tokensToCss(): string {
     ...fonts,
     "}",
     "@media (prefers-color-scheme: dark) {",
-    "  :root {",
-    "    color-scheme: dark;",
-    ...colorLines(DARK_COLORS, "    "),
+    '  :root:not([data-theme="light"]) {',
+    ...dark.map((l) => `  ${l}`),
     "  }",
+    "}",
+    ':root[data-theme="dark"] {',
+    ...dark,
     "}",
     "",
   ].join("\n");

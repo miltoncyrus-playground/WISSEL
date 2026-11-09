@@ -1785,6 +1785,12 @@ export function createApp(
             return r.ok ? json(r.plan) : json({ error: r.error }, r.status);
           }
           if (parts.length === 3 && parts[2] === "decisions" && req.method === "GET") return json(decisions.list(ws.id));
+          // A decision the owner records from the window (§4.14): a default and its alternative, flippable like the rest.
+          if (parts.length === 3 && parts[2] === "decisions" && req.method === "POST") {
+            const body = (await req.json().catch(() => undefined)) as { text?: unknown; alternative?: unknown } | undefined;
+            if (typeof body?.text !== "string" || !body.text.trim() || typeof body.alternative !== "string" || !body.alternative.trim()) return json({ error: "text and alternative must be non-empty strings" }, 400);
+            return json(decisions.create({ workstreamId: ws.id, text: body.text.trim(), alternative: body.alternative.trim(), by: "owner" }), 201);
+          }
           // The coordinator window (§4.14): one document, a scoped conversation, and its own confirm step.
           if (parts.length === 3 && parts[2] === "window" && req.method === "GET") return json(await coordinatorWindow.document(ws.id));
           if (parts.length === 4 && parts[2] === "window" && parts[3] === "messages" && req.method === "POST") {

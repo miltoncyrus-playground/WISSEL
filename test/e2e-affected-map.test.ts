@@ -13,6 +13,7 @@ const ALL_SPECS = [
   "ask-control.spec.ts",
   "ask.spec.ts",
   "board.spec.ts",
+  "coordinator-window.spec.ts",
   "feed.spec.ts",
   "listen.spec.ts",
   "live-task-output.spec.ts",
@@ -89,10 +90,10 @@ describe("resolveAffectedSpecs", () => {
     expect(resolveAffectedSpecs([{ path: "src/executors/tts.ts" }], ALL_SPECS).specs).toEqual(["pipelines.spec.ts", "voice.spec.ts"]);
   });
 
-  test("app/** and its server file resolve to the six /app specs only", () => {
+  test("app/** and its server file resolve to the /app specs only", () => {
     for (const path of ["app/src/App.tsx", "app/package.json", "src/api/serve-app.ts"]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
-      expect(result.specs).toEqual(["app-look.spec.ts", "app.spec.ts", "ask-control.spec.ts", "ask.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"]);
+      expect(result.specs).toEqual(["app-look.spec.ts", "app.spec.ts", "ask-control.spec.ts", "ask.spec.ts", "coordinator-window.spec.ts", "feed.spec.ts", "listen.spec.ts", "voice.spec.ts", "you.spec.ts"]);
       expect(result.fullSuite).toBe(false);
     }
     // Not a prefix match on "app": a top-level "apps/" would be novel.
