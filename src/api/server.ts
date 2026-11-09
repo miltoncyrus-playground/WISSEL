@@ -43,7 +43,7 @@ import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { getProjectGitOverview, groupWork } from "../services/project-git.ts";
-import { getProjectPrs, getProjectRuns, withPrCache } from "../services/github-status.ts";
+import { getProjectPrs, getProjectRuns, startPrWatcher, withPrCache } from "../services/github-status.ts";
 import { loadTicketProvider, type TicketsSetup } from "../services/integrations.ts";
 import { KEY_RE, TicketError } from "../services/ticket-provider.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
@@ -294,6 +294,11 @@ export interface CreateAppOptions {
    *  DEFAULT_MERGE_HEALTH_CHECK_INTERVAL_HOURS there (matches
    *  archive-scheduler's own default). */
   mergeHealthIntervalHours?: number;
+  /** Starts the PR watcher (startPrWatcher, src/services/github-status.ts,
+   *  docs/SDD-coordinator.md §4.7): every card with `pr` set is polled
+   *  through `gh` every 60 s. On in the real server unless
+   *  WISSEL_PR_WATCHER=0; off in tests by default. */
+  prWatcherEnabled?: boolean;
   /** The local Kokoro text-to-speech service the "Make audio" pipeline
    *  step calls (TtsExecutor, docs/SDD-ai-news-podcast.md §3.7). Read
    *  once from `WISSEL_TTS_URL` / `WISSEL_TTS_VOICE` at the bootstrap
@@ -775,6 +780,13 @@ export function createApp(
       runner: commandRunner,
       checkIntervalHours: opts.mergeHealthIntervalHours,
     });
+  }
+
+  // The PR watcher (§4.7) shares `prsOf` with the Tickets page, so a
+  // tick costs no extra `gh` call within the cache's minute.
+  if (opts.prWatcherEnabled) {
+    const prWatcher = startPrWatcher({ board: board as Board & { events: import("node:events").EventEmitter }, prsOf });
+    onShutdown(() => prWatcher.stop());
   }
 
   // Always on in the real server (the bootstrap sets schedulesEnabled):
@@ -2336,6 +2348,7 @@ if (import.meta.main) {
       modelsCachePath,
       mergeHealthEnabled,
       mergeHealthIntervalHours,
+      prWatcherEnabled: !["0", "false"].includes(process.env.WISSEL_PR_WATCHER ?? ""),
       tts,
       audioDir,
       stt,
