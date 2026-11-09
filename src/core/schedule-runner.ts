@@ -1,6 +1,8 @@
 import type { Board } from "../services/board.ts";
+import type { DigestRunFn } from "../services/digests.ts";
 import type { ScheduleStore } from "../services/schedules.ts";
 import type { TelemetryLog } from "../services/telemetry.ts";
+import type { Workstream } from "../services/workstreams.ts";
 import { nextRunAfter } from "./schedule-time.ts";
 import type { ScheduleDef, ScheduleOutcome, ScheduleTaskTemplate, TaskCard } from "./types.ts";
 
@@ -21,6 +23,12 @@ import type { ScheduleDef, ScheduleOutcome, ScheduleTaskTemplate, TaskCard } fro
  * - otherwise fires: a pipeline through the shared runPipelineNow
  *   (src/core/pipeline-runner.ts), never awaiting the run's settlement,
  *   or a task card the normal sweep then routes with every usual gate.
+ *
+ * The third kind, digests (docs/SDD-coordinator.md §4.11), has no store
+ * row: every tick reads `Workstream.digests`, keeps each cron's next
+ * occurrence in memory (first sight counts from now, so a restart never
+ * fires one), and when it has passed runs `digests.run` once, missed
+ * occurrences collapsed, then logs the text it delivered.
  *
  * Ticks and run-nows go through one queue, so two of them never look at
  * the same schedule at once.
@@ -72,6 +80,9 @@ export interface ScheduleRunnerOptions {
    *  template names may have gone since the schedule was saved. */
   validateTaskTemplate?: (template: ScheduleTaskTemplate) => Promise<{ ok: true } | { ok: false; error: string }>;
   telemetry?: Pick<TelemetryLog, "record">;
+  /** Digests (§4.11): the workstreams whose `digests` crons drive them,
+   *  and what one fire does. Absent: no digests. */
+  digests?: { workstreams: { list(): Promise<Workstream[]> }; run: DigestRunFn };
   logger?: ScheduleRunnerLogger;
   now?: () => Date;
   setInterval?: (fn: () => void, ms: number) => unknown;
@@ -110,6 +121,10 @@ export class ScheduleRunner {
   private readonly runPipeline: RunPipelineNowFn;
   private readonly validateTaskTemplate: ScheduleRunnerOptions["validateTaskTemplate"];
   private readonly telemetry: ScheduleRunnerOptions["telemetry"];
+  private readonly digests: ScheduleRunnerOptions["digests"];
+  /** Per workstream digest cron (`<ws id>\0<cron>\0<tz>`): the next fire
+   *  in ms, or null for a cron that doesn't parse (logged once). */
+  private readonly digestNext = new Map<string, number | null>();
   private readonly logger: ScheduleRunnerLogger;
   private readonly now: () => Date;
   private readonly setIntervalFn: (fn: () => void, ms: number) => unknown;
@@ -132,6 +147,7 @@ export class ScheduleRunner {
     this.runPipeline = opts.runPipelineNow;
     this.validateTaskTemplate = opts.validateTaskTemplate;
     this.telemetry = opts.telemetry;
+    this.digests = opts.digests;
     this.logger = opts.logger ?? { log: (l) => console.log(l), error: (l) => console.error(l) };
     this.now = opts.now ?? (() => new Date());
     this.setIntervalFn = opts.setInterval ?? ((fn, ms) => setInterval(fn, ms));
@@ -222,6 +238,8 @@ export class ScheduleRunner {
   }
 
   private async tickOnce(): Promise<void> {
+    const now = this.now();
+    if (this.digests) await this.tickDigests(now);
     let all: ScheduleDef[];
     try {
       all = await this.store.list();
@@ -229,7 +247,6 @@ export class ScheduleRunner {
       this.logger.error(`schedules: tick failed: ${errorText(e)}`);
       return;
     }
-    const now = this.now();
     for (const s of all) {
       if (!s.enabled || !s.nextRunAt || Date.parse(s.nextRunAt) > now.getTime()) continue;
       try {
@@ -238,6 +255,49 @@ export class ScheduleRunner {
         this.logger.error(`schedule: "${s.name}" tick failed: ${errorText(e)}`);
       }
     }
+  }
+
+  /** The digest kind: due crons fire once each, in memory only. A cron
+   *  dropped from its workstream is forgotten; a new one counts from now. */
+  private async tickDigests(now: Date): Promise<void> {
+    const { workstreams, run } = this.digests!;
+    let all: Workstream[];
+    try {
+      all = await workstreams.list();
+    } catch (e) {
+      this.logger.error(`digests: tick failed: ${errorText(e)}`);
+      return;
+    }
+    const seen = new Set<string>();
+    for (const ws of all) {
+      for (const { cron, timezone } of ws.digests ?? []) {
+        const key = `${ws.id}\0${cron}\0${timezone}`;
+        seen.add(key);
+        const next = (): number | null => {
+          try {
+            return nextRunAfter(cron, timezone, now).getTime();
+          } catch (e) {
+            this.logger.error(`digest: "${ws.name}" has an invalid cron "${cron}": ${errorText(e)}`);
+            return null;
+          }
+        };
+        if (!this.digestNext.has(key)) {
+          this.digestNext.set(key, next());
+          continue;
+        }
+        const due = this.digestNext.get(key);
+        if (due === null || due === undefined || due > now.getTime()) continue;
+        // Advance first, counted from now: missed occurrences collapse into this one.
+        this.digestNext.set(key, next());
+        try {
+          const record = await run(ws, now);
+          this.logger.log(`digest: "${ws.name}" posted to the channel log\n${record.text}`);
+        } catch (e) {
+          this.logger.error(`digest: "${ws.name}" failed: ${errorText(e)}`);
+        }
+      }
+    }
+    for (const key of this.digestNext.keys()) if (!seen.has(key)) this.digestNext.delete(key);
   }
 
   private async handleDue(s: ScheduleDef, now: Date): Promise<void> {
