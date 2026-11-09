@@ -52,6 +52,8 @@ export interface WindowDocument {
   items: WindowItem[];
   decisions: Decision[];
   log: ChannelEntry[];
+  /** Approved, rejected and expired asks, oldest first: the Log tab shows who answered and how. */
+  resolvedAsks: Ask[];
   conversation?: { conversation: Conversation; messages: ChatMessage[] };
 }
 
@@ -134,7 +136,9 @@ export function createCoordinatorWindow(deps: WindowDeps) {
     const open = tasks.filter((t) => t.status === "open" && (t.blocks.length === 0 || t.blocks.some((id) => ourIds.has(id))));
     const log = deps.channelLog.list(ws.id);
     const decisions = deps.decisions.list(ws.id);
-    const asks = deps.asks?.list(ws.id, "open") ?? [];
+    const allAsks = deps.asks?.list(ws.id) ?? [];
+    const asks = allAsks.filter((a) => a.status === "open");
+    const resolvedAsks = allAsks.filter((a) => a.status !== "open").sort((a, b) => (a.resolvedAt ?? "").localeCompare(b.resolvedAt ?? ""));
     const header: WindowHeader = {
       workstream: { id: ws.id, name: ws.name, ...(ws.ticket ? { ticket: ws.ticket } : {}) },
       roles: ws.projects.map((p) => ({ projectId: p.projectId, role: p.role, ...(p.decider ? { decider: p.decider } : {}) })),
@@ -155,7 +159,7 @@ export function createCoordinatorWindow(deps: WindowDeps) {
         return { kind: "plan", card: { id: c.id, ...(c.key ? { key: c.key } : {}), title: c.title, status: c.status }, ...(held ? { held } : {}) };
       }),
     ];
-    return { header, items, decisions, log, open, asks };
+    return { header, items, decisions, log, open, asks, resolvedAsks };
   }
 
   const statusText = (ws: Workstream, b: Awaited<ReturnType<typeof build>>): string => {
@@ -215,10 +219,10 @@ export function createCoordinatorWindow(deps: WindowDeps) {
     async document(wsId: string): Promise<WindowDocument | undefined> {
       const ws = await deps.workstreams.get(wsId);
       if (!ws) return undefined;
-      const { header, items, decisions, log } = await build(ws);
+      const { header, items, decisions, log, resolvedAsks } = await build(ws);
       const cid = conversationIdOf(ws.id);
       const conversation = cid ? deps.conversations.get(cid) : undefined;
-      return { header, items, decisions, log, ...(conversation ? { conversation: { conversation, messages: deps.conversations.messages(conversation.id).map(withPending) } } : {}) };
+      return { header, items, decisions, log, resolvedAsks, ...(conversation ? { conversation: { conversation, messages: deps.conversations.messages(conversation.id).map(withPending) } } : {}) };
     },
 
     async message(wsId: string, input: WindowMessageInput): Promise<WindowMessageResult> {

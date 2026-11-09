@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { createWorkstream, fetchWindow, fetchWorkstreams, flipDecision, ownerTaskDone, postWindowMessage, resolveWindowAction, setProjectRole } from "../api";
+import { approveAsk, createWorkstream, fetchWindow, fetchWorkstreams, flipDecision, ownerTaskDone, postWindowMessage, rejectAsk, resolveWindowAction, setProjectRole } from "../api";
 import { events } from "../events";
 import { routeHash } from "../routes";
 import { timeAgo } from "../time";
 import { useProjects } from "../useProjects";
-import { PROJECT_ROLES, type ChannelEntry, type ChatMessage, type Decision, type OwnerTask, type ProjectRole, type QuickAction, type WindowDocument, type WindowExecuted, type WindowItem, type Workstream } from "../types";
+import { PROJECT_ROLES, type ChannelEntry, type ChatMessage, type CoordinatorAsk, type Decision, type OwnerTask, type ProjectRole, type QuickAction, type WindowDocument, type WindowExecuted, type WindowItem, type Workstream } from "../types";
+import { askConfirmLine, describeAsk, resolvedAskLine } from "../window-asks";
 import { ConfirmCard } from "./AskScreen";
 
 /** The coordinator window (docs/SDD-coordinator.md §4.14): one component
@@ -202,9 +203,9 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
             ))}
           </div>
           <div role="tabpanel" id="cw-panel" aria-labelledby={`cw-tab-${tab}`} className="cw-panel">
-            {tab === "Conversation" && <Conversation doc={doc} now={now} resolve={resolve} reload={load} hold={() => send({ action: "pause-new-cards" })} />}
+            {tab === "Conversation" && <Conversation doc={doc} workstreamId={workstreamId} now={now} resolve={resolve} reload={load} hold={() => send({ action: "pause-new-cards" })} />}
             {tab === "Decisions" && <Decisions decisions={doc.decisions} now={now} reload={load} />}
-            {tab === "Log" && <Log entries={doc.log} now={now} />}
+            {tab === "Log" && <Log entries={doc.log} resolvedAsks={doc.resolvedAsks ?? []} now={now} />}
           </div>
           <div className="composer-wrap">
             <ul className="quick-replies" aria-label="Quick actions">
@@ -347,8 +348,8 @@ function NewWorkstreamForm({ onCreated }: { onCreated: (ws: Workstream) => void 
 type Timed = { at: string; node: ReactNode; key: string };
 
 /** Owner messages and replies by time, status lines and decisions among
- *  them; owner tasks and plans (no time of their own) wait at the end. */
-function Conversation({ doc, now, resolve, reload, hold }: { doc: WindowDocument; now: number; resolve: (id: string, verb: "confirm" | "cancel") => Promise<void>; reload: () => Promise<void>; hold: () => void }) {
+ *  them; owner tasks, asks and plans (no time of their own) wait at the end. */
+function Conversation({ doc, workstreamId, now, resolve, reload, hold }: { doc: WindowDocument; workstreamId: string; now: number; resolve: (id: string, verb: "confirm" | "cancel") => Promise<void>; reload: () => Promise<void>; hold: () => void }) {
   const timed: Timed[] = [
     ...(doc.conversation?.messages ?? []).map((m) => ({ at: m.at, key: m.id, node: <Message message={m} resolve={resolve} /> })),
     ...doc.items.flatMap((it, i): Timed[] => {
@@ -357,7 +358,7 @@ function Conversation({ doc, now, resolve, reload, hold }: { doc: WindowDocument
       return [];
     }),
   ].sort((a, b) => a.at.localeCompare(b.at));
-  const waiting = doc.items.filter((it): it is Extract<WindowItem, { kind: "owner-task" | "plan" }> => it.kind === "owner-task" || it.kind === "plan");
+  const waiting = doc.items.filter((it): it is Extract<WindowItem, { kind: "owner-task" | "ask" | "plan" }> => it.kind === "owner-task" || it.kind === "ask" || it.kind === "plan");
   if (timed.length === 0 && waiting.length === 0) return <p className="lede">Nothing yet. Ask for the status, or what is waiting on you.</p>;
   return (
     <ol className="cw-items" role="log" aria-label="Conversation">
@@ -367,11 +368,74 @@ function Conversation({ doc, now, resolve, reload, hold }: { doc: WindowDocument
         </li>
       ))}
       {waiting.map((it) => (
-        <li key={it.kind === "owner-task" ? it.task.id : it.card.id} className="cw-entry">
-          {it.kind === "owner-task" ? <OwnerTaskItem task={it.task} hasCheck={it.hasCheck} reload={reload} /> : <PlanItem card={it.card} held={it.held} hold={hold} />}
+        <li key={it.kind === "owner-task" ? it.task.id : it.kind === "ask" ? it.ask.id : it.card.id} className="cw-entry">
+          {it.kind === "owner-task" ? <OwnerTaskItem task={it.task} hasCheck={it.hasCheck} reload={reload} /> : it.kind === "ask" ? <AskItem ask={it.ask} workstreamId={workstreamId} reload={reload} /> : <PlanItem card={it.card} held={it.held} hold={hold} />}
         </li>
       ))}
     </ol>
+  );
+}
+
+/** An open ask (§4.2 rules 5 and 7): what wissel wants to do and why the
+ *  gate asked, with Approve and Reject. Approve first shows the change as
+ *  the window's Confirm line and runs nothing until Confirm, so a stray
+ *  tap never arms a PR; Reject runs nothing, so it goes straight through.
+ *  A 409 (a hard limit trips now, resolved meanwhile, Shadow) stays under
+ *  the item in the server's words; the item stays until a refetch drops it. */
+function AskItem({ ask, workstreamId, reload }: { ask: CoordinatorAsk; workstreamId: string; reload: () => Promise<void> }) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const d = describeAsk(ask);
+  const answer = (verb: "approve" | "reject") => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    (verb === "approve" ? approveAsk : rejectAsk)(workstreamId, ask.id).then(
+      () => reload().then(() => setBusy(false)),
+      (err: unknown) => {
+        setBusy(false);
+        setConfirming(false);
+        setError(text(err));
+      },
+    );
+  };
+  return (
+    <div className="cw-item cw-ask" data-ask-id={ask.id}>
+      <p>
+        <span className="cw-kind">Ask</span>
+        <strong className="cw-text">wissel wants to {d.what}</strong>
+      </p>
+      <p className="muted">{d.why}</p>
+      {d.onChannel && <p className="muted">The decider can also answer approve or reject on the channel.</p>}
+      {confirming ? (
+        <div className="cw-change" role="group" aria-label="Confirm the approval">
+          <p className="confirm-head">{askConfirmLine(ask)}</p>
+          <div className="confirm-actions">
+            <button type="button" className="btn btn-small btn-primary" disabled={busy} aria-busy={busy || undefined} onClick={() => answer("approve")}>
+              Confirm
+            </button>
+            <button type="button" className="btn btn-small" disabled={busy} onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="cw-actions">
+          <button type="button" className="btn btn-small btn-primary" disabled={busy} onClick={() => setConfirming(true)}>
+            Approve
+          </button>
+          <button type="button" className="btn btn-small" disabled={busy} aria-busy={busy || undefined} onClick={() => answer("reject")}>
+            Reject
+          </button>
+        </div>
+      )}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -547,21 +611,26 @@ function Decisions({ decisions, now, reload }: { decisions: Decision[]; now: num
   );
 }
 
-/** The channel log, the decider's entries included. */
-function Log({ entries, now }: { entries: ChannelEntry[]; now: number }) {
-  if (entries.length === 0) return <p className="empty">Nothing on the channel yet.</p>;
+/** The channel log, the decider's entries included, and the resolved asks
+ *  (who answered, how) in time order among them. */
+function Log({ entries, resolvedAsks, now }: { entries: ChannelEntry[]; resolvedAsks: CoordinatorAsk[]; now: number }) {
   // The entry's own fields, as text or as JSON for the structured kinds (claim, question...).
   const body = (m: ChannelEntry["message"]) => (typeof m.text === "string" ? m.text : JSON.stringify(Object.fromEntries(Object.entries(m).filter(([k]) => !["kind", "from", "about"].includes(k)))));
+  const rows = [
+    ...entries.map((e) => ({ key: e.ref, at: e.at, from: e.message.from, kind: e.message.kind, text: body(e.message), askId: undefined as string | undefined })),
+    ...resolvedAsks.map((a) => ({ key: `ask-${a.id}`, at: a.resolvedAt ?? a.askedAt, askId: a.id, ...resolvedAskLine(a) })),
+  ].sort((a, b) => a.at.localeCompare(b.at));
+  if (rows.length === 0) return <p className="empty">Nothing on the channel yet.</p>;
   return (
     <ol className="cw-log">
-      {entries.map((e) => (
-        <li key={e.ref}>
-          <time className="mono" dateTime={e.at}>
-            {timeAgo(e.at, now)}
+      {rows.map((r) => (
+        <li key={r.key} data-ask-id={r.askId}>
+          <time className="mono" dateTime={r.at}>
+            {timeAgo(r.at, now)}
           </time>
-          <span className="cw-from">{e.message.from}</span>
-          <span className="cw-kind">{e.message.kind}</span>
-          <span className="cw-text">{body(e.message)}</span>
+          <span className="cw-from">{r.from}</span>
+          <span className="cw-kind">{r.kind}</span>
+          <span className="cw-text">{r.text}</span>
         </li>
       ))}
     </ol>

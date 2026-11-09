@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createWorkstream, fetchConversation, postAsk, postReplyAudio, postVoice, resolveAskAction, runNotice, runPipeline } from "../src/api";
+import { approveAsk, createWorkstream, fetchConversation, postAsk, postReplyAudio, postVoice, rejectAsk, resolveAskAction, runNotice, runPipeline } from "../src/api";
 
 // POST /pipelines/:id/run answers 201 with the settled root card, which
 // can be "failed" (src/api/server.ts). The palette's notice must say so
@@ -128,5 +128,26 @@ describe("createWorkstream", () => {
   test("throws the server's message on a refusal", async () => {
     stubFetch(400, { error: "unknown project nope" });
     await expect(createWorkstream({ name: "x", projects: [{ projectId: "nope", role: "shadow" }] })).rejects.toThrow("unknown project nope");
+  });
+});
+
+describe("asks: approve and reject (SDD-coordinator §5)", () => {
+  test("approveAsk POSTs to the ask's approve route, ids encoded, and returns the outcome", async () => {
+    const fetchMock = stubFetch(200, { ok: true, ask: { id: "a/1", status: "approved" } });
+    const out = await approveAsk("w 1", "a/1");
+    expect(out.ask.status).toBe("approved");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect([url, init.method]).toEqual(["/workstreams/w%201/asks/a%2F1/approve", "POST"]);
+  });
+  test("rejectAsk POSTs to the reject route", async () => {
+    const fetchMock = stubFetch(200, { ok: true, ask: { id: "a1", status: "rejected" } });
+    expect((await rejectAsk("w1", "a1")).ask.status).toBe("rejected");
+    expect(fetchMock.mock.calls[0]![0]).toBe("/workstreams/w1/asks/a1/reject");
+  });
+  test("a 409 (hard limit, already resolved, Shadow) throws the server's own words", async () => {
+    stubFetch(409, { error: "refused: the action now trips 1:hard-limit; the ask stays open" });
+    await expect(approveAsk("w1", "a1")).rejects.toThrow("refused: the action now trips 1:hard-limit; the ask stays open");
+    stubFetch(409, { error: "ask a1 is already rejected" });
+    await expect(rejectAsk("w1", "a1")).rejects.toThrow("ask a1 is already rejected");
   });
 });

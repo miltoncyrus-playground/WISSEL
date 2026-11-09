@@ -12,15 +12,32 @@ import { test, expect, type APIRequestContext, type Page } from "@playwright/tes
 
 const unique = (label: string) => `cw-${label}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-async function makeWorkstream(request: APIRequestContext, label: string): Promise<{ id: string; name: string; projectId: string }> {
+async function makeWorkstream(request: APIRequestContext, label: string, entry: Record<string, unknown> = { role: "follow" }): Promise<{ id: string; name: string; projectId: string }> {
   const dir = await mkdtemp(join(tmpdir(), "wissel-e2e-window-"));
   execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "pipe" });
   const project = (await (await request.post("/projects/local", { data: { path: dir, initGit: false } })).json()) as { id: string };
   const name = unique(label);
-  const res = await request.post("/workstreams", { data: { name, projects: [{ projectId: project.id, role: "follow" }] } });
+  const res = await request.post("/workstreams", { data: { name, projects: [{ projectId: project.id, ...entry }] } });
   expect(res.status()).toBe(201);
   const ws = (await res.json()) as { id: string };
   return { id: ws.id, name, projectId: project.id };
+}
+
+type AskRow = { id: string; status: string; resolvedBy?: string; via?: string; action: { kind: string; decision?: string } };
+const asksWith = async (request: APIRequestContext, wsId: string, status: string) => (await (await request.get(`/workstreams/${wsId}/asks?status=${status}`)).json()) as AskRow[];
+const wisselDecisions = async (request: APIRequestContext, wsId: string) => ((await (await request.get(`/workstreams/${wsId}/channel`)).json()) as { message: { kind: string; from: string } }[]).filter((e) => e.message.from === "wissel" && e.message.kind === "decision");
+
+/** A decide-role project whose must-ask list names the decision kind "schema": the decider's decision on the channel
+ *  becomes a decision post the gate asks the owner about (ask-owner, rule 5:must-ask), and nothing runs until the answer. */
+async function raiseAsk(request: APIRequestContext, label: string, card: string) {
+  const ws = await makeWorkstream(request, label, { role: "decide", decider: "Ana", mustAsk: ["schema"] });
+  const posted = await request.post(`/workstreams/${ws.id}/channel`, { data: { kind: "decision", from: "Ana", about: { card }, decision: "schema", text: `one table for ${card}` } });
+  expect(posted.status()).toBe(201);
+  await expect.poll(async () => (await asksWith(request, ws.id, "open")).length, { timeout: 15_000 }).toBe(1);
+  const ask = (await asksWith(request, ws.id, "open"))[0]!;
+  expect(ask.action).toMatchObject({ kind: "channel.post", decision: "schema" });
+  expect(await wisselDecisions(request, ws.id)).toHaveLength(0);
+  return { ws, ask };
 }
 
 async function openWindow(page: Page, id: string) {
@@ -139,6 +156,57 @@ test("a policy quick action shows the change and waits for Confirm; the log togg
   // Not confirmed: still Confirm, nothing ran. (The pause is left unconfirmed so other specs keep dispatching.)
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(confirm.getByText("Cancelled")).toBeVisible();
+});
+
+test("an ask: Approve shows the Change line and runs nothing; Confirm runs it once; the ask leaves the open list and lands in the Log", async ({ page, request }) => {
+  const { ws, ask } = await raiseAsk(request, "approve", "A4");
+  await openWindow(page, ws.id);
+  const item = page.getByRole("tabpanel", { name: "Conversation" }).locator(`[data-ask-id="${ask.id}"]`);
+  await expect(item).toContainText("wissel wants to post a decision (schema) on the channel about card A4");
+  await expect(item).toContainText("rule 5:must-ask");
+  await expect(item.getByText("The decider can also answer")).toHaveCount(0); // ask-owner: the owner alone answers
+
+  await item.getByRole("button", { name: "Approve" }).click();
+  const confirm = item.getByRole("group", { name: "Confirm the approval" });
+  await expect(confirm.getByText(/^Change: wissel will post a decision \(schema\) on the channel about card A4.*\. Confirm\.$/)).toBeVisible();
+  expect(await asksWith(request, ws.id, "open")).toHaveLength(1); // Approve alone ran nothing
+  expect(await wisselDecisions(request, ws.id)).toHaveLength(0);
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toHaveCount(0);
+  await expect(item.getByRole("button", { name: "Approve" })).toBeVisible();
+
+  await item.getByRole("button", { name: "Approve" }).click();
+  await item.getByRole("group", { name: "Confirm the approval" }).getByRole("button", { name: "Confirm" }).click();
+  await expect(item).toHaveCount(0);
+  await expect.poll(async () => (await asksWith(request, ws.id, "approved")).map((a) => [a.id, a.resolvedBy, a.via])).toEqual([[ask.id, "owner", "api"]]);
+  expect(await asksWith(request, ws.id, "open")).toHaveLength(0);
+  expect(await wisselDecisions(request, ws.id)).toHaveLength(1); // ran once
+
+  await tab(page, "Log").click();
+  const row = page.getByRole("tabpanel", { name: "Log" }).locator(`li[data-ask-id="${ask.id}"]`);
+  await expect(row.getByText("owner", { exact: true })).toBeVisible();
+  await expect(row.getByText("ask approved", { exact: true })).toBeVisible();
+  await expect(row).toContainText("from the window; it ran once");
+});
+
+test("an ask: Reject runs nothing, the ask leaves the open list and the Log says who rejected it", async ({ page, request }) => {
+  const { ws, ask } = await raiseAsk(request, "reject", "A5");
+  await openWindow(page, ws.id);
+  const item = page.getByRole("tabpanel", { name: "Conversation" }).locator(`[data-ask-id="${ask.id}"]`);
+  await expect(item.getByRole("button", { name: "Approve" })).toBeVisible();
+  await item.getByRole("button", { name: "Reject" }).click();
+  await expect(item).toHaveCount(0);
+  await expect.poll(async () => (await asksWith(request, ws.id, "rejected")).map((a) => [a.id, a.resolvedBy])).toEqual([[ask.id, "owner"]]);
+  expect(await wisselDecisions(request, ws.id)).toHaveLength(0);
+
+  await tab(page, "Log").click();
+  const row = page.getByRole("tabpanel", { name: "Log" }).locator(`li[data-ask-id="${ask.id}"]`);
+  await expect(row.getByText("ask rejected", { exact: true })).toBeVisible();
+  await expect(row).toContainText("nothing ran");
+  // The answer is final: a second answer over the API is a 409 in the server's words, which the window would show under the item.
+  const again = await request.post(`/workstreams/${ws.id}/asks/${ask.id}/approve`);
+  expect(again.status()).toBe(409);
+  expect(((await again.json()) as { error: string }).error).toContain("already rejected");
 });
 
 test("the board docks the same window beside the lanes and follows the theme toggle", async ({ page, request }) => {
