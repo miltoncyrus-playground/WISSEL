@@ -244,3 +244,30 @@ test("the picker creates a workstream from a form and opens its window", async (
   const list = (await (await request.get("/workstreams")).json()) as { name: string; projects: { projectId: string; role: string }[] }[];
   expect(list.find((w) => w.name === name)?.projects).toEqual([{ projectId: project.id, role: "shadow", decideAlone: [], mustAsk: [], never: [] }]);
 });
+
+test("the window updates by itself: a channel entry posted through the API shows up with no click or reload", async ({ page, request }) => {
+  const ws = await makeWorkstream(request, "live");
+  await openWindow(page, ws.id);
+  const panel = page.getByRole("tabpanel", { name: "Conversation" });
+  await expect(panel.getByText("arrived while open")).toHaveCount(0);
+  const posted = await request.post(`/workstreams/${ws.id}/channel`, { data: { kind: "status", from: "decider", about: { card: ws.id }, text: "arrived while open" } });
+  expect(posted.status()).toBe(201);
+  await expect(panel.getByText("arrived while open")).toBeVisible({ timeout: 8000 }); // the window looks again every few seconds
+  await expect(page.locator(".cw-live")).toContainText("live");
+});
+
+test("the window's own buttons are never covered, on a short screen", async ({ page, request }) => {
+  const ws = await makeWorkstream(request, "covered");
+  await page.setViewportSize({ width: 390, height: 640 });
+  await openWindow(page, ws.id);
+  for (const name of ["Conversation", "Decisions", "Log", "Status now", "Restart when idle", "Send"]) {
+    const el = page.getByRole(name === "Conversation" || name === "Decisions" || name === "Log" ? "tab" : "button", { name }).first();
+    await el.scrollIntoViewIfNeeded();
+    const top = await el.evaluate((node) => {
+      const r = node.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return hit === node || node.contains(hit);
+    });
+    expect(top, `${name} is covered`).toBe(true);
+  }
+});

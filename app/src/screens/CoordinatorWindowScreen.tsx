@@ -23,6 +23,7 @@ const QUICK: { action: QuickAction; label: string }[] = [
   { action: "restart-when-idle", label: "Restart when idle" },
 ];
 const REFETCH_DEBOUNCE_MS = 150;
+const POLL_MS = 3000;
 const text = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstreamId?: string; now: number; dock?: boolean }) {
@@ -34,12 +35,21 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [roleChange, setRoleChange] = useState<{ projectId: string; from: ProjectRole; to: ProjectRole; error?: string; busy?: boolean } | null>(null);
+  const [heardAt, setHeardAt] = useState<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastJson = useRef("");
+  const projects = useProjects();
 
   const load = useCallback(async () => {
     if (!workstreamId) return;
     try {
-      setDoc(await fetchWindow(workstreamId));
+      const next = await fetchWindow(workstreamId);
+      const json = JSON.stringify(next);
+      if (json !== lastJson.current) {
+        lastJson.current = json; // an unchanged document is not a re-render: open confirm lines and drafts stay put
+        setDoc(next);
+      }
+      setHeardAt(Date.now());
       setError(null);
     } catch (err) {
       setError(text(err));
@@ -50,16 +60,27 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
 
   useEffect(() => {
     setDoc(null);
+    lastJson.current = "";
     setLoaded(false);
     setRoleChange(null);
     void load();
-    // Any board event (a card moved, a channel entry) refetches, debounced like the board.
+    // A board event refetches, debounced like the board. The channel, the asks, the gate log and the outbound queue
+    // raise no board event, so the window also looks again every POLL_MS while it is on screen.
     const off = events.subscribe(() => {
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => void load(), REFETCH_DEBOUNCE_MS);
     });
+    const poll = setInterval(() => {
+      if (document.visibilityState === "visible") void load();
+    }, POLL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       off();
+      clearInterval(poll);
+      document.removeEventListener("visibilitychange", onVisible);
       if (timer.current) clearTimeout(timer.current);
     };
   }, [load]);
@@ -107,10 +128,18 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
   if (!workstreamId) return <Picker />;
   const h = doc?.header;
   const paused = Boolean(h?.live.dispatchHold);
+  const nameOf = (id: string) => projects.find((p) => p.id === id)?.name ?? id.slice(0, 8);
+  const needsYou = (doc?.items ?? []).filter((it) => it.kind === "ask" || it.kind === "owner-task").length;
+  const ago = heardAt === null ? "" : `updated ${Math.max(0, Math.round((now - heardAt) / 1000))}s ago`;
   return (
-    <div className="screen window-screen">
-      <div className="screen-head">
+    <div className="screen window-screen cw">
+      <div className="screen-head cw-bar">
         <h1>Coordinator window{h ? `: ${h.workstream.name}` : ""}</h1>
+        <span className={`cw-live${error ? " is-down" : ""}`} role="status">
+          <span className="cw-dot" aria-hidden="true" />
+          {error ? "offline" : "live"}
+          {ago && !error ? <span className="muted"> · {ago}</span> : null}
+        </span>
         {dock ? (
           <a className="btn btn-small" href={`/app${routeHash({ screen: "window", workstreamId })}`} target="_top">
             Open in the app
@@ -129,48 +158,54 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
       )}
       {h && (
         <section className="cw-head" aria-label="Window header">
-          <dl>
-            <dt>Workstream</dt>
-            <dd>
-              <span>{h.workstream.name}</span>
+          <div className="cw-chips">
+            <span className="cw-name">
+              {h.workstream.name}
               {h.workstream.ticket && <span className="mono"> {h.workstream.ticket}</span>}
-            </dd>
-            <dt>Roles</dt>
-            <dd>
-              {h.roles.length === 0 && "no projects"}
-              {h.roles.map((r) => (
-                <span className="cw-role" key={r.projectId}>
-                  <span className="mono">{r.projectId}</span>
-                  <select aria-label={`Role for ${r.projectId}`} value={roleChange?.projectId === r.projectId ? roleChange.to : r.role} onChange={(e) => setRoleChange(e.target.value === r.role ? null : { projectId: r.projectId, from: r.role, to: e.target.value as ProjectRole })}>
-                    {PROJECT_ROLES.map((role) => (
-                      <option key={role} value={role}>
-                        {role}
-                      </option>
-                    ))}
-                  </select>
-                  {r.decider && <span className="muted">({r.decider})</span>}
-                  {r.pendingRole && <span className="muted cw-pending-role">{pendingRoleText(r)}</span>}
-                </span>
-              ))}
-            </dd>
-            <dt>Live</dt>
-            <dd>
-              {paused ? `New cards paused: ${h.live.dispatchHold}` : "New cards start"}
-              {h.live.restartPending ? "; restart pending" : ""}; {h.live.running} running on the board
-            </dd>
-            <dt>Cards</dt>
-            <dd>
-              {h.cards.live} live{h.cards.cap === null ? ", no cap" : ` of ${h.cards.cap}`}
-            </dd>
-            <dt>Channel written</dt>
-            <dd>{h.channelLastWrittenAt ? timeAgo(h.channelLastWrittenAt, now) : "never"}</dd>
-            <dt>Quiet hours</dt>
-            <dd>{h.quietHours ? `${h.quietHours.start} to ${h.quietHours.end} ${h.quietHours.timezone}, ${h.quietHours.quiet ? "on now" : "off now"}` : "none"}</dd>
-            <dt>Outbound</dt>
-            <dd>
-              {h.outbound.queued} queued{h.outbound.flushAt ? `, flush ${timeAgo(h.outbound.flushAt, now)}` : ""}
-            </dd>
-          </dl>
+            </span>
+            {h.roles.length === 0 && <span className="muted">no projects</span>}
+            {h.roles.map((r) => (
+              <span className="cw-role" key={r.projectId} title={r.projectId}>
+                <span>{nameOf(r.projectId)}</span>
+                <select aria-label={`Role for ${r.projectId}`} value={roleChange?.projectId === r.projectId ? roleChange.to : r.role} onChange={(e) => setRoleChange(e.target.value === r.role ? null : { projectId: r.projectId, from: r.role, to: e.target.value as ProjectRole })}>
+                  {PROJECT_ROLES.map((role) => (
+                    <option key={role} value={role}>
+                      {role}
+                    </option>
+                  ))}
+                </select>
+                {r.decider && <span className="muted">({r.decider})</span>}
+                {r.pendingRole && <span className="muted cw-pending-role">{pendingRoleText(r)}</span>}
+              </span>
+            ))}
+            {needsYou > 0 && <span className="cw-chip is-hot">{needsYou} need{needsYou === 1 ? "s" : ""} you</span>}
+            <span className={`cw-chip${paused ? " is-hot" : ""}`} title={paused ? h.live.dispatchHold ?? undefined : undefined}>
+              {paused ? "New cards paused" : "New cards start"}
+            </span>
+            {h.live.restartPending && <span className="cw-chip is-hot">Restart pending</span>}
+            <span className="cw-chip">{h.live.running} running</span>
+            {h.outbound.queued > 0 && <span className="cw-chip">{h.outbound.queued} queued</span>}
+            {h.quietHours?.quiet && <span className="cw-chip">Quiet hours</span>}
+          </div>
+          <details className="cw-more">
+            <summary>Details</summary>
+            <dl>
+              <dt>Cards</dt>
+              <dd>
+                {h.cards.live} live{h.cards.cap === null ? ", no cap" : ` of ${h.cards.cap}`}
+              </dd>
+              <dt>Channel written</dt>
+              <dd>{h.channelLastWrittenAt ? timeAgo(h.channelLastWrittenAt, now) : "never"}</dd>
+              <dt>Quiet hours</dt>
+              <dd>{h.quietHours ? `${h.quietHours.start} to ${h.quietHours.end} ${h.quietHours.timezone}, ${h.quietHours.quiet ? "on now" : "off now"}` : "none"}</dd>
+              <dt>Outbound</dt>
+              <dd>
+                {h.outbound.queued} queued{h.outbound.flushAt ? `, flush ${timeAgo(h.outbound.flushAt, now)}` : ""}
+              </dd>
+              <dt>Dispatch</dt>
+              <dd>{paused ? `paused: ${h.live.dispatchHold}` : "open"}</dd>
+            </dl>
+          </details>
         </section>
       )}
       {roleChange && (
@@ -196,40 +231,42 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
       )}
       {doc && (
         <>
-          <div className="segmented cw-tabs" role="tablist" aria-label="Window tabs">
-            {TABS.map((t) => (
-              <button key={t} type="button" role="tab" id={`cw-tab-${t}`} className="segment" aria-selected={tab === t} aria-controls="cw-panel" onClick={() => setTab(t)}>
-                {t}
-              </button>
-            ))}
+          <div className="cw-toolbar">
+            <div className="segmented cw-tabs" role="tablist" aria-label="Window tabs">
+              {TABS.map((t) => (
+                <button key={t} type="button" role="tab" id={`cw-tab-${t}`} className="segment" aria-selected={tab === t} aria-controls="cw-panel" onClick={() => setTab(t)}>
+                  {t}
+                </button>
+              ))}
+            </div>
+            <ul className="cw-quick" aria-label="Quick actions">
+              {QUICK.map((q) => (
+                <li key={q.action}>
+                  <button type="button" className="btn btn-small" disabled={sending} onClick={() => send({ action: q.action === "pause-new-cards" && paused ? "resume-new-cards" : q.action })}>
+                    {q.action === "pause-new-cards" && paused ? "Resume new cards" : q.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
           <div role="tabpanel" id="cw-panel" aria-labelledby={`cw-tab-${tab}`} className="cw-panel">
             {tab === "Conversation" && <Conversation doc={doc} workstreamId={workstreamId} now={now} resolve={resolve} reload={load} hold={() => send({ action: "pause-new-cards" })} />}
             {tab === "Decisions" && <Decisions decisions={doc.decisions} now={now} reload={load} />}
             {tab === "Log" && <Log entries={doc.log} resolvedAsks={doc.resolvedAsks ?? []} now={now} />}
           </div>
-          <div className="composer-wrap">
-            <ul className="quick-replies" aria-label="Quick actions">
-              {QUICK.map((q) => (
-                <li key={q.action}>
-                  <button type="button" className="quick-reply" disabled={sending} onClick={() => send({ action: q.action === "pause-new-cards" && paused ? "resume-new-cards" : q.action })}>
-                    {q.action === "pause-new-cards" && paused ? "Resume new cards" : q.label}
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <label className="cw-toggle">
-              <input type="checkbox" checked={log} onChange={(e) => setLog(e.target.checked)} />
-              Log it on the channel
-            </label>
-            <form className="composer" onSubmit={onSubmit}>
+          <div className="cw-foot">
+            <form className="cw-compose" onSubmit={onSubmit}>
               <label htmlFor="cw-input" className="sr-only">
                 Message to the window
               </label>
-              <textarea id="cw-input" rows={1} placeholder="Ask the window" value={draft} onChange={(e) => setDraft(e.target.value)} />
-              <button type="submit" className="btn btn-small" disabled={sending || !draft.trim()}>
+              <input id="cw-input" type="text" autoComplete="off" placeholder="Ask the window" value={draft} onChange={(e) => setDraft(e.target.value)} />
+              <button type="submit" className="btn btn-small btn-primary" disabled={sending || !draft.trim()}>
                 Send
               </button>
+              <label className="cw-toggle">
+                <input type="checkbox" checked={log} onChange={(e) => setLog(e.target.checked)} />
+                Log it on the channel
+              </label>
             </form>
           </div>
         </>
