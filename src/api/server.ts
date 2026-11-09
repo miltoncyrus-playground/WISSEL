@@ -97,6 +97,7 @@ import { HostGuard, hostThresholdsFromEnv, type HostGuardOptions } from "../serv
 import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
 import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch } from "../services/workstreams.ts";
+import { SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
 import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -167,6 +168,11 @@ export interface CreateAppOptions {
    *  none. Injectable so tests never reach a real tracker. Undefined is
    *  "not set up". */
   tickets?: TicketsSetup;
+  /** The policy gate's append-only audit log (docs/SDD-coordinator.md §4.2, §6),
+   *  served by GET /workstreams/:id/gate-log. Defaults to the board database. */
+  gateLog?: GateLog;
+  /** §6 hard limits, read once at start from hard-limits.yaml (`WISSEL_HARD_LIMITS_PATH`). */
+  hardLimits?: HardLimits;
   /** Used only by `POST /mcp-servers/:id/enable`'s re-validation check —
    *  injectable so tests never hit a real filesystem PATH lookup or
    *  network probe. Defaults to the real environment/fetch. */
@@ -539,6 +545,8 @@ export function createApp(
   const ownerTasks = new SqliteOwnerTaskStore((board as SqliteBoard).db);
   // Workstreams and roles (docs/SDD-coordinator.md §3.1, §4.13).
   const workstreams = new SqliteWorkstreamStore((board as SqliteBoard).db);
+  // The policy gate's audit log (§4.2); the executor that writes to it is a later card.
+  const gateLog: GateLog = opts.gateLog ?? new SqliteGateLog((board as SqliteBoard).db);
   const needsYouOpts: NeedsYouOptions = {
     openOwnerTasks: async () => (await ownerTasks.list()).filter((t) => t.status === "open"),
     async worktreeChanged(task, worktree) {
@@ -1636,6 +1644,7 @@ export function createApp(
           const ws = await workstreams.get(parts[1]!);
           if (!ws) return notFound();
           if (parts.length === 2 && req.method === "GET") return json(ws);
+          if (parts.length === 3 && parts[2] === "gate-log" && req.method === "GET") return json(await gateLog.list(ws.id));
           if (parts.length === 2 && req.method === "PATCH") {
             const check = validateWorkstreamPatch(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
@@ -2257,6 +2266,10 @@ if (import.meta.main) {
   // git alone.
   const tickets = await loadTicketProvider(process.env.WISSEL_INTEGRATIONS_PATH ?? "integrations.yaml", process.env);
   console.log(tickets.provider ? `tickets: ${tickets.provider.id} (write-back ${tickets.provider.writeBack ? "on" : "off"})` : `tickets: off (${tickets.reason})`);
+  // Policy gate hard limits (docs/SDD-coordinator.md §6): code defaults,
+  // widened only by this file; a malformed file stops the start.
+  const hardLimits = await loadHardLimits(process.env.WISSEL_HARD_LIMITS_PATH ?? "hard-limits.yaml");
+  console.log(`hard limits: ${hardLimits.production.length} production pattern(s), ${hardLimits.readOnlyRepos.length} read-only repo(s)`);
 
   // Can write-tier Bash run inside Claude Code's OS sandbox here? Probed
   // once (bubblewrap, socat, AppArmor userns); "unavailable" falls back
@@ -2368,6 +2381,7 @@ if (import.meta.main) {
       mcpServers,
       mcpServersPath,
       tickets,
+      hardLimits,
       maxConcurrentTasks,
       spendCeilingUsd,
       hostGuard: { thresholds: hostThresholdsFromEnv(process.env) },
