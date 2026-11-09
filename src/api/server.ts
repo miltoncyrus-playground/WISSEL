@@ -27,7 +27,7 @@ import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-s
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
 import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH } from "../core/model-refresh-scheduler.ts";
 import { startMergeHealthScheduler } from "../core/merge-health-scheduler.ts";
-import { readMemoryLessons, DEFAULT_MEMORY_PATH } from "../services/memory.ts";
+import { appendCardRule, DEFAULT_MEMORY_PATH, proposedCardRule, readMemoryLessons, wisselIssueSuggestions } from "../services/memory.ts";
 import { appendTaskOutput, getBufferedOutput, getTaskOutput, TASK_OUTPUT_EVENTS } from "../services/task-output.ts";
 import { parseSubagentRuns, settleSubagentRuns, summarizeSubagentRuns } from "../services/subagent-runs.ts";
 import { buildPipelineRunSummary } from "../services/pipeline-run-summary.ts";
@@ -98,6 +98,7 @@ import { HostGuard, hostThresholdsFromEnv, realHostProbes, type HostGuardOptions
 import { SqliteDigestLog, createDigestRun } from "../services/digests.ts";
 import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
+import { SqliteDecisionStore } from "../services/decision-cards.ts";
 import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch } from "../services/workstreams.ts";
 import { importWorkstream } from "../services/workstream-import.ts";
 import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions } from "../services/inbox.ts";
@@ -564,6 +565,8 @@ export function createApp(
   const ownerTasks = new SqliteOwnerTaskStore((board as SqliteBoard).db);
   // Workstreams and roles (docs/SDD-coordinator.md §3.1, §4.13).
   const workstreams = new SqliteWorkstreamStore((board as SqliteBoard).db);
+  // Decision records (§3.4, §4.4): a default taken, reversible with POST /decisions/:id/flip.
+  const decisions = new SqliteDecisionStore((board as SqliteBoard).db);
   // The event inbox (docs/SDD-coordinator.md §4.1): board and PR-watcher
   // events are persisted here with source-stable ids before any handler.
   const inbox = new SqliteInbox((board as SqliteBoard).db);
@@ -821,6 +824,7 @@ export function createApp(
       telemetryPath: telemetry.filePath,
       intervalHours: opts.memoryIntervalHours,
       memoryPath: opts.memoryPath,
+      ownerTasks,
     });
   }
 
@@ -1062,7 +1066,8 @@ export function createApp(
       // empty state, not a fetch failure.
       if (url.pathname === "/memory" && req.method === "GET") {
         const content = await readMemoryLessons(opts.memoryPath ?? DEFAULT_MEMORY_PATH);
-        return json({ content, path: opts.memoryPath ?? DEFAULT_MEMORY_PATH, injected: opts.injectMemory ?? false });
+        // `wisselIssues`: the `wissel`-scoped lessons as suggested issue text (§4.15).
+        return json({ content, path: opts.memoryPath ?? DEFAULT_MEMORY_PATH, injected: opts.injectMemory ?? false, wisselIssues: wisselIssueSuggestions(content) });
       }
 
       // Every past curation run, most recent first, each carrying the
@@ -1691,7 +1696,16 @@ export function createApp(
         }
         if (parts.length === 3 && parts[2] === "done" && req.method === "POST") {
           const done = await completeOwnerTask(ownerTasks, parts[1]!, { runner: opts.ownerTaskCheckRunner });
-          if (done.ok) return json(done.value);
+          if (done.ok) {
+            // A Done card-rule proposal (§4.15) appends its lesson to cardRules of the project it names, or every project.
+            const proposal = proposedCardRule(done.value, await readMemoryLessons(opts.memoryPath ?? DEFAULT_MEMORY_PATH));
+            for (const p of proposal ? await projects.list() : []) {
+              if (!proposal!.project || p.name === proposal!.project || p.path === proposal!.project) {
+                await projects.setSettings(p.id, { cardRules: appendCardRule(p.cardRules, proposal!.rule) });
+              }
+            }
+            return json(done.value);
+          }
           return done.status === 404 ? notFound() : json({ error: done.error, output: done.output }, done.status);
         }
       }
@@ -1726,6 +1740,7 @@ export function createApp(
             const r = await importWorkstream(ws, await req.json().catch(() => undefined), url.searchParams.get("dryRun") === "1", { board: board as Board, projects, workstreams });
             return r.ok ? json(r.plan) : json({ error: r.error }, r.status);
           }
+          if (parts.length === 3 && parts[2] === "decisions" && req.method === "GET") return json(decisions.list(ws.id));
           if (parts.length === 2 && req.method === "PATCH") {
             const check = validateWorkstreamPatch(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
@@ -1742,6 +1757,13 @@ export function createApp(
             return json(await workstreams.setRole(ws.id, parts[3]!, check.change));
           }
         }
+      }
+
+      if (parts[0] === "decisions" && parts.length === 3 && parts[2] === "flip" && req.method === "POST") {
+        const d = decisions.get(parts[1]!);
+        if (!d) return notFound();
+        if (d.status === "flipped") return json({ error: `decision ${d.id} was already flipped` }, 409);
+        return json(decisions.flip(d.id));
       }
 
       if (parts[0] === "tasks") {

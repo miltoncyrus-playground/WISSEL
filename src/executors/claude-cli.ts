@@ -2,7 +2,7 @@ import type { AgentDef, McpApprovalRequest, PipelineHandoff, ReviewVerdict, RunU
 import type { McpServerPool } from "../core/mcp-server-pool.ts";
 import { buildAgentPrompt, parallelHintOn } from "../core/prompt.ts";
 import type { Verification } from "../core/verification.ts";
-import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
+import { DEFAULT_MEMORY_PATH, readPromptMemory } from "../services/memory.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
 import { summarizeDenials } from "../core/permission-denials.ts";
 import { parseSubtaskPlan } from "./parse-subtask-plan.ts";
@@ -433,7 +433,8 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     verification,
   } = opts;
   const sandbox: SandboxState = opts.sandbox ?? "off";
-  const memory = injectMemory ? await readMemoryLessons(memoryPath ?? DEFAULT_MEMORY_PATH) : undefined;
+  // Scoped lessons (docs/SDD-coordinator.md §4.15) never reach the prompt.
+  const memory = injectMemory ? await readPromptMemory(memoryPath ?? DEFAULT_MEMORY_PATH) : undefined;
 
   // Resolving against the pool happens once, up front — every other MCP
   // decision below (the --mcp-config payload, the --allowedTools

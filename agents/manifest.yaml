@@ -961,6 +961,21 @@ agents:
       beyond its ELI5 paragraph is fine — omit the detail rather than
       padding it out.
 
+      Scope — end a topic's heading with a scope tag when one fits
+      (docs/SDD-coordinator.md §4.15; parsed by parseMemoryLessons in
+      src/services/memory.ts; a heading without a tag is a general
+      lesson and keeps working as before):
+      - `## <title> [scope: wissel]` — a problem with Wissel's own
+        environment (a sandbox, a disk, a harness). Becomes a suggested
+        Wissel issue, never a prompt line.
+      - `## <title> [scope: project]` — a standing rule for every card.
+        Proposed to the owner as an addition to cardRules and applied
+        only on approval. `[scope: project:<name>]` names one project.
+      - `## <title> [scope: path:<glob>]` — knowledge about one area of
+        the code (`path:src/api/**`). Added to a card's brief only when
+        the card's planned files match the glob.
+      Keep existing scope tags when you rewrite a topic.
+
   # Ask wissel, the app's chat (docs/SDD-wissel-app.md §3.4). Ask runs it
   # directly through ReadOnlyExecutor for each chat message
   # (src/services/concierge.ts); it is never a board card. `executor:
