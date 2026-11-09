@@ -2,8 +2,9 @@ import { expect, test } from "bun:test";
 import { SqliteBoard } from "../src/services/board.ts";
 import { Registry } from "../src/core/registry.ts";
 import { Router } from "../src/core/router.ts";
-import { wireAutoIntegrator, resolveHandoffAllowlist } from "../src/core/orchestrator.ts";
-import type { AgentDef } from "../src/core/types.ts";
+import { wireAutoIntegrator, resolveHandoffAllowlist, tryAutoMerge } from "../src/core/orchestrator.ts";
+import type { MergeContext } from "../src/services/worktree.ts";
+import type { AgentDef, TaskResult } from "../src/core/types.ts";
 
 async function settle(): Promise<void> {
   // wireAutoIntegrator's listener runs its async work fire-and-forget
@@ -202,4 +203,18 @@ test("a pipeline run whose steps all finish spawns no integrator card", async ()
   await settle();
 
   expect((await board.list()).filter((t) => t.labels.includes("integration"))).toEqual([]);
+});
+
+test("a failed settings read in auto-merge sends the card to review and never runs a local merge", async () => {
+  const board = new SqliteBoard();
+  const registry = await Registry.load();
+  const task = await board.create({ title: "Do the thing", body: "", labels: ["code"], repo: "/repo" });
+  const ran: string[][] = [];
+  const merge = {
+    runner: async (cmd: string[]) => (ran.push(cmd), { exitCode: 0, stdout: "", stderr: "" }),
+    settingsFor: async () => { throw new Error("project store unavailable"); },
+  };
+  const outcome = await tryAutoMerge(board, registry, { taskId: task.id, worktree: { path: "/repo-wt", branch: `wissel/${task.id}` } } as unknown as TaskResult, merge as unknown as MergeContext);
+  expect(outcome).toBe("review");
+  expect(ran).toEqual([]);
 });

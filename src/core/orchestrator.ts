@@ -897,14 +897,22 @@ export type AutoMergeOutcome = "landed" | "pushback" | "escalated" | "review";
  *  the conflict is first discovered. Only for a conflict: a
  *  blocked-local-changes, head-moved or error result isn't one, and an
  *  integrator can't fix it. */
-async function tryAutoMerge(board: Board, registry: Registry, result: TaskResult, merge: MergeContext): Promise<AutoMergeOutcome> {
+export async function tryAutoMerge(board: Board, registry: Registry, result: TaskResult, merge: MergeContext): Promise<AutoMergeOutcome> {
   if (!result.worktree) return "landed";
   const task = await board.get(result.taskId);
   if (!task) return "review";
   // A worktree only ever exists for a write-tier run, which requires
   // `repo` at creation time (see POST /tasks' validation) — never
   // reachable for a repo-less readonly task.
-  const settings = await merge.settingsFor?.(task.repo!).catch(() => undefined);
+  // A failed settings read must not fall back to a local merge: the project may be set to pull-request, and a local merge
+  // would land the card in the user's checkout. The card goes to review instead.
+  let settings: Awaited<ReturnType<NonNullable<MergeContext["settingsFor"]>>> | undefined;
+  try {
+    settings = await merge.settingsFor?.(task.repo!);
+  } catch (e) {
+    console.error(`orchestrator: couldn't read the delivery settings of ${task.repo} for ${task.id}: ${(e as Error).message}`);
+    return "review";
+  }
   if (settings?.delivery?.mode === "pull-request") return deliverPullRequest(board, task, result.worktree, settings.delivery, settings.ticketPatterns, merge);
   const res = await mergeTaskWorktree(task.repo!, result.worktree, task, withConflictIntegratorCheck(board, merge), (sha) => board.recordMerge(task.id, sha));
   return afterMergeAttempt(board, registry, task, result.worktree, res);

@@ -109,13 +109,17 @@ export async function deliverAsPullRequest(repo: string, worktree: TaskWorktree,
   const git = gitIn(ctx.runner);
   const host = ctx.host ?? ctx.runner;
   const hostPath = join(wisselHome(ctx.homeDir), "deliveries", task.id);
-  const branch = deliveryBranchName(delivery.branchPattern, task, ctx.ticketPatterns);
+  // The PR branch must not be the card's own branch, which the card worktree has checked out.
+  const named = deliveryBranchName(delivery.branchPattern, task, ctx.ticketPatterns);
+  const branch = named === worktree.branch ? `${named}-pr` : named;
   const commitMessage = `${task.title}\n\ntask: ${task.id}`;
   let [gate, hostGate, pushed] = [NO_GATE, NO_GATE, false];
   const fail = (outcome: PrDeliveryResult["outcome"], message: string): PrDeliveryResult => ({ ok: false, outcome, message, branch, gate, hostGate, pushed });
+  // Only a branch this delivery created is ever deleted (`created`), never one that was already there.
+  let created = false;
   const cleanup = async (keepBranch: boolean) => {
     await git(repo, ["worktree", "remove", "--force", hostPath]);
-    if (!keepBranch) await git(repo, ["branch", "-D", branch]);
+    if (!keepBranch && created) await git(repo, ["branch", "-D", branch]);
   };
 
   if (!existsSync(worktree.path)) return fail("error", `the worktree ${worktree.path} is gone: this card was already delivered or discarded`);
@@ -128,7 +132,9 @@ export async function deliverAsPullRequest(repo: string, worktree: TaskWorktree,
     if (!commit.ok) return fail("error", `failed to commit the card's changes: ${commit.text}`);
   }
 
-  const main = (await git(repo, ["rev-parse", "--verify", "-q", "refs/heads/main^{commit}"])).ok ? "main" : "master";
+  const hasBranch = async (name: string) => (await git(repo, ["rev-parse", "--verify", "-q", `refs/heads/${name}^{commit}`])).ok;
+  // The card's merge target when it names one that exists, else main, else master.
+  const main = task.mergeTarget && validateMergeTarget(task.mergeTarget).ok && (await hasBranch(task.mergeTarget)) ? task.mergeTarget : (await hasBranch("main")) ? "main" : "master";
   const baseRes = await git(repo, ["merge-base", main, `refs/heads/${worktree.branch}`]);
   if (!baseRes.ok) return fail("error", `couldn't find where ${worktree.branch} branched from ${main}: ${baseRes.text}`);
   const baseSha = baseRes.stdout.trim();
@@ -137,9 +143,11 @@ export async function deliverAsPullRequest(repo: string, worktree: TaskWorktree,
   if (diff.stdout === "") return fail("nothing", `nothing to deliver: ${worktree.branch} has no change past ${main}`);
 
   // 1. A fresh host worktree on the PR branch, from the card's base.
-  await cleanup(false); // a stale one from an earlier attempt
+  await cleanup(true); // a stale host worktree from an earlier attempt; branches are never touched here
+  if (await hasBranch(branch)) return fail("error", `the branch ${branch} already exists in ${repo}; delete it or change delivery.branchPattern. Nothing was pushed.`);
   const add = await git(repo, ["worktree", "add", "-q", "-b", branch, hostPath, baseSha]);
   if (!add.ok) return fail("error", `couldn't create the delivery worktree for ${branch}: ${add.text}`);
+  created = true;
   try {
     // 2. The card's diff, staged by explicit path, as its own commit.
     const applied = await git(hostPath, ["apply", "--binary", "--whitespace=nowarn"], diff.stdout);
@@ -149,7 +157,9 @@ export async function deliverAsPullRequest(repo: string, worktree: TaskWorktree,
     const committed = await git(hostPath, ["commit", "-q", "-m", commitMessage]);
     if (!committed.ok) return fail("error", `couldn't commit the card's changes in the delivery worktree: ${committed.text}`);
 
-    // 3. Main merged in; a conflict is reported, never resolved here.
+    // 3. Main merged in; a conflict is reported, never resolved here. Unlike the local merge, the conflict is not left in the
+    //    card worktree for the conflict integrator: the merge ran in the delivery worktree, which is aborted and removed, so the
+    //    caller (orchestrator deliverPullRequest) sends the card to review with this message for a person.
     const merged = await git(hostPath, ["merge", "-q", "--no-edit", `refs/heads/${main}`]);
     if (!merged.ok) {
       const conflicted = (await git(hostPath, ["diff", "--name-only", "--diff-filter=U"])).stdout.trim().split("\n").filter(Boolean);

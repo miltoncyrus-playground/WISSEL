@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createApp } from "../src/api/server.ts";
 import { Registry } from "../src/core/registry.ts";
 import { SqliteBoard } from "../src/services/board.ts";
-import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, gateContextFor, inQuietHours, quietHoursEnd, type ExecutableAction, type ExecutorOptions } from "../src/services/coordinator-executor.ts";
+import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, gateContextFor, inQuietHours, startOutboundFlusher, quietHoursEnd, type ExecutableAction, type ExecutorOptions } from "../src/services/coordinator-executor.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, evaluate, type GateContext, type GateVerdict } from "../src/services/policy-gate.ts";
 import { SqliteWorkstreamStore, type Workstream } from "../src/services/workstreams.ts";
 
@@ -152,4 +152,33 @@ test("gateContextFor reads the project's role and lists from the workstream; bui
   await handlers["host.restart-when-idle"]!(act("host.restart-when-idle"));
   expect(calls).toEqual([`stop:${started.id}`, "owner:Log in to gh", "hold:disk", "release", "restart"]);
   for (const kind of ["channel.post", "branch.push", "pr.open", "pr.arm", "ticket.transition", "ticket.comment", "chat.post"] as const) expect(handlers[kind]).toBeUndefined();
+});
+
+test("the flusher sends queued actions once quiet hours end, with no direct flush call", async () => {
+  const s = setup();
+  s.clock.now = at("2026-11-09T23:00:00Z");
+  expect((await s.executor.execute(act("channel.post", { post: "a" }))).outcome).toBe("queued");
+  const flusher = startOutboundFlusher({ executor: s.executor, workstreams: { list: async () => [{ id: WS }] }, setInterval: () => 1, clearInterval: () => {}, logger: () => {} });
+  await flusher.tick();
+  expect(s.ran).toEqual([]); // still quiet
+  s.clock.now = at("2026-11-10T07:01:00Z");
+  await flusher.tick();
+  expect(s.ran).toEqual(["post:a"]);
+  flusher.stop();
+});
+
+test("overlapping flushes of one workstream post each queued entry once", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const s = setup({ handlers: { "channel.post": async () => { s0.count++; await gate; } } });
+  const s0 = { count: 0 };
+  s.clock.now = at("2026-11-09T23:00:00Z");
+  await s.executor.execute(act("channel.post", { post: "a" }));
+  s.clock.now = at("2026-11-10T07:01:00Z");
+  const first = s.executor.flush(WS);
+  const second = await s.executor.flush(WS); // overlaps the first, which is parked in the handler
+  release();
+  await first;
+  expect(second).toEqual([]);
+  expect(s0.count).toBe(1);
 });

@@ -156,3 +156,28 @@ test("validateDelivery and the project settings accept both modes and refuse the
   expect(validateProjectSettings({ delivery: null })).toEqual({ ok: true, patch: { delivery: null } });
   expect(validateProjectSettings({ delivery: { mode: "pull-request" } }).ok).toBe(false);
 });
+
+test("a pre-existing branch of the rendered name is refused and never deleted; the card's own branch name gets a -pr suffix", async () => {
+  const worktree = await fixture();
+  await git(repo, "branch", HEAD); // the user's own branch of that name
+  const before = await git(repo, "rev-parse", HEAD);
+  const res = await deliverAsPullRequest(repo, worktree, task, delivery, { runner: runViaBun, host: fakeHost().runner, gateRunner: fakeGates().runner, homeDir: dir });
+  expect([res.ok, res.outcome, res.pushed]).toEqual([false, "error", false]);
+  expect(res.message).toContain("already exists");
+  expect(await git(repo, "rev-parse", HEAD)).toBe(before); // still there, untouched
+
+  // A pattern that renders to the card's own branch (the fallback) must not collide with the card worktree's checkout.
+  await git(repo, "branch", "-D", HEAD);
+  const own = await deliverAsPullRequest(repo, worktree, task, { ...delivery, branchPattern: "wissel/{id}" }, { runner: runViaBun, host: fakeHost().runner, gateRunner: fakeGates().runner, homeDir: dir });
+  expect([own.ok, own.branch, own.pr?.head]).toEqual([true, "wissel/t1-pr", "wissel/t1-pr"]);
+});
+
+test("a card's mergeTarget is the PR base when that branch exists", async () => {
+  const worktree = await fixture();
+  await git(repo, "branch", "release", "main");
+  const host = fakeHost();
+  const res = await deliverAsPullRequest(repo, worktree, { ...task, mergeTarget: "release" } as TaskCard, delivery, { runner: runViaBun, host: host.runner, gateRunner: fakeGates().runner, homeDir: dir });
+  expect(res.ok).toBe(true);
+  const create = host.calls.find((c) => c[0] === "gh")!;
+  expect(create[create.indexOf("--base") + 1]).toBe("release");
+});

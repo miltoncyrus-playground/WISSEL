@@ -115,6 +115,7 @@ export interface ExecutorOptions {
 export class CoordinatorExecutor {
   constructor(private readonly opts: ExecutorOptions) {}
 
+  private readonly flushing = new Set<string>();
   private now = (): Date => (this.opts.now ?? (() => new Date()))();
 
   private async run(action: ExecutableAction, verdict: GateVerdict): Promise<ExecuteOutcome> {
@@ -140,6 +141,16 @@ export class CoordinatorExecutor {
 
   /** Flushes the workstream's queue in order once its quiet hours are over; each entry is gated again first. A handler failure settles that entry and leaves the rest queued. */
   async flush(workstreamId: string): Promise<OutboundEntry[]> {
+    if (this.flushing.has(workstreamId)) return []; // one flush per workstream at a time: an overlapping call would post the same queued rows twice
+    this.flushing.add(workstreamId);
+    try {
+      return await this.flushOnce(workstreamId);
+    } finally {
+      this.flushing.delete(workstreamId);
+    }
+  }
+
+  private async flushOnce(workstreamId: string): Promise<OutboundEntry[]> {
     const now = this.now();
     if (inQuietHours(await this.opts.quietHours(workstreamId), now)) return [];
     const at = now.toISOString();
@@ -171,6 +182,43 @@ export class CoordinatorExecutor {
     const flushAt = quietHoursEnd(q, now)?.toISOString();
     return { quiet: inQuietHours(q, now), ...(flushAt ? { flushAt } : {}), queued: this.opts.queue.list(workstreamId, "queued"), would: this.opts.queue.list(workstreamId, "would") };
   }
+}
+
+export interface OutboundFlusherOptions {
+  executor: Pick<CoordinatorExecutor, "flush">;
+  workstreams: { list(): Promise<{ id: string }[]> };
+  /** How often to look for queues whose quiet hours have ended. */
+  intervalMs?: number;
+  setInterval?: (fn: () => void, ms: number) => unknown;
+  clearInterval?: (handle: unknown) => void;
+  logger?: (message: string) => void;
+}
+
+/** The trigger for `CoordinatorExecutor.flush` (§4.3, §4.11): on every tick each workstream's queue is flushed, which does
+ *  nothing while its quiet hours last and sends the queued actions in order once they are over. */
+export function startOutboundFlusher(opts: OutboundFlusherOptions): { tick: () => Promise<void>; stop: () => void } {
+  const log = opts.logger ?? ((m: string) => console.log(m));
+  let busy = false;
+  const tick = async (): Promise<void> => {
+    if (busy) return;
+    busy = true;
+    try {
+      for (const ws of await opts.workstreams.list()) {
+        try {
+          const settled = await opts.executor.flush(ws.id);
+          if (settled.length > 0) log(`outbound ${ws.id}: flushed ${settled.length} queued action(s)`);
+        } catch (e) {
+          log(`outbound ${ws.id}: flush failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    } catch (e) {
+      log(`outbound flush: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      busy = false;
+    }
+  };
+  const handle = (opts.setInterval ?? ((fn, ms) => { const h = setInterval(fn, ms); (h as { unref?: () => void }).unref?.(); return h; }))(() => void tick(), opts.intervalMs ?? 60_000);
+  return { tick, stop: () => (opts.clearInterval ?? ((h) => clearInterval(h as Parameters<typeof clearInterval>[0])))(handle) };
 }
 
 export interface BuiltinDeps {

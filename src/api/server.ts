@@ -107,7 +107,7 @@ import { SqliteDecisionStore } from "../services/decision-cards.ts";
 import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions } from "../services/inbox.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
-import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, gateContextFor, type ExecutorOptions } from "../services/coordinator-executor.ts";
+import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, startOutboundFlusher, gateContextFor, type ExecutorOptions } from "../services/coordinator-executor.ts";
 import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -803,7 +803,7 @@ export function createApp(
   const duties = new SqliteDutyStore((board as SqliteBoard).db);
   const outboundQueue = new SqliteOutboundQueue((board as SqliteBoard).db);
   const executor = new CoordinatorExecutor({
-    gate: new PolicyGate(gateLog),
+    gate: new PolicyGate(gateLog, opts.executor?.now),
     queue: outboundQueue,
     context: async (a) => {
       const ws = await workstreams.get(a.workstreamId);
@@ -891,6 +891,12 @@ export function createApp(
       runner: commandRunner,
       checkIntervalHours: opts.mergeHealthIntervalHours,
     });
+  }
+
+  // Queued outward actions leave once their workstream's quiet hours end (§4.3, §4.11).
+  if (opts.schedulesEnabled) {
+    const outboundFlusher = startOutboundFlusher({ executor, workstreams });
+    onShutdown(() => outboundFlusher.stop());
   }
 
   // The PR watcher (§4.7) shares `prsOf` with the Tickets page, so a
