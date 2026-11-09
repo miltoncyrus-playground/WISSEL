@@ -1485,6 +1485,10 @@ export interface OrchestratorOptions {
    *  `notBefore` against, in ms. Defaults to Date.now; tests pass a fake
    *  one to pin "before" and "after" without waiting. */
   now?: () => number;
+  /** Cards an open owner task blocks (OwnerTaskStore.heldCardIds,
+   *  docs/SDD-coordinator.md §3.4): sweep() holds them until the task is
+   *  done. Read once per sweep. Undefined means nothing is held. */
+  heldCardIds?: () => Promise<ReadonlySet<string>>;
 }
 
 /** Midnight UTC on `now`'s calendar day — the window `spendCeilingUsd`
@@ -1641,8 +1645,12 @@ export class Orchestrator {
     const spentToday =
       this.opts.spendCeilingUsd !== undefined && this.telemetry ? await this.telemetry.sumCostSince(startOfUtcDay(new Date())) : undefined;
     const overSpendCeiling = spentToday !== undefined && this.opts.spendCeilingUsd !== undefined && spentToday >= this.opts.spendCeilingUsd;
+    const held = this.opts.heldCardIds ? await this.opts.heldCardIds() : undefined;
 
     for (const task of tasks) {
+      // Waiting on the owner (an open owner task names it): same wait as
+      // a dependency, resolved by the person instead of another card.
+      if (held?.has(task.id)) continue;
       if (this.inFlight.has(task.id)) continue;
       if (task.routedTo) continue; // already routed — a human or a prior run owns it now
       if (task.status !== "inbox" && task.status !== "ready") continue;
