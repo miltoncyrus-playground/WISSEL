@@ -48,12 +48,36 @@ test("the dock script keeps the width in localStorage, every access inside a try
   for (const line of lines) expect(line, `unguarded: ${line.trim()}`).toContain("try {");
 });
 
-test("the dock's limits and step are the SDD's: 320 to 560 by 16, 380 by default", () => {
+test("the dock's limits and step are the SDD's: 320 to 560 by 16, 380 by default, a 44 px rail", () => {
   const script = dockScript();
   expect(script).toMatch(/MIN_W = 320\b/);
   expect(script).toMatch(/MAX_W = 560\b/);
   expect(script).toMatch(/STEP_W = 16\b/);
   expect(script).toMatch(/DEFAULT_W = 380\b/);
+  expect(script).toMatch(/RAIL_W = 44\b/);
+});
+
+test("the header has the collapse button and the dock a rail with the label and the count (R5)", () => {
+  const aside = dockMarkup();
+  const head = aside.slice(aside.indexOf('<div class="drawer-head">'), aside.indexOf("</div>", aside.indexOf('<div class="drawer-head">')));
+  const button = head.match(/<button[^>]*id="coordCollapse"[^>]*>/)?.[0] ?? "";
+  expect(button, "the collapse button is in the header").not.toBe("");
+  expect(button).toContain('aria-expanded="true"');
+  expect(button).toContain('aria-label="Collapse coordinator window"');
+  const railEl = aside.match(/<button[^>]*id="coordRail"[^>]*>/)?.[0] ?? "";
+  expect(railEl).toContain('class="coord-rail"');
+  expect(aside).toContain('<span class="coord-rail-label">Coordinator</span>');
+  expect(aside).toContain('id="coordRailCount"');
+  // The rail's vertical label and 44px width are CSS, not script.
+  expect(html).toMatch(/\.coord-rail-label\s*\{[^}]*writing-mode:\s*vertical-rl/);
+});
+
+test("the collapsed state is kept in localStorage under its own key, inside a try (R5, §5)", () => {
+  const script = dockScript();
+  expect(script).toContain('"wissel-coord-collapsed"');
+  const lines = script.split("\n").filter((l) => l.includes("COLLAPSED_KEY") && l.includes("localStorage"));
+  expect(lines.length).toBeGreaterThanOrEqual(2); // read, write and clear
+  for (const line of lines) expect(line, `unguarded: ${line.trim()}`).toContain("try {");
 });
 
 test("board.html's inline script parses: node --check on the extracted script passes (§5)", async () => {

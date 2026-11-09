@@ -428,6 +428,85 @@ test("with storage blocked the dock still opens at 380 px and the handle still r
   expect(await dockWidth(page)).toBe(446);
 });
 
+// docs/SDD-coordinator-dock.md R5, check 4: the header's collapse button
+// folds the dock to a 44 px rail (a vertical "Coordinator" and the count
+// of cards that need the owner); the rail or the button expands it back to
+// the saved width, and the collapsed state is kept in localStorage.
+const lanesWidth = (page: Page) => page.locator("#lanesPanel").evaluate((el) => Math.round(el.getBoundingClientRect().width));
+const collapseBtn = (page: Page) => page.locator("#coordCollapse");
+const rail = (page: Page) => page.locator("#coordRail");
+
+/** A card whose result nobody has checked: review is the owner's queue, so it sits in Needs a human. */
+async function makeReviewCard(request: APIRequestContext, label: string) {
+  const created = await request.post("/tasks", { data: { title: unique(label), body: "x", labels: [], repo: "/tmp/wissel-e2e-repo" } });
+  const task = (await created.json()) as { id: string };
+  const result = await request.post(`/tasks/${task.id}/result`, { data: { agentId: "fixer", ok: true, summary: "opened a PR" } });
+  expect(result.ok()).toBe(true);
+  return task;
+}
+
+test("collapse folds the dock to a 44 px rail with the needs-owner count and gives the lanes 300 px more; expand restores the saved width; the state survives a reload", async ({ page, request }) => {
+  const card = await makeReviewCard(request, "rail");
+  await openDockOnBoard(page, 1280, 800);
+  await expect(page.locator(`#needsYou .kcard[data-task-id="${card.id}"]`)).toBeVisible();
+  const needing = await page.locator("#needsYouBody .kcard").count();
+  expect(needing).toBeGreaterThanOrEqual(1);
+  expect(await dockWidth(page)).toBe(380);
+  const open = await lanesWidth(page);
+  await expect(collapseBtn(page)).toHaveAttribute("aria-expanded", "true");
+  await expect(rail(page)).toBeHidden();
+
+  await collapseBtn(page).click();
+  expect(await dockWidth(page)).toBe(44);
+  expect(await lanesWidth(page)).toBeGreaterThanOrEqual(open + 300); // the lanes area uses the freed width
+  await expect(collapseBtn(page)).toHaveAttribute("aria-expanded", "false");
+  await expect(rail(page)).toBeVisible();
+  await expect(rail(page).locator(".coord-rail-label")).toHaveText("Coordinator");
+  expect(await rail(page).locator(".coord-rail-label").evaluate((el) => getComputedStyle(el).writingMode)).toMatch(/^vertical/);
+  await expect(rail(page).locator("#coordRailCount")).toHaveText(String(needing));
+  await expect(page.locator("#coordWorkstream")).toBeHidden();
+  await expect(page.locator("#coordFrame")).toBeHidden();
+  await expect(resizeHandle(page)).toBeHidden();
+  const folded = await dockGeometry(page, false);
+  expect(folded.dockLeft).toBeGreaterThanOrEqual(folded.lanesRight - 0.5);
+  expect(folded.headers.filter((h) => !h.hit).map((h) => h.lane), "a lane header is covered").toEqual([]);
+  expect(folded.pageScrollWidth).toBeLessThanOrEqual(folded.innerWidth);
+  expect(await page.evaluate(() => localStorage.getItem("wissel-coord-collapsed"))).toBe("1");
+
+  await rail(page).click(); // the rail expands it
+  expect(await dockWidth(page)).toBe(380);
+  expect(await lanesWidth(page)).toBe(open);
+  await expect(rail(page)).toBeHidden();
+  await expect(page.locator("#coordFrame")).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("wissel-coord-collapsed"))).toBeNull();
+
+  await dragHandle(page, -60); // a chosen width, then collapse: the rail is still 44 and the width is kept for the expand
+  expect(await dockWidth(page)).toBe(440);
+  await collapseBtn(page).click();
+  expect(await dockWidth(page)).toBe(44);
+  await page.reload();
+  await expect(page.locator('.kcol[data-lane="done"] h3')).toBeVisible();
+  await page.locator("#coordBtn").click();
+  await expect(page.locator("#coordDock")).toBeVisible();
+  expect(await dockWidth(page)).toBe(44); // still collapsed after the reload
+  await expect(rail(page)).toBeVisible();
+  await collapseBtn(page).click(); // the same button expands it
+  expect(await dockWidth(page)).toBe(440); // the saved width, not the default
+  await expect(collapseBtn(page)).toHaveAttribute("aria-expanded", "true");
+  await expect(resizeHandle(page)).toHaveAttribute("aria-valuenow", "440");
+});
+
+test("with storage blocked collapse and expand still work", async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", { get() { throw new Error("storage blocked"); } });
+  });
+  await openDockOnBoard(page, 1280, 800);
+  await collapseBtn(page).click();
+  expect(await dockWidth(page)).toBe(44);
+  await rail(page).click();
+  expect(await dockWidth(page)).toBe(380);
+});
+
 test("+ New has a Coordinator tab that creates a workstream and docks its window", async ({ page, request }) => {
   const dir = await mkdtemp(join(tmpdir(), "wissel-e2e-new-coord-"));
   execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "pipe" });

@@ -206,6 +206,33 @@
   .coord-resize:hover, .coord-resize:focus-visible, .coord-resize.dragging { background: var(--accent); outline: none; }
   body.coord-resizing { user-select: none; cursor: col-resize; }
   body.coord-resizing .coord-dock iframe { pointer-events: none; }
+  /* Collapsed (R5): the script sets --coord-w to the 44px rail, so the
+     dock's box and the room .main leaves both follow. Inside, the header
+     keeps only the collapse button (a column now), the select, link,
+     close, handle and frame go, and the rail below shows the vertical
+     label and, when any, the needs-owner count. The frame is hidden,
+     not unloaded: expanding brings the same window straight back. No
+     transition on the width, so nothing to tune for reduced motion. */
+  .coord-collapse {
+    appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--ink-muted); cursor: pointer;
+    font: inherit; font-size: 13px; line-height: 1; width: 28px; height: 28px; padding: 0; border-radius: 6px; flex: none;
+  }
+  .coord-collapse:hover { background: var(--page); color: var(--ink-1); }
+  .coord-rail { display: none; }
+  body.coord-collapsed .coord-dock .drawer-head { flex-direction: column; align-items: center; padding: 8px 0; border-bottom: 0; }
+  body.coord-collapsed .coord-dock .drawer-head > :not(.coord-collapse) { display: none; }
+  body.coord-collapsed .coord-dock .coord-resize, body.coord-collapsed .coord-dock iframe { display: none; }
+  body.coord-collapsed .coord-rail {
+    display: flex; flex: 1; flex-direction: column; align-items: center; gap: 10px; padding: 8px 0;
+    appearance: none; border: 0; background: transparent; color: var(--ink-1); cursor: pointer; font: inherit; min-width: 0;
+  }
+  body.coord-collapsed .coord-rail:hover { background: var(--page); }
+  .coord-rail-label { writing-mode: vertical-rl; font-size: 13px; font-weight: 700; letter-spacing: 0.04em; }
+  .coord-rail-count {
+    display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
+    background: var(--no-match); color: var(--on-accent, #fff); font-size: 12px; font-weight: 700;
+  }
+  .coord-rail-count[hidden] { display: none; }
   /* The top menu stays full width; only the content makes room, and the
      dock starts where the cards start. The width is set outright: the
      news-site block below gives .main width: 100%, which ignores a right
@@ -1775,11 +1802,16 @@
        it and use the arrow keys (16px), Home (320px) and End (560px). -->
   <div class="coord-resize" id="coordResize" role="separator" aria-orientation="vertical" aria-label="Resize coordinator window" aria-valuemin="320" aria-valuemax="560" aria-valuenow="380" tabindex="0" title="Drag to resize; arrow keys, Home and End"></div>
   <div class="drawer-head">
+    <!-- Collapse to the rail (docs/SDD-coordinator-dock.md R5); the same button expands it again. -->
+    <button type="button" class="coord-collapse" id="coordCollapse" aria-expanded="true" aria-controls="coordFrame" aria-label="Collapse coordinator window" title="Collapse to a rail">»</button>
     <select id="coordWorkstream" aria-label="Workstream"></select>
     <a class="app-link" id="coordOpenApp" href="/app#/window">Open in the app</a>
     <button type="button" class="drawer-close" id="coordClose" aria-label="Close coordinator window">×</button>
   </div>
   <iframe id="coordFrame" title="Coordinator window" src="about:blank"></iframe>
+  <!-- The rail (R5), shown only while collapsed: the label and the count
+       of cards in Needs a human; pressing it expands the dock. -->
+  <button type="button" class="coord-rail" id="coordRail" title="Expand the coordinator window"><span class="coord-rail-label">Coordinator</span><span class="coord-rail-count" id="coordRailCount" hidden></span></button>
 </aside>
 
 <script src="/render-task-output.js"></script>
@@ -7843,10 +7875,11 @@
     // limits). The chosen width is kept in localStorage; storage can be
     // blocked or throw, so every access is in a try and the page runs
     // on the default without it.
-    var MIN_W = 320, MAX_W = 560, STEP_W = 16, DEFAULT_W = 380;
-    var WIDTH_KEY = "wissel-coord-width";
+    var MIN_W = 320, MAX_W = 560, STEP_W = 16, DEFAULT_W = 380, RAIL_W = 44;
+    var WIDTH_KEY = "wissel-coord-width", COLLAPSED_KEY = "wissel-coord-collapsed";
     var handle = document.getElementById("coordResize");
     var width = DEFAULT_W;
+    var collapsed = false;
     function clampWidth(w) {
       w = Math.round(Number(w));
       if (!isFinite(w)) return DEFAULT_W;
@@ -7857,13 +7890,57 @@
       try { raw = localStorage.getItem(WIDTH_KEY); } catch (e) { raw = null; }
       return raw === null || raw === "" ? DEFAULT_W : clampWidth(raw);
     }
+    // --coord-w is what the dock takes: the rail while collapsed, else
+    // the chosen width, which is kept so the expand comes back to it.
+    function applyRoom() {
+      document.body.style.setProperty("--coord-w", (collapsed ? RAIL_W : width) + "px");
+    }
     function setWidth(w, save) {
       width = clampWidth(w);
-      document.body.style.setProperty("--coord-w", width + "px");
+      applyRoom();
       handle.setAttribute("aria-valuenow", String(width));
       if (save) { try { localStorage.setItem(WIDTH_KEY, String(width)); } catch (e) { /* not kept */ } }
     }
     setWidth(readWidth(), false);
+
+    // Collapsed to the rail (R5). The state is kept under its own key
+    // ("1", or removed); the width keeps its own, so expanding restores
+    // the chosen width. Both the header button and the rail toggle it.
+    var collapseBtn = document.getElementById("coordCollapse");
+    var rail = document.getElementById("coordRail");
+    var railCount = document.getElementById("coordRailCount");
+    function readCollapsed() {
+      var raw = null;
+      try { raw = localStorage.getItem(COLLAPSED_KEY); } catch (e) { raw = null; }
+      return raw === "1";
+    }
+    function setCollapsed(on, save) {
+      collapsed = !!on;
+      document.body.classList.toggle("coord-collapsed", collapsed);
+      collapseBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      collapseBtn.setAttribute("aria-label", collapsed ? "Expand coordinator window" : "Collapse coordinator window");
+      collapseBtn.title = collapsed ? "Expand the coordinator window" : "Collapse to a rail";
+      collapseBtn.textContent = collapsed ? "«" : "»";
+      applyRoom();
+      if (save) {
+        try { if (collapsed) localStorage.setItem(COLLAPSED_KEY, "1"); else localStorage.removeItem(COLLAPSED_KEY); } catch (e) { /* not kept */ }
+      }
+    }
+    collapseBtn.addEventListener("click", function () { setCollapsed(!collapsed, true); });
+    rail.addEventListener("click", function () { setCollapsed(false, true); });
+    // The rail's count is the board's Needs a human list (renderNeedsYou
+    // above fills #needsYouBody): the cards waiting on the owner. Read
+    // off the DOM each time that list is redrawn, so the dock needs no
+    // fetch of its own and the two numbers never disagree.
+    var needsBody = document.getElementById("needsYouBody");
+    function updateRailCount() {
+      var n = needsBody ? needsBody.querySelectorAll(".kcard").length : 0;
+      railCount.textContent = n ? String(n) : "";
+      railCount.hidden = n === 0;
+      rail.setAttribute("aria-label", n ? "Expand the coordinator window; " + n + " need" + (n === 1 ? "s" : "") + " you" : "Expand the coordinator window");
+    }
+    updateRailCount();
+    if (needsBody && window.MutationObserver) new MutationObserver(updateRailCount).observe(needsBody, { childList: true });
     var drag = null;
     handle.addEventListener("pointerdown", function (e) {
       if (e.button !== 0) return;
@@ -7899,6 +7976,7 @@
 
     function openDock(selectId) {
       setWidth(readWidth(), false); // another tab may have changed it since the page loaded
+      setCollapsed(readCollapsed(), false);
       setOpen(true);
       place();
       fetch("/workstreams").then(function (r) { return r.json(); }).then(function (list) {
