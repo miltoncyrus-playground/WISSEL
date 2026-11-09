@@ -1,7 +1,7 @@
 // The server endpoints the shell reads. Same origin: the server that
 // serves /app also serves the API.
 
-import type { AgentInfo, AskResult, Conversation, ConversationDetail, Decision, FeedPage, PendingResult, PipelineDef, PodcastEpisode, ProjectGit, ProjectInfo, ProjectRole, QuickAction, Schedule, TaskCard, WindowDocument, WindowMessageResult, Workstream, Wrapped } from "./types";
+import type { AgentInfo, AskResult, Conversation, ConversationDetail, CoordinatorAsk, Decision, FeedPage, PendingResult, PipelineDef, PodcastEpisode, ProjectGit, ProjectInfo, ProjectRole, QuickAction, Schedule, TaskCard, WindowDocument, WindowMessageResult, Workstream, Wrapped } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path, { headers: { accept: "application/json" } });
@@ -184,6 +184,11 @@ export const postWindowMessage = (workstreamId: string, input: { action?: QuickA
 export const resolveWindowAction = (workstreamId: string, pendingId: string, verb: "confirm" | "cancel") => postJson<PendingResult>(`/workstreams/${enc(workstreamId)}/window/actions/${enc(pendingId)}/${verb}`);
 /** POST /decisions/:id/flip: takes the alternative. */
 export const flipDecision = (id: string) => postJson<Decision>(`/decisions/${enc(id)}/flip`);
+/** The owner's answer to an ask (src/services/asks.ts): approve re-checks the hard limits and runs the action once; reject
+ *  runs nothing. A 409 (a hard limit trips now, already resolved, the project is in Shadow) throws the server's words. */
+export type AskOutcome = { ok: true; ask: CoordinatorAsk; result?: unknown; error?: string };
+export const approveAsk = (workstreamId: string, askId: string) => postJson<AskOutcome>(`/workstreams/${enc(workstreamId)}/asks/${enc(askId)}/approve`);
+export const rejectAsk = (workstreamId: string, askId: string) => postJson<AskOutcome>(`/workstreams/${enc(workstreamId)}/asks/${enc(askId)}/reject`);
 /** A role change is the owner's and goes with confirm: true, after the window's confirm click. */
 export const setProjectRole = (workstreamId: string, projectId: string, role: ProjectRole) => postJson<Workstream>(`/workstreams/${enc(workstreamId)}/projects/${enc(projectId)}/role`, { confirm: true, role });
 

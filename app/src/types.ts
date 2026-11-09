@@ -372,10 +372,28 @@ export interface ChannelEntry {
   message: { kind: string; from: string; text?: string; [field: string]: unknown };
 }
 
+/** An ask-owner or ask-decider verdict waiting for a person (asks.ts,
+ *  §4.2 rules 5 and 7). `action` is the gated action as the executor
+ *  built it; the window reads its kind, post, decision and payload. */
+export interface CoordinatorAsk {
+  id: string;
+  workstreamId: string;
+  action: { id?: string; kind: string; workstreamId: string; projectId: string; post?: string; decision?: string; base?: string; repo?: string; payload?: Record<string, unknown> };
+  verdict: "ask-owner" | "ask-decider";
+  /** The gate rule that asked, e.g. "5:must-ask". */
+  rule: string;
+  status: "open" | "approved" | "rejected" | "expired";
+  askedAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  via?: "api" | "channel" | "sweep";
+}
+
 export type WindowItem =
   | { kind: "status"; at: string; from: string; text: string }
   | { kind: "decision"; decision: Decision; flip: boolean }
   | { kind: "owner-task"; task: OwnerTask; hasCheck: boolean }
+  | { kind: "ask"; ask: CoordinatorAsk }
   | { kind: "plan"; card: { id: string; key?: string; title: string; status: TaskStatus }; held?: string };
 
 export interface WindowHeader {
@@ -393,6 +411,8 @@ export interface WindowDocument {
   items: WindowItem[];
   decisions: Decision[];
   log: ChannelEntry[];
+  /** Asks that were approved, rejected or expired, oldest first; the Log tab shows them with who and how. */
+  resolvedAsks?: CoordinatorAsk[];
   conversation?: { conversation: Conversation; messages: ChatMessage[] };
 }
 

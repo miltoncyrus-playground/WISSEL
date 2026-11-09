@@ -169,8 +169,11 @@ test("the window lists open asks as items and counts them in what waits on me", 
   expect(doc.items.filter((i) => i.kind === "ask")).toEqual([{ kind: "ask", ask: expect.objectContaining({ id: ask.id, status: "open" }) }]);
   const waiting = await window.message(s.ws.id, { action: "waiting-on-me", log: false });
   expect(waiting.assistant.text).toContain(`Ask: ${describeAction(ask.action)}`);
+  expect(doc.resolvedAsks).toEqual([]);
   await s.asks.reject(s.ws.id, ask.id, "owner", "api");
-  expect((await window.document(s.ws.id))!.items.filter((i) => i.kind === "ask")).toEqual([]);
+  const after = (await window.document(s.ws.id))!;
+  expect(after.items.filter((i) => i.kind === "ask")).toEqual([]);
+  expect(after.resolvedAsks).toEqual([expect.objectContaining({ id: ask.id, status: "rejected", resolvedBy: "owner", via: "api" })]); // the Log tab's "who and how"
 });
 
 test("API: GET the open asks, approve one through the owner's route, reject another; the app's own executor and window see them", async () => {

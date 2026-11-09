@@ -682,6 +682,10 @@ a.result-text:hover { text-decoration: underline; }
 .cw-steps { gap: 2px; }
 .cw-steps label { display: flex; align-items: center; gap: 8px; min-height: 32px; }
 .cw-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+/* An ask waits for a person, so it carries the same coral edge as a Confirm;
+   its Change line nests inside the item and keeps the dock's narrow width. */
+.cw-ask { border-left: 4px solid var(--coral); }
+.cw-ask .cw-change { padding: 10px 12px; border: 1px solid var(--line); border-left-width: 1px; background: var(--ground); }
 .cw-output { margin: 0; padding: 8px 10px; max-height: 12em; overflow: auto; background: var(--surface-2); border-radius: 4px; font: 12px var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .cw-log { gap: 0; border-top: 1px solid var(--line); }
 .cw-log li { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
