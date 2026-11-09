@@ -49,7 +49,7 @@ import { createApp } from "../src/api/server.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { SqliteProjectStore } from "../src/services/projects.ts";
 import { SqlitePipelineStore } from "../src/services/pipelines.ts";
-import { SqlitePendingActionStore } from "../src/services/pending-actions.ts";
+import { controlActionsOf, SqlitePendingActionStore } from "../src/services/pending-actions.ts";
 import { Registry } from "../src/core/registry.ts";
 import { HarnessPool } from "../src/core/harness-pool.ts";
 import { evalHarnessPool } from "./eval-harness.ts";
@@ -140,7 +140,7 @@ const pendingOf = (r: AskResult, board: SqliteBoard) =>
     .forMessage(r.assistant.id)
     .filter((p) => p.kind === "confirm" && !p.resolution);
 const pendingCards = (r: AskResult, board: SqliteBoard, type: string) =>
-  pendingOf(r, board).flatMap((p) => p.actions.filter((a) => a.type === type && isCardControl(a)).flatMap((a) => (a as { taskIds: string[] }).taskIds));
+  pendingOf(r, board).flatMap((p) => controlActionsOf(p).filter((a) => a.type === type && isCardControl(a)).flatMap((a) => (a as { taskIds: string[] }).taskIds));
 
 interface Case {
   name: string;
@@ -631,7 +631,7 @@ export async function runControlCase(c: ControlCase, s: ControlSeeded): Promise<
   const board = await s.board.list();
   const ran = controlRan(result);
   const pending = pendingOf(result, s.board);
-  const pendingActions = pending.flatMap((p) => p.actions);
+  const pendingActions = pending.flatMap(controlActionsOf);
   // Earlier messages' pending actions count too: nothing may have run them.
   const allMessages = (await (await s.app(new Request(`http://localhost/conversations/${result.conversation.id}`))).json()) as { messages: { actions: ExecutedAction[] }[] };
   const everRan = allMessages.messages.flatMap((m) => m.actions.filter((a): a is ControlExecuted => "control" in a));

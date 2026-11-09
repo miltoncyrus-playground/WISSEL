@@ -32,13 +32,25 @@ export interface ControlExecuted {
   undoId?: string;
 }
 
+/** A coordinator window policy change as it ran after its Confirm
+ *  (docs/SDD-coordinator.md §4.14); `text` is the sentence the window shows. */
+export interface WindowExecuted {
+  type: `window.${string}`;
+  window: true;
+  ok: boolean;
+  confirmedBy: "confirm";
+  text: string;
+  error?: string;
+}
+
 /** An action as it was executed: what it was, and what it made. */
 export type ExecutedAction =
   | { type: "create_task"; ok: true; taskId: string; title: string }
   | { type: "run_pipeline"; ok: true; runId: string; name: string; pipelineId: string }
   | { type: "show_task"; ok: true; taskId: string }
   | { type: "create_task" | "run_pipeline" | "show_task"; ok: false; error: string; title?: string; name?: string }
-  | ControlExecuted;
+  | ControlExecuted
+  | WindowExecuted;
 
 export function isControlExecuted(a: ExecutedAction): a is ControlExecuted {
   return "control" in a;

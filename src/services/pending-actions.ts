@@ -15,6 +15,21 @@ export const PENDING_TTL_MS = 10 * 60_000;
 
 export type PendingKind = "confirm" | "undo";
 
+/** A coordinator window policy change (docs/SDD-coordinator.md §4.14,
+ *  src/services/coordinator-window.ts) waiting for its Confirm. Not a
+ *  board control: the Ask confirm route refuses it. */
+export interface WindowAction {
+  type: "window.pause-new-cards" | "window.resume-new-cards" | "window.restart-when-idle";
+  tier: "B";
+  workstreamId: string;
+  /** "Log it on the channel" as it was ticked when proposed. */
+  log: boolean;
+}
+export const isWindowAction = (a: PendingItem): a is WindowAction => a.type.startsWith("window.");
+export type PendingItem = ControlAction | WindowAction;
+/** The board controls among a pending action's items (Ask runs only these). */
+export const controlActionsOf = (p: Pick<PendingAction, "actions">): ControlAction[] => p.actions.filter((a): a is ControlAction => !isWindowAction(a));
+
 export interface PendingAction {
   id: string;
   conversationId: string;
@@ -22,7 +37,7 @@ export interface PendingAction {
   messageId: string;
   kind: PendingKind;
   /** What a Confirm runs, in order. */
-  actions: ControlAction[];
+  actions: PendingItem[];
   /** One line per target, as the Confirm card shows it. */
   lines: string[];
   createdAt: string;
@@ -64,7 +79,7 @@ function fromRow(r: Row): PendingAction {
     conversationId: r.conversationId,
     messageId: r.messageId,
     kind: r.kind === "undo" ? "undo" : "confirm",
-    actions: JSON.parse(r.actions) as ControlAction[],
+    actions: JSON.parse(r.actions) as PendingItem[],
     lines: JSON.parse(r.lines) as string[],
     createdAt: r.createdAt,
     expiresAt: r.expiresAt,
@@ -107,7 +122,7 @@ export class SqlitePendingActionStore {
     this.db.run("CREATE INDEX IF NOT EXISTS ask_pending_by_message ON ask_pending_actions (messageId);");
   }
 
-  create(input: { conversationId: string; messageId: string; kind: PendingKind; actions: ControlAction[]; lines: string[] }, now = new Date()): PendingAction {
+  create(input: { conversationId: string; messageId: string; kind: PendingKind; actions: PendingItem[]; lines: string[] }, now = new Date()): PendingAction {
     const p: PendingAction = {
       id: randomUUID(),
       ...input,

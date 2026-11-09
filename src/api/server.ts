@@ -99,6 +99,7 @@ import { SqliteDigestLog, createDigestRun } from "../services/digests.ts";
 import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
 import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch, type Workstream } from "../services/workstreams.ts";
+import { createCoordinatorWindow, validateWindowMessage } from "../services/coordinator-window.ts";
 import { importWorkstream } from "../services/workstream-import.ts";
 import { SqliteDutyStore, isDuty, validateDutyChange } from "../services/duties.ts";
 import { shadowReport } from "../services/shadow-report.ts";
@@ -632,6 +633,8 @@ export function createApp(
   // on exactly the same path as POST /pipelines/:id/run, but Ask answers
   // as soon as the root card exists instead of waiting for the run.
   const conversations = new SqliteConversationStore((board as SqliteBoard).db);
+  // Shared with the coordinator window (§4.14), whose changes wait here too.
+  const pendingActions = new SqlitePendingActionStore((board as SqliteBoard).db);
   // The routes below and Ask's control actions (docs/SDD-wissel-app.md
   // §3.7) share these, and the functions in board-actions.ts.
   const harnessControl: HarnessControlDeps = {
@@ -663,7 +666,7 @@ export function createApp(
       // functions (docs/SDD-schedules.md §3.9).
       schedules: scheduleControl,
     },
-    pending: new SqlitePendingActionStore((board as SqliteBoard).db),
+    pending: pendingActions,
     board: board as Board,
     registry,
     router,
@@ -819,6 +822,16 @@ export function createApp(
       }),
       ...opts.executor?.handlers,
     },
+  });
+  // The coordinator window (§4.14): the same hold, restart and queue the admin routes and the executor use.
+  const coordinatorWindow = createCoordinatorWindow({
+    db: (board as SqliteBoard).db, board: board as Board, workstreams, ownerTasks, decisions, channelLog, conversations, pending: pendingActions,
+    outbound: (id) => executor.status(id),
+    live: async () => ({ dispatchHold: orchestrator.dispatchHold, restartPending: restartWhenIdle.pending }),
+    holdDispatch: (reason) => orchestrator.holdDispatch("owner", reason),
+    releaseDispatch: () => orchestrator.releaseDispatch("owner"),
+    requestRestart: () => restartWhenIdle.request(),
+    maxConcurrentTasks: opts.maxConcurrentTasks,
   });
   // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
   // subtask set should get its integrator card queued the moment it
@@ -1772,6 +1785,17 @@ export function createApp(
             return r.ok ? json(r.plan) : json({ error: r.error }, r.status);
           }
           if (parts.length === 3 && parts[2] === "decisions" && req.method === "GET") return json(decisions.list(ws.id));
+          // The coordinator window (§4.14): one document, a scoped conversation, and its own confirm step.
+          if (parts.length === 3 && parts[2] === "window" && req.method === "GET") return json(await coordinatorWindow.document(ws.id));
+          if (parts.length === 4 && parts[2] === "window" && parts[3] === "messages" && req.method === "POST") {
+            const check = validateWindowMessage(await req.json().catch(() => undefined));
+            if (!check.ok) return json({ error: check.error }, 400);
+            return json(await coordinatorWindow.message(ws.id, check.input));
+          }
+          if (parts.length === 6 && parts[2] === "window" && parts[3] === "actions" && (parts[5] === "confirm" || parts[5] === "cancel") && req.method === "POST") {
+            const r = await coordinatorWindow.confirm(ws.id, parts[4]!, parts[5]);
+            return r.ok ? json(r.value) : r.status === 404 ? notFound() : json({ error: r.error }, r.status);
+          }
           if (parts.length === 2 && req.method === "PATCH") {
             const check = validateWorkstreamPatch(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
