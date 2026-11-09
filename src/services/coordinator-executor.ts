@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
-import type { CardTemplateKind, Project, TaskCard } from "../core/types.ts";
+import type { CardTemplateKind, Project, StartCondition, TaskCard } from "../core/types.ts";
 import { aboutOf, describeAction, type Ask } from "./asks.ts";
 import type { Board } from "./board.ts";
 import { renderCardTemplateFor } from "./card-templates.ts";
@@ -317,7 +317,8 @@ export function startOutboundFlusher(opts: OutboundFlusherOptions): { tick: () =
 }
 
 export interface BuiltinDeps {
-  board: Pick<Board, "create">;
+  /** `list` resolves a plan's waitsFor keys to this workstream's cards. */
+  board: Pick<Board, "create" | "list">;
   projects: { list(): Promise<Project[]> };
   ownerTasks: { create(task: NewOwnerTask): Promise<OwnerTask> };
   holdDispatch: (reason: string) => void;
@@ -329,7 +330,9 @@ export interface BuiltinDeps {
 const str = (v: unknown, name: string): string => (typeof v === "string" && v.trim() !== "" ? v : (() => { throw new Error(`${name} must be a non-empty string`); })());
 const list = (v: unknown): string[] => (Array.isArray(v) ? (v as string[]) : []);
 
-/** The inward kinds of §4.3 against existing services. card.start renders the project's template with its rules and refuses an empty placeholder (§4.16). */
+/** The inward kinds of §4.3 against existing services. card.start renders the project's template with its rules and refuses an empty placeholder (§4.16);
+ *  a plan's `waitsFor` keys become card-done conditions on the workstream's cards (§4.8), so a batch is created in its planned order; an unknown key fails
+ *  the action rather than starting the card without its condition. The project's harness becomes the card's harnessOverride. */
 export function builtinHandlers(deps: BuiltinDeps): ActionHandlers {
   return {
     "card.start": async (a) => {
@@ -339,9 +342,17 @@ export function builtinHandlers(deps: BuiltinDeps): ActionHandlers {
       // `optional` names the placeholders that may be empty (a fix round's key, ticket and files; buildFixRoundBody).
       const rendered = renderCardTemplateFor(project, str(p.template, "template") as CardTemplateKind, (p.vars ?? {}) as Record<string, string | undefined>, { optional: list(p.optional) });
       if (!rendered.ok) throw new Error(rendered.error);
+      const keys = list(p.waitsFor);
+      const ours = keys.length ? (await deps.board.list()).filter((c) => c.workstreamId === a.workstreamId && !c.archivedAt) : [];
+      const waitsFor = keys.map((key): StartCondition => {
+        const target = ours.filter((c) => c.key === str(key, "waitsFor key")).at(-1);
+        if (!target) throw new Error(`waitsFor key "${key}" names no card in workstream ${a.workstreamId}`);
+        return { kind: "card-done", cardId: target.id };
+      });
       const card: Omit<TaskCard, "id" | "status"> = {
         title: str(p.title, "title"), body: rendered.body, labels: list(p.labels), repo: project.path, dependsOn: [], workstreamId: a.workstreamId,
         ...(typeof p.key === "string" ? { key: p.key } : {}), ...(typeof p.round === "number" ? { round: p.round } : {}),
+        ...(waitsFor.length ? { waitsFor } : {}), ...(project.harness ? { harnessOverride: project.harness } : {}),
       };
       return deps.board.create(card);
     },

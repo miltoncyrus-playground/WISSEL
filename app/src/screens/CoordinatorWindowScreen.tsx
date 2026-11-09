@@ -244,6 +244,13 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
                   </button>
                 </li>
               ))}
+              {doc.header.hasSpec && (
+                <li>
+                  <button type="button" className="btn btn-small" disabled={sending} title="Hand the workstream's spec to the coordinator: it plans the cards and starts them" onClick={() => send({ action: "plan-from-spec" })}>
+                    Plan from spec
+                  </button>
+                </li>
+              )}
             </ul>
           </div>
           <div role="tabpanel" id="cw-panel" aria-labelledby={`cw-tab-${tab}`} className="cw-panel">

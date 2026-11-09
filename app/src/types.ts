@@ -335,7 +335,7 @@ export interface ProjectInfo {
  *  workstreams.ts (ProjectRole, Workstream's header slice). */
 export type ProjectRole = "shadow" | "follow" | "decide" | "decide-over";
 export const PROJECT_ROLES: readonly ProjectRole[] = ["shadow", "follow", "decide", "decide-over"];
-export type QuickAction = "status-now" | "waiting-on-me" | "pause-new-cards" | "resume-new-cards" | "restart-when-idle";
+export type QuickAction = "status-now" | "waiting-on-me" | "pause-new-cards" | "resume-new-cards" | "restart-when-idle" | "plan-from-spec";
 
 export interface Workstream {
   id: string;
@@ -399,6 +399,8 @@ export type WindowItem =
 
 export interface WindowHeader {
   workstream: { id: string; name: string; ticket?: string };
+  /** The "Plan from spec" quick action shows only when the workstream has a spec. */
+  hasSpec: boolean;
   /** `pendingRole`: a confirmed change waiting for the arm in flight (§4.13). */
   roles: { projectId: string; role: ProjectRole; decider?: string; pendingRole?: ProjectRole }[];
   live: { dispatchHold?: string; restartPending: boolean; running: number };

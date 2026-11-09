@@ -100,12 +100,13 @@ import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions }
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
 import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch, type Workstream } from "../services/workstreams.ts";
 import { createCoordinatorWindow, validateWindowMessage } from "../services/coordinator-window.ts";
+import { planFromSpec, validatePlanRequest } from "../services/plan-from-spec.ts";
 import { importWorkstream } from "../services/workstream-import.ts";
 import { SqliteDutyStore, isDuty, validateDutyChange } from "../services/duties.ts";
 import { shadowReport } from "../services/shadow-report.ts";
 import { DECISION_CARD_KINDS, SqliteDecisionStore } from "../services/decision-cards.ts";
 import { createDecisionRuntime, type DecisionRuntime } from "../services/decision-runtime.ts";
-import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions, type InboxHandler } from "../services/inbox.ts";
+import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions, type InboxHandler, type NewInboxEvent } from "../services/inbox.ts";
 import { createCoordinatorDriver } from "../services/coordinator-driver.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
 import { channelHandlers, ownerMessageEvent, startChannelReader } from "../services/channel-sinks.ts";
@@ -889,6 +890,8 @@ export function createApp(
   // A confirmed role change lands at once, or after the arm in flight settles (§4.13, role-changes.ts); a held one
   // survives a restart, and the project's open asks are re-routed under the new role with a handover note.
   const roleChanges = createRoleChanges({ workstreams, executor, asks, db: (board as SqliteBoard).db });
+  // Plan from spec (§4.4 plan-batch, §7): the owner's spec becomes a plan-batch event, from the route or the window's quick action.
+  const planDeps = { projects, inbox, ingest: (e: NewInboxEvent) => inboxDispatcher.ingest(e) };
   // The coordinator window (§4.14): the same hold, restart and queue the admin routes and the executor use.
   const coordinatorWindow = createCoordinatorWindow({
     db: (board as SqliteBoard).db, board: board as Board, workstreams, ownerTasks, decisions, channelLog, asks: askStore, conversations, pending: pendingActions,
@@ -900,6 +903,7 @@ export function createApp(
     requestRestart: () => restartWhenIdle.request(),
     maxConcurrentTasks: opts.maxConcurrentTasks,
     onOwnerMessage: (ws, message, input) => inboxDispatcher.ingest(ownerMessageEvent(ws.id, message, input)),
+    plan: (ws) => planFromSpec(ws, {}, planDeps),
   });
   // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
   // subtask set should get its integrator card queued the moment it
@@ -1869,6 +1873,13 @@ export function createApp(
           if (parts.length === 3 && parts[2] === "import" && req.method === "POST") {
             const r = await importWorkstream(ws, await req.json().catch(() => undefined), url.searchParams.get("dryRun") === "1", { board: board as Board, projects, workstreams });
             return r.ok ? json(r.plan) : json({ error: r.error }, r.status);
+          }
+          // Plan from spec (owner route): 202 with the plan-batch event id; a double click returns the same id as a duplicate.
+          if (parts.length === 3 && parts[2] === "plan" && req.method === "POST") {
+            const check = validatePlanRequest(await req.json().catch(() => undefined));
+            if (!check.ok) return json({ error: check.error }, 400);
+            const r = await planFromSpec(ws, check.request, planDeps);
+            return r.ok ? json({ eventId: r.eventId, ...(r.duplicate ? { duplicate: true } : {}) }, 202) : json({ error: r.error }, 400);
           }
           if (parts.length === 3 && parts[2] === "decisions" && req.method === "GET") return json(decisions.list(ws.id));
           // A decision the owner records from the window (§4.14): a default and its alternative, flippable like the rest.

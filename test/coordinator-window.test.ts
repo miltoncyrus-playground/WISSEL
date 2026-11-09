@@ -66,6 +66,7 @@ test("document: header, structured items, decisions and the log, all scoped to t
   const doc = (await window.document(ws.id))!;
   expect(doc.header).toEqual({
     workstream: { id: ws.id, name: "checkout", ticket: "SHOP-12" },
+    hasSpec: false,
     roles: [{ projectId: "p1", role: "decide", decider: "Ana" }, { projectId: "p2", role: "follow" }],
     live: { dispatchHold: undefined, restartPending: false, running: 1 },
     cards: { live: 1, cap: 3 },
