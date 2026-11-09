@@ -14,6 +14,8 @@ import type { Project } from "../core/types.ts";
 import { grantError, MAX_EXTRA_ALLOWED_TOOLS } from "../core/allowed-tools.ts";
 import { MAX_REF_PATTERNS, patternError } from "./ticket-refs.ts";
 import { cardRulesError, cardTemplatesError } from "./card-templates.ts";
+import { reviewPolicyError } from "./review-policy.ts";
+import { validateDelivery } from "./pr-delivery.ts";
 
 export const MAX_SANDBOX_DOMAINS = 20;
 export const MAX_SETTING_COMMANDS = 20;
@@ -22,7 +24,7 @@ export const MAX_PROTECTED_PATHS = 50;
 /** The settings, as stored on Project. */
 export type ProjectSettings = Pick<
   Project,
-  "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates" | "env"
+  "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates" | "reviewPolicy" | "env" | "delivery"
 >;
 export type ProjectSettingKey = keyof Required<ProjectSettings>;
 export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = [
@@ -35,7 +37,9 @@ export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = [
   "referencePatterns",
   "cardRules",
   "cardTemplates",
+  "reviewPolicy",
   "env",
+  "delivery",
 ];
 
 export const MAX_ENV_ENTRIES = 50;
@@ -233,6 +237,17 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
     }
   }
 
+  // Review policy (docs/SDD-coordinator.md §4.6, src/services/review-policy.ts).
+  if ("reviewPolicy" in raw) {
+    const v = raw.reviewPolicy;
+    if (v === null) patch.reviewPolicy = null;
+    else {
+      const error = reviewPolicyError(v);
+      if (error) return { ok: false, error };
+      patch.reviewPolicy = v as NonNullable<Project["reviewPolicy"]>;
+    }
+  }
+
   // Per-project env (docs/SDD-coordinator.md §3.2): a flat string map;
   // an empty map is stored as cleared.
   if ("env" in raw) {
@@ -247,6 +262,17 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
         if (error) return { ok: false, error: `env: ${error}` };
       }
       patch.env = entries.length > 0 ? (v as Record<string, string>) : null;
+    }
+  }
+
+  // Delivery (docs/SDD-coordinator.md §4.5, src/services/pr-delivery.ts).
+  if ("delivery" in raw) {
+    const v = raw.delivery;
+    if (v === null) patch.delivery = null;
+    else {
+      const check = validateDelivery(v);
+      if (!check.ok) return { ok: false, error: check.error };
+      patch.delivery = check.delivery;
     }
   }
 

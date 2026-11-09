@@ -177,6 +177,39 @@ export interface ReviewVerdict {
   /** Optional: grant patterns ("Bash(<command>:*)") the required changes
    *  need and the implementer was refused. See TaskResult.reviewGrants. */
   grants?: string[];
+  /** Optional: the review's findings, each with a severity and whether
+   *  the reviewer gave a concrete failing scenario. The review policy
+   *  (src/services/review-policy.ts, §4.6) counts these; nothing parses
+   *  severities out of the feedback text. */
+  findings?: ReviewFinding[];
+}
+
+export type ReviewSeverity = "HIGH" | "MED" | "LOW";
+export interface ReviewFinding {
+  severity: ReviewSeverity;
+  title: string;
+  /** True when the finding names concrete inputs that make it fail. */
+  scenario: boolean;
+}
+
+/** Review policy (docs/SDD-coordinator.md §4.6): which findings stop a
+ *  merge, how many fix rounds a tier gets, and what happens at the cap. */
+export interface ReviewerSpec {
+  model: "other-than-coder" | string;
+  mode: "standard" | "adversarial";
+}
+export interface ReviewTier {
+  id: string;
+  when: string;
+  reviewers: ReviewerSpec[];
+  maxRounds: number;
+}
+export type ReviewBlock = "HIGH" | "MED" | "MED-with-scenario";
+export interface ReviewPolicy {
+  tiers: ReviewTier[];
+  blocks: ReviewBlock[];
+  carryForward: "ticket" | "card" | "drop";
+  atCap: "ask-decider" | "spec-question" | "accept";
 }
 
 /** Token use of one `claude -p` run, from the `usage` and `num_turns`
@@ -416,9 +449,30 @@ export interface Project {
    *  (src/services/card-templates.ts). A kind that is unset has no
    *  template; renderCardTemplateFor refuses rather than inventing one. */
   cardTemplates?: Partial<Record<CardTemplateKind, string>>;
+  /** What a review verdict means for a card of this project
+   *  (docs/SDD-coordinator.md §4.6, src/services/review-policy.ts). */
+  reviewPolicy?: ReviewPolicy;
   /** Environment set on this project's card and gate subprocesses, e.g. `TMPDIR` on a disk with
    *  room (docs/SDD-coordinator.md §3.2, §4.12). Never a credential (projectEnvError). */
   env?: Record<string, string>;
+  /** How a finished card lands (docs/SDD-coordinator.md §4.5). Unset
+   *  means `local-merge`, today's merge path. src/services/pr-delivery.ts. */
+  delivery?: Delivery;
+}
+
+/** A finished card's delivery (docs/SDD-coordinator.md §4.5). */
+export type Delivery = { mode: "local-merge" } | PullRequestDelivery;
+export interface PullRequestDelivery {
+  mode: "pull-request";
+  /** `feat/{ticket}-{key}-{slug}`; `{id}` too. */
+  branchPattern: string;
+  /** PR body with `{title}`, `{body}`, `{id}`, `{key}`, `{ticket}`. */
+  prTemplate?: string;
+  /** Argv commands run on the host after Project.mergeGate, outside the card sandbox. */
+  hostGates: string[][];
+  /** Re-run a failed gate once. */
+  gateRetries: 0 | 1;
+  draft: boolean;
 }
 
 /** The kinds of card a project may hold a body template for

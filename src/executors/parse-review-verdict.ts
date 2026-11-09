@@ -1,7 +1,20 @@
-import type { ReviewVerdict } from "../core/types.ts";
+import type { ReviewFinding, ReviewSeverity, ReviewVerdict } from "../core/types.ts";
 import { lastFencedBlock } from "./fenced-block.ts";
 
 const VALID_VERDICTS = new Set<ReviewVerdict["verdict"]>(["approve", "changes_requested"]);
+const SEVERITIES: readonly ReviewSeverity[] = ["HIGH", "MED", "LOW"];
+
+/** One `findings` entry, or null when it isn't one: an object with a
+ *  known severity (any case) and a non-blank title. `scenario` is a
+ *  boolean, false when absent. */
+function parseFinding(entry: unknown): ReviewFinding | null {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return null;
+  const { severity, title, scenario } = entry as Record<string, unknown>;
+  const level = typeof severity === "string" ? severity.trim().toUpperCase() : "";
+  if (!(SEVERITIES as readonly string[]).includes(level)) return null;
+  if (typeof title !== "string" || title.trim() === "") return null;
+  return { severity: level as ReviewSeverity, title: title.trim(), scenario: scenario === true };
+}
 
 /**
  * The only code allowed to turn raw claude output into a ReviewVerdict.
@@ -24,7 +37,7 @@ export function parseReviewVerdict(rawOutput: string): ReviewVerdict | null {
   }
 
   if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return null;
-  const { verdict, feedback, grants } = candidate as Record<string, unknown>;
+  const { verdict, feedback, grants, findings } = candidate as Record<string, unknown>;
 
   if (typeof verdict !== "string" || !VALID_VERDICTS.has(verdict as ReviewVerdict["verdict"])) return null;
   if (typeof feedback !== "string") return null;
@@ -38,5 +51,14 @@ export function parseReviewVerdict(rawOutput: string): ReviewVerdict | null {
       ? [...new Set(grants.filter((g): g is string => typeof g === "string" && g.trim() !== "").map((g) => g.trim()))]
       : [];
 
-  return { verdict: verdict as ReviewVerdict["verdict"], feedback, ...(grantList.length ? { grants: grantList } : {}) };
+  // Same leniency for `findings` (docs/SDD-coordinator.md §4.6): entries
+  // that don't parse are dropped, never a failed review.
+  const findingList = Array.isArray(findings) ? findings.map(parseFinding).filter((f): f is ReviewFinding => f !== null) : [];
+
+  return {
+    verdict: verdict as ReviewVerdict["verdict"],
+    feedback,
+    ...(grantList.length ? { grants: grantList } : {}),
+    ...(findingList.length ? { findings: findingList } : {}),
+  };
 }

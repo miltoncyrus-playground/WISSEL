@@ -21,12 +21,13 @@ import {
   type TaskWorktree,
 } from "../services/worktree.ts";
 import { DEFAULT_MEMORY_PATH, writeMemoryLessons } from "../services/memory.ts";
+import { deliverAsPullRequest } from "../services/pr-delivery.ts";
 import { handlePipelineStepResult } from "./pipeline-runner.ts";
 import { readProjectAllowRules, validateExtraAllowedTools } from "./allowed-tools.ts";
 import { DEFAULT_VERIFICATION } from "./verification.ts";
 import { formatMcpTranscript } from "../services/mcp-transcript.ts";
 import { findOverlaps, firstUnmetStartCondition, type OverlapWarning, type StartConditionChecker } from "./start-conditions.ts";
-import type { AgentDef, Executor, Harness, HarnessTool, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
+import type { AgentDef, Executor, Harness, HarnessTool, PullRequestDelivery, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
 
 /** What finishResult needs to drive a pipeline step's own follow-up work
  *  (see the `task.pipelineId !== undefined` branch below) — passed
@@ -903,8 +904,24 @@ async function tryAutoMerge(board: Board, registry: Registry, result: TaskResult
   // A worktree only ever exists for a write-tier run, which requires
   // `repo` at creation time (see POST /tasks' validation) — never
   // reachable for a repo-less readonly task.
+  const settings = await merge.settingsFor?.(task.repo!).catch(() => undefined);
+  if (settings?.delivery?.mode === "pull-request") return deliverPullRequest(board, task, result.worktree, settings.delivery, settings.ticketPatterns, merge);
   const res = await mergeTaskWorktree(task.repo!, result.worktree, task, withConflictIntegratorCheck(board, merge), (sha) => board.recordMerge(task.id, sha));
   return afterMergeAttempt(board, registry, task, result.worktree, res);
+}
+
+/** Pull-request delivery (§4.5, pr-delivery.ts) in place of the local merge: an open PR is recorded and counts as
+ *  landed; a red gate takes the merge-gate pushback loop; anything else (conflict, failed push) goes to a human. */
+async function deliverPullRequest(board: Board, task: TaskCard, worktree: TaskWorktree, delivery: PullRequestDelivery, ticketPatterns: string[] | undefined, merge: MergeContext): Promise<AutoMergeOutcome> {
+  const mergeGate = await merge.gateFor?.(task.repo!).catch(() => undefined);
+  const res = await deliverAsPullRequest(task.repo!, worktree, task, delivery, { runner: merge.runner, host: merge.host, gateRunner: merge.gateRunner, mergeGate, ticketPatterns });
+  console.log(`delivery ${task.id}: ${res.outcome}: ${res.message}`);
+  if (res.ok && res.pr) {
+    await board.updateFields(task.id, { pr: res.pr });
+    return "landed";
+  }
+  if (res.outcome === "gate-failed") return pushBackGateFailure(board, task, res.message);
+  return "review";
 }
 
 /** Every conflict integrator card spawned for `task`
