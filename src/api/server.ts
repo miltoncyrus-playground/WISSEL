@@ -99,6 +99,7 @@ import { SqliteDigestLog, createDigestRun } from "../services/digests.ts";
 import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
 import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch } from "../services/workstreams.ts";
+import { importWorkstream } from "../services/workstream-import.ts";
 import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions } from "../services/inbox.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
@@ -1720,6 +1721,11 @@ export function createApp(
             return json(await channelLog.adapter(ws.id).post(check.message), 201);
           }
           if (parts.length === 3 && parts[2] === "outbound" && req.method === "GET") return json(await executor.status(ws.id));
+          // Import (§7 step 1): existing cards get key/pr/round, nothing is created; ?dryRun=1 plans only.
+          if (parts.length === 3 && parts[2] === "import" && req.method === "POST") {
+            const r = await importWorkstream(ws, await req.json().catch(() => undefined), url.searchParams.get("dryRun") === "1", { board: board as Board, projects, workstreams });
+            return r.ok ? json(r.plan) : json({ error: r.error }, r.status);
+          }
           if (parts.length === 2 && req.method === "PATCH") {
             const check = validateWorkstreamPatch(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);

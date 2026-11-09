@@ -36,6 +36,9 @@ export interface Workstream {
   channel?: { adapter: string; target: string };
   quietHours?: { start: string; end: string; timezone: string };
   digests?: { cron: string; timezone: string }[];
+  /** Where the old coordinator's channel reading stopped (§7 step 1,
+   *  src/services/workstream-import.ts): set by import only, not PATCH. */
+  channelCursor?: string;
   createdAt: string;
 }
 
