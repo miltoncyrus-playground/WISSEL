@@ -127,15 +127,45 @@ export class CoordinatorExecutor {
 
   private readonly flushing = new Set<string>();
   private now = (): Date => (this.opts.now ?? (() => new Date()))();
+  /** pr.arm handlers in flight per workstream (§4.13: a role change never lands during an arm; role-changes.ts waits here). */
+  private readonly arms = new Map<string, number>();
+  private armWaiters: { workstreamId: string; resolve: () => void }[] = [];
+
+  armsInFlight(workstreamId: string): number {
+    return this.arms.get(workstreamId) ?? 0;
+  }
+
+  /** Resolves once no arm is in flight for the workstream; at once when none is. */
+  whenArmsSettle(workstreamId: string): Promise<void> {
+    if (this.armsInFlight(workstreamId) === 0) return Promise.resolve();
+    return new Promise((resolve) => this.armWaiters.push({ workstreamId, resolve }));
+  }
 
   private async run(action: ExecutableAction, verdict: GateVerdict): Promise<ExecuteOutcome> {
     const handler = this.opts.handlers[action.kind as ActionKind];
     if (!handler) return { outcome: "failed", verdict, error: `no executor for ${action.kind}` };
+    const arming = action.kind === "pr.arm";
+    if (arming) this.arms.set(action.workstreamId, this.armsInFlight(action.workstreamId) + 1);
     try {
       return { outcome: "done", verdict, result: await handler(action) };
     } catch (e) {
       return { outcome: "failed", verdict, error: e instanceof Error ? e.message : String(e) };
+    } finally {
+      if (arming) this.settleArm(action.workstreamId);
     }
+  }
+
+  /** One arm finished; the last one for the workstream wakes whoever waits on whenArmsSettle. */
+  private settleArm(workstreamId: string): void {
+    const left = this.armsInFlight(workstreamId) - 1;
+    if (left > 0) {
+      this.arms.set(workstreamId, left);
+      return;
+    }
+    this.arms.delete(workstreamId);
+    const settled = this.armWaiters.filter((w) => w.workstreamId === workstreamId);
+    this.armWaiters = this.armWaiters.filter((w) => w.workstreamId !== workstreamId);
+    for (const w of settled) w.resolve();
   }
 
   /** Gate, then act, queue, ask, record or refuse. Never acts on anything but a live `allow`. */

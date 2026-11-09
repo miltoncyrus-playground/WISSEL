@@ -110,7 +110,8 @@ import { createCoordinatorDriver } from "../services/coordinator-driver.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
 import { channelHandlers, ownerMessageEvent, startChannelReader } from "../services/channel-sinks.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
-import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, startOutboundFlusher, gateContextFor, type ExecutorOptions } from "../services/coordinator-executor.ts";
+import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, startOutboundFlusher, gateContextFor, type ExecutorOptions, type OutboundFlusherOptions } from "../services/coordinator-executor.ts";
+import { createRoleChanges } from "../services/role-changes.ts";
 import { SqliteAsks, createAskService, isAskStatus } from "../services/asks.ts";
 import { SqliteTrackerMemory, createTrackerSync } from "../services/ticket-actions.ts";
 import { hostHandlers } from "../services/host-actions.ts";
@@ -191,6 +192,8 @@ export interface CreateAppOptions {
   hardLimits?: HardLimits;
   /** The executor's injected parts (src/services/coordinator-executor.ts, §4.3): outward-kind handlers, the push re-check, the fix-round callback, a clock. */
   executor?: Partial<Pick<ExecutorOptions, "handlers" | "pushStillGreen" | "startFixRound" | "now">>;
+  /** The quiet-hours flusher's timer (startOutboundFlusher, §4.11); giving it starts the flusher even without schedulesEnabled, so a test drives the tick. */
+  outboundFlusher?: Pick<OutboundFlusherOptions, "intervalMs" | "setInterval" | "clearInterval">;
   /** Used only by `POST /mcp-servers/:id/enable`'s re-validation check —
    *  injectable so tests never hit a real filesystem PATH lookup or
    *  network probe. Defaults to the real environment/fetch. */
@@ -882,10 +885,13 @@ export function createApp(
     Object.assign(driverHandlers, createCoordinatorDriver({ executor, board: board as Board, workstreams, projects, openDecisionCard: decisionRuntime.open, asks }).handlers, trackerSync.inboxHandlers);
     void (async () => { for (const e of inbox.list({ unhandled: true })) await inboxDispatcher.dispatch(e); })();
   }
+  // A confirmed role change lands at once, or after the arm in flight settles (§4.13, role-changes.ts).
+  const roleChanges = createRoleChanges({ workstreams, executor });
   // The coordinator window (§4.14): the same hold, restart and queue the admin routes and the executor use.
   const coordinatorWindow = createCoordinatorWindow({
     db: (board as SqliteBoard).db, board: board as Board, workstreams, ownerTasks, decisions, channelLog, asks: askStore, conversations, pending: pendingActions,
     outbound: (id) => executor.status(id),
+    pendingRoles: (id) => roleChanges.pending(id),
     live: async () => ({ dispatchHold: orchestrator.dispatchHold, restartPending: restartWhenIdle.pending }),
     holdDispatch: (reason) => orchestrator.holdDispatch("owner", reason),
     releaseDispatch: () => orchestrator.releaseDispatch("owner"),
@@ -954,8 +960,8 @@ export function createApp(
   }
 
   // Queued outward actions leave once their workstream's quiet hours end (§4.3, §4.11).
-  if (opts.schedulesEnabled) {
-    const outboundFlusher = startOutboundFlusher({ executor, workstreams, asks, now: opts.executor?.now });
+  if (opts.schedulesEnabled || opts.outboundFlusher) {
+    const outboundFlusher = startOutboundFlusher({ executor, workstreams, asks, now: opts.executor?.now, ...opts.outboundFlusher });
     onShutdown(() => outboundFlusher.stop());
   }
 
@@ -1893,7 +1899,9 @@ export function createApp(
             if (!ws.projects.some((p) => p.projectId === parts[3])) return notFound();
             const check = validateRoleChange(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
-            return json(await workstreams.setRole(ws.id, parts[3]!, check.change));
+            // §4.13: never during an arm. 202 says the change waits for the arm in flight; the window shows it as pending.
+            const r = await roleChanges.request(ws.id, parts[3]!, check.change);
+            return r.applied ? json(r.workstream) : json({ pending: r.pending, workstream: ws }, 202);
           }
         }
       }

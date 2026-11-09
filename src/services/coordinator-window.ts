@@ -39,7 +39,8 @@ export type WindowItem =
 
 export interface WindowHeader {
   workstream: { id: string; name: string; ticket?: string };
-  roles: { projectId: string; role: ProjectRole; decider?: string }[];
+  /** `pendingRole`: a confirmed change waiting for an arm in flight (role-changes.ts, §4.13). */
+  roles: { projectId: string; role: ProjectRole; decider?: string; pendingRole?: ProjectRole }[];
   live: { dispatchHold?: string; restartPending: boolean; running: number };
   cards: { live: number; cap: number | null };
   channelLastWrittenAt?: string;
@@ -75,6 +76,8 @@ export interface WindowDeps {
   /** The executor's quiet-hours view (GET /workstreams/:id/outbound). */
   outbound: (workstreamId: string) => Promise<{ quiet: boolean; flushAt?: string; queued: OutboundEntry[] }>;
   live: () => Promise<{ dispatchHold?: string; restartPending: boolean }>;
+  /** Role changes held until an arm settles (role-changes.ts); absent means none can be. */
+  pendingRoles?: (workstreamId: string) => { projectId: string; change: { role: ProjectRole } }[];
   holdDispatch: (reason: string) => void;
   releaseDispatch: () => void;
   requestRestart: () => { ok: true } | { ok: false; error: string };
@@ -141,7 +144,10 @@ export function createCoordinatorWindow(deps: WindowDeps) {
     const resolvedAsks = allAsks.filter((a) => a.status !== "open").sort((a, b) => (a.resolvedAt ?? "").localeCompare(b.resolvedAt ?? ""));
     const header: WindowHeader = {
       workstream: { id: ws.id, name: ws.name, ...(ws.ticket ? { ticket: ws.ticket } : {}) },
-      roles: ws.projects.map((p) => ({ projectId: p.projectId, role: p.role, ...(p.decider ? { decider: p.decider } : {}) })),
+      roles: ws.projects.map((p) => {
+        const held = deps.pendingRoles?.(ws.id).find((r) => r.projectId === p.projectId);
+        return { projectId: p.projectId, role: p.role, ...(p.decider ? { decider: p.decider } : {}), ...(held ? { pendingRole: held.change.role } : {}) };
+      }),
       live: { ...live, running: cards.filter((c) => c.status === "running").length },
       cards: { live: ours.filter((c) => LIVE.has(c.status)).length, cap: deps.maxConcurrentTasks ?? null },
       ...(log.length ? { channelLastWrittenAt: log[log.length - 1]!.at } : {}),
@@ -167,7 +173,7 @@ export function createCoordinatorWindow(deps: WindowDeps) {
     const flippable = b.decisions.filter((d) => d.status === "taken").length;
     return [
       `Status now for ${ws.name}:`,
-      `Roles: ${h.roles.map((r) => `${r.projectId} ${r.role}${r.decider ? ` (${r.decider})` : ""}`).join(", ") || "no projects"}`,
+      `Roles: ${h.roles.map((r) => `${r.projectId} ${r.role}${r.decider ? ` (${r.decider})` : ""}${r.pendingRole ? `, ${r.pendingRole} once the arm settles` : ""}`).join(", ") || "no projects"}`,
       `Cards: ${h.cards.live} live${h.cards.cap === null ? ", no cap" : ` of cap ${h.cards.cap}`}; ${h.live.running} running on the board; new cards ${h.live.dispatchHold ? `paused: ${h.live.dispatchHold}` : "start"}${h.live.restartPending ? "; restart pending" : ""}`,
       `Owner tasks: ${b.open.length} open owner task${b.open.length === 1 ? "" : "s"}${b.open.length ? `: ${b.open.map((t) => t.title).join("; ")}` : ""}`,
       `Asks: ${b.asks.length} open`,
