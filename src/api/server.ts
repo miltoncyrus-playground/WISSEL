@@ -44,6 +44,7 @@ import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { getProjectGitOverview, groupWork } from "../services/project-git.ts";
 import { getProjectPrs, getProjectRuns, startPrWatcher, withPrCache } from "../services/github-status.ts";
+import { startMergeForward, touchedFilesWith } from "../services/merge-forward.ts";
 import { loadTicketProvider, type TicketsSetup } from "../services/integrations.ts";
 import { KEY_RE, TicketError } from "../services/ticket-provider.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
@@ -798,6 +799,10 @@ export function createApp(
   if (opts.prWatcherEnabled) {
     const prWatcher = startPrWatcher({ board: board as Board & { events: import("node:events").EventEmitter }, prsOf });
     onShutdown(() => prWatcher.stop());
+    // Its pr.dirty events start one merge-forward card per PR head, then
+    // a re-review when the resolution touched product code (§4.7).
+    const mergeForward = startMergeForward({ board: board as Board & { events: import("node:events").EventEmitter }, settingsFor, touchedFiles: touchedFilesWith(commandRunner) });
+    onShutdown(() => mergeForward.stop());
   }
 
   // Always on in the real server (the bootstrap sets schedulesEnabled):
