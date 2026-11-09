@@ -323,12 +323,32 @@ async function dockGeometry(page: Page, scrollTo: boolean) {
   }, { lanes: BOARD_LANE_IDS, scrollTo });
 }
 
+/** Cards left by earlier specs can make the Needs a human strip tall
+ *  enough to push the lanes area, and the dock that starts where it starts
+ *  (R7), below the fold, or a viewport change can leave it scrolled past.
+ *  Scroll until the lanes sit just under the menu and wait for the dock
+ *  to follow (the sheet below 720 px has no such tie). */
+async function bringLanesUp(page: Page) {
+  await page.evaluate(() => {
+    const lanes = document.getElementById("lanesPanel")!.getBoundingClientRect();
+    const bar = document.querySelector(".sidebar")!.getBoundingClientRect();
+    if (lanes.top < bar.bottom || lanes.top > window.innerHeight / 2) window.scrollBy(0, lanes.top - bar.bottom - 8);
+    window.dispatchEvent(new Event("scroll")); // the dock re-places itself on scroll; a width change that reflowed the strip above the lanes moved them without one
+  });
+  await page.waitForFunction(() => {
+    const dock = document.getElementById("coordDock")!;
+    if (dock.hidden || window.innerWidth < 720) return true;
+    return Math.abs(dock.getBoundingClientRect().top - document.getElementById("lanesPanel")!.getBoundingClientRect().top) <= 2;
+  });
+}
+
 async function openDockOnBoard(page: Page, width: number, height: number) {
   await page.setViewportSize({ width, height });
   await page.goto("/board");
   await expect(page.locator('.kcol[data-lane="done"] h3')).toBeVisible();
   await page.locator("#coordBtn").click();
   await expect(page.locator("#coordDock")).toBeVisible();
+  await bringLanesUp(page);
 }
 
 test("at 1280 x 800 the five lanes sit beside the 380 px dock, none under it, no scrolling needed", async ({ page }) => {
@@ -382,6 +402,7 @@ test("dragging the handle 100 px left widens the dock by 100 px; the width survi
   await dragHandle(page, -100);
   expect(await dockWidth(page)).toBe(480);
   await expect(handle).toHaveAttribute("aria-valuenow", "480");
+  await bringLanesUp(page); // the narrower content may have reflowed the strip above the lanes
   const geo = await dockGeometry(page, false);
   expect(geo.dockLeft).toBeGreaterThanOrEqual(geo.lanesRight - 0.5); // the lanes area gave up the 100px
   expect(geo.pageScrollWidth).toBeLessThanOrEqual(geo.innerWidth);
@@ -390,6 +411,7 @@ test("dragging the handle 100 px left widens the dock by 100 px; the width survi
   await expect(page.locator('.kcol[data-lane="done"] h3')).toBeVisible();
   await page.locator("#coordBtn").click();
   await expect(page.locator("#coordDock")).toBeVisible();
+  await bringLanesUp(page);
   expect(await dockWidth(page)).toBe(480); // restored from localStorage
   await expect(handle).toHaveAttribute("aria-valuenow", "480");
 
@@ -467,6 +489,7 @@ test("collapse folds the dock to a 44 px rail with the needs-owner count and giv
   await expect(page.locator("#coordWorkstream")).toBeHidden();
   await expect(page.locator("#coordFrame")).toBeHidden();
   await expect(resizeHandle(page)).toBeHidden();
+  await bringLanesUp(page); // the wider content reflowed the strip above the lanes
   const folded = await dockGeometry(page, false);
   expect(folded.dockLeft).toBeGreaterThanOrEqual(folded.lanesRight - 0.5);
   expect(folded.headers.filter((h) => !h.hit).map((h) => h.lane), "a lane header is covered").toEqual([]);
@@ -488,6 +511,7 @@ test("collapse folds the dock to a 44 px rail with the needs-owner count and giv
   await expect(page.locator('.kcol[data-lane="done"] h3')).toBeVisible();
   await page.locator("#coordBtn").click();
   await expect(page.locator("#coordDock")).toBeVisible();
+  await bringLanesUp(page);
   expect(await dockWidth(page)).toBe(44); // still collapsed after the reload
   await expect(rail(page)).toBeVisible();
   await collapseBtn(page).click(); // the same button expands it
@@ -505,6 +529,109 @@ test("with storage blocked collapse and expand still work", async ({ page }) => 
   expect(await dockWidth(page)).toBe(44);
   await rail(page).click();
   expect(await dockWidth(page)).toBe(380);
+});
+
+// docs/SDD-coordinator-dock.md R6, check 5: below 720 px there is no room
+// beside the lanes, so the dock is a bottom sheet over the lower 60 % of
+// the screen with a close button. The lanes above it still scroll, the
+// top menu stays clickable, and closing it gives the page back.
+/** The sheet's box against the viewport, whether every top-menu link (the
+ *  nav and the controls row) whose centre is on screen is reachable there
+ *  (on a phone the nav scrolls sideways by design, so links off its right
+ *  end are not counted), and the page's shape, for the before/after
+ *  comparison. */
+async function sheetGeometry(page: Page) {
+  return page.evaluate(() => {
+    const dockEl = document.getElementById("coordDock")!;
+    const dock = dockEl.getBoundingClientRect();
+    const main = document.querySelector("main.main")!.getBoundingClientRect();
+    const links = Array.from(document.querySelectorAll(".sidebar a, .topbar a")).filter((a) => (a as HTMLElement).offsetParent !== null).map((a) => {
+      const r = a.getBoundingClientRect();
+      const x = r.x + r.width / 2, y = r.y + r.height / 2;
+      const onScreen = x >= 0 && x <= window.innerWidth && y >= 0 && y <= window.innerHeight;
+      const hit = document.elementFromPoint(x, y);
+      return { text: (a.textContent ?? "").trim(), onScreen, reachable: hit === a || a.contains(hit) };
+    }).filter((l) => l.onScreen);
+    return {
+      hidden: dockEl.hidden, dockTop: dock.top, dockBottom: dock.bottom, dockLeft: dock.left, dockRight: dock.right, dockHeight: dock.height,
+      position: getComputedStyle(dockEl).position, mainWidth: Math.round(main.width), mainRight: main.right, links,
+      innerWidth: window.innerWidth, innerHeight: window.innerHeight, pageScrollWidth: document.documentElement.scrollWidth,
+    };
+  });
+}
+
+test("at 390 x 800 the dock is a bottom sheet over at most 60 % of the height with a close button; the top menu stays clickable, the lanes above it scroll, and closing it restores the page", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto("/board");
+  await expect(page.locator('.kcol[data-lane="done"] h3')).toBeVisible();
+  const before = await sheetGeometry(page);
+  expect(before.hidden).toBe(true);
+  await page.locator("#coordBtn").click();
+  await expect(page.locator("#coordDock")).toBeVisible();
+
+  const geo = await sheetGeometry(page);
+  expect(geo.position).toBe("fixed");
+  expect(geo.dockHeight).toBeLessThanOrEqual(geo.innerHeight * 0.6 + 0.5); // the lower 60 % at most
+  expect(geo.dockHeight).toBeGreaterThanOrEqual(geo.innerHeight * 0.5); // and a real sheet, not a strip
+  expect(Math.abs(geo.dockBottom - geo.innerHeight)).toBeLessThanOrEqual(1); // sits on the bottom edge
+  expect(geo.dockLeft).toBeLessThanOrEqual(0.5); // full width
+  expect(Math.abs(geo.dockRight - geo.innerWidth)).toBeLessThanOrEqual(1);
+  expect(geo.mainWidth).toBe(before.mainWidth); // the content gives up no width: this is an overlay
+  expect(geo.pageScrollWidth).toBeLessThanOrEqual(geo.innerWidth);
+  expect(geo.links.length).toBeGreaterThan(3);
+  expect(geo.links.filter((l) => !l.reachable), "a top-menu link is covered").toEqual([]);
+  // The sheet keeps the workstream select, the frame and the close button; the side-dock controls go.
+  await expect(page.locator("#coordWorkstream")).toBeVisible();
+  await expect(page.locator("#coordFrame")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Close coordinator window" })).toBeVisible();
+  await expect(resizeHandle(page)).toBeHidden();
+  await expect(collapseBtn(page)).toBeHidden();
+  await expect(rail(page)).toBeHidden();
+
+  // The lanes above stay scrollable: at the bottom of the page the lanes area's own bottom edge sits above the sheet, nothing over it.
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  const lanes = await page.evaluate(() => {
+    const k = document.getElementById("kanbanBody")!.getBoundingClientRect();
+    const el = document.elementFromPoint(k.x + k.width / 2, k.bottom - 2);
+    return { bottom: k.bottom, inLanes: el !== null && document.getElementById("lanesPanel")!.contains(el), sheetTop: document.getElementById("coordDock")!.getBoundingClientRect().top };
+  });
+  expect(lanes.bottom).toBeGreaterThan(0);
+  expect(lanes.bottom).toBeLessThanOrEqual(lanes.sheetTop + 0.5);
+  expect(lanes.inLanes, "the bottom of the lanes area is under the sheet").toBe(true);
+
+  await page.getByRole("button", { name: "Close coordinator window" }).click();
+  await expect(page.locator("#coordDock")).toBeHidden();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const after = await sheetGeometry(page);
+  expect(after.mainWidth).toBe(before.mainWidth);
+  expect(after.mainRight).toBe(before.mainRight);
+  expect(after.pageScrollWidth).toBeLessThanOrEqual(after.innerWidth);
+  expect(await page.evaluate(() => document.body.classList.contains("coord-docked"))).toBe(false);
+});
+
+test("the sheet ignores a saved collapse and turns back into the side dock at 720 px and wider", async ({ page }) => {
+  await openDockOnBoard(page, 1280, 800);
+  await collapseBtn(page).click(); // collapsed and saved on a wide screen
+  expect(await dockWidth(page)).toBe(44);
+
+  await page.setViewportSize({ width: 390, height: 800 });
+  const narrow = await sheetGeometry(page);
+  expect(narrow.dockHeight).toBeLessThanOrEqual(narrow.innerHeight * 0.6 + 0.5);
+  expect(Math.abs(narrow.dockRight - narrow.innerWidth)).toBeLessThanOrEqual(1);
+  expect(narrow.dockLeft).toBeLessThanOrEqual(0.5);
+  await expect(page.locator("#coordFrame")).toBeVisible(); // a rail makes no sense at the bottom: the sheet shows the window
+  await expect(rail(page)).toBeHidden();
+  expect(narrow.links.filter((l) => !l.reachable), "a top-menu link is covered").toEqual([]);
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await bringLanesUp(page);
+  expect(await dockWidth(page)).toBe(44); // the saved collapse applies again beside the lanes
+  await expect(rail(page)).toBeVisible();
+  await collapseBtn(page).click();
+  expect(await dockWidth(page)).toBe(380);
+  const wide = await dockGeometry(page, false);
+  expect(wide.dockLeft).toBeGreaterThanOrEqual(wide.lanesRight - 0.5);
+  expect(wide.headers.filter((h) => !h.hit).map((h) => h.lane), "a lane header is covered").toEqual([]);
 });
 
 test("+ New has a Coordinator tab that creates a workstream and docks its window", async ({ page, request }) => {
