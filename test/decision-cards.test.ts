@@ -76,6 +76,11 @@ test("proposals: follow asks a question with options and a lean, decide posts a 
   expect(proposeActions("triage-red", { verdict: "retry", reason: "flaky" }, { event: event(), workstreamId: WS, projectId: "p1", role: "decide" })).toEqual([]);
   const plan = proposeActions("plan-batch", { cards: [{ key: "A4", title: "Add the index", files: ["src/db.ts"], tier: "write" }] }, { event: event(), workstreamId: WS, projectId: "p1", role: "decide" });
   expect(plan[0]).toMatchObject({ kind: "card.start", payload: { template: "coder", key: "A4", title: "Add the index" } });
+  // A fix round is the driver's builder (fixRoundActions): round, key and ticket filled from the card, so a template needing them renders either way.
+  const red = { event: event({ payload: { taskId: "t-1" } }), workstreamId: WS, projectId: "p1", role: "decide" as const, card: { id: "t-1", key: "A4", title: "A4 add the index (WS-7)", round: 1 } };
+  const fix = proposeActions("triage-red", { verdict: "fix-round", reason: "typecheck fails" }, { ...red, project: { cardTemplates: { "fix-round": "Round {round} of {key} for {ticket}\n\n{review}" }, ticketPatterns: ["WS-\\d+"] } });
+  expect(fix).toEqual([{ kind: "card.start", workstreamId: WS, projectId: "p1", payload: { template: "fix-round", title: "Fix round 2: A4 add the index (WS-7)", key: "A4", round: 2, labels: ["fix-round"], vars: { round: "2", review: "typecheck fails", key: "A4", ticket: "WS-7", files: undefined }, optional: ["key", "ticket", "files"] } }]);
+  expect(proposeActions("triage-red", { verdict: "fix-round", reason: "typecheck fails" }, { ...red, project: {} })).toMatchObject([{ kind: "owner.task", payload: { title: "Fix round for A4 could not be built", blocks: ["t-1"] } }]);
 
   // Through the real gate: the hostile entry changes nothing. follow gets ask-decider on the decision; decide-alone allows it; a kind outside decideAlone asks the owner.
   const board = new SqliteBoard();

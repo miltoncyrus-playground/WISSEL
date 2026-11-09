@@ -5,7 +5,7 @@ import { routeHash } from "../routes";
 import { timeAgo } from "../time";
 import { useProjects } from "../useProjects";
 import { PROJECT_ROLES, type ChannelEntry, type ChatMessage, type CoordinatorAsk, type Decision, type OwnerTask, type ProjectRole, type QuickAction, type WindowDocument, type WindowExecuted, type WindowItem, type Workstream } from "../types";
-import { askConfirmLine, describeAsk, resolvedAskLine } from "../window-asks";
+import { askConfirmLine, describeAsk, pendingRoleText, resolvedAskLine } from "../window-asks";
 import { ConfirmCard } from "./AskScreen";
 
 /** The coordinator window (docs/SDD-coordinator.md §4.14): one component
@@ -149,6 +149,7 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
                     ))}
                   </select>
                   {r.decider && <span className="muted">({r.decider})</span>}
+                  {r.pendingRole && <span className="muted cw-pending-role">{pendingRoleText(r)}</span>}
                 </span>
               ))}
             </dd>

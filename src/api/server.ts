@@ -110,7 +110,7 @@ import { createCoordinatorDriver } from "../services/coordinator-driver.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
 import { channelHandlers, ownerMessageEvent, startChannelReader } from "../services/channel-sinks.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
-import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, startOutboundFlusher, gateContextFor, type ExecutorOptions, type OutboundFlusherOptions } from "../services/coordinator-executor.ts";
+import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, reportFailures, startOutboundFlusher, gateContextFor, type ExecutorOptions, type OutboundFlusherOptions } from "../services/coordinator-executor.ts";
 import { createRoleChanges } from "../services/role-changes.ts";
 import { SqliteAsks, createAskService, isAskStatus } from "../services/asks.ts";
 import { SqliteTrackerMemory, createTrackerSync } from "../services/ticket-actions.ts";
@@ -850,6 +850,7 @@ export function createApp(
     quietHours: async (id) => (await workstreams.get(id))?.quietHours,
     pushStillGreen: hostActions.pushStillGreen,
     startFixRound: hostActions.startFixRound,
+    onFailure: reportFailures({ channelLog, ownerTasks, workstreams }), // a handler failure: a failed row, a wissel status line, an owner task once (§4.3)
     ...opts.executor,
     handlers: {
       ...builtinHandlers({
@@ -885,8 +886,9 @@ export function createApp(
     Object.assign(driverHandlers, createCoordinatorDriver({ executor, board: board as Board, workstreams, projects, openDecisionCard: decisionRuntime.open, asks }).handlers, trackerSync.inboxHandlers);
     void (async () => { for (const e of inbox.list({ unhandled: true })) await inboxDispatcher.dispatch(e); })();
   }
-  // A confirmed role change lands at once, or after the arm in flight settles (§4.13, role-changes.ts).
-  const roleChanges = createRoleChanges({ workstreams, executor });
+  // A confirmed role change lands at once, or after the arm in flight settles (§4.13, role-changes.ts); a held one
+  // survives a restart, and the project's open asks are re-routed under the new role with a handover note.
+  const roleChanges = createRoleChanges({ workstreams, executor, asks, db: (board as SqliteBoard).db });
   // The coordinator window (§4.14): the same hold, restart and queue the admin routes and the executor use.
   const coordinatorWindow = createCoordinatorWindow({
     db: (board as SqliteBoard).db, board: board as Board, workstreams, ownerTasks, decisions, channelLog, asks: askStore, conversations, pending: pendingActions,

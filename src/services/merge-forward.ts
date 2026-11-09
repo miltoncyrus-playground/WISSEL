@@ -112,16 +112,40 @@ export function buildMergeForwardBody(project: Pick<Project, "cardRules" | "card
   return `merge-forward: ${markerFor(card.repo ?? "", pr)}\n\n${brief}`;
 }
 
-function reReviewBody(mergeForward: TaskCard, files: string[] | undefined): string {
+function reReviewLines(mergeForward: TaskCard, files: string[] | undefined): string[] {
   const list = files === undefined ? ["(the resolution's files could not be read; review the whole merge commit)"] : files.filter((f) => !DOCS_OR_TESTS.test(f)).map((f) => `- ${f}`);
   return [
-    `re-review: ${mergeForward.id}`,
-    "",
     `The merge-forward card ${mergeForward.id} ("${mergeForward.title}") resolved conflicts and touched product code, so the earlier review no longer covers the head.`,
     "Review only the resolution: the files below, as changed by the merge commit. Docs and tests it also touched are not listed.",
     "",
     ...list,
-  ].join("\n");
+  ];
+}
+
+export interface ReReview {
+  /** What the `re-review: <key>` marker line names; one card per key, whatever its status. */
+  key: string;
+  title: string;
+  lines: string[];
+  /** The card the review is for: its repo, harness and merge target carry over, and it becomes the parent. */
+  from: TaskCard;
+}
+
+/** The §4.7 re-review path, shared by a merge-forward's resolution and an arm whose head moved after the review (host-actions.ts). */
+export async function startReReview(board: Pick<Board, "list" | "create">, r: ReReview): Promise<{ id: string; created: boolean }> {
+  const marker = `re-review: ${r.key}`;
+  const existing = (await board.list()).find((t) => RE_REVIEW_RE.exec(t.body)?.[0] === marker);
+  if (existing) return { id: existing.id, created: false };
+  const card = await board.create({
+    title: r.title,
+    body: [marker, "", ...r.lines].join("\n"),
+    labels: ["review"],
+    repo: r.from.repo,
+    parentTaskId: r.from.id,
+    ...(r.from.harnessOverride ? { harnessOverride: r.from.harnessOverride } : {}),
+    ...(r.from.mergeTarget ? { mergeTarget: r.from.mergeTarget } : {}),
+  });
+  return { id: card.id, created: true };
 }
 
 /** The files a finished card's merge commit changed against all its
@@ -176,21 +200,12 @@ export function startMergeForward(opts: MergeForwardOptions): MergeForwardServic
 
   const onMoved = async (task: TaskCard): Promise<void> => {
     if ((task.status !== "done" && task.status !== "review") || !MARKER_RE.test(task.body)) return;
-    const key = `re-review: ${task.id}`;
-    if ((await opts.board.list()).some((t) => RE_REVIEW_RE.exec(t.body)?.[0] === key)) return;
+    if ((await opts.board.list()).some((t) => RE_REVIEW_RE.exec(t.body)?.[0] === `re-review: ${task.id}`)) return;
     const files = await opts.touchedFiles(task, await opts.board.getResult(task.id));
     if (!touchesProductCode(files)) return;
     const parent = task.parentTaskId ? await opts.board.get(task.parentTaskId) : undefined;
     const number = parent?.pr?.number ?? MARKER_RE.exec(task.body)?.[1]?.split("@")[0]?.split("#")[1] ?? "?";
-    await opts.board.create({
-      title: `Re-review merge-forward of PR #${number}: ${parent?.id ?? task.parentTaskId ?? task.id}`,
-      body: reReviewBody(task, files),
-      labels: ["review"],
-      repo: task.repo,
-      parentTaskId: task.id,
-      ...(task.harnessOverride ? { harnessOverride: task.harnessOverride } : {}),
-      ...(task.mergeTarget ? { mergeTarget: task.mergeTarget } : {}),
-    });
+    await startReReview(opts.board, { key: task.id, title: `Re-review merge-forward of PR #${number}: ${parent?.id ?? task.parentTaskId ?? task.id}`, lines: reReviewLines(task, files), from: task });
   };
 
   const handler = (e: BoardEvent): void => {

@@ -382,11 +382,12 @@ export interface CoordinatorAsk {
   verdict: "ask-owner" | "ask-decider";
   /** The gate rule that asked, e.g. "5:must-ask". */
   rule: string;
-  status: "open" | "approved" | "rejected" | "expired";
+  /** `withdrawn`: a role change took the question back (§4.13). */
+  status: "open" | "approved" | "rejected" | "expired" | "withdrawn";
   askedAt: string;
   resolvedAt?: string;
   resolvedBy?: string;
-  via?: "api" | "channel" | "sweep";
+  via?: "api" | "channel" | "sweep" | "role-change";
 }
 
 export type WindowItem =
@@ -398,7 +399,8 @@ export type WindowItem =
 
 export interface WindowHeader {
   workstream: { id: string; name: string; ticket?: string };
-  roles: { projectId: string; role: ProjectRole; decider?: string }[];
+  /** `pendingRole`: a confirmed change waiting for the arm in flight (§4.13). */
+  roles: { projectId: string; role: ProjectRole; decider?: string; pendingRole?: ProjectRole }[];
   live: { dispatchHold?: string; restartPending: boolean; running: number };
   cards: { live: number; cap: number | null };
   channelLastWrittenAt?: string;

@@ -19,11 +19,18 @@ import type { Workstream, WorkstreamStore } from "./workstreams.ts";
  * action that now trips a hard limit is refused, then runs the action's
  * handler once and writes an owner-approved gate record carrying the ask
  * id. Reject and expiry (7 days, swept on the flusher tick) do nothing.
+ * A role change (§4.13, role-changes.ts) re-evaluates the project's open
+ * asks under the new role (onRoleChange): one still asked the same way,
+ * or now allowed, is kept for whoever has it; one asked the other way is
+ * handed over (the owner task dismissed and a channel question posted, or
+ * the reverse); one the new role denies, or Shadow, is withdrawn. A
+ * handover note from wissel on the channel says what changed and which
+ * asks moved.
  */
 export type AskVerdict = "ask-owner" | "ask-decider";
-export const ASK_STATUSES = ["open", "approved", "rejected", "expired"] as const;
+export const ASK_STATUSES = ["open", "approved", "rejected", "expired", "withdrawn"] as const;
 export type AskStatus = (typeof ASK_STATUSES)[number];
-export type AskVia = "api" | "channel" | "sweep";
+export type AskVia = "api" | "channel" | "sweep" | "role-change";
 export const ASK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface Ask {
@@ -94,6 +101,12 @@ export class SqliteAsks {
     return this.get(id)!;
   }
 
+  /** A role change moved the open ask to the other route (§4.13): the verdict and rule follow the new role; the refs stay for the record. */
+  reroute(id: string, v: GateVerdict): Ask {
+    this.db.query(`UPDATE asks SET verdict = ?, rule = ? WHERE id = ? AND status = 'open'`).run(v.verdict, v.rule, id);
+    return this.get(id)!;
+  }
+
   /** Settles an open ask; undefined when it was no longer open (the one check that makes approve run once). */
   resolve(id: string, status: Exclude<AskStatus, "open">, at: string, by: string, via: AskVia): Ask | undefined {
     const changes = this.db.query(`UPDATE asks SET status = ?, resolvedAt = ?, resolvedBy = ?, via = ? WHERE id = ? AND status = 'open'`).run(status, at, by, via, id).changes;
@@ -119,7 +132,7 @@ export function describeAction(a: ExecutableAction): string {
 }
 
 /** What the question is about (§4.9): the action's own message, else its card and PR, else the workstream's ticket. */
-function aboutOf(a: ExecutableAction, ws: Workstream): About {
+export function aboutOf(a: ExecutableAction, ws: Workstream): About {
   const p = a.payload ?? {};
   const m = isRecord(p.message) ? p.message : {};
   if (isRecord(m.about) && Object.keys(m.about).length > 0) return m.about as About;
@@ -230,6 +243,34 @@ export function createAskService(deps: AskServiceDeps) {
     },
 
     byQuestionRef: (workstreamId: string, ref: string): Ask | undefined => deps.store.byQuestionRef(workstreamId, ref),
+
+    /** The project's role changed (§4.13): each open ask of the project is gated again under the new role and kept, handed over or withdrawn; one handover note says which. */
+    async onRoleChange(workstreamId: string, projectId: string, from: string, to: string): Promise<{ kept: Ask[]; moved: Ask[]; withdrawn: Ask[] }> {
+      const out = { kept: [] as Ask[], moved: [] as Ask[], withdrawn: [] as Ask[] };
+      const ws = await deps.workstreams.get(workstreamId);
+      const open = deps.store.list(workstreamId, "open").filter((a) => a.action.projectId === projectId);
+      if (!ws || open.length === 0) return out;
+      const at = now().toISOString();
+      for (const ask of open) {
+        const v = await deps.gate.evaluate(ask.action, { ...(await deps.context(ask.action)), quiet: false });
+        if (v.mode === "shadow" || v.verdict === "deny") {
+          const withdrawn = deps.store.resolve(ask.id, "withdrawn", at, "role-change", "role-change");
+          if (!withdrawn) continue;
+          await closeTask(withdrawn, "dismissed");
+          out.withdrawn.push(withdrawn);
+        } else if ((v.verdict === "ask-owner" || v.verdict === "ask-decider") && v.verdict !== ask.verdict) {
+          await closeTask(ask, "dismissed"); // the owner task, when it had one; a posted question stays as the record
+          out.moved.push(await raise(deps.store.reroute(ask.id, v)));
+        } else out.kept.push(ask);
+      }
+      const ids = (asks: Ask[]): string => (asks.length ? ` (${asks.map((a) => `${a.id}: ${describeAction(a.action)}`).join("; ")})` : "");
+      const toDecider = out.moved.some((a) => a.verdict === "ask-decider");
+      const to_ = toDecider ? (ws.projects.find((p) => p.projectId === projectId)?.decider ?? "the decider") : "owner";
+      const text = `Role of ${projectId} changed from ${from} to ${to}: ${out.moved.length} ask(s) handed over${ids(out.moved)}, ${out.withdrawn.length} withdrawn${ids(out.withdrawn)}, ${out.kept.length} unchanged.`;
+      await deps.channelLog.adapter(ws.id).post({ kind: "handover", from: "wissel", about: ws.ticket ? { ticket: ws.ticket } : { card: ws.id }, to: to_, text });
+      log(`coordinator> ${ws.name}: ${text}`);
+      return out;
+    },
   };
 }
 

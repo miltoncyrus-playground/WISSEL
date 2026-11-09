@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { createApp } from "../src/api/server.ts";
 import { Registry } from "../src/core/registry.ts";
 import { SqliteBoard } from "../src/services/board.ts";
-import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, gateContextFor, inQuietHours, startOutboundFlusher, quietHoursEnd, type ExecutableAction, type ExecutorOptions } from "../src/services/coordinator-executor.ts";
+import { SqliteChannelLog } from "../src/services/channel.ts";
+import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, gateContextFor, inQuietHours, reportFailures, startOutboundFlusher, quietHoursEnd, type ExecutableAction, type ExecutorOptions } from "../src/services/coordinator-executor.ts";
+import { SqliteOwnerTaskStore } from "../src/services/owner-tasks.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, evaluate, type GateContext, type GateVerdict } from "../src/services/policy-gate.ts";
 import { SqliteWorkstreamStore, type Workstream } from "../src/services/workstreams.ts";
 
@@ -109,6 +111,41 @@ test("a queued push is re-checked before it flushes: green pushes, red becomes a
   expect(await broken.flush(WS)).toEqual([expect.objectContaining({ status: "flushed" }), expect.objectContaining({ status: "failed", note: expect.stringContaining("adapter down") })]);
   expect(ran).toEqual(["post:ready-to-merge", "push:"]);
   expect((await executor.status(WS)).queued.map((e) => e.action.post)).toEqual(["status"]);
+});
+
+test("a handler failure is persisted as a failed entry with the error and reported: a wissel status line on the channel, an owner task once per outward action id, none for an inward one", async () => {
+  const reports: string[] = [];
+  const { board, executor, clock } = setup({
+    handlers: { "channel.post": async () => { throw new Error("adapter down"); }, "card.start": async () => { throw new Error("no template"); } },
+    onFailure: async (a, error, info) => void reports.push(`${a.id}:${error}:${info.first}:${info.outward}`),
+  });
+  const claim = act("channel.post", { id: "evt-1#0", post: "claim" });
+  expect(await executor.execute(claim)).toMatchObject({ outcome: "failed", error: "adapter down" });
+  expect(await executor.execute(claim)).toMatchObject({ outcome: "failed" }); // a replay fails again and is recorded again, but reported as not the first
+  expect(await executor.execute(act("card.start", { id: "evt-2#0", own: true }))).toMatchObject({ outcome: "failed", error: "no template" });
+  const queue = new SqliteOutboundQueue(board.db);
+  expect(queue.failures(WS, "evt-1#0").map((e) => `${e.status}/${e.verdict}/${e.note}/${e.flushedAt}`)).toEqual(["failed/allow/adapter down/2026-11-09T12:00:00.000Z", "failed/allow/adapter down/2026-11-09T12:00:00.000Z"]);
+  expect(queue.failures(WS, "evt-2#0")).toHaveLength(1);
+  expect(queue.list(WS, "queued")).toEqual([]);
+  expect(reports).toEqual(["evt-1#0:adapter down:true:true", "evt-1#0:adapter down:false:true", "evt-2#0:no template:true:false"]);
+
+  // The server's reporter against the real stores: the window reads the status line from the channel log; the owner task is raised once.
+  const workstreams = new SqliteWorkstreamStore(board.db);
+  const ws = await workstreams.create({ name: "checkout", ticket: "WS-7", projects: [{ projectId: "p1", role: "decide", decideAlone: [], mustAsk: [], never: [] }] });
+  const channelLog = new SqliteChannelLog(board.db, { log() {} });
+  const ownerTasks = new SqliteOwnerTaskStore(board.db);
+  const report = reportFailures({ channelLog, ownerTasks, workstreams });
+  const arm: ExecutableAction = { id: "evt-3#0", kind: "pr.arm", workstreamId: ws.id, projectId: "p1", payload: { taskId: "t-9", pr: 12 } };
+  await report(arm, "gh pr merge failed", { first: true, outward: true });
+  await report(arm, "gh pr merge failed", { first: false, outward: true });
+  await report({ ...arm, id: "evt-4#0", kind: "card.start" }, "no template", { first: true, outward: false });
+  expect(channelLog.list(ws.id).map((e) => e.message)).toEqual([
+    { kind: "status", from: "wissel", about: { card: "t-9", pr: "12" }, text: "pr.arm on PR #12: t-9 failed: gh pr merge failed" },
+    { kind: "status", from: "wissel", about: { card: "t-9", pr: "12" }, text: "pr.arm on PR #12: t-9 failed: gh pr merge failed" },
+    { kind: "status", from: "wissel", about: { card: "t-9", pr: "12" }, text: "card.start on PR #12: t-9 failed: no template" },
+  ]);
+  expect(await ownerTasks.list()).toMatchObject([{ title: "Failed: pr.arm on PR #12: t-9", why: expect.stringContaining("gh pr merge failed"), blocks: ["t-9"], status: "open" }]);
+  clock.now = at("2026-11-09T13:00:00Z");
 });
 
 test("shadow records would-entries with the live verdict and never executes or queues", async () => {

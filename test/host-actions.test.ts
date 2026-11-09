@@ -144,13 +144,23 @@ test("branch.push: a red gate never pushes and starts a fix round through card.s
   expect(forcePushes([...calls, ...green.calls])).toEqual([]);
 });
 
-test("pr.arm: refuses when the head sha moved past the reviewed one, refuses red checks, arms with --auto --squash when both hold", async () => {
+test("pr.arm: a head that moved past the reviewed sha is not armed and gets one re-review card per head sha (§4.7); red checks refuse; --auto --squash when both hold", async () => {
   await fixture();
-  const moved = setup({ view: { headRefOid: "feedfacefeedfacefeedfacefeedfacefeedface" } });
+  const head = "feedfacefeedfacefeedfacefeedfacefeedface";
+  const moved = setup({ view: { headRefOid: head } });
   const card = await fixRoundCard(moved.board, { path: join(dir, "fix-wt"), branch: "wissel/fix" });
   const arm = { taskId: card.id, pr: 12, url: card.pr!.url };
-  await expect(moved.actions.handlers["pr.arm"]!(moved.act("pr.arm", arm, { checks: "green", own: true }))).rejects.toThrow(/head .*feedface.* is not the reviewed .*12345678/);
+  const first = (await moved.actions.handlers["pr.arm"]!(moved.act("pr.arm", arm, { checks: "green", own: true }))) as { armed: boolean; reReview: string };
+  expect(first).toMatchObject({ armed: false, number: 12, head, reviewed: SHA });
   expect(moved.calls.some((c) => c[0] === "gh" && c[2] === "merge")).toBe(false);
+  const review = await moved.board.get(first.reReview);
+  expect(review).toMatchObject({ labels: ["review"], repo, parentTaskId: card.id, status: "inbox", title: `Re-review PR #12 at ${head.slice(0, 12)}: ${card.title}` });
+  expect(review!.body.split("\n")[0]).toBe(`re-review: ${card.id}@${head}`);
+  expect(review!.body).toContain(`moved to head ${head} after the review passed on ${SHA}`);
+  // The same head again: the same card, no second one; the fix round that moves the head once more gets its own.
+  expect(await moved.actions.handlers["pr.arm"]!(moved.act("pr.arm", arm, { checks: "green", own: true }))).toMatchObject({ armed: false, reReview: first.reReview });
+  expect((await moved.board.list()).filter((t) => t.labels.includes("review"))).toHaveLength(1);
+  expect(moved.executed).toEqual([]); // the review card is the board's, not a gated action
 
   const red = setup({ view: { statusCheckRollup: [{ __typename: "CheckRun", name: "ci", status: "COMPLETED", conclusion: "FAILURE" }] } });
   const card2 = await fixRoundCard(red.board, { path: join(dir, "fix-wt"), branch: "wissel/fix" });

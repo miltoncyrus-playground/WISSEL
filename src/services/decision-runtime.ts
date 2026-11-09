@@ -26,7 +26,7 @@ import type { ProjectRole, WorkstreamStore } from "./workstreams.ts";
  */
 export interface DecisionRuntimeDeps {
   db: Database;
-  board: Pick<Board, "create" | "getResult"> & { events: EventEmitter };
+  board: Pick<Board, "create" | "get" | "getResult"> & { events: EventEmitter };
   workstreams: Pick<WorkstreamStore, "get">;
   projects: { list(): Promise<Project[]> };
   executor: Pick<CoordinatorExecutor, "execute">;
@@ -91,7 +91,11 @@ export function createDecisionRuntime(deps: DecisionRuntimeDeps): DecisionRuntim
     return deps.board.create({ ...rest, harnessOverride: project?.harness ?? "claude" });
   };
 
-  const cards = new DecisionCards({ startCard, openCards: new SqliteOpenDecisionCards(deps.db), executor: deps.executor, ownerTasks: deps.ownerTasks, decisions: deps.decisions, roleFor, logger: log });
+  const cards = new DecisionCards({
+    startCard, openCards: new SqliteOpenDecisionCards(deps.db), executor: deps.executor, ownerTasks: deps.ownerTasks, decisions: deps.decisions, roleFor, logger: log,
+    cardFor: (id) => deps.board.get(id),
+    projectFor: async (id) => (await deps.projects.list()).find((p) => p.id === id),
+  });
 
   // Completions run one after another, in board order, and `idle` awaits the chain.
   let chain: Promise<void> = Promise.resolve();
