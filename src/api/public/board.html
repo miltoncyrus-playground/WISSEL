@@ -247,6 +247,32 @@
      160px lanes with 12px gaps (848px) fit it beside a page scrollbar. */
   body.coord-docked .kanban { overflow-x: auto; gap: 0 12px; }
   body.coord-docked .kcol { flex-basis: 160px; min-width: 160px; }
+  /* Narrow screens (R6): below 720px nothing fits beside the lanes, so
+     the dock is a bottom sheet over the lower 60% of the screen, a
+     deliberate overlay with the close button. The content keeps its full
+     width (the right margin above goes) and gets the sheet's height as
+     bottom padding, so the lanes above it scroll all the way out from
+     under it; the top menu sits above the sheet. The side-dock controls
+     (handle, collapse, rail) go, and a collapse saved on a wide screen is
+     set aside here, not undone: the sheet always shows the window, and
+     the rail comes back at 720px and wider. The lanes are stacked at
+     this width (the phone block below), so the 160px lane basis from the
+     docked rules above, which would be a height here, is lifted. The
+     position changes outright, no transition, so nothing to tune for
+     reduced motion. */
+  @media (max-width: 719px) {
+    .drawer.coord-dock {
+      top: auto; bottom: 0; left: 0; right: 0; width: 100%; height: 60vh; max-height: 60%;
+      border-left: 0; border-top: 1px solid var(--border); box-shadow: 0 -8px 24px rgba(0,0,0,0.14);
+    }
+    .coord-dock .coord-resize, .coord-dock .coord-collapse, .coord-dock .coord-rail, body.coord-collapsed .coord-rail { display: none; }
+    body.coord-collapsed .coord-dock .drawer-head { flex-direction: row; align-items: center; padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+    body.coord-collapsed .coord-dock .drawer-head > :not(.coord-collapse) { display: block; }
+    body.coord-collapsed .coord-dock iframe { display: block; }
+    body.coord-docked .main { width: 100%; margin-right: 0; padding-left: 12px; padding-right: 12px; padding-bottom: calc(60vh + 32px); }
+    body.coord-docked .kanban { overflow-x: visible; gap: 10px; }
+    body.coord-docked .kcol { flex-basis: auto; min-width: 0; }
+  }
   .ws-projects { display: grid; gap: 4px; }
   .ws-project { display: flex; align-items: center; gap: 10px; min-height: 36px; }
   .ws-project label { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
