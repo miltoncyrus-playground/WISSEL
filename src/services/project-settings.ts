@@ -22,7 +22,7 @@ export const MAX_PROTECTED_PATHS = 50;
 /** The settings, as stored on Project. */
 export type ProjectSettings = Pick<
   Project,
-  "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates"
+  "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates" | "env"
 >;
 export type ProjectSettingKey = keyof Required<ProjectSettings>;
 export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = [
@@ -35,7 +35,29 @@ export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = [
   "referencePatterns",
   "cardRules",
   "cardTemplates",
+  "env",
 ];
+
+export const MAX_ENV_ENTRIES = 50;
+export const MAX_ENV_VALUE_LENGTH = 4096;
+const CREDENTIAL_KEY_RE = /TOKEN|SECRET|KEY|PASSWORD/i; // env is for paths and switches (§4.12), never a secret the DB would hold
+
+/** The env a card or gate subprocess gets: the project's under the harness's
+ *  own (which wins on a shared key); undefined when neither has any. */
+export function mergeProjectEnv(projectEnv: Record<string, string> | undefined, harnessEnv: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!projectEnv && !harnessEnv) return undefined;
+  return { ...projectEnv, ...harnessEnv };
+}
+
+/** Why one env entry is refused, or undefined when it's acceptable. */
+export function projectEnvError(key: string, value: unknown): string | undefined {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) return `"${key}" is not an environment variable name (letters, digits, underscores; not starting with a digit)`;
+  if (CREDENTIAL_KEY_RE.test(key)) return `"${key}" looks like a credential; env is for paths and switches, never secrets`;
+  if (typeof value !== "string") return `"${key}" must be a string`;
+  if (value.includes("\0")) return `"${key}" contains a NUL byte`;
+  if (value.length > MAX_ENV_VALUE_LENGTH) return `"${key}" is ${value.length} chars; at most ${MAX_ENV_VALUE_LENGTH}`;
+  return undefined;
+}
 
 /** A partial update: a key that's absent is left alone, `null` clears
  *  it. An empty list (or a verification with no commands and no tools)
@@ -208,6 +230,23 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
       if (error) return { ok: false, error };
       const templates = v as NonNullable<Project["cardTemplates"]>;
       patch.cardTemplates = Object.keys(templates).length > 0 ? templates : null;
+    }
+  }
+
+  // Per-project env (docs/SDD-coordinator.md §3.2): a flat string map;
+  // an empty map is stored as cleared.
+  if ("env" in raw) {
+    const v = raw.env;
+    if (v === null) patch.env = null;
+    else {
+      if (typeof v !== "object" || Array.isArray(v)) return { ok: false, error: 'env must be an object of { "NAME": "value" }' };
+      const entries = Object.entries(v as Record<string, unknown>);
+      if (entries.length > MAX_ENV_ENTRIES) return { ok: false, error: `env has ${entries.length} entries; at most ${MAX_ENV_ENTRIES}` };
+      for (const [key, value] of entries) {
+        const error = projectEnvError(key, value);
+        if (error) return { ok: false, error: `env: ${error}` };
+      }
+      patch.env = entries.length > 0 ? (v as Record<string, string>) : null;
     }
   }
 

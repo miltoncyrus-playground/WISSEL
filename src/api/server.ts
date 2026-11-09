@@ -92,6 +92,7 @@ import { DEFAULT_STT_MODEL, DEFAULT_STT_URL, SttClient, SttError, transcribeVoic
 import { createReplyAudio, ReplyAudioError } from "../services/reply-audio.ts";
 import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
 import { needsYouFor, needsYouLogLine, type NeedsYouOptions } from "../services/needs-you.ts";
+import { HostGuard, hostThresholdsFromEnv, type HostGuardOptions } from "../services/host-guard.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -118,6 +119,8 @@ export interface CreateAppOptions {
   /** Passed straight through to Orchestrator's option of the same name
    *  — see its own doc comment. Undefined means unlimited. */
   spendCeilingUsd?: number;
+  /** Turns on the host guard (src/services/host-guard.ts); undefined (tests) means none. */
+  hostGuard?: Pick<HostGuardOptions, "probes" | "thresholds">;
   /** Executor pool the manual `/tasks/:id/run` endpoint uses — defaults
    *  to a real ReadOnlyExecutor + WriteExecutor pair. Overridable so
    *  tests can inject fakes instead of spawning a real `claude`
@@ -630,6 +633,10 @@ export function createApp(
       maxConcurrentTasks: opts.maxConcurrentTasks,
       spendCeilingUsd: opts.spendCeilingUsd,
       memoryPath: opts.memoryPath,
+      // Host guard (§4.12), probing every project's TMPDIR; logs until the OwnerTask store (§3.4) is wired as raiseOwnerTask.
+      hostGuard: opts.hostGuard
+        ? new HostGuard({ ...opts.hostGuard, paths: async () => (await projects.list()).flatMap((p) => (p.env?.TMPDIR ? [p.env.TMPDIR] : [])) })
+        : undefined,
       // A rate-limited pipeline step resumes on the same context POST
       // /pipelines/:id/run starts it with (docs/SDD-pipelines.md §3.8).
       resumePipelineStep: (task) =>
@@ -2233,6 +2240,7 @@ if (import.meta.main) {
       tickets,
       maxConcurrentTasks,
       spendCeilingUsd,
+      hostGuard: { thresholds: hostThresholdsFromEnv(process.env) },
       memoryCurationEnabled,
       memoryIntervalHours,
       memoryPath,

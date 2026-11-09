@@ -1485,6 +1485,10 @@ export interface OrchestratorOptions {
    *  `notBefore` against, in ms. Defaults to Date.now; tests pass a fake
    *  one to pin "before" and "after" without waiting. */
   now?: () => number;
+  /** Host guard (src/services/host-guard.ts, docs/SDD-coordinator.md §4.12),
+   *  asked once per sweep: not ok holds every new dispatch this round (pipeline
+   *  retries too); running cards continue. runNow bypasses it like every gate. */
+  hostGuard?: { check(): Promise<{ ok: boolean }> };
 }
 
 /** Midnight UTC on `now`'s calendar day — the window `spendCeilingUsd`
@@ -1612,6 +1616,8 @@ export class Orchestrator {
     const spentToday =
       this.opts.spendCeilingUsd !== undefined && this.telemetry ? await this.telemetry.sumCostSince(startOfUtcDay(new Date())) : undefined;
     const overSpendCeiling = spentToday !== undefined && this.opts.spendCeilingUsd !== undefined && spentToday >= this.opts.spendCeilingUsd;
+    // Host guard (§4.12): one probe per sweep, not per task.
+    const hostShort = this.opts.hostGuard ? !(await this.opts.hostGuard.check()).ok : false;
 
     for (const task of tasks) {
       if (this.inFlight.has(task.id)) continue;
@@ -1629,7 +1635,7 @@ export class Orchestrator {
       // The one exception: a step a 429 sent back to wait. The runner
       // returned long ago, so nothing but this sweep comes back for it.
       if (task.pipelineId !== undefined) {
-        if (this.isDuePipelineRetry(task, tasks) && !overSpendCeiling && !this.atConcurrencyCap()) {
+        if (this.isDuePipelineRetry(task, tasks) && !overSpendCeiling && !hostShort && !this.atConcurrencyCap()) {
           this.inFlight.add(task.id);
           pending.push(this.resumePipelineStep(task).finally(() => this.inFlight.delete(task.id)));
         }
@@ -1659,6 +1665,7 @@ export class Orchestrator {
 
       if (this.atConcurrencyCap()) continue;
       if (overSpendCeiling) continue;
+      if (hostShort) continue;
 
       this.inFlight.add(task.id);
       pending.push(this.process(task).finally(() => this.inFlight.delete(task.id)));

@@ -72,6 +72,7 @@ interface ProjectRow {
   referencePatterns?: string | null;
   cardRules?: string | null;
   cardTemplates?: string | null;
+  env?: string | null;
 }
 
 /** The settings columns: each a nullable JSON TEXT column named after
@@ -99,6 +100,7 @@ function rowToProject(row: ProjectRow): Project {
     ...(row.referencePatterns ? { referencePatterns: JSON.parse(row.referencePatterns) as string[] } : {}),
     ...(row.cardRules ? { cardRules: JSON.parse(row.cardRules) as string } : {}),
     ...(row.cardTemplates ? { cardTemplates: JSON.parse(row.cardTemplates) as NonNullable<Project["cardTemplates"]> } : {}),
+    ...(row.env ? { env: JSON.parse(row.env) as Record<string, string> } : {}),
   };
 }
 
@@ -241,7 +243,13 @@ export class SqliteProjectStore implements ProjectStore {
   async mergeGateFor(repo: string): Promise<MergeGateConfig | undefined> {
     const project = await this.byPath(repo);
     if (!project?.mergeGate?.length) return undefined;
-    return { commands: project.mergeGate, ...(project.mergeGateTimeoutMs ? { timeoutMs: project.mergeGateTimeoutMs } : {}) };
+    // The gate runs under the project's env (TMPDIR and the like), the
+    // same as its cards (docs/SDD-coordinator.md §4.12).
+    return {
+      commands: project.mergeGate,
+      ...(project.mergeGateTimeoutMs ? { timeoutMs: project.mergeGateTimeoutMs } : {}),
+      ...(project.env ? { env: project.env } : {}),
+    };
   }
 
   async worktreeSetupFor(repo: string): Promise<WorktreeSetupConfig | undefined> {

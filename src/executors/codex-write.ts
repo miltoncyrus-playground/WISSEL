@@ -6,6 +6,7 @@ import { runCodex, type CommandRunner } from "./codex-cli.ts";
 import { createTaskWorktree, type WorktreeSetupResolver } from "../services/worktree.ts";
 import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { ProjectSettingsResolver } from "./write.ts";
+import { mergeProjectEnv } from "../services/project-settings.ts";
 
 export interface CodexWriteExecutorOptions {
   runner?: CommandRunner;
@@ -123,7 +124,8 @@ export class CodexWriteExecutor implements Executor {
 
     // Same lookup as WriteExecutor's: by the human-controlled `task.repo`
     // path, never a file in the worktree.
-    const verification = (await this.settingsFor?.(task.repo!))?.verification;
+    const projectSettings = await this.settingsFor?.(task.repo!);
+    const verification = projectSettings?.verification;
 
     const result = await runCodex({
       runner: this.runner,
@@ -131,7 +133,7 @@ export class CodexWriteExecutor implements Executor {
       agent,
       sandbox: "workspace-write",
       model: this.model ?? resolveModel(task, agent, harness),
-      env: harness?.env,
+      env: mergeProjectEnv(projectSettings?.env, harness?.env),
       memoryPath: this.memoryPath,
       injectMemory: this.injectMemory,
       mcpAccess: task.mcpAccessOverride ?? agent.mcpAccess,

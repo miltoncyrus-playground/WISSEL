@@ -15,6 +15,9 @@ import { trackChild } from "../executors/child-processes.ts";
 export interface MergeGateConfig {
   commands: string[][];
   timeoutMs?: number;
+  /** The project's env (Project.env: TMPDIR and the like), set on every
+   *  gate command over the ambient environment (docs/SDD-coordinator.md §4.12). */
+  env?: Record<string, string>;
 }
 
 /** Looks up the gate for a repo path (the project registered at that
@@ -40,7 +43,7 @@ export interface GateCommandResult {
 }
 
 /** Injectable so tests can fake a gate without spawning anything. */
-export type GateCommandRunner = (argv: string[], opts: { cwd: string; timeoutMs: number }) => Promise<GateCommandResult>;
+export type GateCommandRunner = (argv: string[], opts: { cwd: string; timeoutMs: number; env?: Record<string, string> }) => Promise<GateCommandResult>;
 
 export interface GateRun {
   argv: string[];
@@ -70,12 +73,12 @@ export interface GateReport {
  * shutdown stops a gate mid-run; that run never resolves, and nothing
  * lands.
  */
-export const runGateCommand: GateCommandRunner = async (argv, { cwd, timeoutMs }) => {
+export const runGateCommand: GateCommandRunner = async (argv, { cwd, timeoutMs, env: projectEnv }) => {
   const cmd = ["sh", "-c", 'exec "$@" 2>&1', "sh", ...argv];
   // The server's own WISSEL_* settings (its board, telemetry, ports,
-  // orchestrator switch) are not the gate's business: a repo's tests
-  // run the way they would in a fresh terminal.
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("WISSEL_"))) as Record<string, string>;
+  // orchestrator switch) are not the gate's business: a repo's tests run
+  // the way they would in a fresh terminal. Project.env goes on top.
+  const env = { ...(Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("WISSEL_"))) as Record<string, string>), ...projectEnv };
   const proc = Bun.spawn(cmd, { cwd, env, stdout: "pipe", stderr: "ignore", stdin: "ignore", detached: true } as Parameters<typeof Bun.spawn>[1]);
   const tracked = trackChild(proc, argv, cwd);
 
@@ -137,7 +140,7 @@ export async function runMergeGate(gate: MergeGateConfig | undefined, cwd: strin
   const start = performance.now();
   for (const argv of gate.commands) {
     const t0 = performance.now();
-    const res = await runner(argv, { cwd, timeoutMs });
+    const res = await runner(argv, { cwd, timeoutMs, ...(gate.env ? { env: gate.env } : {}) });
     const run: GateRun = { argv, exitCode: res.exitCode, durationMs: Math.round(performance.now() - t0), timedOut: res.timedOut };
     runs.push(run);
     if (res.timedOut || res.exitCode !== 0) {

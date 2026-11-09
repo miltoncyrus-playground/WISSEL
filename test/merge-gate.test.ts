@@ -119,6 +119,24 @@ test("runGateCommand runs without the server's WISSEL_* settings, everything els
   }
 });
 
+// Per-project env (docs/SDD-coordinator.md §4.12): the gate runs under
+// the project's TMPDIR and the like, the same as its cards.
+test("runMergeGate hands the gate's env to the runner; runGateCommand applies it over the ambient environment", async () => {
+  const seen: (Record<string, string> | undefined)[] = [];
+  const fake: GateCommandRunner = async (_argv, opts) => (seen.push(opts.env), { exitCode: 0, output: "", timedOut: false });
+  await runMergeGate({ commands: [["ok"]], env: { TMPDIR: "/scratch/tmp" } }, dir, fake);
+  await runMergeGate({ commands: [["ok"]] }, dir, fake);
+  expect(seen).toEqual([{ TMPDIR: "/scratch/tmp" }, undefined]);
+
+  process.env.GATE_TEST_KEEP = "kept";
+  try {
+    const res = await runGateCommand(["sh", "-c", 'echo "[$GATE_TEST_TMP][$GATE_TEST_KEEP]"'], { cwd: dir, timeoutMs: 10_000, env: { GATE_TEST_TMP: "/scratch/tmp" } });
+    expect(res.output).toBe("[/scratch/tmp][kept]\n");
+  } finally {
+    delete process.env.GATE_TEST_KEEP;
+  }
+});
+
 test("tailLines keeps the last N lines", () => {
   expect(tailLines("a\nb\nc\nd\n", 2)).toBe("c\nd");
   expect(tailLines("only", 200)).toBe("only");

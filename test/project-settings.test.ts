@@ -113,6 +113,35 @@ test("validateProjectSettings refuses bad input with a message naming the field"
 
 // ---------- store ----------
 
+// Per-project env (docs/SDD-coordinator.md §3.2, §4.12): TMPDIR and the like for cards and gates; never a credential.
+test("env validates, refuses credential-shaped keys, clears, and round-trips through the store and mergeGateFor", async () => {
+  const env = { TMPDIR: "/scratch/tmp", UV_CACHE_DIR: "/scratch/uv" };
+  expect(validateProjectSettings({ env })).toEqual({ ok: true, patch: { env } });
+  expect(validateProjectSettings({ env: null })).toEqual({ ok: true, patch: { env: null } });
+  expect(validateProjectSettings({ env: {} })).toEqual({ ok: true, patch: { env: null } });
+  for (const key of ["GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_API_KEY", "DB_PASSWORD", "my_token", "SshKeyPath"]) {
+    const r = validateProjectSettings({ env: { [key]: "x" } });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe(`env: "${key}" looks like a credential; env is for paths and switches, never secrets`);
+  }
+  const tooMany = Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`V${i}`, "x"]));
+  for (const bad of [["TMPDIR=/tmp"], "TMPDIR=/tmp", { "": "x" }, { "bad-name": "x" }, { "1ABC": "x" }, { TMPDIR: 1 }, { TMPDIR: null }, { TMPDIR: "a\0b" }, { TMPDIR: "x".repeat(4097) }, tooMany]) {
+    const r = validateProjectSettings({ env: bad });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("env");
+  }
+
+  const store = new SqliteProjectStore(legacyDb());
+  expect((await store.setSettings("p", { env: { TMPDIR: "/scratch/tmp" } })).env).toEqual({ TMPDIR: "/scratch/tmp" });
+  expect(await store.settingsFor("/r/acme")).toEqual({ env: { TMPDIR: "/scratch/tmp" } });
+  // The gate runs under the same env as the cards (§4.12).
+  await store.setMergeGate("p", [["make", "test"]], null);
+  expect(await store.mergeGateFor("/r/acme")).toEqual({ commands: [["make", "test"]], env: { TMPDIR: "/scratch/tmp" } });
+  await store.setSettings("p", { env: null });
+  expect((await store.list())[0]!.env).toBeUndefined();
+  expect(await store.mergeGateFor("/r/acme")).toEqual({ commands: [["make", "test"]] });
+});
+
 test("setSettings stores, reads back, patches one field and clears with null; unknown id throws", async () => {
   const store = new SqliteProjectStore(legacyDb());
   const set = await store.setSettings("p", ACME);

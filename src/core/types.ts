@@ -416,6 +416,9 @@ export interface Project {
    *  (src/services/card-templates.ts). A kind that is unset has no
    *  template; renderCardTemplateFor refuses rather than inventing one. */
   cardTemplates?: Partial<Record<CardTemplateKind, string>>;
+  /** Environment set on this project's card and gate subprocesses, e.g. `TMPDIR` on a disk with
+   *  room (docs/SDD-coordinator.md §3.2, §4.12). Never a credential (projectEnvError). */
+  env?: Record<string, string>;
 }
 
 /** The kinds of card a project may hold a body template for

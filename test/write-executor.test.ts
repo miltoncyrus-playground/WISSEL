@@ -664,6 +664,26 @@ test("a project verification replaces the bun pair in --allowedTools (card grant
   }
 });
 
+// Per-project env (docs/SDD-coordinator.md §3.2, §4.12): the card's claude process
+// runs under the project's TMPDIR and the like; a harness's own env wins on a shared key.
+test("a project env reaches the claude process; the harness env wins on a shared key; no env means no env", async () => {
+  const home = await fakeHome();
+  try {
+    const envs: (Record<string, string> | undefined)[] = [];
+    const runner: CommandRunner = async (cmd, opts) => (cmd[0] === "git" ? { stdout: "", stderr: "", exitCode: 0 } : (envs.push(opts.env), ok));
+    const env = { TMPDIR: "/scratch/tmp", CLAUDE_CONFIG_DIR: "/project/claude" };
+    const harness = { id: "h", tool: "claude-cli" as const, label: "h", enabled: true, env: { CLAUDE_CONFIG_DIR: "/harness/claude" } };
+    await new WriteExecutor({ homeDir: home, runner, settingsFor: async () => ({ env }) }).run(task, agent);
+    await new WriteExecutor({ homeDir: home, runner, settingsFor: async () => ({ env }) }).run(task, agent, harness);
+    await new WriteExecutor({ homeDir: home, runner, settingsFor: async () => ({}) }).run(task, agent);
+    // runClaude always scrubs the two API-key vars on top (see its scopedEnv).
+    const scrubbed = { ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "" };
+    expect(envs).toEqual([{ ...env, ...scrubbed }, { TMPDIR: "/scratch/tmp", CLAUDE_CONFIG_DIR: "/harness/claude", ...scrubbed }, scrubbed]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("no settingsFor, a repo with no project, and a project with no verification all give identical argv and prompt: the bun defaults", async () => {
   const home = await fakeHome();
   try {
