@@ -100,6 +100,7 @@ import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type Own
 import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch } from "../services/workstreams.ts";
 import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions } from "../services/inbox.ts";
 import { SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
+import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
 import type { GateCommandRunner } from "../services/merge-gate.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -366,6 +367,10 @@ export interface CreateAppOptions {
    *  §4.1), by event kind, plus the decision-card hook. None are built in:
    *  without them every entry is persisted and left unhandled. */
   inbox?: Pick<InboxDispatcherOptions, "handlers" | "decisionKinds" | "openDecisionCard">;
+  /** The decisions channel's log adapter (src/services/channel.ts, §4.9),
+   *  served by GET/POST /workstreams/:id/channel. Defaults to the board
+   *  database with a console line per message; tests capture the lines. */
+  channelLog?: SqliteChannelLog;
 }
 
 /** The bit of Bun's Server that createApp's fetch uses: lifting the idle
@@ -560,6 +565,8 @@ export function createApp(
   if (board.events) onShutdown(subscribeBoardEvents({ events: board.events }, inboxDispatcher));
   // The policy gate's audit log (§4.2); the executor that writes to it is a later card.
   const gateLog: GateLog = opts.gateLog ?? new SqliteGateLog((board as SqliteBoard).db);
+  // The decisions channel's one adapter (§4.9, descoped): an append-only log.
+  const channelLog = opts.channelLog ?? new SqliteChannelLog((board as SqliteBoard).db);
   const needsYouOpts: NeedsYouOptions = {
     openOwnerTasks: async () => (await ownerTasks.list()).filter((t) => t.status === "open"),
     async worktreeChanged(task, worktree) {
@@ -1663,6 +1670,12 @@ export function createApp(
           if (parts.length === 2 && req.method === "GET") return json(ws);
           if (parts.length === 3 && parts[2] === "inbox" && req.method === "GET") return json(inbox.list({ workstreamId: ws.id, unhandled: url.searchParams.get("unhandled") === "1" }));
           if (parts.length === 3 && parts[2] === "gate-log" && req.method === "GET") return json(await gateLog.list(ws.id));
+          if (parts.length === 3 && parts[2] === "channel" && req.method === "GET") return json(channelLog.list(ws.id));
+          if (parts.length === 3 && parts[2] === "channel" && req.method === "POST") {
+            const check = validateChannelMessage(await req.json().catch(() => undefined));
+            if (!check.ok) return json({ error: check.error }, 400);
+            return json(await channelLog.adapter(ws.id).post(check.message), 201);
+          }
           if (parts.length === 2 && req.method === "PATCH") {
             const check = validateWorkstreamPatch(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
