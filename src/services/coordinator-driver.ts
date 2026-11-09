@@ -47,13 +47,25 @@ export interface DriverDeps {
 }
 
 interface Scope { event: InboxEvent; ws: Workstream; projectId: string; role: ProjectRole; decider?: string; project?: Project }
-type Draft = Omit<ExecutableAction, "id" | "workstreamId" | "projectId">;
+/** An action before the driver stamps its id, workstream and project. */
+export type Draft = Omit<ExecutableAction, "id" | "workstreamId" | "projectId">;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const text = (v: unknown): string | undefined => (typeof v === "string" && v.trim() !== "" ? v : undefined);
 const payloadOf = (event: InboxEvent): Record<string, unknown> => (isRecord(event.payload) ? event.payload : {});
 const checksOf = (pr: NonNullable<TaskCard["pr"]>): "green" | "red" | "pending" => (pr.watch?.checks === "passing" ? "green" : pr.watch?.checks === "failing" ? "red" : "pending");
 const label = (card: TaskCard): string => card.key ?? card.id;
+
+/** The §4.6 fix round as one card.start from the FULL `review` text, or an owner task when the project cannot render
+ *  one. The one path for a review that blocked (onReview) and a push whose gates went red (host-actions.ts). */
+export function fixRoundActions(project: Pick<Project, "cardRules" | "cardTemplates"> | undefined, card: TaskCard, review: string, round: number, ticket: string | undefined): Draft[] {
+  const built = buildFixRoundBody(project ?? {}, { round, review, key: card.key, ticket });
+  if (!built.ok) {
+    return [{ kind: "owner.task", payload: { title: `Fix round for ${label(card)} could not be built`, why: built.error, steps: ["Set the project's fix-round card template", "Re-run the review"], blocks: [card.id] } }];
+  }
+  const vars = { round: String(round), review, key: card.key, ticket, files: undefined };
+  return [{ kind: "card.start", payload: { template: "fix-round", title: `Fix round ${round}: ${card.title}`, key: card.key, round, labels: ["fix-round"], vars, optional: ["key", "ticket", "files"] } }];
+}
 
 export function createCoordinatorDriver(deps: DriverDeps): { handlers: Record<string, InboxHandler> } {
   const log = deps.logger ?? console;
@@ -94,16 +106,7 @@ export function createCoordinatorDriver(deps: DriverDeps): { handlers: Record<st
     return [{ kind: "pr.arm", base: mainBranch, checks: checksOf(pr), repo: card.repo, own: true, payload: { taskId: card.id, pr: pr.number, url: pr.url } }];
   }
 
-  function fixRound(scope: Scope, card: TaskCard, verdict: ReviewVerdict, round: number): Draft[] {
-    const review = reviewTextOf(verdict);
-    const ticket = ticketOf(scope, card);
-    const built = buildFixRoundBody(scope.project ?? {}, { round, review, key: card.key, ticket });
-    if (!built.ok) {
-      return [{ kind: "owner.task", payload: { title: `Fix round for ${label(card)} could not be built`, why: built.error, steps: ["Set the project's fix-round card template", "Re-run the review"], blocks: [card.id] } }];
-    }
-    const vars = { round: String(round), review, key: card.key, ticket, files: undefined };
-    return [{ kind: "card.start", payload: { template: "fix-round", title: `Fix round ${round}: ${card.title}`, key: card.key, round, labels: ["fix-round"], vars, optional: ["key", "ticket", "files"] } }];
-  }
+  const fixRound = (scope: Scope, card: TaskCard, verdict: ReviewVerdict, round: number): Draft[] => fixRoundActions(scope.project, card, reviewTextOf(verdict), round, ticketOf(scope, card));
 
   async function defaultVerdictFor(card: TaskCard): Promise<ReviewVerdict | undefined> {
     const own = await deps.board.getResult(card.id);

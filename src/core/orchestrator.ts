@@ -919,8 +919,9 @@ export async function tryAutoMerge(board: Board, registry: Registry, result: Tas
 }
 
 /** Pull-request delivery (§4.5, pr-delivery.ts) in place of the local merge: an open PR is recorded and counts as
- *  landed; a red gate takes the merge-gate pushback loop; anything else (conflict, failed push) goes to a human. */
-async function deliverPullRequest(board: Board, task: TaskCard, worktree: TaskWorktree, delivery: PullRequestDelivery, ticketPatterns: string[] | undefined, merge: MergeContext): Promise<AutoMergeOutcome> {
+ *  landed; a red gate takes the merge-gate pushback loop; anything else (conflict, failed push) goes to a human.
+ *  The executor's pr.open (src/services/host-actions.ts) is this same path. */
+export async function deliverPullRequest(board: Board, task: TaskCard, worktree: TaskWorktree, delivery: PullRequestDelivery, ticketPatterns: string[] | undefined, merge: MergeContext): Promise<AutoMergeOutcome> {
   const mergeGate = await merge.gateFor?.(task.repo!).catch(() => undefined);
   const res = await deliverAsPullRequest(task.repo!, worktree, task, delivery, { runner: merge.runner, host: merge.host, gateRunner: merge.gateRunner, mergeGate, ticketPatterns });
   console.log(`delivery ${task.id}: ${res.outcome}: ${res.message}`);
