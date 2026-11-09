@@ -175,6 +175,8 @@ const enc = encodeURIComponent;
 
 /** The coordinator window (docs/SDD-coordinator.md §4.14, §5). */
 export const fetchWorkstreams = () => getJson<Workstream[]>("/workstreams");
+/** POST /workstreams: the server's message on a refusal (unknown project, empty name). */
+export const createWorkstream = (input: { name: string; ticket?: string; projects: { projectId: string; role: ProjectRole }[] }) => postJson<Workstream>("/workstreams", input);
 export const fetchWindow = (workstreamId: string) => getJson<WindowDocument>(`/workstreams/${enc(workstreamId)}/window`);
 /** A quick action or free text; `log` writes the answer to the channel. */
 export const postWindowMessage = (workstreamId: string, input: { action?: QuickAction; text?: string; log: boolean }) => postJson<WindowMessageResult>(`/workstreams/${enc(workstreamId)}/window/messages`, input);

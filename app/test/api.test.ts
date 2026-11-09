@@ -116,3 +116,21 @@ describe("runNotice", () => {
     }
   });
 });
+
+describe("createWorkstream", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  test("posts the name and projects as JSON and returns the workstream", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ id: "w1", name: "Build", projects: [{ projectId: "p1", role: "shadow" }] }), { status: 201, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { createWorkstream } = await import("../src/api");
+    const ws = await createWorkstream({ name: "Build", projects: [{ projectId: "p1", role: "shadow" }] });
+    expect(ws.id).toBe("w1");
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect([url, init.method, JSON.parse(String(init.body))]).toEqual(["/workstreams", "POST", { name: "Build", projects: [{ projectId: "p1", role: "shadow" }] }]);
+  });
+  test("throws the server's message on a refusal", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "unknown project nope" }), { status: 400, headers: { "content-type": "application/json" } })));
+    const { createWorkstream } = await import("../src/api");
+    await expect(createWorkstream({ name: "x", projects: [{ projectId: "nope", role: "shadow" }] })).rejects.toThrow("unknown project nope");
+  });
+});

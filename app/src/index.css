@@ -687,6 +687,12 @@ a.result-text:hover { text-decoration: underline; }
 .cw-log li { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
 .cw-toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; }
 .muted { color: var(--muted); }
+.cw-new { display: grid; gap: 12px; margin-top: 20px; padding: 14px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.cw-new h2 { margin: 0; font-size: 16px; }
+.cw-field { display: grid; gap: 4px; margin: 0; padding: 0; border: 0; font-size: 14px; }
+.cw-field legend { padding: 0; margin-bottom: 4px; }
+.cw-field input[type="text"], .cw-project select { min-height: 44px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--ground); color: var(--text); font: 16px var(--font-body); }
+.cw-project { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 44px; }
 .shell.is-dock .content { padding: 12px 14px; }
 
 /* ---------- You: Wissel Wrapped (SDD §3.6) ---------- */

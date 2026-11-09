@@ -158,3 +158,21 @@ test("the board docks the same window beside the lanes and follows the theme tog
   await dock.getByRole("button", { name: "Close coordinator window" }).click();
   await expect(dock).toBeHidden();
 });
+
+test("the picker creates a workstream from a form and opens its window", async ({ page, request }) => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-e2e-window-new-"));
+  execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "pipe" });
+  const project = (await (await request.post("/projects/local", { data: { path: dir, initGit: false } })).json()) as { id: string; name: string };
+  const name = unique("form");
+  await page.goto("/app#/window");
+  const form = page.getByRole("form", { name: "New workstream" });
+  await expect(form).toBeVisible();
+  await expect(form.getByRole("button", { name: "Create workstream" })).toBeDisabled(); // no name yet
+  await form.getByLabel("Name").fill(name);
+  await form.getByRole("checkbox", { name: project.name }).check();
+  await expect(form.getByLabel(`Role in ${project.name}`)).toHaveValue("shadow"); // the safe default
+  await form.getByRole("button", { name: "Create workstream" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: new RegExp(`Coordinator window: ${name}`) })).toBeVisible();
+  const list = (await (await request.get("/workstreams")).json()) as { name: string; projects: { projectId: string; role: string }[] }[];
+  expect(list.find((w) => w.name === name)?.projects).toEqual([{ projectId: project.id, role: "shadow", decideAlone: [], mustAsk: [], never: [] }]);
+});

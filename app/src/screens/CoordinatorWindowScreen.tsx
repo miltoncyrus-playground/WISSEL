@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { fetchWindow, fetchWorkstreams, flipDecision, ownerTaskDone, postWindowMessage, resolveWindowAction, setProjectRole } from "../api";
+import { createWorkstream, fetchWindow, fetchWorkstreams, flipDecision, ownerTaskDone, postWindowMessage, resolveWindowAction, setProjectRole } from "../api";
 import { events } from "../events";
 import { routeHash } from "../routes";
 import { timeAgo } from "../time";
+import { useProjects } from "../useProjects";
 import { PROJECT_ROLES, type ChannelEntry, type ChatMessage, type Decision, type OwnerTask, type ProjectRole, type QuickAction, type WindowDocument, type WindowExecuted, type WindowItem, type Workstream } from "../types";
 import { ConfirmCard } from "./AskScreen";
 
@@ -102,7 +103,7 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
     );
   };
 
-  if (!workstreamId) return <Picker dock={dock} />;
+  if (!workstreamId) return <Picker />;
   const h = doc?.header;
   const paused = Boolean(h?.live.dispatchHold);
   return (
@@ -237,7 +238,7 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
 
 /** `#/window` with no id: the workstreams to pick from. In the dock the
  *  board's own select does this, so the list is the fallback. */
-function Picker({ dock }: { dock: boolean }) {
+function Picker() {
   const [list, setList] = useState<Workstream[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -253,7 +254,7 @@ function Picker({ dock }: { dock: boolean }) {
           {error}
         </p>
       )}
-      {list === null ? <p className="empty">Loading…</p> : list.length === 0 ? <p className="empty">No workstreams yet{dock ? "" : ": the board's Coordinator dock makes one visible once it exists"}.</p> : null}
+      {list === null ? <p className="empty">Loading…</p> : list.length === 0 ? <p className="empty">No workstreams yet. Create one below.</p> : null}
       <ul className="chat-list">
         {(list ?? []).map((ws) => (
           <li key={ws.id}>
@@ -264,7 +265,82 @@ function Picker({ dock }: { dock: boolean }) {
           </li>
         ))}
       </ul>
+      <NewWorkstreamForm onCreated={(ws) => setList((l) => [...(l ?? []), ws])} />
     </div>
+  );
+}
+
+/** A workstream is a name and the projects it covers, each with a role. New projects start in Shadow, where the coordinator
+ *  records what it would do and acts on nothing; a role is changed later from the window, with a Confirm. */
+function NewWorkstreamForm({ onCreated }: { onCreated: (ws: Workstream) => void }) {
+  const projects = useProjects();
+  const [name, setName] = useState("");
+  const [ticket, setTicket] = useState("");
+  const [picked, setPicked] = useState<Record<string, ProjectRole>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const toggle = (id: string, on: boolean) =>
+    setPicked((p) => {
+      const next = { ...p };
+      if (on) next[id] = "shadow";
+      else delete next[id];
+      return next;
+    });
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const ws = await createWorkstream({ name: name.trim(), ...(ticket.trim() ? { ticket: ticket.trim() } : {}), projects: Object.entries(picked).map(([projectId, role]) => ({ projectId, role })) });
+      onCreated(ws);
+      window.location.hash = routeHash({ screen: "window", workstreamId: ws.id });
+    } catch (err) {
+      setError(text(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form className="cw-new" onSubmit={submit} aria-labelledby="cw-new-title">
+      <h2 id="cw-new-title">New workstream</h2>
+      <label className="cw-field">
+        <span>Name</span>
+        <input type="text" value={name} onChange={(e) => setName(e.target.value)} required />
+      </label>
+      <label className="cw-field">
+        <span>Ticket (optional)</span>
+        <input type="text" value={ticket} onChange={(e) => setTicket(e.target.value)} placeholder="ABC-123" />
+      </label>
+      <fieldset className="cw-field">
+        <legend>Projects</legend>
+        {projects.length === 0 ? <p className="muted">No projects are registered.</p> : null}
+        {projects.map((p) => (
+          <div key={p.id} className="cw-project">
+            <label className="cw-toggle">
+              <input type="checkbox" checked={p.id in picked} onChange={(e) => toggle(p.id, e.target.checked)} />
+              <span>{p.name}</span>
+            </label>
+            {p.id in picked && (
+              <select aria-label={`Role in ${p.name}`} value={picked[p.id]} onChange={(e) => setPicked((x) => ({ ...x, [p.id]: e.target.value as ProjectRole }))}>
+                {PROJECT_ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        ))}
+      </fieldset>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      <button type="submit" className="btn btn-primary" disabled={busy || !name.trim()}>
+        Create workstream
+      </button>
+    </form>
   );
 }
 
