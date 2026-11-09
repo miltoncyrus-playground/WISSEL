@@ -190,12 +190,28 @@
     padding: 5px 12px; border-radius: 7px; cursor: pointer; flex: none;
   }
   .coord-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
-  .drawer.coord-dock { top: var(--coord-top, 0px); width: min(520px, 100vw); transform: none; box-shadow: none; z-index: 30; border-top: 1px solid var(--border); }
+  /* --coord-w is the dock's one width (docs/SDD-coordinator-dock.md R3:
+     380px, so five lanes fit beside it at 1280px); the dock and the room
+     the content leaves for it both read it. */
+  body { --coord-w: 380px; }
+  .drawer.coord-dock { top: var(--coord-top, 0px); width: min(var(--coord-w), 100vw); transform: none; box-shadow: none; z-index: 30; border-top: 1px solid var(--border); }
   .coord-dock .drawer-head { align-items: center; }
   .coord-dock select { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--page); color: var(--ink-1); }
   .coord-dock iframe { flex: 1; width: 100%; border: 0; background: var(--page); }
-  /* The top menu stays full width; only the content makes room, and the dock starts where the cards start. */
-  body.coord-docked .main { margin-right: min(520px, 100vw); }
+  /* The top menu stays full width; only the content makes room, and the
+     dock starts where the cards start. The width is set outright: the
+     news-site block below gives .main width: 100%, which ignores a right
+     margin (the dock then lay over the last lanes, R1), and width: auto
+     with the auto left margin makes it shrink to its content inside
+     .main-col's column flex, so the lanes pushed under the dock anyway. */
+  body.coord-docked .main { width: calc(100% - min(var(--coord-w), 100vw)); margin-right: min(var(--coord-w), 100vw); padding-left: 12px; padding-right: 12px; }
+  /* Beside the dock the lanes reflow (R2): each keeps at least 160px, and
+     when five of them no longer fit the lanes area scrolls sideways inside
+     its own box; the page never does and the dock never covers a lane.
+     Tighter gaps than the undocked 28px: 1280 - 380 leaves 900px, and five
+     160px lanes with 12px gaps (848px) fit it beside a page scrollbar. */
+  body.coord-docked .kanban { overflow-x: auto; gap: 0 12px; }
+  body.coord-docked .kcol { flex-basis: 160px; min-width: 160px; }
   .ws-projects { display: grid; gap: 4px; }
   .ws-project { display: flex; align-items: center; gap: 10px; min-height: 36px; }
   .ws-project label { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
