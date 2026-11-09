@@ -74,6 +74,8 @@ export interface WindowDeps {
   requestRestart: () => { ok: true } | { ok: false; error: string };
   maxConcurrentTasks?: number;
   now?: () => Date;
+  /** Every owner message, once stored: the inbox takes it as an owner.message event (channel-sinks.ts, §4.1). */
+  onOwnerMessage?: (ws: Workstream, message: ChatMessage, input: WindowMessageInput) => Promise<unknown> | void;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -221,6 +223,7 @@ export function createCoordinatorWindow(deps: WindowDeps) {
       }
       const action = input.action ?? quickActionOf(input.text!);
       const user = deps.conversations.add({ conversationId: cid, role: "user", text: input.action ? QUICK_TEXT[input.action] : input.text!, actions: [], dropped: [], at });
+      await deps.onOwnerMessage?.(ws, user, { ...input, ...(action ? { action } : {}) });
       const b = await build(ws);
       const assistantId = randomUUID();
       let reply: string;

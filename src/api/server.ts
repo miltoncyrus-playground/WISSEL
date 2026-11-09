@@ -107,6 +107,7 @@ import { SqliteDecisionStore } from "../services/decision-cards.ts";
 import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions, type InboxHandler } from "../services/inbox.ts";
 import { createCoordinatorDriver } from "../services/coordinator-driver.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
+import { channelHandlers, ownerMessageEvent, startChannelReader } from "../services/channel-sinks.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
 import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, startOutboundFlusher, gateContextFor, type ExecutorOptions } from "../services/coordinator-executor.ts";
 import { hostHandlers } from "../services/host-actions.ts";
@@ -600,6 +601,9 @@ export function createApp(
   const gateLog: GateLog = opts.gateLog ?? new SqliteGateLog((board as SqliteBoard).db);
   // The decisions channel's one adapter (§4.9, descoped): an append-only log.
   const channelLog = opts.channelLog ?? new SqliteChannelLog((board as SqliteBoard).db);
+  // Its read half (§4.1, channel-sinks.ts): new entries become inbox events; the cursor persists, so a restart does not replay.
+  const channelReader = startChannelReader({ db: (board as SqliteBoard).db, channelLog, workstreams, dispatcher: inboxDispatcher });
+  onShutdown(() => channelReader.stop());
   // A digest (§4.11) reads the board, the gate log, the owner tasks and the
   // host guard's probes, and lands in the digest log plus a log line: no model, no chat.
   const digestRun = createDigestRun(
@@ -830,6 +834,7 @@ export function createApp(
         requestRestart: () => restartWhenIdle.request(),
         stopCard: (id) => discardTask(board as Board, id, commandRunner),
       }),
+      ...channelHandlers({ channelLog, workstreams }), // channel.post and chat.post: the log plus a console line (§4.9 as descoped)
       ...hostActions.handlers,
       ...opts.executor?.handlers,
     },
@@ -853,6 +858,7 @@ export function createApp(
     releaseDispatch: () => orchestrator.releaseDispatch("owner"),
     requestRestart: () => restartWhenIdle.request(),
     maxConcurrentTasks: opts.maxConcurrentTasks,
+    onOwnerMessage: (ws, message, input) => inboxDispatcher.ingest(ownerMessageEvent(ws.id, message, input)),
   });
   // Always wired, regardless of WISSEL_ORCHESTRATOR — a completed
   // subtask set should get its integrator card queued the moment it
@@ -1791,7 +1797,9 @@ export function createApp(
           if (parts.length === 3 && parts[2] === "channel" && req.method === "POST") {
             const check = validateChannelMessage(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
-            return json(await channelLog.adapter(ws.id).post(check.message), 201);
+            const posted = await channelLog.adapter(ws.id).post(check.message);
+            void channelReader.tick(); // the inbox sees a decider's entry now, not at the next poll
+            return json(posted, 201);
           }
           if (parts.length === 3 && parts[2] === "outbound" && req.method === "GET") return json(await executor.status(ws.id));
           // Duty switches and the shadow report (§4.13): a switch is the owner's and needs confirm:true, like a role change.
