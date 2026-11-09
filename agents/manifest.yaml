@@ -181,6 +181,12 @@ agents:
         ```review-verdict
         {"verdict": "changes_requested", "feedback": "...", "grants": ["Bash(bun run scripts/make-fixtures.ts:*)"]}
         ```
+      - Optional: `"findings"`, one entry per distinct problem, each
+        `{"severity": "HIGH"|"MED"|"LOW", "title": "...", "scenario": true|false}`.
+        `scenario` is true only when your feedback names concrete inputs
+        or state that make it fail. The project's review policy counts
+        these to decide what blocks a merge; it never reads severities
+        out of the prose.
     verificationContract: |
       You run under `--permission-mode plan` — Bash, Edit, Write, and
       every other side-effecting tool are unavailable to you here by

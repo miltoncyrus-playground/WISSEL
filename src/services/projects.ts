@@ -72,6 +72,7 @@ interface ProjectRow {
   referencePatterns?: string | null;
   cardRules?: string | null;
   cardTemplates?: string | null;
+  reviewPolicy?: string | null;
   env?: string | null;
 }
 
@@ -100,6 +101,7 @@ function rowToProject(row: ProjectRow): Project {
     ...(row.referencePatterns ? { referencePatterns: JSON.parse(row.referencePatterns) as string[] } : {}),
     ...(row.cardRules ? { cardRules: JSON.parse(row.cardRules) as string } : {}),
     ...(row.cardTemplates ? { cardTemplates: JSON.parse(row.cardTemplates) as NonNullable<Project["cardTemplates"]> } : {}),
+    ...(row.reviewPolicy ? { reviewPolicy: JSON.parse(row.reviewPolicy) as NonNullable<Project["reviewPolicy"]> } : {}),
     ...(row.env ? { env: JSON.parse(row.env) as Record<string, string> } : {}),
   };
 }

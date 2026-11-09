@@ -14,6 +14,7 @@ import type { Project } from "../core/types.ts";
 import { grantError, MAX_EXTRA_ALLOWED_TOOLS } from "../core/allowed-tools.ts";
 import { MAX_REF_PATTERNS, patternError } from "./ticket-refs.ts";
 import { cardRulesError, cardTemplatesError } from "./card-templates.ts";
+import { reviewPolicyError } from "./review-policy.ts";
 
 export const MAX_SANDBOX_DOMAINS = 20;
 export const MAX_SETTING_COMMANDS = 20;
@@ -22,7 +23,7 @@ export const MAX_PROTECTED_PATHS = 50;
 /** The settings, as stored on Project. */
 export type ProjectSettings = Pick<
   Project,
-  "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates" | "env"
+  "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates" | "reviewPolicy" | "env"
 >;
 export type ProjectSettingKey = keyof Required<ProjectSettings>;
 export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = [
@@ -35,6 +36,7 @@ export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = [
   "referencePatterns",
   "cardRules",
   "cardTemplates",
+  "reviewPolicy",
   "env",
 ];
 
@@ -230,6 +232,17 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
       if (error) return { ok: false, error };
       const templates = v as NonNullable<Project["cardTemplates"]>;
       patch.cardTemplates = Object.keys(templates).length > 0 ? templates : null;
+    }
+  }
+
+  // Review policy (docs/SDD-coordinator.md §4.6, src/services/review-policy.ts).
+  if ("reviewPolicy" in raw) {
+    const v = raw.reviewPolicy;
+    if (v === null) patch.reviewPolicy = null;
+    else {
+      const error = reviewPolicyError(v);
+      if (error) return { ok: false, error };
+      patch.reviewPolicy = v as NonNullable<Project["reviewPolicy"]>;
     }
   }
 
