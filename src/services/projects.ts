@@ -73,6 +73,7 @@ interface ProjectRow {
   cardRules?: string | null;
   cardTemplates?: string | null;
   env?: string | null;
+  delivery?: string | null;
 }
 
 /** The settings columns: each a nullable JSON TEXT column named after
@@ -101,6 +102,7 @@ function rowToProject(row: ProjectRow): Project {
     ...(row.cardRules ? { cardRules: JSON.parse(row.cardRules) as string } : {}),
     ...(row.cardTemplates ? { cardTemplates: JSON.parse(row.cardTemplates) as NonNullable<Project["cardTemplates"]> } : {}),
     ...(row.env ? { env: JSON.parse(row.env) as Record<string, string> } : {}),
+    ...(row.delivery ? { delivery: JSON.parse(row.delivery) as Project["delivery"] } : {}),
   };
 }
 

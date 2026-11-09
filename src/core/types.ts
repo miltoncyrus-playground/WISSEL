@@ -419,6 +419,24 @@ export interface Project {
   /** Environment set on this project's card and gate subprocesses, e.g. `TMPDIR` on a disk with
    *  room (docs/SDD-coordinator.md §3.2, §4.12). Never a credential (projectEnvError). */
   env?: Record<string, string>;
+  /** How a finished card lands (docs/SDD-coordinator.md §4.5). Unset
+   *  means `local-merge`, today's merge path. src/services/pr-delivery.ts. */
+  delivery?: Delivery;
+}
+
+/** A finished card's delivery (docs/SDD-coordinator.md §4.5). */
+export type Delivery = { mode: "local-merge" } | PullRequestDelivery;
+export interface PullRequestDelivery {
+  mode: "pull-request";
+  /** `feat/{ticket}-{key}-{slug}`; `{id}` too. */
+  branchPattern: string;
+  /** PR body with `{title}`, `{body}`, `{id}`, `{key}`, `{ticket}`. */
+  prTemplate?: string;
+  /** Argv commands run on the host after Project.mergeGate, outside the card sandbox. */
+  hostGates: string[][];
+  /** Re-run a failed gate once. */
+  gateRetries: 0 | 1;
+  draft: boolean;
 }
 
 /** The kinds of card a project may hold a body template for
