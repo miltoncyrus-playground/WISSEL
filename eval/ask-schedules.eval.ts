@@ -35,7 +35,7 @@ import { join } from "node:path";
 import { createApp } from "../src/api/server.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { SqlitePipelineStore } from "../src/services/pipelines.ts";
-import { SqlitePendingActionStore } from "../src/services/pending-actions.ts";
+import { controlActionsOf, SqlitePendingActionStore } from "../src/services/pending-actions.ts";
 import { SqliteProjectStore } from "../src/services/projects.ts";
 import { Registry } from "../src/core/registry.ts";
 import type { HarnessPool } from "../src/core/harness-pool.ts";
@@ -305,7 +305,7 @@ export async function runCase(c: Case, s: Seeded): Promise<CaseOutcome> {
   const pending = new SqlitePendingActionStore(s.board.db)
     .forMessage(result.assistant.id)
     .filter((p) => p.kind === "confirm" && !p.resolution)
-    .flatMap((p) => p.actions);
+    .flatMap(controlActionsOf);
   const schedules = (await (await s.app(new Request("http://localhost/schedules"))).json()) as ScheduleDef[];
   const o: Observed = { result, ran, pending, schedules, tasks: await s.board.list(), now };
   const tierBExecuted = ran.filter((a) => a.tier === "B" || a.confirmedBy !== "tier-a").length;

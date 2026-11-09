@@ -32,7 +32,7 @@ import {
   type DroppedAction,
 } from "./concierge-actions.ts";
 import { executeControl, pendingLines, type ControlDeps } from "./concierge-control.ts";
-import { pendingView, REFUSAL_TEXT, type SqlitePendingActionStore } from "./pending-actions.ts";
+import { controlActionsOf, isWindowAction, pendingView, REFUSAL_TEXT, type SqlitePendingActionStore } from "./pending-actions.ts";
 import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { listSchedules } from "./board-actions.ts";
 import { needsYouFor } from "./needs-you.ts";
@@ -476,6 +476,8 @@ export function createConcierge(deps: ConciergeDeps) {
     if (!deps.pending || !deps.controls) throw new AskError("board controls are not set up on this server", 400);
     if (typeof input.conversationId !== "string" || input.conversationId === "") throw new AskError("conversationId is required", 400);
     const conversationId = input.conversationId;
+    // A coordinator window change (§4.14) is confirmed in the window, never here: checked before it is taken, so it stays open there.
+    if (deps.pending.get(pendingId)?.actions.some(isWindowAction)) throw new AskError("that action belongs to a coordinator window", 409);
     const used = resolution === "confirmed" ? deps.pending.take(pendingId, conversationId, now()) : deps.pending.cancel(pendingId, conversationId, now());
     if (!used.ok) throw new AskError(REFUSAL_TEXT[used.reason], used.reason === "not-found" ? 404 : 409);
     const p = used.pending;
@@ -483,7 +485,7 @@ export function createConcierge(deps: ConciergeDeps) {
     let message = deps.conversations.message(p.messageId);
     if (!message) throw new AskError(`message not found: ${p.messageId}`, 404);
     if (resolution === "confirmed") {
-      const executed = await runControls(p.actions, conversationId, p.messageId, p.kind === "undo" ? "undo" : "confirm");
+      const executed = await runControls(controlActionsOf(p), conversationId, p.messageId, p.kind === "undo" ? "undo" : "confirm");
       deps.pending.finish(p.id, executed);
       message = deps.conversations.appendActions(p.messageId, executed, now().toISOString());
       await audit(conversationId, p.messageId, executed);

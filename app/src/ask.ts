@@ -81,8 +81,8 @@ export function chipsOf(
   const seen = new Set<string>();
   const out: Chip[] = [];
   for (const a of message.actions) {
-    // Board controls show as result chips instead (controlChipsOf).
-    if (!a.ok || isControl(a)) continue;
+    // Board controls show as result chips instead (controlChipsOf); a coordinator window change has no card.
+    if (!a.ok || isControl(a) || "window" in a) continue;
     const taskId = a.type === "run_pipeline" ? a.runId : a.taskId;
     if (seen.has(taskId)) continue;
     seen.add(taskId);
