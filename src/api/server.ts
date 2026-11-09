@@ -98,6 +98,7 @@ import { HostGuard, hostThresholdsFromEnv, realHostProbes, type HostGuardOptions
 import { SqliteDigestLog, createDigestRun } from "../services/digests.ts";
 import { needsYouFor, needsYouLogLine, ownerTaskNeedsYou, type NeedsYouOptions } from "../services/needs-you.ts";
 import { completeOwnerTask, SqliteOwnerTaskStore, validateNewOwnerTask, type OwnerTask } from "../services/owner-tasks.ts";
+import { SqliteDecisionStore } from "../services/decision-cards.ts";
 import { SqliteWorkstreamStore, validateNewWorkstream, validateRoleChange, validateWorkstreamPatch } from "../services/workstreams.ts";
 import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions } from "../services/inbox.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
@@ -563,6 +564,8 @@ export function createApp(
   const ownerTasks = new SqliteOwnerTaskStore((board as SqliteBoard).db);
   // Workstreams and roles (docs/SDD-coordinator.md §3.1, §4.13).
   const workstreams = new SqliteWorkstreamStore((board as SqliteBoard).db);
+  // Decision records (§3.4, §4.4): a default taken, reversible with POST /decisions/:id/flip.
+  const decisions = new SqliteDecisionStore((board as SqliteBoard).db);
   // The event inbox (docs/SDD-coordinator.md §4.1): board and PR-watcher
   // events are persisted here with source-stable ids before any handler.
   const inbox = new SqliteInbox((board as SqliteBoard).db);
@@ -1731,6 +1734,7 @@ export function createApp(
             return json(await channelLog.adapter(ws.id).post(check.message), 201);
           }
           if (parts.length === 3 && parts[2] === "outbound" && req.method === "GET") return json(await executor.status(ws.id));
+          if (parts.length === 3 && parts[2] === "decisions" && req.method === "GET") return json(decisions.list(ws.id));
           if (parts.length === 2 && req.method === "PATCH") {
             const check = validateWorkstreamPatch(await req.json().catch(() => undefined));
             if (!check.ok) return json({ error: check.error }, 400);
@@ -1747,6 +1751,13 @@ export function createApp(
             return json(await workstreams.setRole(ws.id, parts[3]!, check.change));
           }
         }
+      }
+
+      if (parts[0] === "decisions" && parts.length === 3 && parts[2] === "flip" && req.method === "POST") {
+        const d = decisions.get(parts[1]!);
+        if (!d) return notFound();
+        if (d.status === "flipped") return json({ error: `decision ${d.id} was already flipped` }, 409);
+        return json(decisions.flip(d.id));
       }
 
       if (parts[0] === "tasks") {
