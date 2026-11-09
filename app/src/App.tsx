@@ -108,11 +108,13 @@ export function App() {
 
   if (DOCK) {
     return (
-      <div className="shell is-dock">
-        <main className="content" id="main" data-screen={route.screen}>
-          {route.screen === "window" ? screen : <CoordinatorWindow now={now} dock />}
-        </main>
-      </div>
+      <ProjectsContext.Provider value={projects}>
+        <div className="shell is-dock">
+          <main className="content" id="main" data-screen={route.screen}>
+            {route.screen === "window" ? screen : <CoordinatorWindow now={now} dock />}
+          </main>
+        </div>
+      </ProjectsContext.Provider>
     );
   }
 

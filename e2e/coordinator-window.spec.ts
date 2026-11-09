@@ -271,3 +271,46 @@ test("the window's own buttons are never covered, on a short screen", async ({ p
     expect(top, `${name} is covered`).toBe(true);
   }
 });
+
+test("the dock starts at the cards and leaves the whole top menu visible and clickable", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/board");
+  await page.locator("#coordBtn").click();
+  await expect(page.locator("#coordDock")).toBeVisible();
+  const geo = await page.evaluate(() => {
+    const dock = document.getElementById("coordDock")!.getBoundingClientRect();
+    const lanes = document.getElementById("lanesPanel")!.getBoundingClientRect();
+    const bar = document.querySelector(".topbar")!.getBoundingClientRect();
+    const links = Array.from(document.querySelectorAll(".topbar a")).filter((a) => (a as HTMLElement).offsetParent !== null).map((a) => {
+      const r = a.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      return { text: (a.textContent ?? "").trim(), reachable: hit === a || a.contains(hit) };
+    });
+    return { dockTop: dock.top, lanesTop: lanes.top, barBottom: bar.bottom, barRight: bar.right, links };
+  });
+  expect(Math.abs(geo.dockTop - geo.lanesTop)).toBeLessThanOrEqual(2); // aligned with the cards
+  expect(geo.dockTop).toBeGreaterThanOrEqual(geo.barBottom - 1); // below the menu, never over it
+  expect(geo.links.length).toBeGreaterThan(3);
+  expect(geo.links.filter((l) => !l.reachable), "a top-menu link is covered").toEqual([]);
+});
+
+test("+ New has a Coordinator tab that creates a workstream and docks its window", async ({ page, request }) => {
+  const dir = await mkdtemp(join(tmpdir(), "wissel-e2e-new-coord-"));
+  execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "pipe" });
+  const project = (await (await request.post("/projects/local", { data: { path: dir, initGit: false } })).json()) as { id: string; name: string };
+  const name = unique("newtab");
+  await page.goto("/board");
+  await page.locator("#newBtn").click();
+  await page.getByRole("tab", { name: "Coordinator" }).click();
+  const submit = page.getByRole("button", { name: "Create coordinator" });
+  await expect(submit).toBeDisabled(); // no name yet
+  await page.locator("#wsName").fill(name);
+  await expect(submit).toBeEnabled();
+  await page.getByRole("checkbox", { name: project.name }).first().check();
+  await submit.click();
+  await expect(page.locator("#newDrawer")).toBeHidden();
+  await expect(page.locator("#coordDock")).toBeVisible();
+  await expect(page.locator("#coordWorkstream option:checked")).toHaveText(name);
+  const list = (await (await request.get("/workstreams")).json()) as { name: string; projects: { projectId: string; role: string }[] }[];
+  expect(list.find((w) => w.name === name)?.projects.map((p) => [p.projectId, p.role])).toEqual([[project.id, "shadow"]]);
+});

@@ -140,11 +140,8 @@ export function CoordinatorWindow({ workstreamId, now, dock = false }: { workstr
           {error ? "offline" : "live"}
           {ago && !error ? <span className="muted"> · {ago}</span> : null}
         </span>
-        {dock ? (
-          <a className="btn btn-small" href={`/app${routeHash({ screen: "window", workstreamId })}`} target="_top">
-            Open in the app
-          </a>
-        ) : (
+        {/* In the dock the board's own header already has the workstream select and "Open in the app". */}
+        {!dock && (
           <a className="btn btn-small" href={routeHash({ screen: "window" })}>
             All workstreams
           </a>

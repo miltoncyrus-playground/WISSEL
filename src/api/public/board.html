@@ -190,11 +190,16 @@
     padding: 5px 12px; border-radius: 7px; cursor: pointer; flex: none;
   }
   .coord-btn[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
-  .drawer.coord-dock { width: min(520px, 100vw); transform: none; box-shadow: none; z-index: 30; }
+  .drawer.coord-dock { top: var(--coord-top, 0px); width: min(520px, 100vw); transform: none; box-shadow: none; z-index: 30; border-top: 1px solid var(--border); }
   .coord-dock .drawer-head { align-items: center; }
   .coord-dock select { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--page); color: var(--ink-1); }
   .coord-dock iframe { flex: 1; width: 100%; border: 0; background: var(--page); }
-  body.coord-docked { padding-right: min(520px, 100vw); }
+  /* The top menu stays full width; only the content makes room, and the dock starts where the cards start. */
+  body.coord-docked .main { margin-right: min(520px, 100vw); }
+  .ws-projects { display: grid; gap: 4px; }
+  .ws-project { display: flex; align-items: center; gap: 10px; min-height: 36px; }
+  .ws-project label { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 600; }
+  .ws-project select { font: inherit; font-size: 13px; padding: 4px 6px; }
   .main { padding: 10px 20px 32px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   /* Below 1100px the header keeps only its icons. Labels are clipped
      rather than display:none so each link keeps its accessible name;
@@ -1531,6 +1536,7 @@
   <div class="new-tabs" role="tablist" aria-label="What to create">
     <button type="button" role="tab" id="newTabTask" data-new-tab="task" aria-controls="newTaskPanel" aria-selected="true">Task</button>
     <button type="button" role="tab" id="newTabPipeline" data-new-tab="pipeline" aria-controls="newPipelinePanel" aria-selected="false">Pipeline run</button>
+    <button type="button" role="tab" id="newTabCoordinator" data-new-tab="coordinator" aria-controls="newCoordinatorPanel" aria-selected="false">Coordinator</button>
   </div>
   <div class="drawer-body">
     <section id="newTaskPanel" role="tabpanel" aria-labelledby="newTabTask">
@@ -1657,6 +1663,28 @@
           <span id="prStatus" class="form-status" hidden></span>
           <span id="prError" class="field-error" hidden></span>
           <button type="submit" id="prSubmit" disabled>Start run</button>
+        </div>
+      </form>
+    </section>
+    <section id="newCoordinatorPanel" role="tabpanel" aria-labelledby="newTabCoordinator" hidden>
+      <form id="coordinatorForm">
+        <div class="field">
+          <label for="wsName">Name</label>
+          <input id="wsName" type="text" required autocomplete="off" placeholder="e.g. Checkout rewrite">
+        </div>
+        <div class="field">
+          <label for="wsTicket">Ticket (optional)</label>
+          <input id="wsTicket" type="text" autocomplete="off" placeholder="ABC-123">
+        </div>
+        <div class="field">
+          <label id="wsProjectsLabel">Projects</label>
+          <div class="ws-projects" id="wsProjects" role="group" aria-labelledby="wsProjectsLabel"></div>
+          <p class="field-hint">Each project starts in Shadow: the coordinator records what it would do and acts on nothing. Change a role later from the window, with a confirm.</p>
+        </div>
+        <div class="form-actions">
+          <span id="wsStatus" class="form-status" hidden></span>
+          <span id="wsError" class="field-error" hidden></span>
+          <button type="submit" id="wsSubmit" disabled>Create coordinator</button>
         </div>
       </form>
     </section>
@@ -6118,6 +6146,8 @@
     });
     document.getElementById("newTaskPanel").hidden = tab !== "task";
     document.getElementById("newPipelinePanel").hidden = tab !== "pipeline";
+    document.getElementById("newCoordinatorPanel").hidden = tab !== "coordinator";
+    if (tab === "coordinator") renderCoordinatorProjects();
     if (tab === "pipeline") {
       // Never over a repo the human typed, nor over the project lock.
       var prRepo = document.getElementById("prRepo");
@@ -6127,7 +6157,7 @@
   }
 
   function openNewDrawer(tab, opts) {
-    tab = tab === "pipeline" ? "pipeline" : "task";
+    tab = tab === "pipeline" || tab === "coordinator" ? tab : "task";
     if (newDrawerHideTimer) { clearTimeout(newDrawerHideTimer); newDrawerHideTimer = null; }
     setNewTab(tab, opts);
     newDrawerOpen = true;
@@ -6138,7 +6168,7 @@
       document.getElementById("newOverlay").classList.add("open");
       document.getElementById("newDrawer").classList.add("open");
     });
-    var first = document.getElementById(tab === "pipeline" ? "prPipeline" : "ntTitle");
+    var first = document.getElementById(tab === "pipeline" ? "prPipeline" : tab === "coordinator" ? "wsName" : "ntTitle");
     if (first) first.focus();
   }
 
@@ -6163,6 +6193,72 @@
   document.getElementById("newOverlay").addEventListener("click", closeNewDrawer);
   document.addEventListener("keydown", function (ev) {
     if (ev.key === "Escape" && newDrawerOpen) closeNewDrawer();
+  });
+
+
+  // --- "+ New" drawer, Coordinator tab (docs/SDD-coordinator.md §3.1, §4.13) ----
+  //
+  // POST /workstreams with the picked projects, each in Shadow, then the
+  // coordinator window opens docked on the new workstream.
+  function renderCoordinatorProjects() {
+    var box = document.getElementById("wsProjects");
+    var kept = {};
+    box.querySelectorAll("input[type=checkbox]").forEach(function (c) { kept[c.value] = c.checked; });
+    box.replaceChildren();
+    if (!projects.length) {
+      var none = document.createElement("p");
+      none.className = "field-hint";
+      none.textContent = "No projects are registered yet.";
+      box.appendChild(none);
+    }
+    projects.forEach(function (p) {
+      var row = document.createElement("div");
+      row.className = "ws-project";
+      var label = document.createElement("label");
+      var cb = document.createElement("input");
+      cb.type = "checkbox"; cb.value = p.id; cb.checked = !!kept[p.id];
+      cb.addEventListener("change", syncCoordinatorForm);
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(p.name));
+      var sel = document.createElement("select");
+      sel.setAttribute("aria-label", "Role in " + p.name);
+      ["shadow", "follow", "decide", "decide-over"].forEach(function (r) {
+        var o = document.createElement("option"); o.value = r; o.textContent = r; sel.appendChild(o);
+      });
+      row.appendChild(label);
+      row.appendChild(sel);
+      box.appendChild(row);
+    });
+    syncCoordinatorForm();
+  }
+  function syncCoordinatorForm() {
+    document.getElementById("wsSubmit").disabled = !document.getElementById("wsName").value.trim();
+  }
+  document.getElementById("wsName").addEventListener("input", syncCoordinatorForm);
+  document.getElementById("coordinatorForm").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var err = document.getElementById("wsError");
+    var status = document.getElementById("wsStatus");
+    var submit = document.getElementById("wsSubmit");
+    err.hidden = true; status.hidden = true;
+    var picked = [];
+    document.querySelectorAll("#wsProjects .ws-project").forEach(function (row) {
+      var cb = row.querySelector("input[type=checkbox]");
+      if (cb.checked) picked.push({ projectId: cb.value, role: row.querySelector("select").value });
+    });
+    var body = { name: document.getElementById("wsName").value.trim(), projects: picked };
+    var ticket = document.getElementById("wsTicket").value.trim();
+    if (ticket) body.ticket = ticket;
+    submit.disabled = true;
+    fetch("/workstreams", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ("HTTP " + r.status)); return j; }); })
+      .then(function (ws) {
+        document.getElementById("coordinatorForm").reset();
+        closeNewDrawer();
+        if (window.openCoordDock) window.openCoordDock(ws.id);
+      })
+      .catch(function (e) { err.textContent = e.message; err.hidden = false; })
+      .then(syncCoordinatorForm);
   });
 
   // --- Pipelines page (docs/SDD-ui-cleanup.md §3.4) -------------------
@@ -7703,12 +7799,20 @@
       document.body.classList.toggle("coord-docked", open);
       btn.setAttribute("aria-expanded", open ? "true" : "false");
     }
-    btn.addEventListener("click", function () {
-      var open = dock.hidden;
-      setOpen(open);
-      if (!open) return;
+    // The dock starts where the cards start, so the top menu stays visible above it.
+    function place() {
+      var anchor = document.getElementById("lanesPanel");
+      if (!anchor || anchor.offsetParent === null) anchor = document.querySelector("main.main");
+      var top = anchor ? Math.max(0, Math.round(anchor.getBoundingClientRect().top)) : 0;
+      dock.style.setProperty("--coord-top", top + "px");
+    }
+    window.addEventListener("scroll", function () { if (!dock.hidden) place(); }, { passive: true });
+    window.addEventListener("resize", function () { if (!dock.hidden) place(); });
+    function openDock(selectId) {
+      setOpen(true);
+      place();
       fetch("/workstreams").then(function (r) { return r.json(); }).then(function (list) {
-        var current = select.value;
+        var current = selectId || select.value;
         select.textContent = "";
         list.forEach(function (ws) {
           var o = document.createElement("option");
@@ -7719,6 +7823,11 @@
         if (list.some(function (ws) { return ws.id === current; })) select.value = current;
         show(select.value);
       }).catch(function () { show(""); });
+    }
+    window.openCoordDock = openDock;
+    btn.addEventListener("click", function () {
+      if (!dock.hidden) { setOpen(false); return; }
+      openDock();
     });
     select.addEventListener("change", function () { show(select.value); });
     document.getElementById("coordClose").addEventListener("click", function () { setOpen(false); });
