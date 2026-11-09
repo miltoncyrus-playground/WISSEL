@@ -3,7 +3,7 @@ import { wisselHome } from "../core/wissel-home.ts";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
-import type { TaskCard } from "../core/types.ts";
+import type { Delivery, TaskCard } from "../core/types.ts";
 import type { TelemetryEvent } from "./telemetry.ts";
 import { withRepoLock } from "./repo-lock.ts";
 import {
@@ -384,7 +384,9 @@ export interface MergeContext {
   runner: CommandRunner;
   /** The repo's project settings (ProjectStore.settingsFor), so a
    *  reviewer's suggested grants can skip ones the card already has. */
-  settingsFor?: (repo: string) => Promise<{ verification?: { allowedTools?: string[] } } | undefined>;
+  settingsFor?: (repo: string) => Promise<{ verification?: { allowedTools?: string[] }; delivery?: Delivery; ticketPatterns?: string[] } | undefined>;
+  /** Runs `git push` and `gh` for a pull-request delivery (pr-delivery.ts); defaults to `runner`. */
+  host?: CommandRunner;
   /** The repo's gate (Project.mergeGate); absent means none. */
   gateFor?: MergeGateResolver;
   gateRunner?: GateCommandRunner;
