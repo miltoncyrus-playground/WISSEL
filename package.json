@@ -50,7 +50,8 @@
     "models:refresh": "bun run scripts/models-refresh.ts",
     "eval:resume": "bun run eval/resume.eval.ts",
     "eval:review-grants": "bun run eval/review-grants.eval.ts",
-    "eval:remote-control": "bun run eval/remote-control.eval.ts"
+    "eval:remote-control": "bun run eval/remote-control.eval.ts",
+    "eval:coordinator-replay": "bun run eval/coordinator-replay.eval.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
