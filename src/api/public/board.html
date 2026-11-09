@@ -198,6 +198,14 @@
   .coord-dock .drawer-head { align-items: center; }
   .coord-dock select { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--page); color: var(--ink-1); }
   .coord-dock iframe { flex: 1; width: 100%; border: 0; background: var(--page); }
+  /* The resize handle (R4) lies along the dock's left edge, inside it, so
+     the dock's box still starts where the lanes area ends (R1). While a
+     drag runs the frame takes no pointer events, or it would swallow the
+     moves, and nothing gets selected. */
+  .coord-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: col-resize; touch-action: none; z-index: 1; }
+  .coord-resize:hover, .coord-resize:focus-visible, .coord-resize.dragging { background: var(--accent); outline: none; }
+  body.coord-resizing { user-select: none; cursor: col-resize; }
+  body.coord-resizing .coord-dock iframe { pointer-events: none; }
   /* The top menu stays full width; only the content makes room, and the
      dock starts where the cards start. The width is set outright: the
      news-site block below gives .main width: 100%, which ignores a right
@@ -1763,6 +1771,9 @@
      workstream's window, the same screen as /app#/window/<id>, in a frame
      with ?dock=1 so the app draws it without its own nav. -->
 <aside class="drawer coord-dock" id="coordDock" aria-label="Coordinator window" hidden>
+  <!-- The resize handle (docs/SDD-coordinator-dock.md R4): drag, or focus
+       it and use the arrow keys (16px), Home (320px) and End (560px). -->
+  <div class="coord-resize" id="coordResize" role="separator" aria-orientation="vertical" aria-label="Resize coordinator window" aria-valuemin="320" aria-valuemax="560" aria-valuenow="380" tabindex="0" title="Drag to resize; arrow keys, Home and End"></div>
   <div class="drawer-head">
     <select id="coordWorkstream" aria-label="Workstream"></select>
     <a class="app-link" id="coordOpenApp" href="/app#/window">Open in the app</a>
@@ -7824,7 +7835,70 @@
     }
     window.addEventListener("scroll", function () { if (!dock.hidden) place(); }, { passive: true });
     window.addEventListener("resize", function () { if (!dock.hidden) place(); });
+
+    // The dock's width (docs/SDD-coordinator-dock.md R4): 320 to 560px,
+    // 380 by default, set through --coord-w on body so the lanes area
+    // makes room for it (see the CSS). The handle on the left edge moves
+    // it by pointer, or by keyboard (arrows 16px, Home and End the
+    // limits). The chosen width is kept in localStorage; storage can be
+    // blocked or throw, so every access is in a try and the page runs
+    // on the default without it.
+    var MIN_W = 320, MAX_W = 560, STEP_W = 16, DEFAULT_W = 380;
+    var WIDTH_KEY = "wissel-coord-width";
+    var handle = document.getElementById("coordResize");
+    var width = DEFAULT_W;
+    function clampWidth(w) {
+      w = Math.round(Number(w));
+      if (!isFinite(w)) return DEFAULT_W;
+      return Math.min(MAX_W, Math.max(MIN_W, w));
+    }
+    function readWidth() {
+      var raw = null;
+      try { raw = localStorage.getItem(WIDTH_KEY); } catch (e) { raw = null; }
+      return raw === null || raw === "" ? DEFAULT_W : clampWidth(raw);
+    }
+    function setWidth(w, save) {
+      width = clampWidth(w);
+      document.body.style.setProperty("--coord-w", width + "px");
+      handle.setAttribute("aria-valuenow", String(width));
+      if (save) { try { localStorage.setItem(WIDTH_KEY, String(width)); } catch (e) { /* not kept */ } }
+    }
+    setWidth(readWidth(), false);
+    var drag = null;
+    handle.addEventListener("pointerdown", function (e) {
+      if (e.button !== 0) return;
+      drag = { x: e.clientX, w: width };
+      try { handle.setPointerCapture(e.pointerId); } catch (err) { /* no capture: moves still reach the handle while over it */ }
+      handle.classList.add("dragging");
+      document.body.classList.add("coord-resizing");
+      e.preventDefault();
+    });
+    handle.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      setWidth(drag.w + (drag.x - e.clientX), false); // left of the start: wider
+    });
+    function endDrag() {
+      if (!drag) return;
+      drag = null;
+      handle.classList.remove("dragging");
+      document.body.classList.remove("coord-resizing");
+      setWidth(width, true);
+    }
+    handle.addEventListener("pointerup", endDrag);
+    handle.addEventListener("pointercancel", endDrag);
+    handle.addEventListener("keydown", function (e) {
+      var next = width;
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = width + STEP_W;
+      else if (e.key === "ArrowRight" || e.key === "ArrowDown") next = width - STEP_W;
+      else if (e.key === "Home") next = MIN_W;
+      else if (e.key === "End") next = MAX_W;
+      else return;
+      e.preventDefault();
+      setWidth(next, true);
+    });
+
     function openDock(selectId) {
+      setWidth(readWidth(), false); // another tab may have changed it since the page loaded
       setOpen(true);
       place();
       fetch("/workstreams").then(function (r) { return r.json(); }).then(function (list) {
