@@ -104,7 +104,8 @@ import { importWorkstream } from "../services/workstream-import.ts";
 import { SqliteDutyStore, isDuty, validateDutyChange } from "../services/duties.ts";
 import { shadowReport } from "../services/shadow-report.ts";
 import { SqliteDecisionStore } from "../services/decision-cards.ts";
-import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions } from "../services/inbox.ts";
+import { InboxDispatcher, SqliteInbox, subscribeBoardEvents, type InboxDispatcherOptions, type InboxHandler } from "../services/inbox.ts";
+import { createCoordinatorDriver } from "../services/coordinator-driver.ts";
 import { SqliteChannelLog, validateChannelMessage } from "../services/channel.ts";
 import { DEFAULT_HARD_LIMITS, PolicyGate, SqliteGateLog, loadHardLimits, type GateLog, type HardLimits } from "../services/policy-gate.ts";
 import { CoordinatorExecutor, SqliteOutboundQueue, builtinHandlers, startOutboundFlusher, gateContextFor, type ExecutorOptions } from "../services/coordinator-executor.ts";
@@ -372,9 +373,10 @@ export interface CreateAppOptions {
    *  (src/services/owner-tasks.ts). Defaults to the merge gate's runner;
    *  tests pass a fake so nothing is spawned. */
   ownerTaskCheckRunner?: GateCommandRunner;
-  /** Handlers for the event inbox (src/services/inbox.ts, docs/SDD-coordinator.md
-   *  §4.1), by event kind, plus the decision-card hook. None are built in:
-   *  without them every entry is persisted and left unhandled. */
+  /** Test override for the event inbox's handlers (src/services/inbox.ts,
+   *  docs/SDD-coordinator.md §4.1), by event kind, plus the decision-card
+   *  hook. Absent, the coordinator driver (src/services/coordinator-driver.ts)
+   *  handles every kind through the real executor. */
   inbox?: Pick<InboxDispatcherOptions, "handlers" | "decisionKinds" | "openDecisionCard">;
   /** The decisions channel's log adapter (src/services/channel.ts, §4.9),
    *  served by GET/POST /workstreams/:id/channel. Defaults to the board
@@ -587,9 +589,11 @@ export function createApp(
   // The event inbox (docs/SDD-coordinator.md §4.1): board and PR-watcher
   // events are persisted here with source-stable ids before any handler.
   const inbox = new SqliteInbox((board as SqliteBoard).db);
-  // Until handlers are injected every entry is unhandled by design, so
-  // the dispatcher's per-event warning would only be noise here.
-  const inboxDispatcher = new InboxDispatcher({ inbox, handlers: {}, ...opts.inbox, ...(opts.inbox ? {} : { logger: { warn() {} } }) });
+  // The handlers are the coordinator driver's, filled in once the executor
+  // exists below (the dispatcher reads this map per event); opts.inbox
+  // replaces them in tests.
+  const driverHandlers: Record<string, InboxHandler> = {};
+  const inboxDispatcher = new InboxDispatcher({ inbox, handlers: driverHandlers, ...opts.inbox });
   if (board.events) onShutdown(subscribeBoardEvents({ events: board.events }, inboxDispatcher));
   // The policy gate's audit log (§4.2); the executor that writes to it is a later card.
   const gateLog: GateLog = opts.gateLog ?? new SqliteGateLog((board as SqliteBoard).db);
@@ -823,6 +827,16 @@ export function createApp(
       ...opts.executor?.handlers,
     },
   });
+  // The coordinator driver (§4.1, §4.3): inbox events become gated actions. Decision
+  // cards are not wired to a runner yet, so the hook only logs; a startup pass
+  // dispatches every row left unhandled by an earlier run, once.
+  if (!opts.inbox) {
+    Object.assign(driverHandlers, createCoordinatorDriver({
+      executor, board: board as Board, workstreams, projects,
+      openDecisionCard: async (kind, event) => console.log(`inbox: ${event.kind} (${event.id}) wants a ${kind} decision card; not opened (decision cards are not wired to a runner yet)`),
+    }).handlers);
+    void (async () => { for (const e of inbox.list({ unhandled: true })) await inboxDispatcher.dispatch(e); })();
+  }
   // The coordinator window (§4.14): the same hold, restart and queue the admin routes and the executor use.
   const coordinatorWindow = createCoordinatorWindow({
     db: (board as SqliteBoard).db, board: board as Board, workstreams, ownerTasks, decisions, channelLog, conversations, pending: pendingActions,

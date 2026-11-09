@@ -19,7 +19,11 @@ import type { Workstream } from "./workstreams.ts";
  */
 export type QuietHours = NonNullable<Workstream["quietHours"]>;
 /** The gate reads the Action fields; `payload` is what the handler needs. */
-export interface ExecutableAction extends Action { payload?: Record<string, unknown> }
+export interface ExecutableAction extends Action {
+  /** A source-stable id (the inbox event id plus an index, coordinator-driver.ts), so a replayed event builds the same action. */
+  id?: string;
+  payload?: Record<string, unknown>;
+}
 export type ActionHandler = (action: ExecutableAction) => Promise<unknown>;
 export type ActionHandlers = Partial<Record<ActionKind, ActionHandler>>;
 
@@ -241,7 +245,8 @@ export function builtinHandlers(deps: BuiltinDeps): ActionHandlers {
       const p = a.payload ?? {};
       const project = (await deps.projects.list()).find((x) => x.id === a.projectId);
       if (!project) throw new Error(`unknown project ${a.projectId}`);
-      const rendered = renderCardTemplateFor(project, str(p.template, "template") as CardTemplateKind, (p.vars ?? {}) as Record<string, string | undefined>);
+      // `optional` names the placeholders that may be empty (a fix round's key, ticket and files; buildFixRoundBody).
+      const rendered = renderCardTemplateFor(project, str(p.template, "template") as CardTemplateKind, (p.vars ?? {}) as Record<string, string | undefined>, { optional: list(p.optional) });
       if (!rendered.ok) throw new Error(rendered.error);
       const card: Omit<TaskCard, "id" | "status"> = {
         title: str(p.title, "title"), body: rendered.body, labels: list(p.labels), repo: project.path, dependsOn: [], workstreamId: a.workstreamId,

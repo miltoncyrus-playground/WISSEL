@@ -131,6 +131,6 @@ test("GET /workstreams/:id/inbox lists that workstream's entries, oldest first; 
   const body = (await res.json()) as InboxEvent[];
   expect(body.map((e) => e.kind)).toEqual(["card.review", "card.failed"]);
   expect(body[0]).toMatchObject({ source: "board", workstreamId: ws.id, untrusted: false, receivedAt: expect.stringMatching(/^\d{4}-/) });
-  expect(body[0]!.handledAt).toBeUndefined(); // no handler injected by default: it waits
+  expect(body[0]!.handledAt).toBeDefined(); // the default driver (coordinator-driver.ts) handled it: a workstream with no project is a no-op
   expect((await app(new Request("http://localhost/workstreams/nope/inbox"))).status).toBe(404);
 });
