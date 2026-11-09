@@ -27,7 +27,7 @@ import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-s
 import { startArchiveScheduler } from "../core/archive-scheduler.ts";
 import { startModelRefreshScheduler, readModelsCache, DEFAULT_MODELS_CACHE_PATH } from "../core/model-refresh-scheduler.ts";
 import { startMergeHealthScheduler } from "../core/merge-health-scheduler.ts";
-import { readMemoryLessons, DEFAULT_MEMORY_PATH } from "../services/memory.ts";
+import { appendCardRule, DEFAULT_MEMORY_PATH, proposedCardRule, readMemoryLessons, wisselIssueSuggestions } from "../services/memory.ts";
 import { appendTaskOutput, getBufferedOutput, getTaskOutput, TASK_OUTPUT_EVENTS } from "../services/task-output.ts";
 import { parseSubagentRuns, settleSubagentRuns, summarizeSubagentRuns } from "../services/subagent-runs.ts";
 import { buildPipelineRunSummary } from "../services/pipeline-run-summary.ts";
@@ -820,6 +820,7 @@ export function createApp(
       telemetryPath: telemetry.filePath,
       intervalHours: opts.memoryIntervalHours,
       memoryPath: opts.memoryPath,
+      ownerTasks,
     });
   }
 
@@ -1061,7 +1062,8 @@ export function createApp(
       // empty state, not a fetch failure.
       if (url.pathname === "/memory" && req.method === "GET") {
         const content = await readMemoryLessons(opts.memoryPath ?? DEFAULT_MEMORY_PATH);
-        return json({ content, path: opts.memoryPath ?? DEFAULT_MEMORY_PATH, injected: opts.injectMemory ?? false });
+        // `wisselIssues`: the `wissel`-scoped lessons as suggested issue text (§4.15).
+        return json({ content, path: opts.memoryPath ?? DEFAULT_MEMORY_PATH, injected: opts.injectMemory ?? false, wisselIssues: wisselIssueSuggestions(content) });
       }
 
       // Every past curation run, most recent first, each carrying the
@@ -1690,7 +1692,16 @@ export function createApp(
         }
         if (parts.length === 3 && parts[2] === "done" && req.method === "POST") {
           const done = await completeOwnerTask(ownerTasks, parts[1]!, { runner: opts.ownerTaskCheckRunner });
-          if (done.ok) return json(done.value);
+          if (done.ok) {
+            // A Done card-rule proposal (§4.15) appends its lesson to cardRules of the project it names, or every project.
+            const proposal = proposedCardRule(done.value, await readMemoryLessons(opts.memoryPath ?? DEFAULT_MEMORY_PATH));
+            for (const p of proposal ? await projects.list() : []) {
+              if (!proposal!.project || p.name === proposal!.project || p.path === proposal!.project) {
+                await projects.setSettings(p.id, { cardRules: appendCardRule(p.cardRules, proposal!.rule) });
+              }
+            }
+            return json(done.value);
+          }
           return done.status === 404 ? notFound() : json({ error: done.error, output: done.output }, done.status);
         }
       }

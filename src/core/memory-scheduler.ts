@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { Board } from "../services/board.ts";
-import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
+import { DEFAULT_MEMORY_PATH, proposeProjectRules, readMemoryLessons } from "../services/memory.ts";
+import type { OwnerTaskStore } from "../services/owner-tasks.ts";
 import type { Executor, RoutingDecision, TaskCard, TaskResult } from "./types.ts";
 import type { Orchestrator } from "./orchestrator.ts";
 
@@ -194,6 +195,11 @@ export interface MemorySchedulerOptions {
    *  Defaults to the current working directory, which is also where the
    *  relative `memoryPath` resolves from. */
   repo?: string;
+  /** When given, every tick first proposes each `project`-scoped lesson
+   *  in the memory file as an owner task (proposeProjectRules,
+   *  docs/SDD-coordinator.md §4.15); the rule lands in cardRules only
+   *  when the owner marks it Done (POST /owner-tasks/:id/done). */
+  ownerTasks?: OwnerTaskStore;
 }
 
 /**
@@ -209,6 +215,7 @@ export interface MemorySchedulerOptions {
 export async function runMemoryCurationIfDue(opts: MemorySchedulerOptions): Promise<boolean> {
   const intervalHours = opts.intervalHours ?? DEFAULT_MEMORY_INTERVAL_HOURS;
   const memoryPath = opts.memoryPath ?? DEFAULT_MEMORY_PATH;
+  if (opts.ownerTasks) await proposeProjectRules(await readMemoryLessons(memoryPath), opts.ownerTasks);
 
   const lastRanAt = await getLastMemoryCurationAt(opts.telemetryPath);
   if (!isMemoryCurationDue(lastRanAt, intervalHours)) return false;
