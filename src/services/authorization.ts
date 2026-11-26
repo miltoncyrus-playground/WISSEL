@@ -12,6 +12,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { userInfo } from "node:os";
+import { POLICY_ACTION_KINDS, type PolicyRevisions } from "./policy-revision.ts";
 
 export type PrincipalKind = "person" | "service" | "agent";
 
@@ -261,6 +262,9 @@ export interface FrontDoorOptions {
   principalFor: (req: Request) => string;
   /** Called after a card is created over the API, to stamp who made it. */
   onCardCreated?: (taskId: string, principalId: string) => void;
+  /** Stamps the revision in force on every record, and bumps it after a
+   *  successful policy write (policy-revision.ts). */
+  policy?: PolicyRevisions;
 }
 
 /** Wraps the app's fetch: every write request is recorded before it
@@ -278,7 +282,13 @@ export function withAuthorizationRecords(
     const principalId = opts.principalFor(req);
     let rec: AuthorizationRecord;
     try {
-      rec = log.begin({ action: { kind: action.kind, target: action.target }, principalId, via: "direct", ...(action.taskId ? { effect: { taskId: action.taskId } } : {}) });
+      rec = log.begin({
+        action: { kind: action.kind, target: action.target },
+        principalId,
+        via: "direct",
+        ...(opts.policy ? { policyRevision: opts.policy.current() } : {}),
+        ...(action.taskId ? { effect: { taskId: action.taskId } } : {}),
+      });
     } catch (e) {
       console.error(`authorization log: refusing ${req.method} ${url.pathname}, the record could not be written: ${(e as Error).message}`);
       return new Response(JSON.stringify({ error: "the authorization log is unavailable, so nothing was changed" }), { status: 503, headers: { "Content-Type": "application/json" } });
@@ -310,7 +320,11 @@ export function withAuthorizationRecords(
         reason = undefined;
       }
     }
-    log.complete(rec.id, outcomeOf(res.status), { ...(reason ? { reason } : {}), ...(effect ? { effect } : {}) });
+    const outcome = outcomeOf(res.status);
+    // The record names the revision it ran under; the change it made is
+    // the next revision.
+    if (outcome === "allowed" && opts.policy && POLICY_ACTION_KINDS.has(action.kind)) opts.policy.bump(action.kind, action.target, principalId);
+    log.complete(rec.id, outcome, { ...(reason ? { reason } : {}), ...(effect ? { effect } : {}) });
     return res;
   };
 }

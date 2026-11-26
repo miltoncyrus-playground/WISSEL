@@ -93,6 +93,7 @@ import { needsYouFor, needsYouLogLine } from "../services/needs-you.ts";
 import { resolveBind } from "../core/bind.ts";
 import { raiseOpenBindTask } from "../services/open-bind-task.ts";
 import { AuthorizationLog, withAuthorizationRecords } from "../services/authorization.ts";
+import { PolicyRevisions } from "../services/policy-revision.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -105,7 +106,7 @@ export interface CreateAppOptions {
    *  `GET /me` names. The bootstrap wraps the app with
    *  withAuthorizationRecords so every write is recorded; unset (most
    *  tests) means no audit routes. */
-  authorization?: { log: AuthorizationLog; principalFor: (req: Request) => string };
+  authorization?: { log: AuthorizationLog; principalFor: (req: Request) => string; policy?: PolicyRevisions };
   /** Starts the automatic sweep-on-every-event loop. Off by default —
    *  matches the pre-existing WISSEL_ORCHESTRATOR gate. */
   orchestratorEnabled?: boolean;
@@ -869,6 +870,9 @@ export function createApp(
       if (opts.authorization && url.pathname === "/me" && req.method === "GET") {
         const p = opts.authorization.log.principal(opts.authorization.principalFor(req));
         return p ? json({ principal: p, grants: [{ permission: "*", scope: "instance" }] }) : notFound();
+      }
+      if (opts.authorization?.policy && url.pathname === "/policy" && req.method === "GET") {
+        return json({ revision: opts.authorization.policy.current(), history: opts.authorization.policy.history() });
       }
       if (opts.authorization && url.pathname === "/audit" && req.method === "GET") {
         const q = url.searchParams;
@@ -2118,7 +2122,9 @@ if (import.meta.main) {
   const owner = authorizationLog.ensureOwner(process.env.WISSEL_OWNER_HANDLE);
   const principalFor = () => owner.id;
   const registry = await Registry.load();
-  const telemetry = new TelemetryLog(telemetryPath);
+  // Opened before telemetry so every event can carry the policy revision.
+  const policy = new PolicyRevisions(board.db);
+  const telemetry = new TelemetryLog(telemetryPath, () => ({ policyRevision: policy.current() }));
   // Same "harnesses.yaml" relative-path default HarnessPool.load()/
   // autoload() always had — this override is new (see
   // docs/SDD-model-selection.md), needed so a test/e2e run can point
@@ -2246,7 +2252,7 @@ if (import.meta.main) {
     port,
     hostname: bind.hostname,
     fetch: withAuthorizationRecords(createApp(board, registry, telemetry, {
-      authorization: { log: authorizationLog, principalFor },
+      authorization: { log: authorizationLog, principalFor, policy },
       orchestratorEnabled,
       autoChain,
       executeWriteTier,
@@ -2276,7 +2282,7 @@ if (import.meta.main) {
       stt,
       schedulesEnabled: true,
       ...scripted,
-    }), authorizationLog, { principalFor, onCardCreated: (id, principalId) => board.attribute(id, principalId) }),
+    }), authorizationLog, { principalFor, policy, onCardCreated: (id, principalId) => board.attribute(id, principalId) }),
   });
   if (conciergeScript) console.log(`ask: scripted concierge from ${conciergeScript} (WISSEL_CONCIERGE_SCRIPT), no model calls`);
   console.log(`wissel board api on ${bind.hostname}:${port} (db: ${dbPath})`);

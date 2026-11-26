@@ -87,11 +87,17 @@ export class TelemetryLog {
   /** Public so callers that need to read the raw log themselves (e.g.
    *  src/core/memory-scheduler.ts's due-ness check) don't need a second,
    *  separately-threaded copy of the same path. */
-  constructor(readonly filePath: string) {}
+  constructor(
+    readonly filePath: string,
+    /** Fields stamped on every event — the policy revision in force
+     *  (docs/SDD-identity-and-permissions.md §4.4), so every dispatch
+     *  and every run result says which rules it ran under. */
+    private readonly stamp?: () => Record<string, string>,
+  ) {}
 
   async record(event: TelemetryEvent): Promise<void> {
     await mkdir(dirname(this.filePath), { recursive: true });
-    const line = JSON.stringify({ ...event, at: ("at" in event ? event.at : undefined) ?? new Date().toISOString() });
+    const line = JSON.stringify({ ...this.stamp?.(), ...event, at: ("at" in event ? event.at : undefined) ?? new Date().toISOString() });
     await appendFile(this.filePath, line + "\n");
   }
 
