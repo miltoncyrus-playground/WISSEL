@@ -90,6 +90,8 @@ import { DEFAULT_STT_MODEL, DEFAULT_STT_URL, SttClient, SttError, transcribeVoic
 import { createReplyAudio, ReplyAudioError } from "../services/reply-audio.ts";
 import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
 import { needsYouFor, needsYouLogLine } from "../services/needs-you.ts";
+import { resolveBind } from "../core/bind.ts";
+import { raiseOpenBindTask } from "../services/open-bind-task.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -2067,9 +2069,21 @@ if (import.meta.main) {
   // docs/SDD-crash-recovery.md §10.
   installShutdownHandlers();
   const port = Number(process.env.WISSEL_PORT ?? 8787);
+  // Loopback unless WISSEL_BIND says otherwise, and anything wider only
+  // with WISSEL_ALLOW_OPEN_BIND=1 — decided before the database is even
+  // opened, so a refused start touches nothing (src/core/bind.ts,
+  // docs/SDD-identity-and-permissions.md §4.1).
+  const bind = resolveBind(process.env);
+  if (!bind.ok) {
+    console.error(bind.error);
+    process.exit(1);
+  }
   const dbPath = process.env.WISSEL_DB_PATH ?? join(homedir(), ".wissel", "board.sqlite");
   const telemetryPath = process.env.WISSEL_TELEMETRY_PATH ?? join(homedir(), ".wissel", "telemetry.jsonl");
   const board = new SqliteBoard(dbPath);
+  // Raised here, before createApp starts the orchestrator, so the router
+  // can never see the owner task while it is still in inbox.
+  if (bind.open) await raiseOpenBindTask(board, bind.hostname, port);
   const registry = await Registry.load();
   const telemetry = new TelemetryLog(telemetryPath);
   // Same "harnesses.yaml" relative-path default HarnessPool.load()/
@@ -2197,6 +2211,7 @@ if (import.meta.main) {
 
   Bun.serve({
     port,
+    hostname: bind.hostname,
     fetch: createApp(board, registry, telemetry, {
       orchestratorEnabled,
       autoChain,
@@ -2230,7 +2245,8 @@ if (import.meta.main) {
     }),
   });
   if (conciergeScript) console.log(`ask: scripted concierge from ${conciergeScript} (WISSEL_CONCIERGE_SCRIPT), no model calls`);
-  console.log(`wissel board api on :${port} (db: ${dbPath})`);
+  console.log(`wissel board api on ${bind.hostname}:${port} (db: ${dbPath})`);
+  if (bind.open) console.error(bind.warning);
   const v = getVersionInfo();
   console.log(`version: ${v.commitShort}${v.dirty ? "+dirty" : ""} (${v.branch})`);
   for (const line of sandboxStartupLines(writeSandbox)) (writeSandbox.state === "unavailable" ? console.error : console.log)(line);
