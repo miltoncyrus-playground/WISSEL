@@ -932,6 +932,9 @@
     } catch (e) {}
   })();
 </script>
+<!-- User mode (docs/SDD-board-ui-for-teams.md §4.2): does nothing unless
+     ?mode=user or a stored wissel.uiMode says so. -->
+<script src="/user-mode.js"></script>
 </head>
 <body>
 <div class="shell">
@@ -1333,7 +1336,7 @@
 <aside class="drawer" id="taskDrawer" role="dialog" aria-modal="true" aria-labelledby="tdTitle" hidden>
   <div class="drawer-head">
     <span class="kind-dot" id="tdKindDot"></span>
-    <h2 id="tdTitle"></h2>
+    <h2 id="tdTitle" data-user-content></h2>
     <button type="button" class="drawer-close" id="tdClose" aria-label="Close">×</button>
   </div>
   <div class="drawer-meta" id="tdMeta"></div>
@@ -1344,7 +1347,7 @@
   <div class="drawer-body" id="tdDetail">
     <section class="drawer-section">
       <p class="eyebrow">Description</p>
-      <p class="drawer-desc" id="tdDescription"></p>
+      <p class="drawer-desc" id="tdDescription" data-user-content></p>
     </section>
 
     <!-- TaskCard.notBefore (docs/SDD-schedules.md §4): only while the
@@ -1396,17 +1399,17 @@
 
     <section class="drawer-section" id="tdResultSection" hidden>
       <p class="eyebrow">Result</p>
-      <div id="tdResult"></div>
+      <div id="tdResult" data-user-content></div>
     </section>
 
     <section class="drawer-section" id="tdDiffSection" hidden>
       <p class="eyebrow">Diff</p>
-      <div id="tdDiff"></div>
+      <div id="tdDiff" data-user-content></div>
     </section>
 
     <section class="drawer-section" id="tdMcpCallsSection" hidden>
       <p class="eyebrow">Tool calls</p>
-      <div id="tdMcpCalls"></div>
+      <div id="tdMcpCalls" data-user-content></div>
     </section>
   </div>
 </aside>
@@ -1484,7 +1487,7 @@
     <button type="button" class="drawer-close" id="loClose" aria-label="Close">×</button>
   </div>
   <div class="drawer-body">
-    <div id="loRows" class="lo-rows"></div>
+    <div id="loRows" class="lo-rows" data-user-content></div>
   </div>
 </aside>
 
@@ -1850,6 +1853,9 @@
     renderEscalationTimeline(task);
     renderMcpApprovalSection(task);
     renderStartSection(task);
+    // User mode only (src/api/public/user-mode-client.js): the failure's
+    // sentence and action above the rest. A no-op in operator mode.
+    if (window.WisselUserMode) window.WisselUserMode.onDrawer(task);
   }
 
   // Start at (TaskCard.notBefore, docs/SDD-schedules.md §4): set, change
@@ -3999,8 +4005,12 @@
 
     // Wraps to two lines (CSS line clamp); the full title shows on hover.
     var kt = document.createElement("div"); kt.className = "kt"; kt.textContent = t.title; kt.title = t.title;
+    kt.setAttribute("data-user-content", "");
     card.appendChild(kt);
 
+    // User mode says what happened instead of naming a status; operator
+    // mode gets `reason` back unchanged (src/api/public/user-mode-client.js).
+    if (window.WisselUserMode) reason = window.WisselUserMode.reasonFor(t, reason);
     if (reason) {
       var kr = document.createElement("div"); kr.className = "kreason"; kr.textContent = reason;
       card.appendChild(kr);
@@ -4055,6 +4065,7 @@
     if (!t.supersededBy && taskOutputIsLive(t)) ka.appendChild(liveOutputButton(t));
 
     card.appendChild(ka);
+    if (window.WisselUserMode) window.WisselUserMode.decorateCard(card, t);
     var open = function () { if (run) openRunDrawer(t.id, expandId); else openTaskDrawer(t.id); };
     card.addEventListener("click", open);
     card.addEventListener("keydown", function (ev) { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); open(); } });
