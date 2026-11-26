@@ -1,3 +1,4 @@
+import { presentationOf, statusText, term, useUiMode } from "../uiMode";
 import { LANES, laneOf, startOfLocalDay, type Lanes } from "../lanes";
 import { routeHash } from "../routes";
 import type { TaskCard } from "../types";
@@ -69,22 +70,24 @@ export function CardDetail({ taskId, tasks, loaded }: { taskId: string; tasks: T
   const projects = useProjects();
   const ticket = task ? cardTicket(task, projects) : undefined;
   const project = task ? projectOf(task, projects) : undefined;
+  const mode = useUiMode();
+  const failure = task ? presentationOf(task, mode) : null;
   return (
     <div className="screen card-detail">
       <div className="screen-head">
         <a className="icon-btn" href={routeHash({ screen: "board" })} aria-label="Back to Board">
           <Icon name="back" />
         </a>
-        <h1>{task ? task.title || task.id.slice(0, 8) : "Card"}</h1>
+        <h1>{task ? task.title || task.id.slice(0, 8) : term("card", mode, true)}</h1>
       </div>
       {!task ? (
-        <p className="empty">{loaded ? "No card with that id. It may have been deleted." : "Loading…"}</p>
+        <p className="empty">{loaded ? `No ${term("card", mode)} with that id. It may have been deleted.` : "Loading…"}</p>
       ) : (
         <>
           <dl className="facts">
             <dt>Status</dt>
             <dd>
-              <span className={`pill lane-${lane ?? "other"}`}>{task.status}</span>
+              <span className={`pill lane-${lane ?? "other"}`}>{statusText(task.status, mode)}</span>
               {starts && <span className="starts-chip">{starts}</span>}
             </dd>
             {task.routedTo && (
@@ -126,6 +129,7 @@ export function CardDetail({ taskId, tasks, loaded }: { taskId: string; tasks: T
             <dt>Id</dt>
             <dd className="mono">{task.id}</dd>
           </dl>
+          {failure && <p className="card-failure">{failure.sentence}</p>}
           {task.body && <p className="card-body">{task.body}</p>}
           <a className="btn" href="/board">
             Act on it in the full board

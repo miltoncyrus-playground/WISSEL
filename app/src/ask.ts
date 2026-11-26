@@ -3,6 +3,7 @@
 // line, and the chat the screen keeps open across reloads. AskScreen.tsx
 // only draws what this returns.
 
+import { term, type UiMode } from "./uiMode";
 import { needsYouReason, type LaneId } from "./lanes";
 import { trackOf } from "./podcasts";
 import { startsChip } from "./schedules";
@@ -175,13 +176,14 @@ export function isPodcastPipeline(p: PipelineDef): boolean {
  *  name), what needs Milton, retry what failed and the harnesses (§3.7),
  *  two questions Milton asks often, and the board. Show board is a link,
  *  not a message: no model call to open a page. */
-export function quickReplies(pipelines: readonly PipelineDef[]): QuickReply[] {
+export function quickReplies(pipelines: readonly PipelineDef[], mode: UiMode = "operator"): QuickReply[] {
   const podcasts = pipelines.filter(isPodcastPipeline).slice(0, PODCAST_REPLIES);
   return [
     ...podcasts.map((p) => ({ label: `Run ${p.name}`, text: `Run the ${p.name} pipeline` })),
     { label: "What needs me?", text: "What needs me?" },
     { label: "Retry failed", text: "Retry every failed card" },
-    { label: "Show harnesses", text: "Show me the harnesses" },
+    // The text goes to Ask as written; only the chip a person reads changes.
+    { label: `Show ${term("harnesses", mode)}`, text: "Show me the harnesses" },
     { label: "What did I do this week?", text: "What did I do this week?" },
     { label: "What is running?", text: "What is running?" },
     { label: "Show board", href: "#/board" },
