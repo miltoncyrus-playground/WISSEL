@@ -202,6 +202,8 @@ interface TaskRow {
   pendingMcpApproval: string | null;
   extraAllowedDirs: string | null;
   extraAllowedTools: string | null;
+  createdByPrincipalId: string | null;
+  authorizedByPrincipalId: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -230,6 +232,8 @@ function rowToCard(row: TaskRow): TaskCard {
     notBefore: row.notBefore ?? undefined,
     scheduleId: row.scheduleId ?? undefined,
     mergeTarget: row.mergeTarget ?? undefined,
+    createdByPrincipalId: row.createdByPrincipalId ?? undefined,
+    authorizedByPrincipalId: row.authorizedByPrincipalId ?? undefined,
     resumeSessionId: row.resumeSessionId ?? undefined,
     suggestedGrants: row.suggestedGrants ? (JSON.parse(row.suggestedGrants) as string[]) : undefined,
     doneAt: row.doneAt ?? undefined,
@@ -298,7 +302,9 @@ export class SqliteBoard implements Board {
         extraAllowedTools TEXT,
         notBefore TEXT,
         scheduleId TEXT,
-        mergeTarget TEXT
+        mergeTarget TEXT,
+        createdByPrincipalId TEXT,
+        authorizedByPrincipalId TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -338,6 +344,10 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN scheduleId TEXT;",
       // docs/SDD-merge-target.md: the branch this card lands on.
       "ALTER TABLE tasks ADD COLUMN mergeTarget TEXT;",
+      // docs/SDD-identity-and-permissions.md §3.6: who made the card and
+      // who stands behind its run.
+      "ALTER TABLE tasks ADD COLUMN createdByPrincipalId TEXT;",
+      "ALTER TABLE tasks ADD COLUMN authorizedByPrincipalId TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -545,10 +555,28 @@ export class SqliteBoard implements Board {
     return row ? rowToCard(row) : undefined;
   }
 
+  /** Records who made a card and who stands behind it, once: a field
+   *  already set is never overwritten, so attribution cannot be moved
+   *  after the fact (docs/SDD-identity-and-permissions.md §4.4). */
+  attribute(id: string, principalId: string): void {
+    this.db.run(
+      "UPDATE tasks SET createdByPrincipalId = COALESCE(createdByPrincipalId, ?), authorizedByPrincipalId = COALESCE(authorizedByPrincipalId, ?) WHERE id = ?",
+      [principalId, principalId, id],
+    );
+  }
+
   async create(card: Omit<TaskCard, "id" | "status">): Promise<TaskCard> {
     const full: TaskCard = { ...card, id: randomUUID(), status: "inbox", dependsOn: card.dependsOn ?? [] };
+    // A card spawned from another (a review, a pushback round, a
+    // subtask) runs on the authority of whoever stood behind its parent
+    // (docs/SDD-identity-and-permissions.md §4.4). It has no creator of
+    // its own: no person made it.
+    if (!full.authorizedByPrincipalId && full.parentTaskId) {
+      const parent = this.db.query("SELECT authorizedByPrincipalId FROM tasks WHERE id = ?").get(full.parentTaskId) as { authorizedByPrincipalId: string | null } | null;
+      if (parent?.authorizedByPrincipalId) full.authorizedByPrincipalId = parent.authorizedByPrincipalId;
+    }
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget, createdByPrincipalId, authorizedByPrincipalId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -575,6 +603,8 @@ export class SqliteBoard implements Board {
         full.notBefore ?? null,
         full.scheduleId ?? null,
         full.mergeTarget ?? null,
+        full.createdByPrincipalId ?? null,
+        full.authorizedByPrincipalId ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);

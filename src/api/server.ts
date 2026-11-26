@@ -92,6 +92,7 @@ import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
 import { needsYouFor, needsYouLogLine } from "../services/needs-you.ts";
 import { resolveBind } from "../core/bind.ts";
 import { raiseOpenBindTask } from "../services/open-bind-task.ts";
+import { AuthorizationLog, withAuthorizationRecords } from "../services/authorization.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
@@ -99,6 +100,12 @@ const PUBLIC_DIR = new URL("./public/", import.meta.url);
 const DEFAULT_PIPELINE_EDITOR_DIST = new URL("../../pipeline-editor/dist/", import.meta.url);
 
 export interface CreateAppOptions {
+  /** Identity phase 2 (docs/SDD-identity-and-permissions.md §3.4,
+   *  §4.10): the authorization log `GET /audit` reads, and the principal
+   *  `GET /me` names. The bootstrap wraps the app with
+   *  withAuthorizationRecords so every write is recorded; unset (most
+   *  tests) means no audit routes. */
+  authorization?: { log: AuthorizationLog; principalFor: (req: Request) => string };
   /** Starts the automatic sweep-on-every-event loop. Off by default —
    *  matches the pre-existing WISSEL_ORCHESTRATOR gate. */
   orchestratorEnabled?: boolean;
@@ -854,6 +861,26 @@ export function createApp(
       // endpoint or the scheduler behind it does on its own.
       if (url.pathname === "/merge-health" && req.method === "GET") {
         return json(mergeHealthScheduler?.getLast() ?? []);
+      }
+
+      // Who is acting, and the chain of what was done on whose authority
+      // (docs/SDD-identity-and-permissions.md §5). Single-owner mode:
+      // loopback-only and one principal, so `audit.read` is the owner's.
+      if (opts.authorization && url.pathname === "/me" && req.method === "GET") {
+        const p = opts.authorization.log.principal(opts.authorization.principalFor(req));
+        return p ? json({ principal: p, grants: [{ permission: "*", scope: "instance" }] }) : notFound();
+      }
+      if (opts.authorization && url.pathname === "/audit" && req.method === "GET") {
+        const q = url.searchParams;
+        const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
+        return json(
+          opts.authorization.log.list({
+            ...(limit && Number.isFinite(limit) ? { limit } : {}),
+            ...(q.get("principal") ? { principalId: q.get("principal")! } : {}),
+            ...(q.get("task") ? { taskId: q.get("task")! } : {}),
+            ...(q.get("kind") ? { kind: q.get("kind")! } : {}),
+          }),
+        );
       }
 
       if (url.pathname === "/harnesses" && req.method === "GET") {
@@ -2084,6 +2111,12 @@ if (import.meta.main) {
   // Raised here, before createApp starts the orchestrator, so the router
   // can never see the owner task while it is still in inbox.
   if (bind.open) await raiseOpenBindTask(board, bind.hostname, port);
+  // Single-owner mode (docs/SDD-identity-and-permissions.md §4.10): one
+  // implicit owner stands behind every request until sign-in exists, and
+  // every write gets an authorization record.
+  const authorizationLog = new AuthorizationLog(board.db);
+  const owner = authorizationLog.ensureOwner(process.env.WISSEL_OWNER_HANDLE);
+  const principalFor = () => owner.id;
   const registry = await Registry.load();
   const telemetry = new TelemetryLog(telemetryPath);
   // Same "harnesses.yaml" relative-path default HarnessPool.load()/
@@ -2212,7 +2245,8 @@ if (import.meta.main) {
   Bun.serve({
     port,
     hostname: bind.hostname,
-    fetch: createApp(board, registry, telemetry, {
+    fetch: withAuthorizationRecords(createApp(board, registry, telemetry, {
+      authorization: { log: authorizationLog, principalFor },
       orchestratorEnabled,
       autoChain,
       executeWriteTier,
@@ -2242,7 +2276,7 @@ if (import.meta.main) {
       stt,
       schedulesEnabled: true,
       ...scripted,
-    }),
+    }), authorizationLog, { principalFor, onCardCreated: (id, principalId) => board.attribute(id, principalId) }),
   });
   if (conciergeScript) console.log(`ask: scripted concierge from ${conciergeScript} (WISSEL_CONCIERGE_SCRIPT), no model calls`);
   console.log(`wissel board api on ${bind.hostname}:${port} (db: ${dbPath})`);
