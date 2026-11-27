@@ -24,8 +24,9 @@ import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle
 import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
-import { workstreamCheck, WorkstreamStore, type WorkstreamInput } from "../services/workstreams.ts";
-import { GateLog, loadHardLimits, type HardLimits } from "../services/policy-gate.ts";
+import { ACTION_KINDS, workstreamCheck, WorkstreamStore, type WorkstreamInput } from "../services/workstreams.ts";
+import { DEFAULT_HARD_LIMITS, GateLog, loadHardLimits, type HardLimits } from "../services/policy-gate.ts";
+import { ActionExecutor, EXECUTOR_FLUSH_MS, OutboundQueue, type ExecutorAction } from "../services/executor.ts";
 import { boardInboxEvent, InboxDispatcher, InboxStore, prInboxEvents, type InboxHandler } from "../services/inbox.ts";
 
 /** What each inbox kind does today. Until the gate (card 14) and decision
@@ -685,6 +686,72 @@ export function createApp(
     const tick = () => void prWatcher.tick().catch((e) => console.error(`pr watcher: ${(e as Error).message}`));
     setInterval(tick, PR_WATCH_INTERVAL_MS).unref?.();
   }
+  // The executor (docs/SDD-coordinator.md §4.3): what the gate allows is
+  // done by a performer per kind. Channel, chat and tracker performers
+  // come with their adapters (cards 17, 18).
+  const outbound = board instanceof SqliteBoard ? new OutboundQueue(board.db) : undefined;
+  const executor =
+    gateLog && outbound && workstreams
+      ? new ActionExecutor({
+          gateLog,
+          queue: outbound,
+          workstream: (id) => (id ? workstreams.get(id) : undefined),
+          hardLimits: opts.hardLimits ?? DEFAULT_HARD_LIMITS,
+          mainBranchFor: async (a) => {
+            const project = a.projectId ? (await projects.list()).find((p) => p.id === a.projectId) : undefined;
+            if (!project) return "main";
+            const d = project.delivery;
+            if (d?.mode === "pull-request" && d.base) return d.base;
+            const head = await runViaBun(["git", "symbolic-ref", "-q", "--short", "HEAD"], { cwd: project.path }).catch(() => undefined);
+            return head && head.exitCode === 0 ? head.stdout.trim() : "main";
+          },
+          performers: {
+            "card.start": async (a) => {
+              const started = prepareCardStart((a.payload?.card ?? {}) as CardStart, undefined);
+              if (!started.ok) throw new Error(started.error);
+              const card = { ...started.task, ...(a.workstreamId ? { workstreamId: a.workstreamId } : {}) };
+              const check = await validateNewTask(card, { board: board as Board, registry, router, harnesses, modelsCachePath, now: new Date(), projectHarnessFor, workstreamExists: (id) => workstreams.get(id) !== undefined });
+              if (!check.ok) throw new Error(check.error);
+              const settings = check.task.repo ? await projects.settingsFor(check.task.repo) : undefined;
+              const withRules = prepareCardStart(check.task, settings);
+              const made = await board.create(withRules.ok ? withRules.task : check.task);
+              return `started card ${made.id}`;
+            },
+            "owner.task": async (a) => {
+              const p = (a.payload ?? {}) as { title?: unknown; why?: unknown; steps?: unknown };
+              const error = ownerTaskError({ title: p.title, why: p.why, steps: p.steps });
+              if (error || !ownerTasks) throw new Error(error ?? "no owner tasks on this board");
+              const r = await ownerTasks.create({ title: p.title as string, why: p.why as string, steps: p.steps as string[] });
+              if (!r.ok) throw new Error(r.error);
+              return `raised owner task ${r.task.id}`;
+            },
+            "host.restart-when-idle": async () => {
+              const r = await restart.request();
+              if (!r.ok) throw new Error(r.error);
+              return "restart when idle requested";
+            },
+            "pr.merge-forward": async (a) => {
+              const card = typeof a.payload?.taskId === "string" ? await board.get(a.payload.taskId) : undefined;
+              if (!card) throw new Error("pr.merge-forward needs payload.taskId of a delivered card");
+              return `merge forward: ${await mergeForward({ board: board as Board, registry, merge: mergeContext }, card)}`;
+            },
+          },
+          ask: async (a, record, forWhom) => {
+            if (!ownerTasks) return undefined;
+            const { payload: _p, ...shown } = a;
+            const r = await ownerTasks.create({
+              title: `Wissel asks ${forWhom}: ${a.kind}${a.decisionKind ? ` (${a.decisionKind})` : ""}`,
+              why: `The gate (${record.rule}) wants ${forWhom} to decide before Wissel does this: ${JSON.stringify(shown)}.`,
+              steps: ["Read what Wissel would do", "Do it yourself if it should happen, then press Done; or Dismiss to drop it"],
+            });
+            return r.ok ? r.task.id : undefined;
+          },
+        })
+      : undefined;
+  if (executor && opts.prWatch) {
+    const flush = () => void executor.flush().catch((e) => console.error(`executor: ${(e as Error).message}`));
+    setInterval(flush, EXECUTOR_FLUSH_MS).unref?.();
+  }
   if (hostGuard && !opts.hostGuard) {
     const guard = hostGuard;
     const tick = () => void guard.refresh().catch((e) => console.error(`host guard: ${(e as Error).message}`));
@@ -1127,6 +1194,17 @@ export function createApp(
         if (!ws) return notFound();
         if (seg.length === 2 && req.method === "GET") return json(ws);
         if (seg.length === 3 && seg[2] === "gate-log" && req.method === "GET") return json(gateLog?.list(ws.id, Number(url.searchParams.get("limit") ?? 200)) ?? []);
+        // The quiet-hours queue, and the one way to ask the executor to
+        // act: every action goes through the gate (§4.3, §5).
+        if (seg.length === 3 && seg[2] === "outbound" && req.method === "GET") return json(outbound?.list({ workstreamId: ws.id }) ?? []);
+        if (seg.length === 3 && seg[2] === "actions" && req.method === "POST" && executor) {
+          const body = ((await req.json().catch(() => undefined)) ?? {}) as { action?: Record<string, unknown> };
+          const a = body.action;
+          if (!a || typeof a.kind !== "string" || !([...ACTION_KINDS, "decision"] as string[]).includes(a.kind)) return json({ error: `action.kind must be one of: ${[...ACTION_KINDS, "decision"].join(", ")}` }, 400);
+          if (a.projectId !== undefined && !ws.projects.some((p) => p.projectId === a.projectId)) return json({ error: "action.projectId is not in this workstream" }, 400);
+          const result = await executor.execute({ ...(a as unknown as ExecutorAction), workstreamId: ws.id });
+          return json(result, result.status === "done" || result.status === "recorded" ? 200 : result.status === "queued" || result.status === "asked" ? 202 : result.status === "denied" ? 403 : 409);
+        }
         if (seg.length === 3 && seg[2] === "inbox" && req.method === "GET") {
           return json(inbox?.list({ workstreamId: ws.id, unhandled: url.searchParams.get("unhandled") === "1", limit: Number(url.searchParams.get("limit") ?? 200) }) ?? []);
         }

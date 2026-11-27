@@ -430,6 +430,21 @@ Every decision goes to an append-only gate log (`GET
 /workstreams/:id/gate-log`). A property test over random actions checks
 that nothing a deny rule matches is ever allowed.
 
+The executor does what the gate allows and nothing else (`POST
+/workstreams/:id/actions {action}`, `src/services/executor.ts`, §4.3):
+- **Allowed:** a performer for the kind runs it. Card start, owner task,
+  restart when idle and merge-forward exist. Channel, chat and tracker
+  posts arrive with their adapters, and until then such an action
+  answers `unsupported`.
+- **Shadow:** recorded only.
+- **Ask:** raises an owner task naming who should decide.
+- **Deny:** says which rule refused it.
+- **Queue (quiet hours):** the action waits in a persisted outbound
+  queue (`GET /workstreams/:id/outbound`), with its flush time. Each
+  minute the queue is decided again, oldest first, so a rule changed
+  overnight still applies. A queued push goes through the merge path
+  and its gates again.
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
