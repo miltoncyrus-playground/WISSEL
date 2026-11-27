@@ -1,3 +1,5 @@
+import type { CardTemplateKind } from "./card-templates.ts";
+
 export type AgentTier = "service" | "readonly" | "write";
 export type TrustLevel = "low" | "medium" | "high";
 /** "agent" is a full task handler (triage, plan, implement); "skill" is a
@@ -408,6 +410,13 @@ export interface Project {
   /** Patterns for references that are not tickets (a decision or spec
    *  id): shown as plain labels next to a branch, never linked. */
   referencePatterns?: string[];
+  /** Appended to the body of every card started with POST /tasks in
+   *  this repo (src/core/card-templates.ts, docs/SDD-coordinator.md
+   *  §3.2, §4.16). */
+  cardRules?: string;
+  /** A markdown brief per kind of card, with {placeholders}; POST /tasks
+   *  with `template` renders one and refuses empty required ones. */
+  cardTemplates?: Partial<Record<CardTemplateKind, string>>;
 }
 
 /** Which needs-me state a card is in. See NeedsYou. */

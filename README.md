@@ -257,6 +257,18 @@ pushback, and a review carries the round it reviews. `POST /tasks/:id/pr
 with `head` as the full commit sha (`null` clears it)
 (`docs/SDD-coordinator.md` §3.3).
 
+A project can keep `cardRules`, text appended under "Project rules:" to
+the body of every card started with `POST /tasks` in its repo. It can
+also keep `cardTemplates`, a markdown brief per kind (`coder`, `review`,
+`fix-round`, `split-only`, `merge-forward`) with placeholders such as
+`{ticket}` (required) or `{notes?}` (optional). Write `{{` and `}}` for
+literal braces. Set both with `POST /projects/:id/settings`.
+`POST /tasks {template: "fix-round", fields: {...}}` renders the brief
+from `fields` and the card's own `key`, `title` and `body`. It refuses
+the card, creating nothing, when a required placeholder is empty or the
+brief comes out over 2,500 characters (`src/core/card-templates.ts`,
+`docs/SDD-coordinator.md` §4.16).
+
 `bun run usage:report [--since 2026-10-10] [--agent implementer]` shows
 where agent spend goes: per agent the runs, cost, turns, context per turn
 and output, and what runs cut off by a session limit cost
