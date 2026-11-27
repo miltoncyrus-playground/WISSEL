@@ -48,6 +48,7 @@
     "eval:feed-needs-you": "bun run eval/feed-needs-you.eval.ts",
     "eval:auto-archive-replay": "bun run eval/auto-archive-replay.eval.ts",
     "usage:report": "bun run scripts/usage-report.ts",
+    "host:check": "bun run scripts/host-check.ts",
     "models:refresh": "bun run scripts/models-refresh.ts",
     "eval:resume": "bun run eval/resume.eval.ts",
     "eval:review-grants": "bun run eval/review-grants.eval.ts",

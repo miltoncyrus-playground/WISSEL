@@ -306,6 +306,17 @@ With neither, the route is refused, because exiting would leave the board
 down. The start-up log says which applies (`docs/SDD-coordinator.md`
 §4.12).
 
+The host guard (`WISSEL_HOST_GUARD=1`) reads the host every 30 seconds:
+load, available memory, free disk under `~/.wissel`, and free space in
+each project's temp directory. While anything is under its threshold
+(see the `WISSEL_HOST_GUARD_*` variables), new cards, **Run** and
+pipeline runs wait, and running cards carry on. It raises one owner task
+saying what is short, naming the largest entries in a full temp
+directory and the running cards writing there. Done runs `bun run
+host:check`, which passes only once the host has room. The hold lifts by
+itself as soon as a reading is healthy. `GET /admin/host-guard` shows
+whether it is holding (`src/services/host-guard.ts`).
+
 `bun run usage:report [--since 2026-10-10] [--agent implementer]` shows
 where agent spend goes: per agent the runs, cost, turns, context per turn
 and output, and what runs cut off by a session limit cost
@@ -771,6 +782,11 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_PORT` | 8787 | HTTP port. |
 | `WISSEL_BIND` | `127.0.0.1` | Address the board listens on. Anything outside loopback refuses to start without `WISSEL_ALLOW_OPEN_BIND=1`. |
 | `WISSEL_ALLOW_OPEN_BIND` | off | Allow a non-loopback `WISSEL_BIND`. The board has no sign-in yet: start-up warns and raises an owner task. |
+| `WISSEL_HOST_GUARD` | off | `1` turns on the host guard: new cards are held while the host is short of room, and an owner task says why. |
+| `WISSEL_HOST_GUARD_LOAD_PER_CORE` | `3` | Hold when the 1-minute load reaches this many per core. |
+| `WISSEL_HOST_GUARD_MIN_MEMORY_PCT` | `20` | Hold when less than this share of memory is available. |
+| `WISSEL_HOST_GUARD_MIN_DISK_GB` | `30` | Hold when the disk under `~/.wissel` (worktrees) has less free than this. |
+| `WISSEL_HOST_GUARD_MIN_TEMP_GB` | `2` | Hold when a project's temp directory (its `env.TMPDIR`, else the system's) has less free than this. |
 | `WISSEL_SUPERVISOR` | unset | `script` when `bun run serve:supervised` started Wissel (the script sets it). With it, or under systemd, `POST /admin/restart-when-idle` is allowed; with neither it is refused. |
 | `WISSEL_OWNER_HANDLE` | the OS user | Handle of the single-owner principal every action is attributed to (`GET /me`, `GET /audit`). Read once, on the first start against a database. |
 | `WISSEL_DB_PATH` | `~/.wissel/board.sqlite` | Board database. |
