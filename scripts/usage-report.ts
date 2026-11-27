@@ -27,11 +27,25 @@ export interface ResultEvent {
   taskId: string;
   agentId: string;
   actualCost?: number;
+  harnessId?: string;
+  principalId?: string;
   retryAfter?: string;
   usage?: RunUsage;
   resumed?: boolean;
   at: string;
 }
+
+/** Spend for one person or one account (docs/SDD-identity-and-
+ *  permissions.md §4.7). Results logged before attribution existed have
+ *  no principal or harness and are grouped under "(unrecorded)". */
+export interface SpendRow {
+  id: string;
+  runs: number;
+  costUsd: number;
+  cutByLimit: number;
+}
+
+export const UNRECORDED = "(unrecorded)";
 
 export interface AgentUsage {
   agentId: string;
@@ -76,9 +90,22 @@ export function parseResultEvents(text: string): ResultEvent[] {
 
 /** Per-agent and per-task totals for results at or after `since`,
  *  optionally for one agent. Agents sorted by cost, highest first. */
-export function summarizeUsage(events: ResultEvent[], since: Date, agentId?: string): { agents: AgentUsage[]; tasks: TaskUsage[] } {
+export function summarizeUsage(
+  events: ResultEvent[],
+  since: Date,
+  agentId?: string,
+): { agents: AgentUsage[]; tasks: TaskUsage[]; principals: SpendRow[]; harnesses: SpendRow[] } {
   const agents = new Map<string, AgentUsage>();
   const tasks = new Map<string, TaskUsage>();
+  const principals = new Map<string, SpendRow>();
+  const harnesses = new Map<string, SpendRow>();
+  const addSpend = (into: Map<string, SpendRow>, id: string, cost: number, cut: boolean) => {
+    const row = into.get(id) ?? { id, runs: 0, costUsd: 0, cutByLimit: 0 };
+    row.runs++;
+    row.costUsd += cost;
+    if (cut) row.cutByLimit++;
+    into.set(id, row);
+  };
   for (const e of events) {
     if (new Date(e.at).getTime() < since.getTime()) continue;
     if (agentId && e.agentId !== agentId) continue;
@@ -105,6 +132,8 @@ export function summarizeUsage(events: ResultEvent[], since: Date, agentId?: str
       a.resumed.costUsd += cost;
     }
     agents.set(e.agentId, a);
+    addSpend(principals, e.principalId ?? UNRECORDED, cost, !!e.retryAfter);
+    addSpend(harnesses, e.harnessId ?? UNRECORDED, cost, !!e.retryAfter);
 
     const t = tasks.get(e.taskId) ?? { taskId: e.taskId, agentId: e.agentId, runs: 0, costUsd: 0, turns: 0, cacheReadTokens: 0 };
     t.runs++;
@@ -116,6 +145,8 @@ export function summarizeUsage(events: ResultEvent[], since: Date, agentId?: str
   return {
     agents: [...agents.values()].sort((x, y) => y.costUsd - x.costUsd),
     tasks: [...tasks.values()].sort((x, y) => y.costUsd - x.costUsd),
+    principals: [...principals.values()].sort((x, y) => y.costUsd - x.costUsd),
+    harnesses: [...harnesses.values()].sort((x, y) => y.costUsd - x.costUsd),
   };
 }
 
@@ -149,6 +180,15 @@ export function formatReport(summary: ReturnType<typeof summarizeUsage>, since: 
   lines.push("", `Total ${usd(total)}.${untracked ? ` ${untracked} run(s) predate usage logging: in cost, not in the token columns.` : ""}`);
   const cut = summary.agents.reduce((s, a) => s + a.cutByLimit.costUsd, 0);
   if (cut > 0) lines.push(`Spent on runs a session limit cut off: ${usd(cut)} (${Math.round((cut / (total || 1)) * 100)}%).`);
+  for (const [title, rows] of [
+    ["person", summary.principals],
+    ["account", summary.harnesses],
+  ] as const) {
+    lines.push("", `${title.padEnd(26)}   runs      cost  share  cut by 429`);
+    for (const r of rows) {
+      lines.push([r.id.padEnd(26), String(r.runs).padStart(6), usd(r.costUsd).padStart(9), `${Math.round((r.costUsd / (total || 1)) * 100)}%`.padStart(6), String(r.cutByLimit).padStart(11)].join(" "));
+    }
+  }
   lines.push("", `Most expensive tasks:`);
   for (const t of summary.tasks.slice(0, top)) {
     lines.push(`  ${t.taskId.slice(0, 8)}  ${t.agentId.padEnd(22)} ${usd(t.costUsd).padStart(8)}  ${t.runs} run(s)${t.turns ? `, ${t.turns} turns, ${k(t.cacheReadTokens / t.turns)} context/turn` : ""}`);

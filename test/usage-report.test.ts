@@ -40,7 +40,7 @@ test("formatReport shows context per turn, the cut-off share and the top tasks",
   expect(out).toContain("1 run(s) predate usage logging");
   expect(out).toContain("Spent on runs a session limit cut off: $6.00 (33%).");
   expect(out).toMatch(/a\s+implementer\s+\$9\.00\s+2 run\(s\), 60 turns, 100k context\/turn/);
-  expect(formatReport({ agents: [], tasks: [] }, SINCE)).toContain("No results in this window.");
+  expect(formatReport({ agents: [], tasks: [], principals: [], harnesses: [] }, SINCE)).toContain("No results in this window.");
 });
 
 test("parseArgs: defaults to 7 days, takes --since and --agent, refuses junk", () => {

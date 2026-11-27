@@ -755,6 +755,14 @@ export interface Harness {
    *  means unlimited. Must be a positive integer. See
    *  docs/SDD-agent-harness-preference.md §3.3. */
   maxConcurrent?: number;
+  /** Whose account this is (docs/SDD-identity-and-permissions.md §4.7):
+   *  a principal id. Undefined means no owner is named, and the harness
+   *  runs any card, as every harness did before ownership existed. */
+  ownerPrincipalId?: string;
+  /** True lets a harness with an owner run cards anyone authorized.
+   *  Otherwise a harness with an owner runs only cards its owner
+   *  authorized (HarnessPool.mayRun). */
+  shared?: boolean;
 }
 
 /** An external tool surface an agent can reach once it's running — Slack,

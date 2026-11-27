@@ -536,8 +536,9 @@ test("every real manifest agent without `harnesses` builds the same acquire call
   const reached = new Set(calls.map((c) => c.agentId));
   expect([...reached].sort()).toEqual(runnable.filter((a) => a.tags.length > 0).map((a) => a.id).sort());
   for (const c of calls) {
-    expect(c.args).toHaveLength(3);
+    expect(c.args).toHaveLength(4);
     expect(c.args[1]).toBeUndefined(); // no override
     expect(c.args[2]).toBeUndefined(); // no preference
+    expect(c.args[3]).toBe("owner"); // an unattributed card runs for the instance owner (harness ownership)
   }
 });

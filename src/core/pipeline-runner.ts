@@ -1,10 +1,10 @@
 import type { Board } from "../services/board.ts";
 import type { PipelineStore } from "../services/pipelines.ts";
 import type { TelemetryLog } from "../services/telemetry.ts";
-import type { HarnessPool } from "./harness-pool.ts";
+import { cardPrincipal, type HarnessPool } from "./harness-pool.ts";
 import type { Registry } from "./registry.ts";
 import type { Executor, PipelineDef, PipelineEdgeDef, PipelineStepDef, TaskCard, TaskResult } from "./types.ts";
-import { finishResult } from "./orchestrator.ts";
+import { finishResult, recordHarnessLimit } from "./orchestrator.ts";
 
 /**
  * Everything pipeline-runner.ts needs to actually run a step, reused
@@ -357,7 +357,7 @@ async function runStepCard(
   // one (nothing in the canvas editor or PipelineStepDef exposes it),
   // so this is always the automatic pick (the agent's own `harnesses`
   // list when it has one), never the override-or-throw path.
-  const harness = executor.harnessTool ? ctx.harnesses?.acquire(executor.harnessTool, undefined, agent.harnesses) : undefined;
+  const harness = executor.harnessTool ? ctx.harnesses?.acquire(executor.harnessTool, undefined, agent.harnesses, cardPrincipal(created)) : undefined;
   // Nothing available for this step: fail it loud instead of running it
   // with no harness on ambient credentials or on a harness the agent
   // didn't list, matching Orchestrator.process's rule. A step runs
@@ -387,6 +387,7 @@ async function runStepCard(
   } finally {
     if (harness) ctx.harnesses!.release(harness.id);
   }
+  await recordHarnessLimit(ctx.telemetry, result, harness, cardPrincipal(created));
   await finishResult(board, registry, result, ctx.telemetry, undefined, ctx.memoryPath, pipelineCtx);
 }
 
@@ -488,7 +489,7 @@ export async function resumePipelineStep(board: Board, registry: Registry, task:
   // board event (a run finishing frees a harness) tries again.
   const agent = registry.get(step.agentId);
   const executor = agent ? ctx.executors.find((e) => e.canHandle(agent)) : undefined;
-  if (agent && executor?.harnessTool && ctx.harnesses && !ctx.harnesses.canAcquire(executor.harnessTool, agent.harnesses)) return false;
+  if (agent && executor?.harnessTool && ctx.harnesses && !ctx.harnesses.canAcquire(executor.harnessTool, agent.harnesses, cardPrincipal(task))) return false;
   // Runs settled before this fix (and any root a human moved) read
   // "done"/"failed" with this step still waiting: reopen it while the
   // step runs, so the board and the feed don't call it finished.

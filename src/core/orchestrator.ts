@@ -2,7 +2,8 @@ import type { EventEmitter } from "node:events";
 import type { Board, BoardEvent } from "../services/board.ts";
 import type { PipelineStore } from "../services/pipelines.ts";
 import type { TelemetryLog } from "../services/telemetry.ts";
-import { HarnessOverrideError, type HarnessPool } from "./harness-pool.ts";
+import { cardPrincipal, HarnessOverrideError, type HarnessPool } from "./harness-pool.ts";
+import { describeHarnessLimit, harnessLimitEvent } from "./harness-limit.ts";
 import type { Registry } from "./registry.ts";
 import type { Router } from "./router.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
@@ -124,6 +125,17 @@ function audioTelemetry(result: TaskResult): { bytes: number; synthesisSeconds: 
  * with `pipelineId` set (see the branch below, which throws rather than
  * silently stranding such a task if that invariant is ever violated).
  */
+/** A run that hit an account limit becomes a `harness.limit` event
+ *  naming whose account it is (src/core/harness-limit.ts), plus one log
+ *  line. Nothing else changes: the 429 reschedule and the failure path
+ *  run as before. */
+export async function recordHarnessLimit(telemetry: TelemetryLog | undefined, result: TaskResult, harness: Harness | undefined, principalId: string): Promise<void> {
+  const event = harnessLimitEvent(result, harness, principalId);
+  if (!event) return;
+  console.warn(`harness limit: ${describeHarnessLimit(event)}`);
+  await telemetry?.record(event);
+}
+
 export async function finishResult(
   board: Board,
   registry: Registry,
@@ -139,12 +151,14 @@ export async function finishResult(
   const runner: MergeContext = merge.telemetry || !telemetry ? merge : { ...merge, telemetry };
   await board.recordResult(result);
   const audio = audioTelemetry(result);
+  const card = telemetry ? await board.get(result.taskId) : undefined;
   await telemetry?.record({
     type: "result",
     taskId: result.taskId,
     agentId: result.agentId,
     actualCost: result.actualCost,
     harnessId: result.harnessId,
+    ...(card ? { principalId: cardPrincipal(card) } : {}),
     ...(audio ? { audio } : {}),
     // A session-limit (429) reschedule, so the retrospective digest can
     // count them (docs/SDD-wissel-retro-podcast.md §3.1).
@@ -1811,12 +1825,18 @@ export class Orchestrator {
       // finishing run frees capacity and moves its own task, whose board
       // event triggers one. An explicit harnessOverride is excluded:
       // acquire() fails it loud below.
-      if (executor?.harnessTool && this.opts.harnesses && !task.harnessOverride && !this.opts.harnesses.canAcquire(executor.harnessTool, agent.harnesses)) {
+      const principalId = cardPrincipal(task);
+      if (executor?.harnessTool && this.opts.harnesses && !task.harnessOverride && !this.opts.harnesses.canAcquire(executor.harnessTool, agent.harnesses, principalId)) {
+        const pool = this.opts.harnesses;
+        const enabled = pool.all().filter((h) => h.enabled && h.tool === executor.harnessTool);
+        const usable = enabled.filter((h) => pool.mayRun(h, principalId));
         const reason = agent.harnesses?.length
-          ? `none of [${agent.harnesses.join(", ")}] enabled and under capacity`
-          : this.opts.harnesses.all().some((h) => h.enabled && h.tool === executor.harnessTool)
-            ? `every enabled ${executor.harnessTool} harness at capacity`
-            : `no enabled ${executor.harnessTool} harness`;
+          ? `none of [${agent.harnesses.join(", ")}] enabled and under capacity${usable.length < enabled.length ? ` for ${principalId}` : ""}`
+          : enabled.length > 0 && usable.length === 0
+            ? `no enabled ${executor.harnessTool} harness is shared or owned by ${principalId}`
+            : enabled.length > 0
+              ? `every enabled ${executor.harnessTool} harness at capacity`
+              : `no enabled ${executor.harnessTool} harness`;
         if (this.waitingForHarness.get(task.id) !== reason) {
           this.waitingForHarness.set(task.id, reason);
           console.log(`orchestrator: task ${task.id} (${agent.id}) waiting: ${reason}`);
@@ -1874,7 +1894,7 @@ export class Orchestrator {
 
       let harness: Harness | undefined;
       try {
-        harness = executor!.harnessTool ? this.opts.harnesses?.acquire(executor!.harnessTool, task.harnessOverride, agent.harnesses) : undefined;
+        harness = executor!.harnessTool ? this.opts.harnesses?.acquire(executor!.harnessTool, task.harnessOverride, agent.harnesses, principalId) : undefined;
       } catch (e) {
         if (!(e instanceof HarnessOverrideError)) throw e;
         const result: TaskResult = {
@@ -1908,6 +1928,7 @@ export class Orchestrator {
       } finally {
         if (harness) this.opts.harnesses!.release(harness.id);
       }
+      await recordHarnessLimit(this.telemetry, result, harness, principalId);
       await finishResult(this.board, this.registry, result, this.telemetry, this.opts.merge, this.opts.memoryPath);
     } catch (e) {
       console.error(`orchestrator: unexpected error processing task ${task.id}: ${(e as Error).message}`);
