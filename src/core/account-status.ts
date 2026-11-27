@@ -20,6 +20,10 @@ export interface AccountStatus {
   activeCount: number;
   maxConcurrent?: number;
   defaultModel?: string;
+  /** Whose account it is and whether others may use it
+   *  (docs/SDD-identity-and-permissions.md §4.7). */
+  ownerPrincipalId?: string;
+  shared?: boolean;
   running: AccountRunningTask[];
 }
 
@@ -79,6 +83,8 @@ export function buildAccountStatus(input: AccountStatusInput): AccountStatus[] {
       };
       if (h.maxConcurrent !== undefined) row.maxConcurrent = h.maxConcurrent;
       if (h.model !== undefined) row.defaultModel = h.model;
+      if (h.ownerPrincipalId !== undefined) row.ownerPrincipalId = h.ownerPrincipalId;
+      if (h.shared !== undefined) row.shared = h.shared;
       return row;
     });
 }

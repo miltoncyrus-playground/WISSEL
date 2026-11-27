@@ -1,7 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { parse } from "yaml";
 import { discoverApiKeyHarnesses, discoverCodexHarnesses, discoverHarnesses, validateHarness, type DiscoverHarnessesOptions } from "./harness-discovery.ts";
-import type { AgentDef, Executor, Harness, HarnessTool } from "./types.ts";
+import { OWNER_PRINCIPAL_ID } from "../services/authorization.ts";
+import type { AgentDef, Executor, Harness, HarnessTool, TaskCard } from "./types.ts";
+
+/** The principal a card runs for: whoever authorized it, or the
+ *  instance owner for a card nobody did (one made before attribution
+ *  existed, or by the board itself: a schedule, memory curation). */
+export function cardPrincipal(task: Pick<TaskCard, "authorizedByPrincipalId">): string {
+  return task.authorizedByPrincipalId ?? OWNER_PRINCIPAL_ID;
+}
 
 /** Thrown by `HarnessPool.acquire` when a caller passes an explicit
  *  `harnessId` (a `TaskCard.harnessOverride`, not the normal automatic
@@ -143,8 +151,17 @@ export class HarnessPool {
    *  harness (or on a harness the agent didn't list), so disabling a
    *  harness, or filling it to `maxConcurrent`, actually stops new work
    *  on it (see Orchestrator.process). */
-  canAcquire(tool: HarnessTool, preferred?: string[]): boolean {
-    return this.pick(tool, preferred) !== undefined;
+  canAcquire(tool: HarnessTool, preferred?: string[], principalId: string = OWNER_PRINCIPAL_ID): boolean {
+    return this.pick(tool, preferred, principalId) !== undefined;
+  }
+
+  /** Whether `harness` may run a card `principalId` authorized
+   *  (docs/SDD-identity-and-permissions.md §4.7): a harness with no
+   *  owner, or marked `shared`, runs anyone's; otherwise only its
+   *  owner's. A card with no harness it may use waits, exactly as it
+   *  waits when none is free. */
+  mayRun(harness: Harness, principalId: string): boolean {
+    return harness.ownerPrincipalId === undefined || harness.shared === true || harness.ownerPrincipalId === principalId;
   }
 
   get(id: string): Harness | undefined {
@@ -181,19 +198,22 @@ export class HarnessPool {
    *  Undefined means nothing is available; callers hold the task
    *  (Orchestrator) or fail the step (pipeline-runner) rather than run
    *  without a harness. */
-  acquire(tool: HarnessTool, harnessId?: string, preferred?: string[]): Harness | undefined {
+  acquire(tool: HarnessTool, harnessId?: string, preferred?: string[], principalId: string = OWNER_PRINCIPAL_ID): Harness | undefined {
     if (harnessId !== undefined) {
       const harness = this.harnesses.get(harnessId);
       if (!harness) throw new HarnessOverrideError(`unknown harness id "${harnessId}"`);
       if (!harness.enabled) throw new HarnessOverrideError(`harness "${harnessId}" is disabled`);
       if (harness.tool !== tool) throw new HarnessOverrideError(`harness "${harnessId}" is a ${harness.tool} harness, not ${tool}`);
+      if (!this.mayRun(harness, principalId)) {
+        throw new HarnessOverrideError(`harness "${harnessId}" belongs to ${harness.ownerPrincipalId} and is not shared; this card was authorized by ${principalId}`);
+      }
       if (!this.hasCapacity(harness)) {
         throw new HarnessOverrideError(`harness "${harnessId}" is at capacity (${this.activeCount(harness.id)}/${harness.maxConcurrent} running)`);
       }
       this.inFlight.set(harness.id, this.activeCount(harness.id) + 1);
       return harness;
     }
-    const picked = this.pick(tool, preferred);
+    const picked = this.pick(tool, preferred, principalId);
     if (picked) this.inFlight.set(picked.id, this.activeCount(picked.id) + 1);
     return picked;
   }
@@ -201,8 +221,8 @@ export class HarnessPool {
   /** Rules 2 and 3 of `acquire()`, with no side effects. Shared with
    *  `canAcquire()` so the orchestrator's hold and the real pick can
    *  never disagree about what's available. */
-  private pick(tool: HarnessTool, preferred?: string[]): Harness | undefined {
-    const available = (h: Harness) => h.enabled && h.tool === tool && this.hasCapacity(h);
+  private pick(tool: HarnessTool, preferred: string[] | undefined, principalId: string): Harness | undefined {
+    const available = (h: Harness) => h.enabled && h.tool === tool && this.mayRun(h, principalId) && this.hasCapacity(h);
     if (preferred && preferred.length > 0) {
       for (const id of preferred) {
         const harness = this.harnesses.get(id);

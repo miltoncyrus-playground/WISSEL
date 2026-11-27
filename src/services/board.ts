@@ -571,8 +571,10 @@ export class SqliteBoard implements Board {
     // subtask) runs on the authority of whoever stood behind its parent
     // (docs/SDD-identity-and-permissions.md §4.4). It has no creator of
     // its own: no person made it.
-    if (!full.authorizedByPrincipalId && full.parentTaskId) {
-      const parent = this.db.query("SELECT authorizedByPrincipalId FROM tasks WHERE id = ?").get(full.parentTaskId) as { authorizedByPrincipalId: string | null } | null;
+    // A pipeline step card runs for whoever started the run.
+    const parentId = full.parentTaskId ?? full.pipelineRunId;
+    if (!full.authorizedByPrincipalId && parentId) {
+      const parent = this.db.query("SELECT authorizedByPrincipalId FROM tasks WHERE id = ?").get(parentId) as { authorizedByPrincipalId: string | null } | null;
       if (parent?.authorizedByPrincipalId) full.authorizedByPrincipalId = parent.authorizedByPrincipalId;
     }
     this.db.run(

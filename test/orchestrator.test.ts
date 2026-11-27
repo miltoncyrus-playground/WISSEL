@@ -1541,7 +1541,8 @@ test("finishResult's telemetry result event carries retryAfter for a 429 resched
     await finishResult(board, registry, { taskId: plain.id, agentId: "triager", ok: true, summary: "ok", actualCost: 0.1 }, telemetry);
     const events = (await readFile(join(dir, "t.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
     expect(events[0]).toMatchObject({ type: "result", taskId: limited.id, retryAfter });
-    expect(Object.keys(events[1]).sort()).toEqual(["actualCost", "agentId", "at", "taskId", "type"]);
+    // principalId: who the run spent for (docs/SDD-identity-and-permissions.md §3.6).
+    expect(Object.keys(events[1]).sort()).toEqual(["actualCost", "agentId", "at", "principalId", "taskId", "type"]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

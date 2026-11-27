@@ -1,8 +1,10 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { RunUsage, ScheduleOutcome } from "../core/types.ts";
+import type { HarnessLimitEvent } from "../core/harness-limit.ts";
 
 export type TelemetryEvent =
+  | HarnessLimitEvent
   | { type: "dispatch"; taskId: string; agentId: string; model?: string; estimatedCost?: number }
   | {
       type: "result";
@@ -10,6 +12,11 @@ export type TelemetryEvent =
       agentId: string;
       actualCost?: number;
       harnessId?: string;
+      /** Who authorized the card (TaskCard.authorizedByPrincipalId, or
+       *  the instance owner), so `usage:report` splits spend per person
+       *  as well as per account (docs/SDD-identity-and-permissions.md
+       *  §3.6). */
+      principalId?: string;
       /** Only on a pipeline "Make audio" step's result (TtsExecutor). */
       audio?: { bytes: number; synthesisSeconds: number };
       /** Only on a result rescheduled after a session-limit (429) hit. */

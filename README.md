@@ -736,6 +736,15 @@ the model from Setup > Harnesses (`POST /harnesses/:id/enable`,
 Disabling stops new work only. See `docs/SDD-execution-harnesses.md`,
 `docs/SDD-harness-enable-disable.md`.
 
+Whose account it is: `ownerPrincipalId` names a principal (`owner` is
+the instance owner, see `GET /me`), and `shared: true` lets others use
+it. A harness with an owner and no `shared` runs only cards its owner
+authorized; anyone else's card waits for one it may use. No owner means
+anyone's, as before. Each run's telemetry names its harness and
+principal, `bun run usage:report` splits spend by both, and a 429, an
+exhausted balance or a lapsed sign-in is logged as a `harness.limit`
+event naming the owner (`docs/SDD-identity-and-permissions.md` §4.7).
+
 ### `agents/manifest.yaml`: the fleet
 
 Each agent declares `tier` (`readonly` or `write`), `executor`, `tags`,
