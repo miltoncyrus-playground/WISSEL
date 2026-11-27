@@ -153,6 +153,12 @@ export async function finishResult(
   const merge = toMergeContext(runnerOrMerge);
   const runner: MergeContext = merge.telemetry || !telemetry ? merge : { ...merge, telemetry };
   await board.recordResult(result);
+  // A decision card's output goes to the gate and the executor; the card
+  // itself finishes like any readonly run.
+  if (result.decision && merge.onDecision) {
+    const card = await board.get(result.taskId);
+    if (card) await merge.onDecision(card, result.decision).catch((e) => console.error(`decision ${result.taskId}: ${(e as Error).message}`));
+  }
   const audio = audioTelemetry(result);
   const card = telemetry ? await board.get(result.taskId) : undefined;
   await telemetry?.record({

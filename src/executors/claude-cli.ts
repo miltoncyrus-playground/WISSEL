@@ -6,6 +6,7 @@ import { DEFAULT_MEMORY_PATH, readMemoryLessons } from "../services/memory.ts";
 import { parseReviewVerdict } from "./parse-review-verdict.ts";
 import { summarizeDenials } from "../core/permission-denials.ts";
 import { parseSubtaskPlan } from "./parse-subtask-plan.ts";
+import { decisionKindOf, parseDecision, type DecisionOutput } from "../services/decisions.ts";
 import { parsePipelineHandoff } from "./parse-pipeline-handoff.ts";
 import { parseSessionLimitReset } from "./parse-session-limit-reset.ts";
 import { buildMcpConfigJson, mcpAllowedToolNames, mcpServerEnvOverrides, resolveMcpGrants, splitGrantsByTrust } from "./mcp-config.ts";
@@ -650,6 +651,17 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     }
   }
 
+  // A decision card's contract (src/services/decisions.ts): strict, and
+  // checked against the kind the card was started for.
+  let decision: DecisionOutput | null = null;
+  if (ok && agent.outputContract && agent.outputContractFormat === "decision") {
+    decision = parseDecision(parsed.result ?? "", decisionKindOf(task.labels));
+    if (decision === null) {
+      ok = false;
+      summary = `${agent.name} violated its output contract — expected a trailing \`\`\`decision fenced block for ${decisionKindOf(task.labels) ?? "its kind"}, got: ${parsed.result ?? "(no result)"}`;
+    }
+  }
+
   // Same idea again, for a pipeline step's contract — see
   // AgentDef.outputContractFormat's doc comment and
   // docs/SDD-pipelines.md §3.4. Unlike verdict/plan, a valid handoff can
@@ -716,6 +728,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     ...(verdict ? { verdict: verdict.verdict, reviewFeedback: verdict.feedback } : {}),
     ...(verdict?.grants?.length ? { reviewGrants: verdict.grants } : {}),
     ...(verdict?.severity ? { reviewSeverity: verdict.severity } : {}),
+    ...(decision ? { decision } : {}),
     ...runFacts(parsed, resumeId, remoteSessionUrl, sandbox),
     ...(plan ? { subtaskPlan: plan } : {}),
     ...(handoff ? { pipelineHandoff: handoff } : {}),
