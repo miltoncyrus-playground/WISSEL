@@ -1,5 +1,6 @@
 import type { NeedsYou, TaskCard, TaskResult } from "../core/types.ts";
 import type { Board } from "./board.ts";
+import type { OwnerTask } from "./owner-tasks.ts";
 import { cardHref } from "./feed.ts";
 
 /**
@@ -347,6 +348,24 @@ export interface NeedsYouOptions {
    *  it would land nothing. undefined (or no checker) means unknown, and
    *  the card is treated as one with changes. */
   worktreeChanged?(task: TaskCard, worktree: NonNullable<TaskResult["worktree"]>): Promise<boolean | undefined>;
+  /** The owner task a card stands for (src/services/owner-tasks.ts), if
+   *  any. An open one shows in Needs a human with its own why and steps. */
+  ownerTaskFor?(cardId: string): Pick<OwnerTask, "id" | "why" | "steps" | "status" | "check" | "blocks"> | undefined;
+}
+
+/** Needs a human for an open owner task: its why, its steps as the
+ *  checklist, and Done, which runs its check. */
+export function ownerTaskNeedsYou(t: Pick<OwnerTask, "id" | "why" | "steps" | "check" | "blocks">): NeedsYou {
+  const waiting = t.blocks.length > 0 ? ` ${t.blocks.length} ${t.blocks.length === 1 ? "card waits" : "cards wait"} on it.` : "";
+  return {
+    kind: "owner-task",
+    lane: "human",
+    value: "owner-task",
+    line: t.check ? "Only you can do this; Done checks it" : "Only you can do this",
+    why: `${t.why}${waiting}`,
+    checklist: [...t.steps],
+    action: { label: "Done", href: `/owner-tasks/${encodeURIComponent(t.id)}/done`, method: "POST" },
+  };
 }
 
 /** needsYou for every card in `tasks` that needs Milton, keyed by id.
@@ -384,6 +403,11 @@ export async function needsYouFor(
           }
         }
       }
+    }
+    const owner = !task.archivedAt && task.status === "review" ? opts.ownerTaskFor?.(task.id) : undefined;
+    if (owner?.status === "open") {
+      out.set(task.id, ownerTaskNeedsYou(owner));
+      continue;
     }
     const ny = deriveNeedsYou(task, { byId, hasWorktree, ...extra });
     if (ny) out.set(task.id, ny);
