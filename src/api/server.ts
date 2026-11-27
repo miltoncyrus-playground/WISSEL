@@ -25,6 +25,16 @@ import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
 import { workstreamCheck, WorkstreamStore, type WorkstreamInput } from "../services/workstreams.ts";
+import { boardInboxEvent, InboxDispatcher, InboxStore, prInboxEvents, type InboxHandler } from "../services/inbox.ts";
+
+/** What each inbox kind does today. Until the gate (card 14) and decision
+ *  cards (card 16) take them, most kinds are recorded only. A dirty PR is
+ *  already brought up to date by the PR watcher itself (merge-forward). */
+function inboxHandlers(): Record<string, InboxHandler> {
+  return {
+    "owner.message": async (e) => console.log(`inbox: owner message ${e.id}${e.workstreamId ? ` for ${e.workstreamId}` : ""}`),
+  };
+}
 import { describeCondition, findOverlaps, overlapWarning, StartConditionChecker } from "../services/start-conditions.ts";
 
 /** How often the host guard reads the host. */
@@ -618,6 +628,13 @@ export function createApp(
   const ownerTasks = opts.ownerTasks ?? (board instanceof SqliteBoard ? new OwnerTaskStore(board.db, board) : undefined);
   // Workstreams and roles (docs/SDD-coordinator.md §3.1, §4.13).
   const workstreams = board instanceof SqliteBoard ? new WorkstreamStore(board.db) : undefined;
+  // The event inbox (§4.1): every coordinator trigger, once each.
+  const inbox = board instanceof SqliteBoard ? new InboxStore(board.db) : undefined;
+  const dispatcher = inbox ? new InboxDispatcher(inbox, inboxHandlers()) : undefined;
+  board.events?.on("event", (e: BoardEvent) => {
+    const ev = boardInboxEvent(e);
+    if (ev) dispatcher?.push(ev);
+  });
   hostGuard =
     opts.hostGuard ??
     (process.env.WISSEL_HOST_GUARD === "1" && ownerTasks
@@ -633,6 +650,7 @@ export function createApp(
             return [...dirs].map(([path, runningCards]) => ({ path, runningCards }));
           },
           raise: async (title, why, steps) => {
+            dispatcher?.push({ id: `host:short:${new Date().toISOString()}`, source: "host", kind: "host.short", payload: { why } });
             if (ownerTasks.list("open").some((t) => t.title === title)) return;
             await ownerTasks.create({ title, why, steps, check: ["bun", "run", "host:check"] });
           },
@@ -648,7 +666,11 @@ export function createApp(
       const head = await (opts.prWatchRunner ?? runViaBun)(["git", "symbolic-ref", "-q", "--short", "HEAD"], { cwd: repo }).catch(() => undefined);
       return head && head.exitCode === 0 ? head.stdout.trim() : undefined;
     },
-    ...(telemetry ? { record: (e) => telemetry.record(e) } : {}),
+    record: async (e) => {
+      await telemetry?.record(e);
+      const ws = (await board.get(e.taskId))?.workstreamId;
+      for (const ev of prInboxEvents(e, ws)) dispatcher?.push(ev);
+    },
     // A dirty PR is brought up to date with main (card 10).
     onDirty: (card) => mergeForward({ board: board as Board, registry, merge: mergeContext }, card),
   });
@@ -1066,6 +1088,21 @@ export function createApp(
       }
 
       // Restart when idle (docs/SDD-coordinator.md §4.12, §5).
+      // The event inbox (docs/SDD-coordinator.md §4.1). POST takes a
+      // message from the owner; everything else arrives on its own.
+      if (inbox && url.pathname === "/inbox") {
+        if (req.method === "GET") return json(inbox.list({ ...(url.searchParams.get("workstream") ? { workstreamId: url.searchParams.get("workstream")! } : {}), unhandled: url.searchParams.get("unhandled") === "1", limit: Number(url.searchParams.get("limit") ?? 200) }));
+        if (req.method === "POST") {
+          const body = ((await req.json().catch(() => undefined)) ?? {}) as { text?: unknown; workstreamId?: unknown };
+          if (typeof body.text !== "string" || !body.text.trim() || body.text.length > 4000) return json({ error: "text must be 1 to 4000 characters" }, 400);
+          if (body.workstreamId !== undefined && (typeof body.workstreamId !== "string" || !workstreams?.get(body.workstreamId))) return json({ error: "no such workstream" }, 400);
+          const id = `owner:${randomUUID()}`;
+          dispatcher!.push({ id, source: "owner", kind: "owner.message", ...(body.workstreamId ? { workstreamId: body.workstreamId as string } : {}), payload: { text: body.text.trim() } });
+          return json(inbox.get(id), 201);
+        }
+        return json({ error: "use GET or POST" }, 405);
+      }
+
       // Workstreams (docs/SDD-coordinator.md §3.1, §5). A project's role
       // changes only through its own route, by the owner, confirmed.
       if (workstreams && (url.pathname === "/workstreams" || url.pathname.startsWith("/workstreams/"))) {
@@ -1082,6 +1119,9 @@ export function createApp(
         const ws = seg[1] ? workstreams.get(seg[1]) : undefined;
         if (!ws) return notFound();
         if (seg.length === 2 && req.method === "GET") return json(ws);
+        if (seg.length === 3 && seg[2] === "inbox" && req.method === "GET") {
+          return json(inbox?.list({ workstreamId: ws.id, unhandled: url.searchParams.get("unhandled") === "1", limit: Number(url.searchParams.get("limit") ?? 200) }) ?? []);
+        }
         if (seg.length === 2 && req.method === "PATCH") {
           const check = workstreamCheck(await req.json().catch(() => undefined), exists, true);
           if (!check.ok) return json({ error: check.error }, 400);

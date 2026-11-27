@@ -390,6 +390,21 @@ deleted. This is the model and the API: the policy gate that reads roles
 comes with card 14 (`src/services/workstreams.ts`,
 `docs/SDD-coordinator.md` §3.1, §4.13).
 
+Every coordinator trigger goes through one persisted inbox:
+- a card reaching review, failed or escalated;
+- a PR's checks finishing, the PR going dirty, ready, merged or closed;
+- the host guard holding;
+- a message you send with `POST /inbox {text, workstreamId?}`.
+
+Each event has a source-stable id, so seeing it again is a no-op. Its
+timestamp is the server's, never one an agent wrote. Payloads from the
+code host, a channel or a tracker are marked untrusted. A dispatcher
+hands events to a handler per kind, oldest first. One that throws is
+retried once and then marked failed. Most kinds are recorded only until
+the gate and decision cards take them. `GET /inbox?unhandled=1&
+workstream=<id>` and `GET /workstreams/:id/inbox` list them
+(`src/services/inbox.ts`, §4.1).
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
