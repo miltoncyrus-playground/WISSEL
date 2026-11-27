@@ -346,6 +346,23 @@ delivers the original card again, merging the freshly fetched main:
 Every delivery moves the card's branch to what it pushed, so a later fix
 round is never a rejected push (`src/services/merge-forward.ts`).
 
+A card can wait on start conditions (`waitsFor`, on `POST /tasks` or
+`PATCH`, at most 10). The sweep leaves it alone until every one holds,
+as it does for `dependsOn`:
+- `{"kind": "card-done", "cardId": ...}`
+- `{"kind": "pr-merged", "repo": "org/repo", "number": 12}` (asked of
+  `gh` at most once a minute)
+- `{"kind": "path-on-main", "repo": "/path/to/checkout", "path":
+  "db/schema.sql"}`
+
+A card can also name the files its work will touch (`files`). When it is
+created, and again just before it starts, Wissel warns when another open
+card, or a delivered card whose PR is still open, names the same files
+or a folder holding them. The warning goes to the log, to a
+`card.overlap` telemetry event and to `overlaps` in POST /tasks's
+answer. It never blocks the card (`src/services/start-conditions.ts`,
+`docs/SDD-coordinator.md` §4.8).
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
