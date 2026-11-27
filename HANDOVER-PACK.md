@@ -178,6 +178,14 @@ one turns out wrong, it is cheaper to flip than to wait.
    scribe card is needed. Design the adapter so a direct write becomes an
    optimisation rather than a rewrite, batch posts per interval, and keep
    the read path cheap.
+   *Result (phase 0, 2026-11-27; `docs/coordinator-phase0-spikes.md`):*
+   neither a server nor a scribe card can write an Artifact board today.
+   A `claude -p` card run gets no artifact tools, with or without Remote
+   Control. Only an interactive session can. A card run does get the
+   Claude Docs connector, and a scribe wrote a doc for $0.07. New lean:
+   the first channel is a Claude Docs doc written by a batched scribe
+   card. An Artifact board is at most a mirror that an interactive session
+   fills.
 2. **Which authentication source first?** *Lean:* the trusted-proxy path,
    because it needs no identity provider to develop against. OIDC behind
    the same interface.
