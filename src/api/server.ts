@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { mkdirSync } from "node:fs";
 import type { Board, BoardEvent } from "../services/board.ts";
 import { SqliteBoard } from "../services/board.ts";
 import type { PipelineStore } from "../services/pipelines.ts";
@@ -24,6 +25,7 @@ import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle
 import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
+import { ChannelOutbox, channelMessageError, docScribeAdapter, flushChannel, type ChannelAdapter, type ChannelMessage } from "../services/channel.ts";
 import { DECISION_LABEL, DecisionStore, decisionBrief, IMPLEMENTED_KINDS, type DecisionOutput, type ImplementedKind } from "../services/decisions.ts";
 import { ACTION_KINDS, workstreamCheck, WorkstreamStore, type WorkstreamInput } from "../services/workstreams.ts";
 import { DEFAULT_HARD_LIMITS, GateLog, loadHardLimits, type HardLimits } from "../services/policy-gate.ts";
@@ -170,6 +172,10 @@ export interface CreateAppOptions {
    *  that reads the supervisor from the environment and exits the
    *  process; tests pass their own. */
   restart?: RestartWhenIdle;
+  /** The channel adapter for every workstream with a claude-docs
+   *  channel, and the runner its scribe uses; tests pass fakes. */
+  channelAdapter?: ChannelAdapter;
+  channelRunner?: CommandRunner;
   /** The host guard (docs/SDD-coordinator.md §4.12). Unset: one is made
    *  when WISSEL_HOST_GUARD=1, reading the host every 30 s. A test's own
    *  is refreshed by the test. */
@@ -666,6 +672,17 @@ export function createApp(
       )
     : undefined;
   const decisions = board instanceof SqliteBoard ? new DecisionStore(board.db) : undefined;
+  // The decisions channel (§4.9): Wissel's outbox, copied out by the
+  // workstream's adapter, batched per interval.
+  const channelOutbox = board instanceof SqliteBoard ? new ChannelOutbox(board.db) : undefined;
+  const channelAdapterFor = (workstreamId: string) => {
+    const ws = workstreams?.get(workstreamId);
+    if (ws?.channel?.adapter !== "claude-docs") return undefined;
+    const harness = harnesses.all().find((h) => h.enabled && h.tool === "claude-cli");
+    const cwd = join(homedir(), ".wissel", "scratch", "channel-scribe");
+    mkdirSync(cwd, { recursive: true });
+    return { adapter: opts.channelAdapter ?? docScribeAdapter(opts.channelRunner ?? runViaBun, { cwd, ...(harness?.env ? { env: harness.env } : {}) }), target: ws.channel.target };
+  };
   /** Starts a decision card: the router sends it to the decider agent. */
   const startDecisionCard = async (kind: ImplementedKind, workstreamId: string, projectId: string | undefined, context: string, subjectId?: string) => {
     const project = projectId ? (await projects.list()).find((x) => x.id === projectId) : undefined;
@@ -768,6 +785,16 @@ export function createApp(
               if (!r.ok) throw new Error(r.error);
               return "restart when idle requested";
             },
+            // A channel message joins the outbox; the adapter posts the
+            // batch at the next interval (§4.9).
+            "channel.post": async (a) => {
+              const ws = a.workstreamId ? workstreams.get(a.workstreamId) : undefined;
+              if (!ws?.channel || !channelOutbox) throw new Error("this workstream has no channel");
+              const error = channelMessageError(a.payload?.message);
+              if (error) throw new Error(error);
+              const row = channelOutbox.add(ws.id, a.payload!.message as ChannelMessage);
+              return `queued for the ${ws.channel.adapter} channel (${row.id})`;
+            },
             // An allowed decision takes effect (§4.4).
             decision: async (a) => {
               const out = a.payload?.output as DecisionOutput | undefined;
@@ -811,6 +838,28 @@ export function createApp(
           },
         })
       : undefined;
+  if (channelOutbox && opts.prWatch) {
+    const every = Number(process.env.WISSEL_CHANNEL_INTERVAL_MS ?? 15 * 60_000);
+    const post = () => void flushChannel(channelOutbox, channelAdapterFor).catch((e) => console.error(`channel: ${(e as Error).message}`));
+    if (every > 0) setInterval(post, every).unref?.();
+    // Reading the channel costs a scribe run per workstream each time, so
+    // it is off unless an interval is set.
+    const readEvery = Number(process.env.WISSEL_CHANNEL_READ_MS ?? 0);
+    if (readEvery > 0) {
+      const cursors = new Map<string, string>();
+      const read = async () => {
+        for (const ws of workstreams?.list() ?? []) {
+          const a = channelAdapterFor(ws.id);
+          if (!a) continue;
+          const got = await a.adapter.read(a.target, cursors.get(ws.id)).catch((e) => (console.error(`channel: reading ${ws.name}: ${(e as Error).message}`), undefined));
+          if (!got) continue;
+          if (got.cursor) cursors.set(ws.id, got.cursor);
+          for (const entry of got.entries) dispatcher?.push({ id: `channel:${ws.id}:${entry.entryId}`, source: "channel", kind: "channel.entry", workstreamId: ws.id, payload: entry });
+        }
+      };
+      setInterval(() => void read(), readEvery).unref?.();
+    }
+  }
   if (executor && opts.prWatch) {
     const flush = () => void executor.flush().catch((e) => console.error(`executor: ${(e as Error).message}`));
     setInterval(flush, EXECUTOR_FLUSH_MS).unref?.();
@@ -1267,6 +1316,12 @@ export function createApp(
         // The quiet-hours queue, and the one way to ask the executor to
         // act: every action goes through the gate (§4.3, §5).
         if (seg.length === 3 && seg[2] === "outbound" && req.method === "GET") return json(outbound?.list({ workstreamId: ws.id }) ?? []);
+        // The channel outbox, and posting it now (§4.9).
+        if (seg.length === 3 && seg[2] === "channel" && req.method === "GET") return json(channelOutbox?.list(ws.id) ?? []);
+        if (seg.length === 4 && seg[2] === "channel" && seg[3] === "flush" && req.method === "POST" && channelOutbox) {
+          const posted = await flushChannel(channelOutbox, channelAdapterFor, ws.id);
+          return json({ posted, outbox: channelOutbox.list(ws.id) });
+        }
         // Decisions (§4.4, §5): the log, and starting a decision card.
         if (seg.length === 3 && seg[2] === "decisions" && req.method === "GET") return json(decisions?.list(ws.id) ?? []);
         if (seg.length === 4 && seg[2] === "decisions" && seg[3] === "start" && req.method === "POST") {
