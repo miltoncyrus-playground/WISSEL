@@ -26,11 +26,17 @@ async function seedFailures(request: APIRequestContext) {
 /** What a person can read: visible text and visible title / aria-label /
  *  placeholder values, leaving out anything marked as their own words
  *  (titles, descriptions, agent output). */
-async function readableText(page: Page, opts: { skipUserContent: boolean }): Promise<string> {
-  return page.evaluate(({ skipUserContent }) => {
+async function readableText(page: Page, opts: { skipUserContent: boolean; onlyCards?: string[] }): Promise<string> {
+  return page.evaluate(({ skipUserContent, onlyCards }) => {
     const out: string[] = [];
     const visible = (el: Element) => (el as HTMLElement).checkVisibility?.({ checkOpacity: false, checkVisibilityCSS: true }) ?? true;
-    const skip = (el: Element) => el.closest("script, style, template" + (skipUserContent ? ", [data-user-content]" : "")) !== null;
+    // onlyCards: leave out every card but these, so cards other spec
+    // files make and move on the shared server meanwhile don't count.
+    const otherCard = (el: Element) => {
+      const card = onlyCards ? el.closest(".kcard[data-task-id]") : null;
+      return card !== null && !onlyCards!.includes((card as HTMLElement).dataset.taskId ?? "");
+    };
+    const skip = (el: Element) => el.closest("script, style, template" + (skipUserContent ? ", [data-user-content]" : "")) !== null || otherCard(el);
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
       const el = n.nodeType === 1 ? (n as Element) : n.parentElement;
@@ -39,7 +45,7 @@ async function readableText(page: Page, opts: { skipUserContent: boolean }): Pro
       else for (const a of ["title", "aria-label", "placeholder"]) { const v = el.getAttribute(a); if (v) out.push(v); }
     }
     return out.join(" ").replace(/\s+/g, " ").trim();
-  }, opts);
+  }, { skipUserContent: opts.skipUserContent, onlyCards: opts.onlyCards ?? null });
 }
 
 /** Words only: counts and clocks on a live board move between two loads
@@ -83,21 +89,23 @@ test.describe("Board user mode", () => {
   });
 
   test("in operator mode the rendered text is unchanged from the board without user mode", async ({ page, request }) => {
-    await seedFailures(request);
+    // Only this test's own cards and the board around them: other spec
+    // files run at the same time and move their cards between loads.
+    const own = { skipUserContent: false, onlyCards: Object.values(await seedFailures(request)) };
 
     // Before this card: the board with no user-mode script at all.
     await page.route("**/user-mode.js", (route) => route.fulfill({ contentType: "text/javascript", body: "" }));
     await openBoard(page);
-    const before = words(await readableText(page, { skipUserContent: false }));
+    const before = words(await readableText(page, own));
     const beforeHtmlMode = await page.locator("html").getAttribute("data-ui-mode");
     await page.unroute("**/user-mode.js");
 
     // After: the real script, in the default mode and asked for by name.
     await openBoard(page);
     expect(await page.evaluate(() => (window as unknown as { WisselUserMode?: { mode: string } }).WisselUserMode?.mode)).toBe("operator");
-    expect(words(await readableText(page, { skipUserContent: false }))).toBe(before);
+    expect(words(await readableText(page, own))).toBe(before);
     await openBoard(page, "?mode=operator");
-    expect(words(await readableText(page, { skipUserContent: false }))).toBe(before);
+    expect(words(await readableText(page, own))).toBe(before);
 
     expect(beforeHtmlMode).toBeNull();
     await expect(page.locator("html")).not.toHaveAttribute("data-ui-mode", /.*/);
