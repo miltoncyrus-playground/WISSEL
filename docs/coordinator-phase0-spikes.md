@@ -141,12 +141,9 @@ stops.
 
 ## Before phase 1
 
-The coordinator spec builds on three commits that are still not on
-`origin/main`:
+The three commits the coordinator spec builds on landed on `main` in #18:
 - `97f3dca`: drop sandbox stubs before staging;
 - `e32ebad`: review guard;
 - `0ad0693`: the Needs a human and Next step lanes.
 
-They are on `coordinator/phase0`, `sdd/coordinator` and
-`local/sandbox-stub-merge-fix`. Phase 1 should start from a branch that
-contains them, or they should land on `main` first.
+Phase 1 can start from `main`.
