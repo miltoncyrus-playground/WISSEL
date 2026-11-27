@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { TaskCard } from "../src/core/types.ts";
-import { deriveNeedsYou, lastParagraph, needsYouFor, needsYouLogLine, type NeedsYouContext } from "../src/services/needs-you.ts";
+import { deriveNeedsYou, lastParagraph, needsYouFor, needsYouLogLine, reportVerdict, type NeedsYouContext } from "../src/services/needs-you.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 
 const A = "aaaaaaaa-1111-4000-8000-000000000001";
@@ -69,25 +69,61 @@ describe("deriveNeedsYou: one case per kind", () => {
     expect(ny.action).toEqual({ label: "Open", href: `/app#/board/${B}`, method: "GET" });
   });
 
-  test("merge", () => {
+  test("merge nobody approved needs a human", () => {
     const ny = derive(card(A, { status: "review", dependsOn: [B] }), [card(B, { status: "done" })], [A])!;
-    expect(ny.value).toBe("merge");
-    expect(ny.line).toBe("Ready to merge");
+    expect(ny).toMatchObject({ kind: "merge", lane: "human", value: "merge:unreviewed", line: "Changes nobody has reviewed" });
+    expect(ny.checklist).toEqual(["Read the diff", "Check the card's checks and tests are green", "Merge, or Discard"]);
     expect(ny.action).toEqual({ label: "Merge", href: `/tasks/${A}/merge`, method: "POST" });
+  });
+
+  test("an approved merge is a next step, not a human's", () => {
+    const task = card(A, { status: "review", mergeTarget: "main" });
+    const ny = deriveNeedsYou(task, { ...ctx([task], [A]), approved: true })!;
+    expect(ny).toMatchObject({ kind: "merge", lane: "next-step", value: "merge", line: "Approved, ready to merge into main" });
+    expect(ny.checklist).toBeUndefined();
+    expect(ny.action).toEqual({ label: "Merge", href: `/tasks/${A}/merge`, method: "POST" });
+  });
+
+  test("an unknown worktree state stays a merge", () => {
+    const task = card(A, { status: "review" });
+    const ny = deriveNeedsYou(task, { ...ctx([task], [A]), approved: true, summary: "VERDICT: PASS" })!;
+    expect(ny.kind).toBe("merge");
+  });
+
+  test("report: an empty worktree with a PASS verdict just needs closing", () => {
+    const task = card(A, { status: "review" });
+    const ny = deriveNeedsYou(task, { ...ctx([task], [A]), worktreeChanged: false, summary: "VERDICT: PASS 0 HIGH / 0 MED / 1 LOW\n\nAll good." })!;
+    expect(ny).toMatchObject({ kind: "report", lane: "next-step", value: "report:pass", line: "Review passed (0 HIGH / 0 MED / 1 LOW), nothing to merge" });
+    expect(ny.action).toEqual({ label: "Close", href: `/tasks/${A}/close`, method: "POST" });
+  });
+
+  test("report: a FAIL verdict needs a human to decide on the findings", () => {
+    const task = card(A, { status: "review" });
+    const ny = deriveNeedsYou(task, { ...ctx([task], [A]), worktreeChanged: false, approved: true, summary: "VERDICT: FAIL 0 HIGH / 2 MED / 3 LOW\n\n## Findings" })!;
+    expect(ny).toMatchObject({ kind: "report", lane: "human", value: "report:fail", line: "Review failed: 0 HIGH / 2 MED / 3 LOW" });
+    expect(ny.why).toContain("Merge would land nothing");
+    expect(ny.checklist).toHaveLength(3);
+    expect(ny.action).toEqual({ label: "Open", href: `/app#/board/${A}`, method: "GET" });
+  });
+
+  test("report: no verdict line still needs a human to read it", () => {
+    const task = card(A, { status: "review" });
+    const ny = deriveNeedsYou(task, { ...ctx([task], [A]), worktreeChanged: false, summary: "Here is what I found." })!;
+    expect(ny).toMatchObject({ kind: "report", lane: "human", value: "report", line: "Report to read, nothing to merge" });
   });
 
   test("blocked-on", () => {
     const ny = derive(card(A, { status: "ready", dependsOn: [B] }), [card(B, { status: "escalated", title: "Auth fix" })])!;
     expect(ny.value).toBe("blocked-on:bbbbbbbb escalated");
     expect(ny.line).toBe("Waiting on Auth fix, which is escalated");
+    expect(ny.lane).toBe("next-step");
     expect(ny.blocker).toEqual({ id: B, id8: "bbbbbbbb", status: "escalated" });
     expect(ny.action).toEqual({ label: "Open", href: `/app#/board/${B}`, method: "GET" });
   });
 
   test("review", () => {
     const ny = derive(card(A, { status: "review" }))!;
-    expect(ny.value).toBe("review");
-    expect(ny.line).toBe("Ready for your review");
+    expect(ny).toMatchObject({ value: "review", lane: "human", line: "Result nobody has checked" });
     expect(ny.action).toEqual({ label: "Open", href: `/app#/board/${A}`, method: "GET" });
   });
 
@@ -105,6 +141,48 @@ describe("deriveNeedsYou: one case per kind", () => {
     expect(ny.value).toBe("no-match");
     expect(ny.line).toBe("No agent matched");
     expect(ny.action).toEqual({ label: "Open", href: `/app#/board/${A}`, method: "GET" });
+  });
+});
+
+describe("deriveNeedsYou: lanes", () => {
+  test("every human answer says why and has tick-box steps; every answer has a lane and a why", () => {
+    const dep = card(B, { status: "escalated", title: "dep" });
+    const cases: [TaskCard, Partial<NeedsYouContext>][] = [
+      [card(A, { status: "review", pendingMcpApproval: mcp("gh", "merge") }), {}],
+      [card(A, { status: "escalated", suggestedGrants: ["Bash(make:*)"] }), {}],
+      [card(A, { status: "escalated", escalationContext: "no" }), {}],
+      [card(A, { status: "review" }), { worktreeChanged: false, summary: "VERDICT: FAIL 1 HIGH" }],
+      [card(A, { status: "review" }), { worktreeChanged: false, summary: "VERDICT: PASS" }],
+      [card(A, { status: "review" }), {}],
+      [card(A, { status: "review" }), { approved: true }],
+      [card(C, { status: "review" }), {}],
+      [card(A, { status: "review", dependsOn: [B] }), {}],
+      [card(A, { status: "inbox", dependsOn: [B] }), {}],
+      [card(A, { status: "inbox", dependsOn: [C] }), {}],
+      [card(A, { status: "failed" }), {}],
+      [card(A, { status: "no-match", labels: ["x"] }), {}],
+    ];
+    const seen = new Set<string>();
+    for (const [task, extra] of cases) {
+      const worktrees = task.status === "review" && !task.pendingMcpApproval ? [A] : []; // C has none
+      const ny = deriveNeedsYou(task, { ...ctx([task, dep], worktrees), ...extra })!;
+      seen.add(`${ny.kind}/${ny.lane}`);
+      expect(ny.why.length).toBeGreaterThan(20);
+      if (ny.lane === "human") expect(ny.checklist!.length).toBeGreaterThan(0);
+      else expect(ny.checklist).toBeUndefined();
+    }
+    expect([...seen].sort()).toEqual([
+      "blocked-on/human", "blocked-on/next-step", "escalated/human", "failed/human", "grant-tools/human",
+      "mcp-approval/human", "merge-after/next-step", "merge/human", "merge/next-step", "no-match/human",
+      "report/human", "report/next-step", "review/human",
+    ]);
+  });
+
+  test("reportVerdict reads the verdict line", () => {
+    expect(reportVerdict("VERDICT: FAIL 0 HIGH / 2 MED / 3 LOW\n\nx")).toEqual({ pass: false, counts: "0 HIGH / 2 MED / 3 LOW" });
+    expect(reportVerdict("Intro\nverdict: pass")).toEqual({ pass: true, counts: "" });
+    expect(reportVerdict("no verdict here")).toBeUndefined();
+    expect(reportVerdict(undefined)).toBeUndefined();
   });
 });
 
@@ -153,7 +231,9 @@ describe("deriveNeedsYou: precedence and non-cases", () => {
   test("blocked-on with a missing dep", () => {
     const ny = derive(card(A, { status: "inbox", dependsOn: [B] }))!;
     expect(ny.value).toBe("blocked-on:bbbbbbbb missing");
-    expect(ny.line).toBe("Waiting on bbbbbbbb, which is missing");
+    expect(ny.line).toBe("Waiting on bbbbbbbb, which no longer exists");
+    expect(ny.lane).toBe("human");
+    expect(ny.action).toEqual({ label: "Open", href: `/app#/board/${A}`, method: "GET" });
   });
 
   test("blocked-on skips healthy deps and reports the first stuck one", () => {
@@ -207,6 +287,13 @@ describe("needsYouFor against a real Board", () => {
     const dep = await board.create({ title: "dep", body: "", labels: [] });
     await board.move(dep.id, "review");
     await board.recordResult({ taskId: dep.id, agentId: "impl", ok: true, summary: "s", worktree: { path: "/wt/dep", branch: "wissel/dep" } });
+    const depReview = await board.create({ title: "Review: dep", body: "", labels: [], reviewLineageId: dep.id });
+    await board.move(depReview.id, "done");
+    await board.recordResult({ taskId: depReview.id, agentId: "reviewer", ok: true, summary: "", verdict: "approve", reviewFeedback: "ok" });
+
+    const report = await board.create({ title: "Review (Opus): PR 1", body: "", labels: [] });
+    await board.move(report.id, "review");
+    await board.recordResult({ taskId: report.id, agentId: "fixer", ok: true, summary: "VERDICT: PASS 0 HIGH", worktree: { path: "/wt/report", branch: "wissel/report" } });
 
     const mergeMe = await board.create({ title: "m", body: "", labels: [], dependsOn: [dep.id] });
     await board.move(mergeMe.id, "review");
@@ -232,8 +319,9 @@ describe("needsYouFor against a real Board", () => {
     const bare = await board.create({ title: "b", body: "", labels: [] });
     await board.move(bare.id, "escalated");
 
-    const needs = await needsYouFor(board, await board.list());
-    expect(needs.get(dep.id)!.value).toBe("merge");
+    const needs = await needsYouFor(board, await board.list(), { worktreeChanged: async (_t, wt) => wt.path !== "/wt/report" });
+    expect(needs.get(dep.id)).toMatchObject({ value: "merge", lane: "next-step" });
+    expect(needs.get(report.id)).toMatchObject({ value: "report:pass", lane: "next-step" });
     expect(needs.get(mergeMe.id)!.value).toBe(`merge-after:${dep.id.slice(0, 8)}`);
     expect(needs.get(mergeMe.id)!.action.href).toBe(`/tasks/${dep.id}/merge`);
     expect(needs.get(plainReview.id)!.value).toBe("review");
@@ -246,7 +334,7 @@ describe("needsYouFor against a real Board", () => {
       expect(ny.value.length).toBeGreaterThan(0);
       expect(ny.line.length).toBeGreaterThan(0);
     }
-    expect(needsYouLogLine(needs)).toBe("needs-you: escalated=3 merge=1 merge-after=1 review=1");
+    expect(needsYouLogLine(needs)).toBe("needs-you: escalated=3 merge=1 merge-after=1 report=1 review=1 (human=4 next-step=3)");
   });
 
   test("log line with nothing to do", () => {

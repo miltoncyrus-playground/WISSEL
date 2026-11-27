@@ -38,6 +38,12 @@ export interface TaskCard {
   pipelineId?: string;
   pipelineRunId?: string;
   pipelineStepId?: string;
+  /** The card this one was spawned from: a reviewer card's is the card
+   *  it reviews. */
+  parentTaskId?: string;
+  /** App-only, set by partitionLanes: a pending-review card whose
+   *  reviewer is running right now. Never sent by the server. */
+  reviewInProgress?: boolean;
   /** "Start at" (docs/SDD-schedules.md §4): ISO UTC; the sweep leaves
    *  the card alone until then. */
   notBefore?: string;
@@ -50,15 +56,25 @@ export interface TaskCard {
 
 /** Mirrors src/core/types.ts NeedsYouKind; test/app-shell.test.ts
  *  checks it matches. */
-export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "failed" | "no-match";
+export type NeedsYouKind = "mcp-approval" | "grant-tools" | "escalated" | "merge-after" | "merge" | "blocked-on" | "review" | "report" | "failed" | "no-match";
+
+/** Mirrors src/core/types.ts NeedsYouLane. */
+export type NeedsYouLane = "human" | "next-step";
 
 /** Mirrors src/core/types.ts NeedsYou (src/services/needs-you.ts
  *  derives it). */
 export interface NeedsYou {
   kind: NeedsYouKind;
+  /** human: a decision only Milton can make. next-step: finished work
+   *  waiting on one mechanical step. Absent from older servers. */
+  lane?: NeedsYouLane;
   value: string;
   /** One human line for the Needs you row. */
   line: string;
+  /** Why the card waits, in full sentences. */
+  why?: string;
+  /** human lane: the steps to resolve it, each one a tick-box. */
+  checklist?: string[];
   /** escalated/grant-tools: the full reason text. */
   reason?: string;
   reasonSource?: "escalation" | "reviewer" | "implementer" | "none";
