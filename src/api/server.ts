@@ -23,6 +23,7 @@ import { PipelineHeldError, PipelineNotFoundError, PipelineRepoRequiredError, re
 import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle.ts";
 import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
+import { mergeForward } from "../services/merge-forward.ts";
 
 /** How often the host guard reads the host. */
 const HOST_GUARD_INTERVAL_MS = 30_000;
@@ -634,6 +635,8 @@ export function createApp(
       return head && head.exitCode === 0 ? head.stdout.trim() : undefined;
     },
     ...(telemetry ? { record: (e) => telemetry.record(e) } : {}),
+    // A dirty PR is brought up to date with main (card 10).
+    onDirty: (card) => mergeForward({ board: board as Board, registry, merge: mergeContext }, card),
   });
   if (opts.prWatch) {
     const tick = () => void prWatcher.tick().catch((e) => console.error(`pr watcher: ${(e as Error).message}`));

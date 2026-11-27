@@ -681,7 +681,7 @@ async function mergeLocked(
       }
       if (gate.status === "failed") return fail("gate-failed", gate.feedback ?? "merge gate failed", gate, extra);
     }
-    if (pr && delivery) return deliver(git, repo, task, ctx, delivery, pr, landing, gate, ticketPatterns, extra);
+    if (pr && delivery) return deliver(git, repo, worktree, task, ctx, delivery, pr, landing, gate, ticketPatterns, extra);
 
     await ctx.beforeLand?.();
 
@@ -745,6 +745,7 @@ async function mergeLocked(
 async function deliver(
   git: Git,
   repo: string,
+  worktree: TaskWorktree,
   task: TaskCard,
   ctx: MergeContext,
   delivery: PullRequestDelivery,
@@ -759,6 +760,11 @@ async function deliver(
   if (!push.ok) {
     return failed(`push of ${short(landing)} to ${to.remote}/${to.branch} was rejected, and Wissel never forces a push. Nothing was opened. ${push.text.slice(0, 500)}`);
   }
+  // The card's branch moves to what was pushed, so the next delivery of
+  // the same card (a fix round, a merge-forward) builds on it and pushes
+  // as a fast-forward instead of being rejected.
+  const ff = await git(worktree.path, ["merge", "--ff-only", "-q", landing]);
+  if (!ff.ok) console.error(`merge: pushed ${short(landing)} but couldn't move ${worktree.branch} to it: ${ff.text}`);
   const host = ctx.codeHost ?? ghCodeHost(ctx.runner);
   let opened = await host.findOpen(repo, to.branch);
   if (!opened) {

@@ -111,6 +111,10 @@ export interface PrWatcherDeps {
   record?: (event: PrChangedEvent) => Promise<void>;
   now?: () => Date;
   log?: (line: string) => void;
+  /** Called on every look at a dirty PR (card 10, merge-forward), after
+   *  the card's watch is saved: it starts one merge-forward card, and
+   *  re-runs it once its conflict integrator has finished. */
+  onDirty?: (card: TaskCard) => Promise<unknown>;
 }
 
 /** Cards whose PR is worth another look: not archived, not merged or
@@ -153,11 +157,15 @@ export class PrWatcher {
         const watch = readPrWatch(raw, pr, main, (this.deps.now ?? (() => new Date()))());
         if (!watch) continue;
         const changes = prChanges(pr.watch, watch);
-        if (changes.length === 0) continue;
-        changed++;
-        await this.deps.setPullRequest(card.id, { ...pr, watch });
-        (this.deps.log ?? console.log)(`pr watcher: ${card.title} (#${pr.number}): ${changes.join("; ")}`);
-        await this.deps.record?.({ type: "pr.changed", taskId: card.id, number: pr.number, changes, lifecycle: watch.lifecycle, mergeable: watch.mergeable, checks: watch.checks.state, headSha: watch.checks.headSha });
+        if (changes.length > 0) {
+          changed++;
+          await this.deps.setPullRequest(card.id, { ...pr, watch });
+          (this.deps.log ?? console.log)(`pr watcher: ${card.title} (#${pr.number}): ${changes.join("; ")}`);
+          await this.deps.record?.({ type: "pr.changed", taskId: card.id, number: pr.number, changes, lifecycle: watch.lifecycle, mergeable: watch.mergeable, checks: watch.checks.state, headSha: watch.checks.headSha });
+        }
+        if (watch.mergeable === "dirty" && this.deps.onDirty) {
+          await this.deps.onDirty({ ...card, pr: { ...pr, watch } }).catch((e) => (this.deps.log ?? console.log)(`pr watcher: merge forward for ${card.title} failed: ${(e as Error).message}`));
+        }
       }
     } finally {
       this.running = false;

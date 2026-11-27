@@ -334,6 +334,18 @@ watcher never arms one: that waits for roles (`docs/SDD-coordinator.md`
 §4.13). `GET /admin/pr-watch` lists the watched cards, and `POST` looks
 again now (`src/services/pr-watcher.ts`, §4.7).
 
+When the watcher sees a PR go dirty (main moved on and now conflicts),
+it starts one **Merge forward** card for it, never two. That card
+delivers the original card again, merging the freshly fetched main:
+- A clean merge is gated and pushed as a fast-forward to the same branch,
+  the open PR is reused and the card's PR head moves on.
+- A conflict is left in the card's worktree for a conflict integrator
+  card. The merge-forward card waits in review, and runs again once the
+  integrator has finished.
+
+Every delivery moves the card's branch to what it pushed, so a later fix
+round is never a rejected push (`src/services/merge-forward.ts`).
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
