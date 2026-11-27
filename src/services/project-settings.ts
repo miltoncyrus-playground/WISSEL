@@ -13,15 +13,16 @@
 import type { Project } from "../core/types.ts";
 import { grantError, MAX_EXTRA_ALLOWED_TOOLS } from "../core/allowed-tools.ts";
 import { MAX_REF_PATTERNS, patternError } from "./ticket-refs.ts";
+import { CARD_TEMPLATE_KINDS, MAX_CARD_RULES_CHARS, templateError, type CardTemplateKind } from "../core/card-templates.ts";
 
 export const MAX_SANDBOX_DOMAINS = 20;
 export const MAX_SETTING_COMMANDS = 20;
 export const MAX_PROTECTED_PATHS = 50;
 
 /** The settings, as stored on Project. */
-export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns">;
+export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates">;
 export type ProjectSettingKey = keyof Required<ProjectSettings>;
-export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness", "ticketPatterns", "referencePatterns"];
+export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness", "ticketPatterns", "referencePatterns", "cardRules", "cardTemplates"];
 
 /** A partial update: a key that's absent is left alone, `null` clears
  *  it. An empty list (or a verification with no commands and no tools)
@@ -170,6 +171,31 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
       if (error) return { ok: false, error };
       const patterns = dedupe(v as string[]);
       patch[key] = patterns.length > 0 ? patterns : null;
+    }
+  }
+
+  if ("cardRules" in raw) {
+    const v = raw.cardRules;
+    if (v === null) patch.cardRules = null;
+    else if (typeof v !== "string") return { ok: false, error: "cardRules must be text (or null to clear it)" };
+    else if (v.length > MAX_CARD_RULES_CHARS) return { ok: false, error: `cardRules is ${v.length} characters; at most ${MAX_CARD_RULES_CHARS}` };
+    else patch.cardRules = v.trim() ? v : null;
+  }
+
+  if ("cardTemplates" in raw) {
+    const v = raw.cardTemplates;
+    if (v === null) patch.cardTemplates = null;
+    else {
+      if (typeof v !== "object" || Array.isArray(v)) return { ok: false, error: `cardTemplates must be an object keyed by kind (${CARD_TEMPLATE_KINDS.join(", ")})` };
+      const templates: Partial<Record<CardTemplateKind, string>> = {};
+      for (const [kind, text] of Object.entries(v as Record<string, unknown>)) {
+        if (!(CARD_TEMPLATE_KINDS as readonly string[]).includes(kind)) return { ok: false, error: `unknown card template kind "${kind}"; expected any of: ${CARD_TEMPLATE_KINDS.join(", ")}` };
+        if (typeof text !== "string") return { ok: false, error: `cardTemplates.${kind} must be text` };
+        const error = templateError(text);
+        if (error) return { ok: false, error: `cardTemplates.${kind} ${error}` };
+        if (text.trim()) templates[kind as CardTemplateKind] = text;
+      }
+      patch.cardTemplates = Object.keys(templates).length > 0 ? templates : null;
     }
   }
 

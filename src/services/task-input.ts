@@ -12,7 +12,8 @@ import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import { validateNotBefore } from "../core/not-before.ts";
 import { validateMergeTarget } from "./worktree.ts";
-import type { ScheduleTaskTemplate, TaskCard } from "../core/types.ts";
+import type { Project, ScheduleTaskTemplate, TaskCard } from "../core/types.ts";
+import { appendCardRules, CARD_TEMPLATE_KINDS, renderCardTemplate, type CardTemplateKind } from "../core/card-templates.ts";
 
 export type NewTask = Omit<TaskCard, "id" | "status">;
 
@@ -139,6 +140,34 @@ export async function validateNewTask(input: NewTask, deps: NewTaskDeps): Promis
     }
   }
   return { ok: true, task: body };
+}
+
+/** A `POST /tasks` body: a new card, optionally started from one of its
+ *  project's templates (docs/SDD-coordinator.md §4.16). */
+export type CardStart = NewTask & { template?: unknown; fields?: unknown };
+
+/** The card's body as it will be stored: the project's template for
+ *  `template` rendered with `fields` (plus the card's own `key`, `title`
+ *  and `body`), then the project's `cardRules` appended. Refused when the
+ *  kind is unknown, the project has no such template, or a required
+ *  placeholder is empty. Without `template`, only the rules are added. */
+export function prepareCardStart(input: CardStart, project: Pick<Project, "cardRules" | "cardTemplates"> | undefined): { ok: true; task: NewTask } | { ok: false; error: string } {
+  const { template, fields, ...task } = input;
+  let body = task.body ?? "";
+  if (template !== undefined && template !== null) {
+    if (typeof template !== "string" || !(CARD_TEMPLATE_KINDS as readonly string[]).includes(template)) {
+      return { ok: false, error: `template must be one of: ${CARD_TEMPLATE_KINDS.join(", ")}` };
+    }
+    const source = project?.cardTemplates?.[template as CardTemplateKind];
+    if (!source) return { ok: false, error: `this project has no "${template}" template (set cardTemplates with POST /projects/:id/settings)` };
+    if (fields !== undefined && (fields === null || typeof fields !== "object" || Array.isArray(fields))) return { ok: false, error: "fields must be an object of placeholder values" };
+    const rendered = renderCardTemplate(source, { ...(fields as Record<string, unknown> | undefined), key: task.key, title: task.title, body: task.body }, template);
+    if (!rendered.ok) return { ok: false, error: rendered.error };
+    body = rendered.body;
+  } else if (fields !== undefined) {
+    return { ok: false, error: "fields are only used with template" };
+  }
+  return { ok: true, task: { ...task, body: appendCardRules(body, project?.cardRules) } };
 }
 
 /** validateNewTask as SqliteScheduleStore's `validateTaskTemplate`

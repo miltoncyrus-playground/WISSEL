@@ -46,7 +46,7 @@ import { getProjectPrs, getProjectRuns, withPrCache } from "../services/github-s
 import { loadTicketProvider, type TicketsSetup } from "../services/integrations.ts";
 import { KEY_RE, TicketError } from "../services/ticket-provider.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
-import { taskTemplateValidator, validateNewTask, type NewTask } from "../services/task-input.ts";
+import { prepareCardStart, taskTemplateValidator, validateNewTask, type CardStart, type NewTask } from "../services/task-input.ts";
 import type { AnthropicMessagesClient } from "../executors/anthropic-api.ts";
 import { runViaBun, type CommandRunner } from "../executors/claude-cli.ts";
 import {
@@ -1618,7 +1618,12 @@ export function createApp(
         }
 
         if (parts.length === 1 && req.method === "POST") {
-          const body = (await req.json()) as NewTask;
+          const raw = (await req.json()) as CardStart;
+          // The project's template, if one is asked for, and its card
+          // rules (docs/SDD-coordinator.md §4.16).
+          const started = prepareCardStart(raw, typeof raw.repo === "string" && raw.repo ? await projects.settingsFor(raw.repo) : undefined);
+          if (!started.ok) return json({ error: started.error }, 400);
+          const body = started.task;
           // The checks live in src/services/task-input.ts so a task
           // schedule's template (docs/SDD-schedules.md §3.2) is refused
           // by exactly these rules too.
