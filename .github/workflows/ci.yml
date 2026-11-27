@@ -1,0 +1,45 @@
+# The checks every pull request into main must pass (required by the
+# "main" ruleset). The same gates as HANDOVER-PACK.md: typecheck, the
+# unit tests and the app's tests. The Playwright suite stays local for
+# now: it needs a browser and runs for several minutes.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - name: Install
+        run: |
+          bun install --frozen-lockfile
+          (cd app && bun install --frozen-lockfile)
+          (cd pipeline-editor && bun install --frozen-lockfile)
+      - name: Git identity for tests that commit
+        run: |
+          git config --global user.name "wissel-ci"
+          git config --global user.email "wissel-ci@users.noreply.github.com"
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Unit tests
+        run: bun test test/
+      - name: App tests
+        working-directory: app
+        run: npx --no-install vitest run
