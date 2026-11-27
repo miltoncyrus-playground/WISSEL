@@ -1,4 +1,5 @@
 import type { CardTemplateKind } from "./card-templates.ts";
+import type { Delivery } from "../services/delivery.ts";
 
 export type AgentTier = "service" | "readonly" | "write";
 export type TrustLevel = "low" | "medium" | "high";
@@ -423,6 +424,10 @@ export interface Project {
    *  that look like one, and anything that would change which account
    *  or which tools run. */
   env?: Record<string, string>;
+  /** How a finished card lands: unset is a local merge into the
+   *  checkout; "pull-request" pushes and opens a PR
+   *  (src/services/delivery.ts, docs/SDD-coordinator.md §4.5). */
+  delivery?: Delivery;
 }
 
 /** Which needs-me state a card is in. See NeedsYou. */

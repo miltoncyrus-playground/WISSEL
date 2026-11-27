@@ -100,7 +100,7 @@ import { needsYouFor, needsYouLogLine, type NeedsYouOptions } from "../services/
 import { OwnerTaskStore, ownerTaskError, type NewOwnerTask, type OwnerTaskStatus } from "../services/owner-tasks.ts";
 import { resolveBind } from "../core/bind.ts";
 import { raiseOpenBindTask } from "../services/open-bind-task.ts";
-import { AuthorizationLog, withAuthorizationRecords } from "../services/authorization.ts";
+import { AuthorizationLog, OWNER_PRINCIPAL_ID, withAuthorizationRecords } from "../services/authorization.ts";
 import { PolicyRevisions } from "../services/policy-revision.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
@@ -574,6 +574,14 @@ export function createApp(
     runner: runViaBun,
     gateFor: (repo) => projects.mergeGateFor(repo),
     settingsFor,
+    // Pull-request delivery (docs/SDD-coordinator.md §4.5): the project's
+    // setting, the PR's attribution chain, and the PR recorded on the card.
+    deliveryFor: async (repo) => {
+      const s = await projects.settingsFor(repo);
+      return s ? { delivery: s.delivery, ticketPatterns: s.ticketPatterns } : undefined;
+    },
+    prContext: async (task) => ({ principalId: task.authorizedByPrincipalId ?? OWNER_PRINCIPAL_ID, ...(opts.authorization?.policy ? { policyRevision: opts.authorization.policy.current() } : {}) }),
+    recordPullRequest: async (taskId, pr) => void (await board.setPullRequest(taskId, pr)),
     ...(telemetry ? { telemetry } : {}),
     ...opts.mergeContext,
   };

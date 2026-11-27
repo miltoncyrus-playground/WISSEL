@@ -13,6 +13,7 @@
 import type { Project } from "../core/types.ts";
 import { grantError, MAX_EXTRA_ALLOWED_TOOLS } from "../core/allowed-tools.ts";
 import { MAX_REF_PATTERNS, patternError } from "./ticket-refs.ts";
+import { validateDelivery } from "./delivery.ts";
 import { CARD_TEMPLATE_KINDS, MAX_CARD_RULES_CHARS, templateError, type CardTemplateKind } from "../core/card-templates.ts";
 
 export const MAX_SANDBOX_DOMAINS = 20;
@@ -20,9 +21,9 @@ export const MAX_SETTING_COMMANDS = 20;
 export const MAX_PROTECTED_PATHS = 50;
 
 /** The settings, as stored on Project. */
-export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates" | "env">;
+export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates" | "env" | "delivery">;
 export type ProjectSettingKey = keyof Required<ProjectSettings>;
-export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness", "ticketPatterns", "referencePatterns", "cardRules", "cardTemplates", "env"];
+export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness", "ticketPatterns", "referencePatterns", "cardRules", "cardTemplates", "env", "delivery"];
 
 /** A partial update: a key that's absent is left alone, `null` clears
  *  it. An empty list (or a verification with no commands and no tools)
@@ -188,6 +189,12 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
       const patterns = dedupe(v as string[]);
       patch[key] = patterns.length > 0 ? patterns : null;
     }
+  }
+
+  if ("delivery" in raw) {
+    const checked = validateDelivery(raw.delivery);
+    if (!checked.ok) return { ok: false, error: checked.error };
+    patch.delivery = checked.delivery;
   }
 
   if ("env" in raw) {

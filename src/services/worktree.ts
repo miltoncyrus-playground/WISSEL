@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, sym
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
-import type { TaskCard } from "../core/types.ts";
+import type { TaskCard, TaskPullRequest } from "../core/types.ts";
+import { deliveryBranch, ghCodeHost, pullRequestText, withRetry, type CodeHost, type Delivery, type PrContext, type PullRequestDelivery } from "./delivery.ts";
 import type { TelemetryEvent } from "./telemetry.ts";
 import { withRepoLock } from "./repo-lock.ts";
 import {
@@ -339,7 +340,7 @@ export async function removeTaskWorktree(repo: string, worktree: TaskWorktree, r
 
 /** Every way one merge attempt can end. Only `landed` reached the
  *  user's checkout; nothing else touched it. */
-export type MergeOutcome = "landed" | "gate-failed" | "conflict" | "blocked-local-changes" | "head-moved" | "error";
+export type MergeOutcome = "landed" | "delivered" | "gate-failed" | "conflict" | "blocked-local-changes" | "head-moved" | "error";
 
 export interface MergeResult {
   ok: boolean;
@@ -363,6 +364,10 @@ export interface MergeResult {
    *  HEAD is a new conflict and gets its own card, the same HEAD never
    *  spawns twice. */
   conflictHead?: string;
+  /** The pull request the card was delivered as. Set only on
+   *  `delivered` (Project.delivery mode "pull-request",
+   *  src/services/delivery.ts). */
+  pr?: TaskPullRequest;
   lockWaitMs: number;
   lockHoldMs: number;
 }
@@ -405,6 +410,16 @@ export interface MergeContext {
   /** Test seam: runs after the gate passes, right before the HEAD
    *  check that guards landing. */
   beforeLand?: () => Promise<void>;
+  /** The repo's delivery (Project.delivery) and ticket patterns. In
+   *  "pull-request" mode a card is pushed and opened as a PR instead of
+   *  landing in the checkout (docs/SDD-coordinator.md §4.5). */
+  deliveryFor?: (repo: string) => Promise<{ delivery?: Delivery; ticketPatterns?: string[] } | undefined>;
+  /** Where PRs are opened; `gh` (ghCodeHost) unless a test fakes it. */
+  codeHost?: CodeHost;
+  /** Who stands behind the card and the policy revision, for the PR body. */
+  prContext?: (task: TaskCard) => Promise<Omit<PrContext, "ticketPatterns">>;
+  /** Records the delivered PR on the card (Board.setPullRequest). */
+  recordPullRequest?: (taskId: string, pr: TaskPullRequest) => Promise<void>;
 }
 
 export function toMergeContext(m: CommandRunner | MergeContext): MergeContext {
@@ -498,6 +513,7 @@ export async function mergeTaskWorktree(
       lockWaitMs: result.lockWaitMs,
       lockHoldMs: result.lockHoldMs,
       ...(result.mergedSha ? { landedSha: result.mergedSha } : {}),
+      ...(result.pr ? { prNumber: result.pr.number, prHead: result.pr.head } : {}),
       ...(result.blockedFiles ? { blockedFiles: result.blockedFiles } : {}),
       ...(result.resolvedConflictBy ? { resolvedConflictBy: result.resolvedConflictBy } : {}),
       ...(result.conflictHead ? { conflictHead: result.conflictHead } : {}),
@@ -574,11 +590,42 @@ async function mergeLocked(
   // A target that isn't the checked-out branch moves with update-ref
   // (compare-and-swap) and never touches the working tree; a target that
   // is checked out takes the normal fast-forward.
+  let delivery: PullRequestDelivery | undefined;
+  let ticketPatterns: string[] | undefined;
+  try {
+    const d = await ctx.deliveryFor?.(repo);
+    if (d?.delivery?.mode === "pull-request") delivery = d.delivery;
+    ticketPatterns = d?.ticketPatterns;
+  } catch (e) {
+    return fail("error", `couldn't read the delivery setting for ${repo}: ${(e as Error).message}`);
+  }
+
   const target = task.mergeTarget;
-  const baseRef = target ? `refs/heads/${target}` : "HEAD";
-  const where = target ? `branch ${target} of ${repo}` : `${repo}'s HEAD`;
+  let baseRef = target ? `refs/heads/${target}` : "HEAD";
+  let where = target ? `branch ${target} of ${repo}` : `${repo}'s HEAD`;
+  // Pull-request delivery: the landing is built against the remote's
+  // main branch as fetched now, not the user's checkout.
+  let pr: { remote: string; base: string; branch: string } | undefined;
+  if (delivery) {
+    const remote = delivery.remote ?? "origin";
+    let base = delivery.base ?? target;
+    if (!base) {
+      const head = await git(repo, ["symbolic-ref", "-q", "--short", "HEAD"]);
+      if (!head.ok) return fail("error", `can't tell ${repo}'s main branch (HEAD is detached); set delivery.base`);
+      base = head.stdout.trim();
+    }
+    const named = deliveryBranch(delivery, task, ticketPatterns, base);
+    if (!named.ok) return fail("error", named.error);
+    const fetched = await git(repo, ["fetch", "-q", "--no-tags", remote, `refs/heads/${base}`]);
+    if (!fetched.ok) return fail("error", `couldn't fetch ${base} from ${remote}: ${fetched.text}`);
+    const sha = await git(repo, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]);
+    if (!sha.ok) return fail("error", `couldn't read the fetched ${remote}/${base}: ${sha.text}`);
+    baseRef = sha.stdout.trim();
+    where = `${remote}/${base}`;
+    pr = { remote, base, branch: named.branch };
+  }
   let viaUpdateRef = false;
-  if (target) {
+  if (target && !delivery) {
     const checkedOut = await git(repo, ["symbolic-ref", "-q", "--short", "HEAD"]);
     viaUpdateRef = !(checkedOut.ok && checkedOut.stdout.trim() === target);
   }
@@ -590,7 +637,9 @@ async function mergeLocked(
 
     // Nothing on the branch that HEAD doesn't already have.
     if (await isAncestor(git, repo, tip, base)) {
-      return land(repo, worktree, ctx, base, { status: "skipped", runs: [], durationMs: 0 }, onLanded, `nothing to land: ${repo} already has everything on ${worktree.branch}`, extra);
+      // Delivered work already upstream is not a merge into the checkout:
+      // no landed sha is recorded for it.
+      return land(repo, worktree, ctx, base, { status: "skipped", runs: [], durationMs: 0 }, pr ? undefined : onLanded, `nothing to land: ${where} already has everything on ${worktree.branch}`, extra);
     }
 
     const plan = await buildLandingCommit(git, repo, worktree, base, tip, message);
@@ -609,12 +658,17 @@ async function mergeLocked(
     const landing = plan.sha;
 
     let gate: GateReport = NO_GATE;
-    if (gateConfig && gateConfig.commands.length > 0) {
+    // Delivery runs the project's host gates after the merge gate, on the
+    // same landing commit, and may re-run a failed command once.
+    const gates: MergeGateConfig | undefined = delivery
+      ? { commands: [...(gateConfig?.commands ?? []), ...delivery.hostGates], ...(gateConfig?.timeoutMs ? { timeoutMs: gateConfig.timeoutMs } : {}), ...(gateConfig?.env ? { env: gateConfig.env } : {}) }
+      : gateConfig;
+    if (gates && gates.commands.length > 0) {
       const detach = await git(worktree.path, ["checkout", "--detach", "-q", landing]);
       if (!detach.ok) return fail("error", `couldn't check out the landing commit in ${worktree.path} to run the merge gate: ${detach.text}`);
       linkNodeModules(repo, worktree.path);
       try {
-        gate = await runMergeGate(gateConfig, worktree.path, ctx.gateRunner);
+        gate = await runMergeGate(gates, worktree.path, delivery ? withRetry(ctx.gateRunner ?? runGateCommand, delivery.gateRetries) : ctx.gateRunner);
       } finally {
         // Back onto the branch, pass or fail: a pushback attempt picks up
         // where the branch was, and landing below uses the sha, not the
@@ -624,6 +678,7 @@ async function mergeLocked(
       }
       if (gate.status === "failed") return fail("gate-failed", gate.feedback ?? "merge gate failed", gate, extra);
     }
+    if (pr && delivery) return deliver(git, repo, task, ctx, delivery, pr, landing, gate, ticketPatterns, extra);
 
     await ctx.beforeLand?.();
 
@@ -679,6 +734,45 @@ async function mergeLocked(
   }
   // Unreachable: every iteration returns or continues at most once.
   return fail("head-moved", `${repo}'s HEAD kept moving; nothing landed`);
+}
+
+/** Pushes the landing commit to the card's own branch, never forced, and
+ *  opens its PR or reuses the open one. The worktree stays: fix rounds
+ *  and the review work on it. */
+async function deliver(
+  git: Git,
+  repo: string,
+  task: TaskCard,
+  ctx: MergeContext,
+  delivery: PullRequestDelivery,
+  to: { remote: string; base: string; branch: string },
+  landing: string,
+  gate: GateReport,
+  ticketPatterns: string[] | undefined,
+  extra: Partial<Unlocked>,
+): Promise<Unlocked> {
+  const failed = (message: string): Unlocked => ({ ok: false, outcome: "error", message, gate, ...extra });
+  const push = await git(repo, ["push", "--porcelain", to.remote, `${landing}:refs/heads/${to.branch}`]);
+  if (!push.ok) {
+    return failed(`push of ${short(landing)} to ${to.remote}/${to.branch} was rejected, and Wissel never forces a push. Nothing was opened. ${push.text.slice(0, 500)}`);
+  }
+  const host = ctx.codeHost ?? ghCodeHost(ctx.runner);
+  let opened = await host.findOpen(repo, to.branch);
+  if (!opened) {
+    const who = (await ctx.prContext?.(task)) ?? { principalId: task.authorizedByPrincipalId ?? "owner" };
+    const text = pullRequestText(delivery, task, { ...who, ticketPatterns });
+    const made = await host.open(repo, { branch: to.branch, base: to.base, title: text.title, body: text.body, draft: delivery.draft });
+    if (!made.ok) return failed(`pushed ${to.branch}, but the PR couldn't be opened: ${made.error}`);
+    opened = { number: made.number, url: made.url };
+  }
+  const pr: TaskPullRequest = { number: opened.number, url: opened.url, head: landing };
+  try {
+    await ctx.recordPullRequest?.(task.id, pr);
+  } catch (e) {
+    console.error(`merge: delivered ${task.id} as PR #${pr.number} but couldn't record it: ${(e as Error).message}`);
+  }
+  const gateNote = gate.status === "passed" ? ` (gates passed in ${Math.round(gate.durationMs / 1000)}s)` : gate.status === "none" ? " (no gates configured)" : "";
+  return { ok: true, outcome: "delivered", message: `delivered ${to.branch} as PR #${pr.number} against ${to.base} at ${short(landing)}${gateNote}: ${pr.url}`, gate, pr, ...extra };
 }
 
 async function land(
