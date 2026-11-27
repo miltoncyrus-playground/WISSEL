@@ -28,6 +28,8 @@ import { DEFAULT_VERIFICATION } from "./verification.ts";
 import { formatMcpTranscript } from "../services/mcp-transcript.ts";
 import type { AgentDef, Executor, Harness, HarnessTool, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
 import { roundOf } from "./types.ts";
+import type { ReviewPolicy, ReviewSeverity } from "./types.ts";
+import { appendCardRules, renderCardTemplate } from "./card-templates.ts";
 
 /** What finishResult needs to drive a pipeline step's own follow-up work
  *  (see the `task.pipelineId !== undefined` branch below) — passed
@@ -509,6 +511,15 @@ export async function resumeAfterReviewVerdict(
   const implementerTask = await board.get(reviewerTask.parentTaskId);
   if (!implementerTask) return "no-op"; // the implementer task it was reviewing is gone
 
+  // The project's review policy (docs/SDD-coordinator.md §4.6). Without
+  // one, everything below behaves exactly as before.
+  const review = implementerTask.repo ? await toMergeContext(runner).reviewPolicyFor?.(implementerTask.repo).catch(() => undefined) : undefined;
+  const policy = review?.policy;
+  const blockedBy = result.verdict === "approve" ? blockingFindings(result.reviewSeverity, policy?.blocks) : undefined;
+  if (blockedBy) {
+    result = { ...result, verdict: "changes_requested", reviewFeedback: `${result.reviewFeedback ?? ""}\n\nThe reviewer approved, but the project's review policy blocks ${blockedBy}: fix ${blockedBy === "1 finding" ? "it" : "them"} before this can merge.`.trim() };
+  }
+
   if (result.verdict === "approve") {
     return resumeAfterApproval(board, registry, implementerTask, runner);
   }
@@ -530,22 +541,68 @@ export async function resumeAfterReviewVerdict(
   }
 
   const pushbackCount = implementerTask.pushbackCount ?? 0;
-  if (pushbackCount >= MAX_PUSHBACKS) {
-    const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
+  const maxRounds = policy?.maxRounds ?? MAX_PUSHBACKS;
+  const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
+  if (pushbackCount >= maxRounds) {
+    // At the cap the policy decides; "accept" hands the work to a human
+    // to merge as it is, instead of escalating.
+    if (policy?.atCap === "accept") {
+      await board.move(implementerTask.id, "review");
+      return "review";
+    }
     const history = await buildEscalationContext(board, lineageId);
     // The history is empty when no reviewer in the lineage left
     // reviewFeedback (card adf63608 escalated with no reason), so the
     // note always says why it stopped.
-    const note = await pushbackCapNote(board, implementerTask, result);
+    const note = (await pushbackCapNote(board, implementerTask, result, maxRounds)) + atCapNote(policy?.atCap);
     await board.escalate(implementerTask.id, history ? `${history}\n\n${note}` : note);
     return "escalated";
   }
 
-  await spawnPushbackImplementer(board, implementerTask, reviewerTask.id, {
-    heading: "Reviewer feedback",
-    text: result.reviewFeedback ?? "(reviewer requested changes but gave no feedback text)",
-  });
+  const feedback = { heading: "Reviewer feedback", text: result.reviewFeedback ?? "(reviewer requested changes but gave no feedback text)" };
+  // A project fix-round template builds the next attempt's whole brief
+  // from the full review text, never an excerpt. One whose required
+  // placeholders come out empty (the pilot's empty fix brief) refuses
+  // the round and escalates instead.
+  if (review?.fixRoundTemplate) {
+    const root = (await board.get(lineageId)) ?? implementerTask;
+    const rendered = renderCardTemplate(
+      review.fixRoundTemplate,
+      { review: result.reviewFeedback, round: pushbackCount + 2, key: implementerTask.key, title: implementerTask.title, body: root.body, ticket: undefined },
+      "fix-round",
+    );
+    if (!rendered.ok) {
+      const history = await buildEscalationContext(board, lineageId);
+      const note = `No fix round was started: ${rendered.error}.`;
+      await board.escalate(implementerTask.id, history ? `${history}\n\n${note}` : note);
+      return "escalated";
+    }
+    await spawnPushbackImplementer(board, implementerTask, reviewerTask.id, feedback, (refusedNote) => appendCardRules(`${rendered.body}${refusedNote}`, review.cardRules));
+    return "pushback";
+  }
+
+  await spawnPushbackImplementer(board, implementerTask, reviewerTask.id, feedback);
   return "pushback";
+}
+
+/** "2 HIGH findings" when the counts include a severity the policy
+ *  blocks, else undefined. */
+export function blockingFindings(severity: ReviewSeverity | undefined, blocks: ReviewPolicy["blocks"]): string | undefined {
+  if (!severity || !blocks?.length) return undefined;
+  const parts: string[] = [];
+  if (blocks.includes("HIGH") && severity.high > 0) parts.push(`${severity.high} HIGH`);
+  if (blocks.includes("MED") && severity.med > 0) parts.push(`${severity.med} MED`);
+  else if (blocks.includes("MED-with-scenario") && (severity.medWithScenario ?? 0) > 0) parts.push(`${severity.medWithScenario} MED with a failing scenario`);
+  if (parts.length === 0) return undefined;
+  const total = (blocks.includes("HIGH") ? severity.high : 0) + (blocks.includes("MED") ? severity.med : blocks.includes("MED-with-scenario") ? (severity.medWithScenario ?? 0) : 0);
+  return total === 1 ? "1 finding" : `${parts.join(" and ")} findings`;
+}
+
+/** What the escalation adds for the policy's atCap. */
+function atCapNote(atCap: ReviewPolicy["atCap"]): string {
+  if (atCap === "spec-question") return "\nThe project's review policy treats this as a question about the spec: the brief likely leaves a decision open. Answer it in the card, then retry.";
+  if (atCap === "ask-decider") return "\nThe project's review policy asks a decider at the cap; until deciders exist (docs/SDD-coordinator.md §4.13), that is you.";
+  return "";
 }
 
 /** The pushback cap: a lineage gets this many re-attempts, whether a
@@ -579,9 +636,9 @@ export function reviewGuardDecision(input: { fingerprint: string | null; previou
 /** Why a reviewer pushback-cap escalation stopped, plus the last thing
  *  the run said: the reviewer's own summary, else the implementer's last
  *  result summary. Never empty. */
-async function pushbackCapNote(board: Board, implementerTask: TaskCard, reviewerResult: TaskResult): Promise<string> {
+async function pushbackCapNote(board: Board, implementerTask: TaskCard, reviewerResult: TaskResult, cap: number = MAX_PUSHBACKS): Promise<string> {
   const rounds = (implementerTask.pushbackCount ?? 0) + 1;
-  const reason = `Escalated: the reviewer requested changes ${rounds} times (cap MAX_PUSHBACKS=${MAX_PUSHBACKS}) without the work landing.`;
+  const reason = cap === MAX_PUSHBACKS ? `Escalated: the reviewer requested changes ${rounds} times (cap MAX_PUSHBACKS=${MAX_PUSHBACKS}) without the work landing.` : `Escalated: the reviewer requested changes ${rounds} times (the project's review policy allows ${cap} rounds) without the work landing.`;
   if (reviewerResult.summary.trim()) return `${reason}\nLast reviewer verdict: ${reviewerResult.summary.trim()}`;
   const implementerSummary = (await board.getResult(implementerTask.id))?.summary.trim();
   if (implementerSummary) return `${reason}\nLast implementer result: ${implementerSummary}`;
@@ -841,6 +898,9 @@ async function spawnPushbackImplementer(
   implementerTask: TaskCard,
   parentTaskId: string | undefined,
   feedback: { heading: string; text: string },
+  /** Builds the whole body instead (a project fix-round template), given
+   *  the refused-commands note. */
+  bodyFrom?: (refusedNote: string) => string,
 ): Promise<TaskCard> {
   const newPushbackCount = (implementerTask.pushbackCount ?? 0) + 1;
   const reviewLineageId = implementerTask.reviewLineageId ?? implementerTask.id;
@@ -856,7 +916,7 @@ async function spawnPushbackImplementer(
     (refused.length > 0
       ? `\n\nRefused on the last attempt: ${refused.join(", ")}. Don't retry these: they need a grant on the card (POST /tasks/:id/allowed-tools). Do everything else, and say plainly which checks you couldn't run.`
       : "") + (nowGranted.length > 0 ? `\n\nRefused on the last attempt and granted since, so run them now: ${nowGranted.join(", ")}.` : "");
-  const body = `${implementerTask.body}\n\n---\n${feedback.heading} (attempt ${newPushbackCount}):\n${feedback.text}${refusedNote}`;
+  const body = bodyFrom ? bodyFrom(refusedNote) : `${implementerTask.body}\n\n---\n${feedback.heading} (attempt ${newPushbackCount}):\n${feedback.text}${refusedNote}`;
 
   const nextAttempt = await board.create({
     title: implementerTask.title,

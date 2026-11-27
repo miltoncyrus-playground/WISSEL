@@ -300,6 +300,34 @@ or another long-lived one. PRs are opened with `gh`, as the account it
 is signed in as (`src/services/delivery.ts`, `docs/SDD-coordinator.md`
 §4.5).
 
+A project's `reviewPolicy` (`{"maxRounds": 2, "blocks": ["HIGH"],
+"atCap": "spec-question"}`) shapes its review loop:
+- The reviewer's verdict may carry `severity` counts (`high`, `med`,
+  `medWithScenario`, `low`). An approval with a severity listed in
+  `blocks` becomes a fix round that says why.
+- `maxRounds` replaces the default cap of 5. At the cap, `atCap` decides:
+  `ask-decider` (the default) and `spec-question` escalate with their
+  own note, and `accept` moves the work to review for you to merge.
+- When the project has a `fix-round` card template, each fix round's
+  whole brief is rendered from it with `{review}` (the full review
+  text), `{round}`, `{key}`, `{title}` and `{body}` (the first
+  attempt's brief), then the project rules. A review with no text
+  refuses the round and escalates (`docs/SDD-coordinator.md` §4.6).
+
+A project's `reviewPolicy` (`{"maxRounds": 2, "blocks": ["HIGH"],
+"atCap": "spec-question"}`) shapes its review loop:
+- The reviewer's verdict may carry `severity` counts (`high`, `med`,
+  `medWithScenario`, `low`). An approval with a severity listed in
+  `blocks` becomes a fix round that says why.
+- `maxRounds` replaces the default cap of 5. At the cap, `atCap` decides:
+  `ask-decider` (the default) and `spec-question` escalate with their
+  own note, and `accept` moves the work to review for you to merge.
+- When the project has a `fix-round` card template, each fix round's
+  whole brief is rendered from it with `{review}` (the full review
+  text), `{round}`, `{key}`, `{title}` and `{body}` (the first
+  attempt's brief), then the project rules. A review with no text
+  refuses the round and escalates (`docs/SDD-coordinator.md` §4.6).
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human

@@ -10,7 +10,7 @@
  * before they existed.
  */
 
-import type { Project } from "../core/types.ts";
+import type { Project, ReviewPolicy } from "../core/types.ts";
 import { grantError, MAX_EXTRA_ALLOWED_TOOLS } from "../core/allowed-tools.ts";
 import { MAX_REF_PATTERNS, patternError } from "./ticket-refs.ts";
 import { validateDelivery } from "./delivery.ts";
@@ -21,9 +21,9 @@ export const MAX_SETTING_COMMANDS = 20;
 export const MAX_PROTECTED_PATHS = 50;
 
 /** The settings, as stored on Project. */
-export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates" | "env" | "delivery">;
+export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates" | "env" | "delivery" | "reviewPolicy">;
 export type ProjectSettingKey = keyof Required<ProjectSettings>;
-export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness", "ticketPatterns", "referencePatterns", "cardRules", "cardTemplates", "env", "delivery"];
+export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness", "ticketPatterns", "referencePatterns", "cardRules", "cardTemplates", "env", "delivery", "reviewPolicy"];
 
 /** A partial update: a key that's absent is left alone, `null` clears
  *  it. An empty list (or a verification with no commands and no tools)
@@ -188,6 +188,27 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
       if (error) return { ok: false, error };
       const patterns = dedupe(v as string[]);
       patch[key] = patterns.length > 0 ? patterns : null;
+    }
+  }
+
+  if ("reviewPolicy" in raw) {
+    const v = raw.reviewPolicy;
+    if (v === null) patch.reviewPolicy = null;
+    else {
+      if (typeof v !== "object" || Array.isArray(v)) return { ok: false, error: 'reviewPolicy must be an object: { "maxRounds": 2, "blocks": ["HIGH"], "atCap": "ask-decider" }' };
+      const r = v as Record<string, unknown>;
+      const extra = Object.keys(r).find((k) => !["maxRounds", "blocks", "atCap"].includes(k));
+      if (extra) return { ok: false, error: `unknown reviewPolicy field "${extra}"; expected maxRounds, blocks, atCap` };
+      if (r.maxRounds !== undefined && !(Number.isInteger(r.maxRounds) && (r.maxRounds as number) >= 0 && (r.maxRounds as number) <= 10)) return { ok: false, error: "reviewPolicy.maxRounds must be a whole number from 0 to 10" };
+      const blockKinds = ["HIGH", "MED", "MED-with-scenario"];
+      if (r.blocks !== undefined && !(Array.isArray(r.blocks) && r.blocks.every((b) => typeof b === "string" && blockKinds.includes(b)))) return { ok: false, error: `reviewPolicy.blocks must list any of ${blockKinds.join(", ")}` };
+      if (r.atCap !== undefined && !["ask-decider", "spec-question", "accept"].includes(r.atCap as string)) return { ok: false, error: "reviewPolicy.atCap must be ask-decider, spec-question or accept" };
+      const policy = {
+        ...(r.maxRounds !== undefined ? { maxRounds: r.maxRounds as number } : {}),
+        ...(r.blocks !== undefined && (r.blocks as string[]).length ? { blocks: dedupe(r.blocks as string[]) as NonNullable<ReviewPolicy["blocks"]> } : {}),
+        ...(r.atCap !== undefined ? { atCap: r.atCap as NonNullable<ReviewPolicy["atCap"]> } : {}),
+      };
+      patch.reviewPolicy = Object.keys(policy).length > 0 ? policy : null;
     }
   }
 

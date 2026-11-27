@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, sym
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
-import type { TaskCard, TaskPullRequest } from "../core/types.ts";
+import type { ReviewPolicy, TaskCard, TaskPullRequest } from "../core/types.ts";
 import { deliveryBranch, ghCodeHost, pullRequestText, withRetry, type CodeHost, type Delivery, type PrContext, type PullRequestDelivery } from "./delivery.ts";
 import type { TelemetryEvent } from "./telemetry.ts";
 import { withRepoLock } from "./repo-lock.ts";
@@ -420,6 +420,9 @@ export interface MergeContext {
   prContext?: (task: TaskCard) => Promise<Omit<PrContext, "ticketPatterns">>;
   /** Records the delivered PR on the card (Board.setPullRequest). */
   recordPullRequest?: (taskId: string, pr: TaskPullRequest) => Promise<void>;
+  /** The repo's review policy, its fix-round template and its card rules
+   *  (docs/SDD-coordinator.md §4.6), read when a review verdict lands. */
+  reviewPolicyFor?: (repo: string) => Promise<{ policy?: ReviewPolicy; fixRoundTemplate?: string; cardRules?: string } | undefined>;
 }
 
 export function toMergeContext(m: CommandRunner | MergeContext): MergeContext {

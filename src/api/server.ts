@@ -582,6 +582,10 @@ export function createApp(
     },
     prContext: async (task) => ({ principalId: task.authorizedByPrincipalId ?? OWNER_PRINCIPAL_ID, ...(opts.authorization?.policy ? { policyRevision: opts.authorization.policy.current() } : {}) }),
     recordPullRequest: async (taskId, pr) => void (await board.setPullRequest(taskId, pr)),
+    reviewPolicyFor: async (repo) => {
+      const s = await projects.settingsFor(repo);
+      return s ? { policy: s.reviewPolicy, fixRoundTemplate: s.cardTemplates?.["fix-round"], cardRules: s.cardRules } : undefined;
+    },
     ...(telemetry ? { telemetry } : {}),
     ...opts.mergeContext,
   };

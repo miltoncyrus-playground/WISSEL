@@ -1,4 +1,4 @@
-import type { ReviewVerdict } from "../core/types.ts";
+import type { ReviewSeverity, ReviewVerdict } from "../core/types.ts";
 import { lastFencedBlock } from "./fenced-block.ts";
 
 const VALID_VERDICTS = new Set<ReviewVerdict["verdict"]>(["approve", "changes_requested"]);
@@ -24,7 +24,7 @@ export function parseReviewVerdict(rawOutput: string): ReviewVerdict | null {
   }
 
   if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return null;
-  const { verdict, feedback, grants } = candidate as Record<string, unknown>;
+  const { verdict, feedback, grants, severity } = candidate as Record<string, unknown>;
 
   if (typeof verdict !== "string" || !VALID_VERDICTS.has(verdict as ReviewVerdict["verdict"])) return null;
   if (typeof feedback !== "string") return null;
@@ -38,5 +38,21 @@ export function parseReviewVerdict(rawOutput: string): ReviewVerdict | null {
       ? [...new Set(grants.filter((g): g is string => typeof g === "string" && g.trim() !== "").map((g) => g.trim()))]
       : [];
 
-  return { verdict: verdict as ReviewVerdict["verdict"], feedback, ...(grantList.length ? { grants: grantList } : {}) };
+  const counts = parseSeverity(severity);
+  return { verdict: verdict as ReviewVerdict["verdict"], feedback, ...(grantList.length ? { grants: grantList } : {}), ...(counts ? { severity: counts } : {}) };
+}
+
+/** Optional severity counts, lenient like `grants`: anything malformed
+ *  is dropped, never fails a readable verdict. high and med are required
+ *  for the counts to count. */
+function parseSeverity(v: unknown): ReviewSeverity | undefined {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return undefined;
+  const s = v as Record<string, unknown>;
+  const n = (x: unknown) => (Number.isInteger(x) && (x as number) >= 0 && (x as number) <= 1000 ? (x as number) : undefined);
+  const high = n(s.high);
+  const med = n(s.med);
+  if (high === undefined || med === undefined) return undefined;
+  const medWithScenario = n(s.medWithScenario);
+  const low = n(s.low);
+  return { high, med, ...(medWithScenario !== undefined ? { medWithScenario: Math.min(medWithScenario, med) } : {}), ...(low !== undefined ? { low } : {}) };
 }

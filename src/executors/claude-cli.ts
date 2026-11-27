@@ -715,6 +715,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
     // being null above.
     ...(verdict ? { verdict: verdict.verdict, reviewFeedback: verdict.feedback } : {}),
     ...(verdict?.grants?.length ? { reviewGrants: verdict.grants } : {}),
+    ...(verdict?.severity ? { reviewSeverity: verdict.severity } : {}),
     ...runFacts(parsed, resumeId, remoteSessionUrl, sandbox),
     ...(plan ? { subtaskPlan: plan } : {}),
     ...(handoff ? { pipelineHandoff: handoff } : {}),

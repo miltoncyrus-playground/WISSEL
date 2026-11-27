@@ -181,6 +181,13 @@ agents:
         ```review-verdict
         {"verdict": "changes_requested", "feedback": "...", "grants": ["Bash(bun run scripts/make-fixtures.ts:*)"]}
         ```
+      - Optional, with either verdict: `"severity"`, the count of your
+        findings by severity: `{"high": 0, "med": 1, "medWithScenario":
+        1, "low": 2}`. HIGH is a defect that breaks behaviour or safety;
+        MED a real problem, and `medWithScenario` counts the MED ones you
+        can show failing with concrete inputs; LOW is a nit. A project
+        may refuse to approve work with HIGH or MED findings left, so
+        count honestly, and say each one in `feedback`.
     verificationContract: |
       You run under `--permission-mode plan` — Bash, Edit, Write, and
       every other side-effecting tool are unavailable to you here by
