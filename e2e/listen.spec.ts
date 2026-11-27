@@ -116,7 +116,10 @@ async function onlyRealControls(page: Page) {
   const unlabeled = await page.evaluate(() =>
     Array.from(document.querySelectorAll<HTMLElement>("button, a[href], input"))
       .filter((el) => el.offsetParent !== null || getComputedStyle(el).position === "fixed")
-      .filter((el) => !(el.getAttribute("aria-label") || el.textContent || "").trim())
+      // A control's name can also come from its <label> (a wrapping one,
+      // or one pointing at it with for=), as the Needs a human checklist's
+      // tick boxes do.
+      .filter((el) => !(el.getAttribute("aria-label") || el.textContent || Array.from((el as HTMLInputElement).labels ?? []).map((l) => l.textContent).join("") || "").trim())
       .map((el) => el.outerHTML.slice(0, 120)),
   );
   expect(unlabeled).toEqual([]);
