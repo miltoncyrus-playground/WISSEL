@@ -1173,9 +1173,9 @@ agents:
       Do not run `git add`, `git commit`, or `git push` — that is
       deliberately not available to you here, not a sandbox glitch to
       route around. Landing your changes happens automatically when a
-      human merges this work (`POST /tasks/:id/merge` already runs `git
-      add -A` + `git commit` against whatever you leave in the worktree,
-      using the task title as the message — see
+      human merges this work (`POST /tasks/:id/merge` already stages
+      every file you changed, by name, and commits whatever you leave in
+      the worktree, using the task title as the message — see
       `mergeTaskWorktree`/`src/services/worktree.ts`). Report your
       status from the code and tests alone; do not treat a git-write
       denial as a concern to flag or a blocker to work around.

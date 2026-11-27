@@ -550,7 +550,8 @@ async function mergeLocked(
   if (stubs.length) console.log(`merge ${task.id}: removed ${stubs.length} sandbox stub file(s) before staging: ${stubs.join(", ")}`);
   const status = await git(worktree.path, ["status", "--porcelain"]);
   if (status.stdout.trim()) {
-    await git(worktree.path, ["add", "-A"]);
+    const staged = await stageChangedPaths(git, worktree.path);
+    if (!staged.ok) return fail("error", `failed to stage worktree changes: ${staged.text}`);
     const commit = await git(worktree.path, ["commit", "-m", `${task.title}\n\ntask: ${task.id}`]);
     if (!commit.ok) return fail("error", `failed to commit worktree changes: ${commit.text}`);
   }
@@ -715,7 +716,7 @@ type FinishOutcome = { ok: true; cardId: string } | { ok: false; outcome: "confl
  *    binary (git leaves one side's bytes there, with no marker to tell a
  *    resolution from the raw conflict). A changed file that is binary
  *    but not unmerged came from the merge itself and is fine. A missing
- *    file is a deletion `git add -A` stages.
+ *    file is a deletion the staging step stages.
  * 2. The card's conflict integrator for this conflict has finished
  *    (ctx.conflictIntegrator, asked with `conflictHead`, the worktree's
  *    MERGE_HEAD: status review or done). A human mid-way through a
@@ -725,7 +726,8 @@ type FinishOutcome = { ok: true; cardId: string } | { ok: false; outcome: "confl
  *    conflict of the same card, against another HEAD, is not this
  *    conflict's and does not count either.
  *
- * Then `git add -A` and `git commit --no-edit --cleanup=strip`: the
+ * Then every changed path is staged by name (stageChangedPaths) and
+ * `git commit --no-edit --cleanup=strip` runs: the
  * prepared MERGE_MSG (`Merge <branch>: <title>`) becomes the commit's
  * message, so the digest counts the landed card by it, and git's own
  * `# Conflicts:` comment lines are dropped whatever the config says.
@@ -748,16 +750,16 @@ async function finishResolvedMerge(git: Git, repo: string, worktree: TaskWorktre
   }
 
   if (!ctx.conflictIntegrator) {
-    return refuse("conflict", "this merge path has no board to check the conflict integrator against, so it won't commit the resolution. Run `git add -A && git commit --no-edit` there, then merge again.");
+    return refuse("conflict", "this merge path has no board to check the conflict integrator against, so it won't commit the resolution. Stage the resolved files by name there (`git add -- <file>...`), run `git commit --no-edit`, then merge again.");
   }
   const integrator = await ctx.conflictIntegrator(task, conflictHead);
   if (!integrator.finished) {
-    return refuse("conflict", `${integrator.reason}. Wissel only commits a resolution its integrator card finished; a manual one is finished with \`git add -A && git commit --no-edit\` there, then merge again.`);
+    return refuse("conflict", `${integrator.reason}. Wissel only commits a resolution its integrator card finished; a manual one is finished by staging the resolved files by name there (\`git add -- <file>...\`) and running \`git commit --no-edit\`, then merge again.`);
   }
 
   await dropStubsWith(git, worktree.path);
-  const add = await git(worktree.path, ["add", "-A"]);
-  if (!add.ok) return refuse("error", `\`git add -A\` failed while finishing the resolved merge: ${add.text}`);
+  const add = await stageChangedPaths(git, worktree.path);
+  if (!add.ok) return refuse("error", `staging the resolved files failed while finishing the resolved merge: ${add.text}`);
   const commit = await git(worktree.path, ["commit", "--no-edit", "--cleanup=strip"]);
   if (!commit.ok) return refuse("error", `\`git commit --no-edit\` failed while finishing the resolved merge: ${commit.text}`);
   return { ok: true, cardId: integrator.cardId };
@@ -982,6 +984,50 @@ async function dropStubsWith(git: Git, worktreePath: string): Promise<string[]> 
     }
   }
   return removed;
+}
+
+/** The paths in a `git status --porcelain -z --no-renames` listing, each
+ *  once: the path after each two-letter status code. With --no-renames a
+ *  rename is a deletion plus an addition, so each side is its own entry. */
+export function parseStatusPathsZ(out: string): string[] {
+  const paths: string[] = [];
+  for (const entry of out.split("\0")) {
+    if (entry.length < 4 || entry[2] !== " ") continue;
+    const path = entry.slice(3);
+    if (!paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
+
+/** How many paths one `git add` gets, so a large change never meets the
+ *  argument-length limit. */
+const STAGE_CHUNK = 200;
+
+/**
+ * Stages a worktree's changes by name: every path `git status` reports
+ * (modified, deleted, new and untracked, ignored files excluded), each
+ * passed to `git add` explicitly and read literally, so no glob or
+ * directory sweeps in anything else. This replaced `git add -A`
+ * (docs/SDD-coordinator.md §4.5 step 2): a tree can be shared, and
+ * staging by name is what a coordinator role rule requires. Since Git
+ * 2.0, `git add <path>` stages a deletion too. Sandbox stubs are dropped
+ * by the caller first (dropStubsWith), so they are never listed.
+ */
+export async function stageChangedPaths(git: Git, worktreePath: string): Promise<{ ok: true; staged: string[] } | { ok: false; text: string }> {
+  const status = await git(worktreePath, ["status", "--porcelain", "--untracked-files=all", "--no-renames", "-z"]);
+  if (!status.ok) return { ok: false, text: `git status failed: ${status.text}` };
+  const paths = parseStatusPathsZ(status.stdout);
+  for (let i = 0; i < paths.length; i += STAGE_CHUNK) {
+    const add = await git(worktreePath, ["--literal-pathspecs", "add", "--", ...paths.slice(i, i + STAGE_CHUNK)]);
+    if (!add.ok) return { ok: false, text: `git add failed: ${add.text}` };
+  }
+  return { ok: true, staged: paths };
+}
+
+/** stageChangedPaths with a CommandRunner, for callers and tests outside
+ *  this module. */
+export async function stageWorktreeChanges(runner: CommandRunner, worktreePath: string): Promise<{ ok: true; staged: string[] } | { ok: false; text: string }> {
+  return stageChangedPaths(gitIn(runner), worktreePath);
 }
 
 function gitIn(runner: CommandRunner): Git {

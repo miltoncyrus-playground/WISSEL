@@ -437,7 +437,7 @@ test("no finished integrator: refused, saying which card and status, even with e
   expect(out.ok).toBe(false);
   if (!out.ok) {
     expect(out.error).toContain(`the conflict integrator card ${integrator.id} is inbox, not finished (review or done)`);
-    expect(out.error).toContain("git add -A && git commit --no-edit");
+    expect(out.error).toContain("(`git add -- <file>...`) and running `git commit --no-edit`");
   }
   expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
   expect(readFileSync(join(worktree.path, "shared.txt"), "utf8")).toBe(RESOLVED);
@@ -738,7 +738,7 @@ test("an integrator that finished an earlier conflict does not vouch for a later
   expect(out.ok).toBe(false);
   if (!out.ok) {
     expect(out.error).toContain(`no conflict integrator card is for this conflict (HEAD ${headB.slice(0, 12)}); the earlier one (${first.id}) handled another HEAD`);
-    expect(out.error).toContain("git add -A && git commit --no-edit");
+    expect(out.error).toContain("(`git add -- <file>...`) and running `git commit --no-edit`");
   }
   expect(gitOk(["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree.path)).toBe(true);
   expect(git(["rev-parse", "HEAD"], repo)).toBe(headB);
