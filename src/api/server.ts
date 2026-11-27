@@ -25,6 +25,7 @@ import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
 import { workstreamCheck, WorkstreamStore, type WorkstreamInput } from "../services/workstreams.ts";
+import { GateLog, loadHardLimits, type HardLimits } from "../services/policy-gate.ts";
 import { boardInboxEvent, InboxDispatcher, InboxStore, prInboxEvents, type InboxHandler } from "../services/inbox.ts";
 
 /** What each inbox kind does today. Until the gate (card 14) and decision
@@ -170,6 +171,9 @@ export interface CreateAppOptions {
    *  when WISSEL_HOST_GUARD=1, reading the host every 30 s. A test's own
    *  is refreshed by the test. */
   hostGuard?: HostGuard;
+  /** The hard limits (hard-limits.yaml, docs/SDD-coordinator.md §6),
+   *  read once at start. Defaults when absent. */
+  hardLimits?: HardLimits;
   /** Look at every delivered card's PR once a minute (src/services/
    *  pr-watcher.ts). The server's start-up turns it on unless
    *  WISSEL_PR_WATCH=0; tests leave it off and tick a watcher of their
@@ -630,6 +634,9 @@ export function createApp(
   const workstreams = board instanceof SqliteBoard ? new WorkstreamStore(board.db) : undefined;
   // The event inbox (§4.1): every coordinator trigger, once each.
   const inbox = board instanceof SqliteBoard ? new InboxStore(board.db) : undefined;
+  // The policy gate's append-only log (§4.2); the executor (card 15)
+  // writes to it through GateLog.decide.
+  const gateLog = board instanceof SqliteBoard ? new GateLog(board.db) : undefined;
   const dispatcher = inbox ? new InboxDispatcher(inbox, inboxHandlers()) : undefined;
   board.events?.on("event", (e: BoardEvent) => {
     const ev = boardInboxEvent(e);
@@ -1119,6 +1126,7 @@ export function createApp(
         const ws = seg[1] ? workstreams.get(seg[1]) : undefined;
         if (!ws) return notFound();
         if (seg.length === 2 && req.method === "GET") return json(ws);
+        if (seg.length === 3 && seg[2] === "gate-log" && req.method === "GET") return json(gateLog?.list(ws.id, Number(url.searchParams.get("limit") ?? 200)) ?? []);
         if (seg.length === 3 && seg[2] === "inbox" && req.method === "GET") {
           return json(inbox?.list({ workstreamId: ws.id, unhandled: url.searchParams.get("unhandled") === "1", limit: Number(url.searchParams.get("limit") ?? 200) }) ?? []);
         }
@@ -2484,6 +2492,9 @@ if (import.meta.main) {
   // variables it names. A missing or unusable file leaves the board on
   // git alone.
   const tickets = await loadTicketProvider(process.env.WISSEL_INTEGRATIONS_PATH ?? "integrations.yaml", process.env);
+  // Hard limits are code plus this file, read once here: never from a
+  // channel or a card (docs/SDD-coordinator.md §6).
+  const hardLimits = await loadHardLimits(process.env.WISSEL_HARD_LIMITS_PATH ?? "hard-limits.yaml");
   console.log(tickets.provider ? `tickets: ${tickets.provider.id} (write-back ${tickets.provider.writeBack ? "on" : "off"})` : `tickets: off (${tickets.reason})`);
 
   // Can write-tier Bash run inside Claude Code's OS sandbox here? Probed
@@ -2586,6 +2597,7 @@ if (import.meta.main) {
     fetch: withAuthorizationRecords(createApp(board, registry, telemetry, {
       authorization: { log: authorizationLog, principalFor, policy },
       prWatch: process.env.WISSEL_PR_WATCH !== "0",
+      hardLimits,
       orchestratorEnabled,
       autoChain,
       executeWriteTier,
