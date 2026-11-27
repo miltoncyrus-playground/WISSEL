@@ -363,6 +363,33 @@ or a folder holding them. The warning goes to the log, to a
 answer. It never blocks the card (`src/services/start-conditions.ts`,
 `docs/SDD-coordinator.md` §4.8).
 
+A workstream is one piece of team work across projects (`POST
+/workstreams {name, ticket?, spec?, projects, channel?, chat?,
+quietHours?, digests?}`; `GET`, `PATCH` and `DELETE` on
+`/workstreams/:id`). A project is in at most one workstream. Each
+project in it has:
+- a `role`:
+  - `shadow`: record only;
+  - `follow`: work to a decider's answers;
+  - `decide`;
+  - `decide-over`;
+- an optional `decider`;
+- `decideAlone`: the decision kinds it may take by itself;
+- `mustAsk`: always asked;
+- `never`: actions refused outright.
+
+A role changes only through `POST
+/workstreams/:id/projects/:projectId/role {role}`. The first call answers
+409 with what would change, and the same call with `"confirm": true`
+applies it. Only the owner may make it. Every workstream or role write is
+a policy revision.
+
+A card may name its `workstreamId`. Within a workstream a card's `key` is
+unique across all its projects. A workstream with open cards can't be
+deleted. This is the model and the API: the policy gate that reads roles
+comes with card 14 (`src/services/workstreams.ts`,
+`docs/SDD-coordinator.md` §3.1, §4.13).
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human

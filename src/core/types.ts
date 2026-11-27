@@ -570,6 +570,9 @@ export interface TaskCard {
    *  until workstreams exist; every attempt and review of the same work
    *  carries it. */
   key?: string;
+  /** The workstream this card belongs to (docs/SDD-coordinator.md §3.1).
+   *  Within a workstream, `key` is unique across all its projects. */
+  workstreamId?: string;
   /** Which attempt this is within its review lineage: 1 for the first,
    *  and one more for each pushback re-attempt. A review card carries
    *  the round it reviews. Unset on cards made before rounds were

@@ -16,6 +16,11 @@ import type { Database } from "bun:sqlite";
 export const POLICY_ACTION_KINDS: ReadonlySet<string> = new Set([
   "POST /projects/:id/settings",
   "POST /projects/:id/merge-gate",
+  // Workstreams and roles (docs/SDD-coordinator.md §3.1, §4.13).
+  "POST /workstreams",
+  "PATCH /workstreams/:id",
+  "DELETE /workstreams/:id",
+  "POST /workstreams/:id/projects/:id/role",
 ]);
 
 export interface PolicyRevision {

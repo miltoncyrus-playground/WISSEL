@@ -32,6 +32,9 @@ export interface NewTaskDeps {
   /** Set when an existing card is being edited: its own key, and the
    *  attempts and reviews of the same work, don't count as a clash. */
   editing?: Pick<TaskCard, "id" | "reviewLineageId">;
+  /** Whether a workstream id is known (WorkstreamStore). Without it a
+   *  card can't name a workstream. */
+  workstreamExists?: (id: string) => boolean;
 }
 
 /** TaskCard.key: a short name such as "A4". */
@@ -41,14 +44,14 @@ export const CARD_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
  *  (docs/SDD-coordinator.md §3.3). Until workstreams exist a key is
  *  unique per project: no other live card (not archived, not replaced by
  *  a later attempt) in the same repo may carry it, except the attempts
- *  and reviews of the same work. */
-export async function cardKeyRefusal(board: Board, key: unknown, repo: string | undefined, editing?: Pick<TaskCard, "id" | "reviewLineageId">): Promise<string | undefined> {
+ *  and reviews of the same work. A card in a workstream is unique across
+ *  the whole workstream instead (§3.3), whatever repo it is in. */
+export async function cardKeyRefusal(board: Board, key: unknown, repo: string | undefined, editing?: Pick<TaskCard, "id" | "reviewLineageId">, workstreamId?: string): Promise<string | undefined> {
   if (typeof key !== "string" || !CARD_KEY_PATTERN.test(key)) return "key must be 1 to 32 letters, digits, dots, dashes or underscores, starting with a letter or digit (such as A4)";
   const lineage = editing ? (editing.reviewLineageId ?? editing.id) : undefined;
-  const clash = (await board.list(repo ? { repo } : {})).find(
-    (t) => t.key === key && !t.archivedAt && !t.supersededBy && (repo ? true : !t.repo) && t.id !== editing?.id && (lineage === undefined || (t.reviewLineageId ?? t.id) !== lineage),
-  );
-  return clash ? `key "${key}" is already used by "${clash.title}" (${clash.id}) in this project` : undefined;
+  const scope = workstreamId ? (await board.list()).filter((t) => t.workstreamId === workstreamId) : (await board.list(repo ? { repo } : {})).filter((t) => (repo ? true : !t.repo));
+  const clash = scope.find((t) => t.key === key && !t.archivedAt && !t.supersededBy && t.id !== editing?.id && (lineage === undefined || (t.reviewLineageId ?? t.id) !== lineage));
+  return clash ? `key "${key}" is already used by "${clash.title}" (${clash.id}) in this ${workstreamId ? "workstream" : "project"}` : undefined;
 }
 
 export type NewTaskCheck = { ok: true; task: NewTask } | { ok: false; error: string };
@@ -61,6 +64,9 @@ export async function validateNewTask(input: NewTask, deps: NewTaskDeps): Promis
   // orchestrator, and POST /tasks/:id/pr), never sent with a new card.
   delete body.round;
   delete body.pr;
+  if (body.workstreamId !== undefined && body.workstreamId !== null) {
+    if (typeof body.workstreamId !== "string" || !deps.workstreamExists?.(body.workstreamId)) return { ok: false, error: `no such workstream: ${JSON.stringify(body.workstreamId)}` };
+  } else body.workstreamId = undefined;
   // Start conditions and named files (docs/SDD-coordinator.md §4.8).
   if (body.waitsFor !== undefined && body.waitsFor !== null) {
     const refused = await startConditionsError(body.waitsFor, async (id) => (await deps.board.get(id)) !== undefined);
@@ -73,7 +79,7 @@ export async function validateNewTask(input: NewTask, deps: NewTaskDeps): Promis
     body.files = body.files.length ? [...new Set(body.files)] : undefined;
   } else body.files = undefined;
   if (body.key !== undefined && body.key !== null) {
-    const refused = await cardKeyRefusal(deps.board, body.key, body.repo, deps.editing);
+    const refused = await cardKeyRefusal(deps.board, body.key, body.repo, deps.editing, body.workstreamId ?? undefined);
     if (refused) return { ok: false, error: refused };
   } else {
     body.key = undefined;

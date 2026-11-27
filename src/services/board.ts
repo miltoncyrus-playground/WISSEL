@@ -150,7 +150,7 @@ export interface ResultMeta {
 }
 
 /** What `PATCH /tasks/:id` may change on a card that hasn't started. */
-export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs", "key", "waitsFor", "files"] as const;
+export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs", "key", "waitsFor", "files", "workstreamId"] as const;
 export type CardEdit = Partial<Pick<TaskCard, (typeof EDITABLE_CARD_FIELDS)[number]>>;
 
 export type BoardEvent =
@@ -214,6 +214,7 @@ interface TaskRow {
   pr: string | null;
   waitsFor: string | null;
   files: string | null;
+  workstreamId: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -249,6 +250,7 @@ function rowToCard(row: TaskRow): TaskCard {
     pr: row.pr ? (JSON.parse(row.pr) as TaskPullRequest) : undefined,
     waitsFor: row.waitsFor ? (JSON.parse(row.waitsFor) as StartCondition[]) : undefined,
     files: row.files ? (JSON.parse(row.files) as string[]) : undefined,
+    workstreamId: row.workstreamId ?? undefined,
     resumeSessionId: row.resumeSessionId ?? undefined,
     suggestedGrants: row.suggestedGrants ? (JSON.parse(row.suggestedGrants) as string[]) : undefined,
     doneAt: row.doneAt ?? undefined,
@@ -324,7 +326,8 @@ export class SqliteBoard implements Board {
         round INTEGER,
         pr TEXT,
         waitsFor TEXT,
-        files TEXT
+        files TEXT,
+        workstreamId TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -376,6 +379,8 @@ export class SqliteBoard implements Board {
       // docs/SDD-coordinator.md §4.8: start conditions and named files.
       "ALTER TABLE tasks ADD COLUMN waitsFor TEXT;",
       "ALTER TABLE tasks ADD COLUMN files TEXT;",
+      // docs/SDD-coordinator.md §3.1: the card's workstream.
+      "ALTER TABLE tasks ADD COLUMN workstreamId TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -606,7 +611,7 @@ export class SqliteBoard implements Board {
       if (parent?.authorizedByPrincipalId) full.authorizedByPrincipalId = parent.authorizedByPrincipalId;
     }
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget, createdByPrincipalId, authorizedByPrincipalId, cardKey, round, pr, waitsFor, files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget, createdByPrincipalId, authorizedByPrincipalId, cardKey, round, pr, waitsFor, files, workstreamId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -640,6 +645,7 @@ export class SqliteBoard implements Board {
         full.pr ? JSON.stringify(full.pr) : null,
         full.waitsFor?.length ? JSON.stringify(full.waitsFor) : null,
         full.files?.length ? JSON.stringify(full.files) : null,
+        full.workstreamId ?? null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
@@ -709,6 +715,7 @@ export class SqliteBoard implements Board {
     if ("key" in fields) set("cardKey", fields.key ?? null);
     if ("waitsFor" in fields) set("waitsFor", fields.waitsFor?.length ? JSON.stringify(fields.waitsFor) : null);
     if ("files" in fields) set("files", fields.files?.length ? JSON.stringify(fields.files) : null);
+    if ("workstreamId" in fields) set("workstreamId", fields.workstreamId ?? null);
     if ("extraAllowedTools" in fields) set("extraAllowedTools", fields.extraAllowedTools?.length ? JSON.stringify(fields.extraAllowedTools) : null);
     if ("extraAllowedDirs" in fields) set("extraAllowedDirs", fields.extraAllowedDirs?.length ? JSON.stringify(fields.extraAllowedDirs) : null);
     if (sets.length === 0) return existing;
