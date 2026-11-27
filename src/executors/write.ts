@@ -6,7 +6,7 @@ import { createTaskWorktree, type WorktreeSetupResolver } from "../services/work
 import type { GateCommandRunner } from "../services/merge-gate.ts";
 import { readProjectAllowRules } from "../core/allowed-tools.ts";
 import { DEFAULT_VERIFICATION } from "../core/verification.ts";
-import type { ProjectSettings } from "../services/project-settings.ts";
+import { runEnv, type ProjectSettings } from "../services/project-settings.ts";
 import { buildSandboxSettings, harnessConfigDirs, type SandboxStatus } from "./sandbox.ts";
 
 /** Looks up the execution settings of the project registered at `repo`
@@ -207,7 +207,9 @@ export class WriteExecutor implements Executor {
       agent,
       permissionMode: "acceptEdits",
       model: this.model ?? resolveModel(task, agent, harness),
-      env: harness?.env,
+      // The project's env (TMPDIR and the like), with the harness's own
+      // account pointers on top so a project can never redirect them.
+      env: runEnv(projectSettings?.env, harness?.env),
       // Guarantees the commands verificationContract (see
       // agents/manifest.yaml's implementer) tells the agent to run
       // actually run, every time — plain acceptEdits' own Bash gating

@@ -269,6 +269,16 @@ the card, creating nothing, when a required placeholder is empty or the
 brief comes out over 2,500 characters (`src/core/card-templates.ts`,
 `docs/SDD-coordinator.md` §4.16).
 
+A project's `env` setting (`POST /projects/:id/settings {env: {"TMPDIR":
+"/data/tmp"}}`, at most 20 entries) is added to its card runs, its merge
+gate and its worktree setup. Use it for a temp directory or cache on a
+disk with room. A harness's own variables stay on top, so a project can't
+redirect an account. Names that are Wissel's own settings (`WISSEL_*`),
+account or tool config (`CLAUDE_*`, `ANTHROPIC_*`, `CODEX_*`,
+`OPENAI_*`), what runs (`PATH`, `HOME`, `GIT_*`, `LD_*`, `NODE_OPTIONS`)
+or anything that looks like a credential (`*TOKEN*`, `*SECRET*`,
+`*PASSWORD*`, `*_KEY`) are refused: the board never holds a secret.
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human

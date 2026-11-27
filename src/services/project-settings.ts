@@ -20,9 +20,9 @@ export const MAX_SETTING_COMMANDS = 20;
 export const MAX_PROTECTED_PATHS = 50;
 
 /** The settings, as stored on Project. */
-export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates">;
+export type ProjectSettings = Pick<Project, "sandboxAllowedDomains" | "verification" | "worktreeSetup" | "protectedPaths" | "harness" | "ticketPatterns" | "referencePatterns" | "cardRules" | "cardTemplates" | "env">;
 export type ProjectSettingKey = keyof Required<ProjectSettings>;
-export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness", "ticketPatterns", "referencePatterns", "cardRules", "cardTemplates"];
+export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllowedDomains", "verification", "worktreeSetup", "protectedPaths", "harness", "ticketPatterns", "referencePatterns", "cardRules", "cardTemplates", "env"];
 
 /** A partial update: a key that's absent is left alone, `null` clears
  *  it. An empty list (or a verification with no commands and no tools)
@@ -84,6 +84,22 @@ function stringListError(name: string, value: unknown, max: number, check: (entr
 }
 
 const dedupe = (xs: string[]): string[] => [...new Set(xs)];
+
+export const MAX_PROJECT_ENV = 20;
+const ENV_NAME = /^[A-Z_][A-Z0-9_]{0,63}$/;
+/** Names a project may not set: Wissel's own settings, the variables
+ *  that choose an account or a tool's config (a harness's job), the
+ *  ones that change what runs (PATH, loader and git hooks), and anything
+ *  that looks like a credential, which never belongs in the board. */
+const ENV_REFUSED = [/^WISSEL_/, /^CLAUDE_/, /^ANTHROPIC_/, /^CODEX_/, /^OPENAI_/, /^GIT_/, /^LD_/, /^DYLD_/, /^(PATH|HOME|USER|LOGNAME|SHELL|NODE_OPTIONS|BUN_OPTIONS)$/, /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_?KEY|PRIVATE_?KEY|_KEY$|^KEY$/];
+
+/** Why a project env entry is refused, or undefined. */
+export function projectEnvError(name: string, value: unknown): string | undefined {
+  if (!ENV_NAME.test(name)) return `env name "${name}" must be upper-case letters, digits and underscores, starting with a letter or underscore`;
+  if (ENV_REFUSED.some((r) => r.test(name))) return `env "${name}" can't be set per project: it names Wissel's own settings, an account or tool config, what runs, or a credential`;
+  if (typeof value !== "string" || value.length > 1000 || /[\0\n\r]/.test(value)) return `env "${name}" must be a single line of text, at most 1000 characters`;
+  return undefined;
+}
 
 /**
  * Validates a `POST /projects/:id/settings` body into a patch. Every key
@@ -174,6 +190,21 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
     }
   }
 
+  if ("env" in raw) {
+    const v = raw.env;
+    if (v === null) patch.env = null;
+    else {
+      if (typeof v !== "object" || Array.isArray(v)) return { ok: false, error: 'env must be an object of names to values, such as { "TMPDIR": "/data/tmp" }' };
+      const entries = Object.entries(v as Record<string, unknown>);
+      if (entries.length > MAX_PROJECT_ENV) return { ok: false, error: `env has ${entries.length} entries; at most ${MAX_PROJECT_ENV}` };
+      for (const [name, value] of entries) {
+        const error = projectEnvError(name, value);
+        if (error) return { ok: false, error };
+      }
+      patch.env = entries.length > 0 ? (Object.fromEntries(entries) as Record<string, string>) : null;
+    }
+  }
+
   if ("cardRules" in raw) {
     const v = raw.cardRules;
     if (v === null) patch.cardRules = null;
@@ -200,4 +231,13 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
   }
 
   return { ok: true, patch };
+}
+
+/** The env for one card run: the project's (Project.env), then the
+ *  harness's own on top, so the account a harness points at can never be
+ *  redirected by a project. Undefined when neither sets anything, which
+ *  keeps a run's env exactly as before. */
+export function runEnv(projectEnv: Record<string, string> | undefined, harnessEnv: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!projectEnv && !harnessEnv) return undefined;
+  return { ...projectEnv, ...harnessEnv };
 }
