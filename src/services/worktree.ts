@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -545,6 +546,8 @@ async function mergeLocked(
   const extra: Partial<Unlocked> = resolvedConflictBy ? { resolvedConflictBy } : {};
   const landNote = resolvedConflictBy ? ` (finished the conflict merge resolved by card ${resolvedConflictBy})` : "";
 
+  const stubs = await dropStubsWith(git, worktree.path);
+  if (stubs.length) console.log(`merge ${task.id}: removed ${stubs.length} sandbox stub file(s) before staging: ${stubs.join(", ")}`);
   const status = await git(worktree.path, ["status", "--porcelain"]);
   if (status.stdout.trim()) {
     await git(worktree.path, ["add", "-A"]);
@@ -752,6 +755,7 @@ async function finishResolvedMerge(git: Git, repo: string, worktree: TaskWorktre
     return refuse("conflict", `${integrator.reason}. Wissel only commits a resolution its integrator card finished; a manual one is finished with \`git add -A && git commit --no-edit\` there, then merge again.`);
   }
 
+  await dropStubsWith(git, worktree.path);
   const add = await git(worktree.path, ["add", "-A"]);
   if (!add.ok) return refuse("error", `\`git add -A\` failed while finishing the resolved merge: ${add.text}`);
   const commit = await git(worktree.path, ["commit", "--no-edit", "--cleanup=strip"]);
@@ -824,6 +828,161 @@ function blockedResult(repo: string, files: string[], gate: GateReport): Unlocke
 }
 
 type Git = (cwd: string, args: string[]) => Promise<{ ok: boolean; stdout: string; text: string }>;
+
+/**
+ * Paths Claude Code's Linux Bash sandbox (bwrap) creates in the working
+ * directory as empty mount points for the files it write-protects. They
+ * exist while a sandboxed Bash call runs and are normally gone when it
+ * ends, but an interrupted run (killed card, crash, timeout) can leave
+ * them behind as untracked empty files, and the merge's `git add -A` then
+ * committed them (seen on cards: `.bashrc`, `.gitconfig`, `.mcp.json`,
+ * `.claude/settings.local.json`, ...). Entries ending in "/" match
+ * everything under that directory. docs/SDD-write-tier-sandbox.md.
+ */
+export const SANDBOX_STUB_PATHS: readonly string[] = [
+  ".bashrc",
+  ".bash_profile",
+  ".zshrc",
+  ".zprofile",
+  ".profile",
+  ".gitconfig",
+  ".gitmodules",
+  ".ripgreprc",
+  ".mcp.json",
+  ".claude/settings.local.json",
+  ".claude/launch.json",
+  ".claude/loop.md",
+  ".claude/scheduled_tasks.json",
+  ".claude/agents/",
+  ".claude/commands/",
+  ".claude/hooks/",
+  ".claude/output-styles/",
+  ".claude/routines/",
+  ".claude/skills/",
+  ".claude/workflows/",
+  ".vscode/",
+  ".idea/",
+];
+
+/** True for a repo-relative path the sandbox uses as a mount point. */
+export function isSandboxStubPath(rel: string): boolean {
+  return SANDBOX_STUB_PATHS.some((p) => (p.endsWith("/") ? rel.startsWith(p) : rel === p));
+}
+
+/**
+ * Deletes sandbox mount-point leftovers from a worktree before a merge
+ * stages it: only paths that are untracked, on SANDBOX_STUB_PATHS, and an
+ * empty regular file. A stub-named file with content (an agent that
+ * really wrote `.mcp.json`) or any tracked file is never touched; empty
+ * directories need nothing, since git never stages them. Returns the
+ * repo-relative paths removed. A failing `git status` (not a repo, gone)
+ * removes nothing.
+ */
+export async function dropSandboxStubs(runner: CommandRunner, worktreePath: string): Promise<string[]> {
+  return dropStubsWith(gitIn(runner), worktreePath);
+}
+
+/**
+ * A fingerprint of everything a card has changed in its worktree: the
+ * tracked diff against HEAD plus each untracked file's path and blob id.
+ * Empty sandbox stubs (isSandboxStubPath) don't count. Null when there is
+ * no change at all, or when `path` isn't a git worktree. Read-only: it
+ * never touches the index. Used by the review guard
+ * (src/core/orchestrator.ts reviewGuardDecision).
+ */
+export async function worktreeDiffFingerprint(runner: CommandRunner, path: string): Promise<string | null> {
+  const git = gitIn(runner);
+  const diff = await git(path, ["diff", "HEAD", "--binary", "--no-color", "--no-ext-diff"]);
+  if (!diff.ok) return null;
+  const untracked = await git(path, ["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (!untracked.ok) return null;
+  const parts: string[] = [];
+  for (const rel of untracked.stdout.split("\0").filter(Boolean).sort()) {
+    const abs = join(path, rel);
+    try {
+      const st = statSync(abs);
+      if (!st.isFile()) continue;
+      if (st.size === 0 && isSandboxStubPath(rel)) continue;
+    } catch {
+      continue;
+    }
+    const blob = await git(path, ["hash-object", "--", rel]);
+    parts.push(`${rel}\0${blob.ok ? blob.stdout.trim() : "?"}`);
+  }
+  if (!diff.stdout && parts.length === 0) return null;
+  return createHash("sha256").update(diff.stdout).update("\0untracked\0").update(parts.join("\n")).digest("hex");
+}
+
+/**
+ * Whether the worktree at `path` holds anything a merge would land: an
+ * uncommitted or untracked change (worktreeDiffFingerprint), or a commit
+ * past `base`. false only when both are provably empty; undefined when
+ * either can't be read (not a git worktree, `base` unknown), so a caller
+ * never mistakes "can't tell" for "empty". Read-only.
+ */
+export async function worktreeHasChanges(runner: CommandRunner, path: string, base: string | undefined): Promise<boolean | undefined> {
+  // A missing cwd makes the spawn itself throw.
+  if (!existsSync(path)) return undefined;
+  const git = gitIn(runner);
+  const inside = await git(path, ["rev-parse", "--is-inside-work-tree"]);
+  if (!inside.ok) return undefined;
+  if ((await worktreeDiffFingerprint(runner, path)) !== null) return true;
+  if (!base) return undefined;
+  const ahead = await git(path, ["rev-list", "--count", `${base}..HEAD`]);
+  if (!ahead.ok) return undefined;
+  return Number(ahead.stdout.trim()) > 0;
+}
+
+const REVIEWED_MARKER = "wissel-reviewed-diff";
+
+async function markerPath(runner: CommandRunner, path: string): Promise<string | undefined> {
+  const dir = await gitIn(runner)(path, ["rev-parse", "--absolute-git-dir"]);
+  return dir.ok ? join(dir.stdout.trim(), REVIEWED_MARKER) : undefined;
+}
+
+/** The fingerprint the last review of this worktree saw, if any. Kept in
+ *  the worktree's own git dir (like the setup marker), so it never shows
+ *  in `git status` and goes away with the worktree. */
+export async function readReviewedFingerprint(runner: CommandRunner, path: string): Promise<string | undefined> {
+  const file = await markerPath(runner, path);
+  if (!file || !existsSync(file)) return undefined;
+  try {
+    return readFileSync(file, "utf8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function writeReviewedFingerprint(runner: CommandRunner, path: string, fingerprint: string): Promise<void> {
+  const file = await markerPath(runner, path);
+  if (!file) return;
+  try {
+    writeFileSync(file, `${fingerprint}\n`);
+  } catch {
+    // Unwritable git dir: the guard just can't spot an unchanged rework.
+  }
+}
+
+async function dropStubsWith(git: Git, worktreePath: string): Promise<string[]> {
+  const status = await git(worktreePath, ["status", "--porcelain", "--untracked-files=all", "-z"]);
+  if (!status.ok) return [];
+  const removed: string[] = [];
+  for (const entry of status.stdout.split("\0")) {
+    if (!entry.startsWith("?? ")) continue;
+    const rel = entry.slice(3);
+    if (!isSandboxStubPath(rel)) continue;
+    const abs = join(worktreePath, rel);
+    try {
+      const st = statSync(abs);
+      if (!st.isFile() || st.size !== 0) continue;
+      rmSync(abs);
+      removed.push(rel);
+    } catch {
+      // Vanished between status and stat: nothing to remove.
+    }
+  }
+  return removed;
+}
 
 function gitIn(runner: CommandRunner): Git {
   return async (cwd, args) => {
