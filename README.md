@@ -502,6 +502,20 @@ chat:
   tokenEnv: TEAM_SLACK_BOT   # the variable's NAME; the token is never stored
 ```
 
+A workstream's `digests` (cron and timezone) send a fixed digest built
+from Wissel's own numbers, with no model call:
+- live cards against the cap;
+- PRs by state;
+- what waits on the decider;
+- open owner tasks;
+- what quiet hours are holding;
+- host load, memory and disk.
+
+It goes through the gate to the workstream's chat, else as a status line
+on its channel, so quiet hours queue it. A restart never sends a backlog.
+`GET /workstreams/:id/digest` previews it, and `POST` sends it now
+(`src/services/digests.ts`, §4.11).
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
