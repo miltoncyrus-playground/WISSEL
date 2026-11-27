@@ -269,6 +269,18 @@ the card, creating nothing, when a required placeholder is empty or the
 brief comes out over 2,500 characters (`src/core/card-templates.ts`,
 `docs/SDD-coordinator.md` §4.16).
 
+An owner task is something only the owner can do, such as signing in
+again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
+blocks?}` raises one: a card labelled `owner` shows in Needs a human
+with the why and the steps as tick-boxes, and each card in `blocks`
+waits on it. `check` is a command as argv, run with no shell. Done
+(`POST /owner-tasks/:id/done`) runs the check and closes the task only
+if it exits 0. A failed check keeps the task open, with its output under
+`lastCheck`. `POST /owner-tasks/:id/dismiss` closes the task without a
+check. Closing releases the waiting cards. `GET /owner-tasks?status=open`
+lists them (`src/services/owner-tasks.ts`, `docs/SDD-coordinator.md`
+§3.4).
+
 `bun run usage:report [--since 2026-10-10] [--agent implementer]` shows
 where agent spend goes: per agent the runs, cost, turns, context per turn
 and output, and what runs cut off by a session limit cost

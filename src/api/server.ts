@@ -92,6 +92,7 @@ import { DEFAULT_STT_MODEL, DEFAULT_STT_URL, SttClient, SttError, transcribeVoic
 import { createReplyAudio, ReplyAudioError } from "../services/reply-audio.ts";
 import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
 import { needsYouFor, needsYouLogLine, type NeedsYouOptions } from "../services/needs-you.ts";
+import { OwnerTaskStore, ownerTaskError, type NewOwnerTask, type OwnerTaskStatus } from "../services/owner-tasks.ts";
 import { resolveBind } from "../core/bind.ts";
 import { raiseOpenBindTask } from "../services/open-bind-task.ts";
 import { AuthorizationLog, withAuthorizationRecords } from "../services/authorization.ts";
@@ -137,6 +138,11 @@ export interface CreateAppOptions {
    *  withAuthorizationRecords so every write is recorded; unset (most
    *  tests) means no audit routes. */
   authorization?: { log: AuthorizationLog; principalFor: (req: Request) => string; policy?: PolicyRevisions };
+  /** Owner tasks (docs/SDD-coordinator.md §3.4): defaults to a store in
+   *  the board's own database when the board is a SqliteBoard. */
+  ownerTasks?: OwnerTaskStore;
+  /** Runs an owner task's `check`; runViaBun unless a test fakes it. */
+  ownerTaskRunner?: CommandRunner;
   /** Starts the automatic sweep-on-every-event loop. Off by default —
    *  matches the pre-existing WISSEL_ORCHESTRATOR gate. */
   orchestratorEnabled?: boolean;
@@ -547,7 +553,9 @@ export function createApp(
   // each answer is kept for 30s. Nothing runs in a worktree while its
   // card waits in review, so a short-lived answer stays true.
   const worktreeChangedCache = new Map<string, { at: number; value: boolean | undefined }>();
+  const ownerTasks = opts.ownerTasks ?? (board instanceof SqliteBoard ? new OwnerTaskStore(board.db, board) : undefined);
   const needsYouOpts: NeedsYouOptions = {
+    ownerTaskFor: (cardId) => ownerTasks?.byCard(cardId),
     async worktreeChanged(task, worktree) {
       const key = `${worktree.path}\0${task.mergeTarget ?? ""}`;
       const hit = worktreeChangedCache.get(key);
@@ -917,6 +925,32 @@ export function createApp(
       // Who is acting, and the chain of what was done on whose authority
       // (docs/SDD-identity-and-permissions.md §5). Single-owner mode:
       // loopback-only and one principal, so `audit.read` is the owner's.
+      // Owner tasks (docs/SDD-coordinator.md §3.4, §5): things only the
+      // owner can do. Done runs the task's check, when it has one.
+      if (ownerTasks && (url.pathname === "/owner-tasks" || url.pathname.startsWith("/owner-tasks/"))) {
+        const seg = url.pathname.split("/").filter(Boolean);
+        if (seg.length === 1 && req.method === "GET") {
+          const status = url.searchParams.get("status");
+          if (status !== null && !["open", "done", "dismissed"].includes(status)) return json({ error: "status must be open, done or dismissed" }, 400);
+          return json(ownerTasks.list((status ?? undefined) as OwnerTaskStatus | undefined));
+        }
+        if (seg.length === 1 && req.method === "POST") {
+          const body = await req.json().catch(() => undefined);
+          const error = ownerTaskError(body);
+          if (error) return json({ error }, 400);
+          const created = await ownerTasks.create(body as NewOwnerTask);
+          return created.ok ? json(created.task, 201) : json({ error: created.error }, 400);
+        }
+        const task = seg[1] ? ownerTasks.get(decodeURIComponent(seg[1])) : undefined;
+        if (!task) return notFound();
+        if (seg.length === 2 && req.method === "GET") return json(task);
+        if (seg.length === 3 && (seg[2] === "done" || seg[2] === "dismiss") && req.method === "POST") {
+          const r = seg[2] === "done" ? await ownerTasks.done(task.id, opts.ownerTaskRunner ?? runViaBun) : await ownerTasks.dismiss(task.id);
+          return r.ok ? json(r.task) : json({ error: r.error, ...(r.task ? { task: r.task } : {}) }, r.status);
+        }
+        return notFound();
+      }
+
       if (opts.authorization && url.pathname === "/me" && req.method === "GET") {
         const p = opts.authorization.log.principal(opts.authorization.principalFor(req));
         return p ? json({ principal: p, grants: [{ permission: "*", scope: "instance" }] }) : notFound();
