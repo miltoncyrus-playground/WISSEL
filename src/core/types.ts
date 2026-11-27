@@ -180,6 +180,32 @@ export interface ReviewVerdict {
   /** Optional: grant patterns ("Bash(<command>:*)") the required changes
    *  need and the implementer was refused. See TaskResult.reviewGrants. */
   grants?: string[];
+  /** Optional: how many findings of each severity the review found
+   *  (docs/SDD-coordinator.md §4.6). A project's reviewPolicy.blocks says
+   *  which ones stop an approval. */
+  severity?: ReviewSeverity;
+}
+
+/** Counts of review findings by severity. `medWithScenario` counts the
+ *  MED findings that came with a concrete failing scenario. */
+export interface ReviewSeverity {
+  high: number;
+  med: number;
+  medWithScenario?: number;
+  low?: number;
+}
+
+/** A project's review policy (docs/SDD-coordinator.md §4.6, §3.2). */
+export interface ReviewPolicy {
+  /** Pushback rounds a lineage gets before `atCap` decides. Default
+   *  MAX_PUSHBACKS. */
+  maxRounds?: number;
+  /** Severities that turn an approval into changes requested. */
+  blocks?: ("HIGH" | "MED" | "MED-with-scenario")[];
+  /** At the cap: escalate for a decider (the default, today's
+   *  behaviour), escalate as a question about the spec, or accept the
+   *  work for a human to merge. */
+  atCap?: "ask-decider" | "spec-question" | "accept";
 }
 
 /** Token use of one `claude -p` run, from the `usage` and `num_turns`
@@ -428,6 +454,8 @@ export interface Project {
    *  checkout; "pull-request" pushes and opens a PR
    *  (src/services/delivery.ts, docs/SDD-coordinator.md §4.5). */
   delivery?: Delivery;
+  /** How reviews decide (§4.6): rounds, blocking severities, the cap. */
+  reviewPolicy?: ReviewPolicy;
 }
 
 /** Which needs-me state a card is in. See NeedsYou. */
@@ -911,6 +939,8 @@ export interface TaskResult {
   /** The reviewer's feedback text, paired with `verdict`. Undefined
    *  whenever `verdict` is. */
   reviewFeedback?: string;
+  /** The review's severity counts, when it gave them (ReviewVerdict.severity). */
+  reviewSeverity?: ReviewSeverity;
   /** Set when this result came from a planner pass that produced a
    *  decomposition — same shape as SubtaskPlanItem[], flattened onto
    *  TaskResult so the orchestrator can spawn the real subtask cards
