@@ -14,7 +14,7 @@ import { addMcpServer } from "../core/mcp-manifest.ts";
 import { Registry } from "../core/registry.ts";
 import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
-import { Orchestrator, carriedCardSettings, grantAndRetry, finishResult, resolveHandoffAllowlist, resolveLiveTip, wireAutoIntegrator } from "../core/orchestrator.ts";
+import { Orchestrator, carriedCardSettings, grantAndRetry, finishResult, pushBackGateFailure, resolveHandoffAllowlist, resolveLiveTip, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts, reconcileLandedMerges } from "../core/crash-recovery.ts";
 import { worktreeHasChanges, type MergeContext } from "../services/worktree.ts";
 import { validateMergeGate } from "../services/merge-gate.ts";
@@ -24,6 +24,7 @@ import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle
 import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
+import { DECISION_LABEL, DecisionStore, decisionBrief, IMPLEMENTED_KINDS, type DecisionOutput, type ImplementedKind } from "../services/decisions.ts";
 import { ACTION_KINDS, workstreamCheck, WorkstreamStore, type WorkstreamInput } from "../services/workstreams.ts";
 import { DEFAULT_HARD_LIMITS, GateLog, loadHardLimits, type HardLimits } from "../services/policy-gate.ts";
 import { ActionExecutor, EXECUTOR_FLUSH_MS, OutboundQueue, type ExecutorAction } from "../services/executor.ts";
@@ -32,9 +33,10 @@ import { boardInboxEvent, InboxDispatcher, InboxStore, prInboxEvents, type Inbox
 /** What each inbox kind does today. Until the gate (card 14) and decision
  *  cards (card 16) take them, most kinds are recorded only. A dirty PR is
  *  already brought up to date by the PR watcher itself (merge-forward). */
-function inboxHandlers(): Record<string, InboxHandler> {
+function inboxHandlers(extra: Record<string, InboxHandler> = {}): Record<string, InboxHandler> {
   return {
     "owner.message": async (e) => console.log(`inbox: owner message ${e.id}${e.workstreamId ? ` for ${e.workstreamId}` : ""}`),
+    ...extra,
   };
 }
 import { describeCondition, findOverlaps, overlapWarning, StartConditionChecker } from "../services/start-conditions.ts";
@@ -618,6 +620,14 @@ export function createApp(
     },
     prContext: async (task) => ({ principalId: task.authorizedByPrincipalId ?? OWNER_PRINCIPAL_ID, ...(opts.authorization?.policy ? { policyRevision: opts.authorization.policy.current() } : {}) }),
     recordPullRequest: async (taskId, pr) => void (await board.setPullRequest(taskId, pr)),
+    // A decision card's output is one gated action (§4.4).
+    onDecision: async (card, output) => {
+      if (!executor || !card.workstreamId) return;
+      const project = (await projects.list()).find((x) => x.path === card.repo);
+      const subject = card.labels.find((l) => l.startsWith("subject:"))?.slice("subject:".length);
+      const r = await executor.execute({ kind: "decision", decisionKind: output.kind, workstreamId: card.workstreamId, ...(project ? { projectId: project.id } : {}), payload: { output, sourceCardId: card.id, ...(subject ? { subjectId: subject } : {}) } });
+      console.log(`decision ${card.id} (${output.kind}): ${r.status}${"detail" in r ? `: ${r.detail}` : ""}`);
+    },
     reviewPolicyFor: async (repo) => {
       const s = await projects.settingsFor(repo);
       return s ? { policy: s.reviewPolicy, fixRoundTemplate: s.cardTemplates?.["fix-round"], cardRules: s.cardRules } : undefined;
@@ -638,7 +648,35 @@ export function createApp(
   // The policy gate's append-only log (§4.2); the executor (card 15)
   // writes to it through GateLog.decide.
   const gateLog = board instanceof SqliteBoard ? new GateLog(board.db) : undefined;
-  const dispatcher = inbox ? new InboxDispatcher(inbox, inboxHandlers()) : undefined;
+  // Red checks on a workstream card's PR start a triage-red decision card
+  // (docs/SDD-coordinator.md §4.4), once per head (the event id).
+  const dispatcher = inbox
+    ? new InboxDispatcher(
+        inbox,
+        inboxHandlers({
+          "pr.checks-failing": async (e) => {
+            const p = e.payload as { taskId?: string; number?: number; headSha?: string };
+            const card = p.taskId ? await board.get(p.taskId) : undefined;
+            const ws = card?.workstreamId ? workstreams?.get(card.workstreamId) : undefined;
+            if (!card || !ws) return;
+            const project = (await projects.list()).find((x) => x.path === card.repo);
+            await startDecisionCard("triage-red", ws.id, project?.id, `The checks on PR #${p.number} (head ${p.headSha}) of "${card.title}" are failing after their retry. The card's brief:\n${card.body.slice(0, 3000)}`, card.id);
+          },
+        }),
+      )
+    : undefined;
+  const decisions = board instanceof SqliteBoard ? new DecisionStore(board.db) : undefined;
+  /** Starts a decision card: the router sends it to the decider agent. */
+  const startDecisionCard = async (kind: ImplementedKind, workstreamId: string, projectId: string | undefined, context: string, subjectId?: string) => {
+    const project = projectId ? (await projects.list()).find((x) => x.id === projectId) : undefined;
+    return board.create({
+      title: `Decide ${kind}${subjectId ? ` for ${subjectId.slice(0, 8)}` : ""}`,
+      body: decisionBrief(kind, context),
+      labels: [DECISION_LABEL, `decision:${kind}`, ...(subjectId ? [`subject:${subjectId}`] : [])],
+      ...(project ? { repo: project.path } : {}),
+      workstreamId,
+    });
+  };
   board.events?.on("event", (e: BoardEvent) => {
     const ev = boardInboxEvent(e);
     if (ev) dispatcher?.push(ev);
@@ -729,6 +767,31 @@ export function createApp(
               const r = await restart.request();
               if (!r.ok) throw new Error(r.error);
               return "restart when idle requested";
+            },
+            // An allowed decision takes effect (§4.4).
+            decision: async (a) => {
+              const out = a.payload?.output as DecisionOutput | undefined;
+              if (!out || !a.workstreamId) throw new Error("a decision action needs payload.output and a workstream");
+              const sourceCardId = typeof a.payload?.sourceCardId === "string" ? a.payload.sourceCardId : undefined;
+              if (out.kind === "plan-batch") {
+                const project = a.projectId ? (await projects.list()).find((x) => x.id === a.projectId) : undefined;
+                const results: string[] = [];
+                for (const c of out.cards) {
+                  const r = await executor!.execute({ kind: "card.start", workstreamId: a.workstreamId, ...(a.projectId ? { projectId: a.projectId } : {}), payload: { card: { title: c.title, body: c.body, labels: [], ...(project ? { repo: project.path } : {}), ...(c.key ? { key: c.key } : {}), ...(c.files ? { files: c.files } : {}), ...(c.waitsFor ? { waitsFor: c.waitsFor } : {}) } } });
+                  results.push(`${c.key ?? c.title}: ${r.status}`);
+                }
+                return `planned ${out.cards.length} card(s): ${results.join("; ")}`;
+              }
+              if (out.kind === "decide-default") {
+                const d = decisions!.add({ workstreamId: a.workstreamId, text: out.text, alternative: out.alternative, lean: out.lean, by: "wissel", ...(sourceCardId ? { sourceCardId } : {}) });
+                return `took decision ${d.id}: ${out.text}`;
+              }
+              const subject = typeof a.payload?.subjectId === "string" ? await board.get(a.payload.subjectId) : undefined;
+              if (!subject) throw new Error("triage-red needs the card it is about");
+              if (out.verdict === "retry") return `retry: ${await mergeForward({ board: board as Board, registry, merge: mergeContext }, subject)}`;
+              if (out.verdict === "fix-round") return `fix round: ${await pushBackGateFailure(board as Board, subject, `Triage: ${out.reason}`)}`;
+              const r = await ownerTasks!.create({ title: `Spec question: ${subject.title}`, why: `The gates stay red and triage says the brief can't be met as written: ${out.reason}`, steps: ["Answer the question in the card's brief", "Retry the card, or dismiss this"], blocks: [] });
+              return r.ok ? `spec question raised: owner task ${r.task.id}` : `spec question: ${r.error}`;
             },
             "pr.merge-forward": async (a) => {
               const card = typeof a.payload?.taskId === "string" ? await board.get(a.payload.taskId) : undefined;
@@ -1162,6 +1225,13 @@ export function createApp(
       }
 
       // Restart when idle (docs/SDD-coordinator.md §4.12, §5).
+      // Flip a decision to its alternative (§5); the owner's call.
+      if (decisions && /^\/decisions\/[^/]+\/flip$/.test(url.pathname) && req.method === "POST") {
+        if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner flips a decision" }, 403);
+        const d = decisions.flip(decodeURIComponent(url.pathname.split("/")[2]!));
+        return d ? json(d) : notFound();
+      }
+
       // The event inbox (docs/SDD-coordinator.md §4.1). POST takes a
       // message from the owner; everything else arrives on its own.
       if (inbox && url.pathname === "/inbox") {
@@ -1197,6 +1267,17 @@ export function createApp(
         // The quiet-hours queue, and the one way to ask the executor to
         // act: every action goes through the gate (§4.3, §5).
         if (seg.length === 3 && seg[2] === "outbound" && req.method === "GET") return json(outbound?.list({ workstreamId: ws.id }) ?? []);
+        // Decisions (§4.4, §5): the log, and starting a decision card.
+        if (seg.length === 3 && seg[2] === "decisions" && req.method === "GET") return json(decisions?.list(ws.id) ?? []);
+        if (seg.length === 4 && seg[2] === "decisions" && seg[3] === "start" && req.method === "POST") {
+          const body = ((await req.json().catch(() => undefined)) ?? {}) as { kind?: unknown; projectId?: unknown; context?: unknown; subjectId?: unknown };
+          if (typeof body.kind !== "string" || !(IMPLEMENTED_KINDS as readonly string[]).includes(body.kind)) return json({ error: `kind must be one of: ${IMPLEMENTED_KINDS.join(", ")}` }, 400);
+          if (typeof body.context !== "string" || !body.context.trim() || body.context.length > 20_000) return json({ error: "context must be 1 to 20000 characters" }, 400);
+          if (body.projectId !== undefined && !ws.projects.some((p) => p.projectId === body.projectId)) return json({ error: "projectId is not in this workstream" }, 400);
+          if (body.subjectId !== undefined && (typeof body.subjectId !== "string" || !(await board.get(body.subjectId)))) return json({ error: "no such subject card" }, 400);
+          const card = await startDecisionCard(body.kind as ImplementedKind, ws.id, body.projectId as string | undefined, body.context, body.subjectId as string | undefined);
+          return json(card, 201);
+        }
         if (seg.length === 3 && seg[2] === "actions" && req.method === "POST" && executor) {
           const body = ((await req.json().catch(() => undefined)) ?? {}) as { action?: Record<string, unknown> };
           const a = body.action;

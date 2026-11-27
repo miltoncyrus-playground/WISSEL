@@ -1,5 +1,6 @@
 import type { CardTemplateKind } from "./card-templates.ts";
 import type { Delivery } from "../services/delivery.ts";
+import type { DecisionOutput } from "../services/decisions.ts";
 
 export type AgentTier = "service" | "readonly" | "write";
 export type TrustLevel = "low" | "medium" | "high";
@@ -140,7 +141,7 @@ export interface AgentDef {
    *  machine parsing beyond the is_error the harness itself reports" —
    *  outputContract text still reaches the prompt, its content just
    *  isn't validated downstream. */
-  outputContractFormat?: "review-verdict" | "subtask-plan" | "pipeline-handoff";
+  outputContractFormat?: "review-verdict" | "subtask-plan" | "pipeline-handoff" | "decision";
   /** Agent-specific self-verification instructions, appended to the
    *  prompt by buildAgentPrompt when present — same mechanism as
    *  outputContract, different purpose: tells the agent to actually run
@@ -980,6 +981,8 @@ export interface TaskResult {
   reviewFeedback?: string;
   /** The review's severity counts, when it gave them (ReviewVerdict.severity). */
   reviewSeverity?: ReviewSeverity;
+  /** A decision card's parsed output (src/services/decisions.ts). */
+  decision?: DecisionOutput;
   /** Set when this result came from a planner pass that produced a
    *  decomposition — same shape as SubtaskPlanItem[], flattened onto
    *  TaskResult so the orchestrator can spawn the real subtask cards

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import type { ReviewPolicy, TaskCard, TaskPullRequest } from "../core/types.ts";
+import type { DecisionOutput } from "./decisions.ts";
 import { deliveryBranch, ghCodeHost, pullRequestText, withRetry, type CodeHost, type Delivery, type PrContext, type PullRequestDelivery } from "./delivery.ts";
 import type { TelemetryEvent } from "./telemetry.ts";
 import { withRepoLock } from "./repo-lock.ts";
@@ -423,6 +424,9 @@ export interface MergeContext {
   /** The repo's review policy, its fix-round template and its card rules
    *  (docs/SDD-coordinator.md §4.6), read when a review verdict lands. */
   reviewPolicyFor?: (repo: string) => Promise<{ policy?: ReviewPolicy; fixRoundTemplate?: string; cardRules?: string } | undefined>;
+  /** Acts on a decision card's output (docs/SDD-coordinator.md §4.4),
+   *  through the gate. Called once its result is recorded. */
+  onDecision?: (task: TaskCard, decision: DecisionOutput) => Promise<void>;
 }
 
 export function toMergeContext(m: CommandRunner | MergeContext): MergeContext {

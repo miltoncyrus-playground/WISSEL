@@ -445,6 +445,24 @@ The executor does what the gate allows and nothing else (`POST
   overnight still applies. A queued push goes through the merge path
   and its gates again.
 
+Judgment runs as short decision cards (`src/services/decisions.ts`,
+§4.4). A card labelled `decision` goes to the read-only `decider` agent.
+Its brief fences the context as untrusted data, and its answer must end
+with a ` ```decision ` block that fits its kind's schema. The decider
+only proposes; the answer is one gated action, so the role decides what
+happens. The kinds:
+- **`plan-batch`:** proposes cards, each started as its own gated card.
+- **`decide-default`:** a default with its alternative and lean, kept
+  as a Decision you can flip (`GET /workstreams/:id/decisions`, `POST
+  /decisions/:id/flip`).
+- **`triage-red`:** `retry` (deliver again), `fix-round` (back with the
+  reason) or `spec-question` (an owner task).
+
+A `follow` project turns the same answer into a question for its decider.
+A workstream card whose PR checks go red starts a `triage-red` on its
+own. `POST /workstreams/:id/decisions/start {kind, context, projectId?,
+subjectId?}` starts one by hand.
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
