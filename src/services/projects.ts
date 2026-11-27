@@ -72,6 +72,7 @@ interface ProjectRow {
   referencePatterns?: string | null;
   cardRules?: string | null;
   cardTemplates?: string | null;
+  env?: string | null;
 }
 
 /** The settings columns: each a nullable JSON TEXT column named after
@@ -99,6 +100,7 @@ function rowToProject(row: ProjectRow): Project {
     ...(row.referencePatterns ? { referencePatterns: JSON.parse(row.referencePatterns) as string[] } : {}),
     ...(row.cardRules ? { cardRules: JSON.parse(row.cardRules) as string } : {}),
     ...(row.cardTemplates ? { cardTemplates: JSON.parse(row.cardTemplates) as NonNullable<Project["cardTemplates"]> } : {}),
+    ...(row.env ? { env: JSON.parse(row.env) as Record<string, string> } : {}),
   };
 }
 
@@ -241,12 +243,12 @@ export class SqliteProjectStore implements ProjectStore {
   async mergeGateFor(repo: string): Promise<MergeGateConfig | undefined> {
     const project = await this.byPath(repo);
     if (!project?.mergeGate?.length) return undefined;
-    return { commands: project.mergeGate, ...(project.mergeGateTimeoutMs ? { timeoutMs: project.mergeGateTimeoutMs } : {}) };
+    return { commands: project.mergeGate, ...(project.mergeGateTimeoutMs ? { timeoutMs: project.mergeGateTimeoutMs } : {}), ...(project.env ? { env: project.env } : {}) };
   }
 
   async worktreeSetupFor(repo: string): Promise<WorktreeSetupConfig | undefined> {
     const project = await this.byPath(repo);
-    return project?.worktreeSetup?.length ? { commands: project.worktreeSetup } : undefined;
+    return project?.worktreeSetup?.length ? { commands: project.worktreeSetup, ...(project.env ? { env: project.env } : {}) } : undefined;
   }
 
   async settingsFor(repo: string): Promise<ProjectSettings | undefined> {

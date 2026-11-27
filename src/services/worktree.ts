@@ -79,6 +79,8 @@ async function ensureTargetBranch(repo: string, target: string, runner: CommandR
 export interface WorktreeSetupConfig {
   commands: string[][];
   timeoutMs?: number;
+  /** The project's env (Project.env). */
+  env?: Record<string, string>;
 }
 
 /** Looks up the setup for a repo path (the project registered there);
@@ -217,7 +219,7 @@ export async function runWorktreeSetup(
   const start = performance.now();
   for (const argv of setup.commands) {
     const t0 = performance.now();
-    const res = await runner(argv, { cwd: worktreePath, timeoutMs });
+    const res = await runner(argv, { cwd: worktreePath, timeoutMs, ...(setup.env ? { env: setup.env } : {}) });
     runs.push({ argv, exitCode: res.exitCode, durationMs: Math.round(performance.now() - t0), timedOut: res.timedOut });
     if (res.timedOut || res.exitCode !== 0) {
       const why = res.timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `exited ${res.exitCode}`;

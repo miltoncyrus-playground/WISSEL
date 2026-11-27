@@ -417,6 +417,12 @@ export interface Project {
   /** A markdown brief per kind of card, with {placeholders}; POST /tasks
    *  with `template` renders one and refuses empty required ones. */
   cardTemplates?: Partial<Record<CardTemplateKind, string>>;
+  /** Environment for this repo's card runs, merge gate and worktree
+   *  setup, such as TMPDIR on a disk with room (docs/SDD-coordinator.md
+   *  §3.2, §4.12). Never credentials: validateProjectEnv refuses names
+   *  that look like one, and anything that would change which account
+   *  or which tools run. */
+  env?: Record<string, string>;
 }
 
 /** Which needs-me state a card is in. See NeedsYou. */

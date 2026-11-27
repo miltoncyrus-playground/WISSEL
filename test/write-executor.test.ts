@@ -718,3 +718,25 @@ test("a verification with grants but no commands passes only those grants and te
     await rm(home, { recursive: true, force: true });
   }
 });
+
+// docs/SDD-coordinator.md §4.12, phase 1 card 6: a card run gets its
+// project's env (TMPDIR on a disk with room), and the harness's own
+// account pointers stay on top.
+test("a project's env reaches the claude run, under the harness's own env", async () => {
+  const home = await fakeHome();
+  try {
+    let env: Record<string, string | undefined> | undefined;
+    const runner: CommandRunner = async (cmd, opts) => {
+      if (cmd[0] === "git") return { stdout: "", stderr: "", exitCode: 0 };
+      env = opts.env;
+      return ok;
+    };
+    const executor = new WriteExecutor({ homeDir: home, runner, settingsFor: async () => ({ env: { TMPDIR: "/data/tmp", CLAUDE_CONFIG_DIR: "/project/tries" } }) });
+    const harness = { id: "claude", tool: "claude-cli" as const, label: "claude", enabled: true, env: { CLAUDE_CONFIG_DIR: "/home/me/.claude" } };
+    await executor.run(task, agent, harness);
+    expect(env?.TMPDIR).toBe("/data/tmp");
+    expect(env?.CLAUDE_CONFIG_DIR).toBe("/home/me/.claude");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
