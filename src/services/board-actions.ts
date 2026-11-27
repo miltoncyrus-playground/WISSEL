@@ -224,6 +224,24 @@ export async function setTaskNotBefore(board: Board, task: TaskCard, notBefore: 
   return ok(await board.setNotBefore(task.id, check.notBefore));
 }
 
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/** `POST /tasks/:id/pr`: records the pull request a card's work was
+ *  delivered as (TaskCard.pr), or clears it with `{ "pr": null }`. The
+ *  head must be the full commit sha (docs/SDD-coordinator.md §4.9), and
+ *  the url an https link. */
+export async function setTaskPullRequest(board: Board, task: TaskCard, body: unknown): Promise<Outcome<TaskCard>> {
+  if (body === null || typeof body !== "object" || !("pr" in body)) return no(400, "body needs pr: { number, url, head } (or null to clear it)");
+  const pr = (body as { pr: unknown }).pr;
+  if (pr === null) return ok(await board.setPullRequest(task.id, undefined));
+  if (typeof pr !== "object" || Array.isArray(pr)) return no(400, "pr must be { number, url, head } or null");
+  const { number, url, head } = pr as Record<string, unknown>;
+  if (!Number.isInteger(number) || (number as number) < 1) return no(400, "pr.number must be a positive whole number");
+  if (typeof url !== "string" || !url.startsWith("https://")) return no(400, "pr.url must be an https:// link");
+  if (typeof head !== "string" || !FULL_SHA.test(head)) return no(400, "pr.head must be the full 40-character commit sha, in lower case");
+  return ok(await board.setPullRequest(task.id, { number: number as number, url, head }));
+}
+
 /** A card can be edited only before anything has happened to it: queued
  *  (inbox or ready), not routed to an agent, not archived, not replaced
  *  by a later attempt. Once it has run, the card is a record. */
@@ -266,9 +284,10 @@ export async function editTask(board: Board, task: TaskCard, patch: unknown, dep
     mergeTarget: task.mergeTarget,
     extraAllowedTools: task.extraAllowedTools,
     extraAllowedDirs: task.extraAllowedDirs,
+    key: task.key,
     ...Object.fromEntries(keys.map((k) => [k, given[k] === null ? undefined : given[k]])),
   };
-  const check = await validateNewTask(candidate, deps);
+  const check = await validateNewTask(candidate, { ...deps, editing: task });
   if (!check.ok) return no(400, check.error);
   const fields: CardEdit = {};
   for (const k of keys) (fields as Record<string, unknown>)[k] = (check.task as Record<string, unknown>)[k];
@@ -276,7 +295,7 @@ export async function editTask(board: Board, task: TaskCard, patch: unknown, dep
 }
 
 function editTypeError(given: Record<string, unknown>): string | undefined {
-  for (const k of ["title", "body", "repo", "model", "harnessOverride", "mergeTarget"]) {
+  for (const k of ["title", "body", "repo", "model", "harnessOverride", "mergeTarget", "key"]) {
     const v = given[k];
     if (k in given && v !== null && typeof v !== "string") return `${k} must be a string (or null to clear it)`;
   }

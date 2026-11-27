@@ -66,6 +66,7 @@ import {
   setTaskHarnessOverride,
   editTask,
   setTaskNotBefore,
+  setTaskPullRequest,
   createSchedule,
   deleteSchedule,
   getSchedule,
@@ -1798,6 +1799,15 @@ export function createApp(
           return outcome(await setTaskNotBefore(board as Board, task, notBefore, new Date()));
         }
 
+        // Records or clears (null) the pull request a card's work was
+        // delivered as (docs/SDD-coordinator.md §3.3): { pr: { number,
+        // url, head } }, head the full commit sha.
+        if (parts.length === 3 && parts[2] === "pr" && req.method === "POST") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          return outcome(await setTaskPullRequest(board as Board, task, await req.json().catch(() => undefined)));
+        }
+
         // mergeTask and discardTask (src/services/board-actions.ts) are
         // the bodies of these two; Ask's merge_task/discard_task call them.
         if (parts.length === 3 && parts[2] === "merge" && req.method === "POST") {
@@ -1894,6 +1904,8 @@ export function createApp(
               repo: task.repo,
               pushbackCount: 0,
               reviewLineageId: randomUUID(),
+              // A fresh lineage starts again at round 1; the key carries.
+              round: 1,
               ...carriedCardSettings(task),
             });
             await board.setSupersededBy(task.id, nextAttempt.id);

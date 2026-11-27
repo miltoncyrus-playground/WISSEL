@@ -868,3 +868,19 @@ test("runNow rejects a click on a superseded task instead of resurrecting its ab
     await cleanup(fixture);
   }
 });
+
+// docs/SDD-coordinator.md §3.3: every attempt and review of the same work
+// carries its key, and each says which round it is.
+test("a keyed card's review and pushback re-attempt carry its key; the review is round 1, the re-attempt round 2", async () => {
+  const fixture = await setup([{ verdict: "changes_requested", feedback: "missing error handling" }]);
+  try {
+    const original = await fixture.board.create({ title: "Add a feature", body: "Implement X.", labels: ["code"], repo: fixture.repo, key: "A4" });
+    await driveRounds(fixture.orchestrator, 1);
+    const review = (await fixture.board.list()).find((t) => t.parentTaskId === original.id)!;
+    expect([review.key, review.round]).toEqual(["A4", 1]);
+    const reattempt = (await fixture.board.get((await fixture.board.get(original.id))!.supersededBy!))!;
+    expect([reattempt.key, reattempt.round, reattempt.pushbackCount]).toEqual(["A4", 2, 1]);
+  } finally {
+    await cleanup(fixture);
+  }
+});

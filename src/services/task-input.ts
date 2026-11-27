@@ -27,6 +27,26 @@ export interface NewTaskDeps {
    *  run on (Project.harness), if any. Filled in when the card names
    *  none. docs/SDD-project-harness.md. */
   projectHarnessFor?: (repo: string) => Promise<string | undefined>;
+  /** Set when an existing card is being edited: its own key, and the
+   *  attempts and reviews of the same work, don't count as a clash. */
+  editing?: Pick<TaskCard, "id" | "reviewLineageId">;
+}
+
+/** TaskCard.key: a short name such as "A4". */
+export const CARD_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
+
+/** Why `key` can't be used on a card in `repo`, or undefined when it can
+ *  (docs/SDD-coordinator.md §3.3). Until workstreams exist a key is
+ *  unique per project: no other live card (not archived, not replaced by
+ *  a later attempt) in the same repo may carry it, except the attempts
+ *  and reviews of the same work. */
+export async function cardKeyRefusal(board: Board, key: unknown, repo: string | undefined, editing?: Pick<TaskCard, "id" | "reviewLineageId">): Promise<string | undefined> {
+  if (typeof key !== "string" || !CARD_KEY_PATTERN.test(key)) return "key must be 1 to 32 letters, digits, dots, dashes or underscores, starting with a letter or digit (such as A4)";
+  const lineage = editing ? (editing.reviewLineageId ?? editing.id) : undefined;
+  const clash = (await board.list(repo ? { repo } : {})).find(
+    (t) => t.key === key && !t.archivedAt && !t.supersededBy && (repo ? true : !t.repo) && t.id !== editing?.id && (lineage === undefined || (t.reviewLineageId ?? t.id) !== lineage),
+  );
+  return clash ? `key "${key}" is already used by "${clash.title}" (${clash.id}) in this project` : undefined;
 }
 
 export type NewTaskCheck = { ok: true; task: NewTask } | { ok: false; error: string };
@@ -35,6 +55,16 @@ export type NewTaskCheck = { ok: true; task: NewTask } | { ok: false; error: str
  *  (tool grants normalized, `notBefore` in UTC). */
 export async function validateNewTask(input: NewTask, deps: NewTaskDeps): Promise<NewTaskCheck> {
   const body: NewTask = { ...input };
+  // The round and the pull request are recorded by Wissel itself (the
+  // orchestrator, and POST /tasks/:id/pr), never sent with a new card.
+  delete body.round;
+  delete body.pr;
+  if (body.key !== undefined && body.key !== null) {
+    const refused = await cardKeyRefusal(deps.board, body.key, body.repo, deps.editing);
+    if (refused) return { ok: false, error: refused };
+  } else {
+    body.key = undefined;
+  }
   // Per-card tool grants (src/core/allowed-tools.ts): command-scoped
   // Bash only, never a blanket grant. Stored normalized.
   const grants = validateExtraAllowedTools(body.extraAllowedTools);

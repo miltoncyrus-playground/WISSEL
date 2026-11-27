@@ -27,6 +27,7 @@ import { readProjectAllowRules, validateExtraAllowedTools } from "./allowed-tool
 import { DEFAULT_VERIFICATION } from "./verification.ts";
 import { formatMcpTranscript } from "../services/mcp-transcript.ts";
 import type { AgentDef, Executor, Harness, HarnessTool, RoutingDecision, SubtaskPlanItem, TaskCard, TaskResult } from "./types.ts";
+import { roundOf } from "./types.ts";
 
 /** What finishResult needs to drive a pipeline step's own follow-up work
  *  (see the `task.pipelineId !== undefined` branch below) — passed
@@ -404,6 +405,10 @@ async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result
     parentTaskId: implementerTask.id,
     reviewLineageId,
     pushbackCount: 0,
+    // The review belongs to the same work, in the round it reviews
+    // (docs/SDD-coordinator.md §3.3).
+    ...(implementerTask.key ? { key: implementerTask.key } : {}),
+    round: roundOf(implementerTask),
     // A review stays on the account and branch of the card it reviews:
     // before this, a review card was created unpinned and could run on
     // any enabled account.
@@ -809,6 +814,7 @@ export function carriedCardSettings(task: TaskCard): Partial<Omit<TaskCard, "id"
     ...(task.harnessOverride ? { harnessOverride: task.harnessOverride } : {}),
     ...(task.mergeTarget ? { mergeTarget: task.mergeTarget } : {}),
     ...(task.mcpAccessOverride ? { mcpAccessOverride: task.mcpAccessOverride } : {}),
+    ...(task.key ? { key: task.key } : {}),
   };
 }
 
@@ -860,6 +866,7 @@ async function spawnPushbackImplementer(
     parentTaskId,
     reviewLineageId,
     pushbackCount: newPushbackCount,
+    round: newPushbackCount + 1,
     ...carriedCardSettings(implementerTask),
   });
 

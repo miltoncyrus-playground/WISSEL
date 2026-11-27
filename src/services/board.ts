@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { McpApprovalRequest, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
+import type { McpApprovalRequest, RoutingDecision, TaskCard, TaskPullRequest, TaskResult } from "../core/types.ts";
 
 /** What `escalate` stores when a caller passes an empty or whitespace-only
  *  reason, so an escalated card never shows a blank escalation panel. */
@@ -49,6 +49,10 @@ export interface Board {
    *  through setTaskNotBefore (src/services/board-actions.ts), and by
    *  Orchestrator.runNow to clear it. */
   setNotBefore(id: string, notBefore: string | undefined): Promise<TaskCard>;
+  /** Records (or, with undefined, clears) the pull request a card's
+   *  work was delivered as (TaskCard.pr). Validated by setTaskPullRequest
+   *  (src/services/board-actions.ts). */
+  setPullRequest(id: string, pr: TaskPullRequest | undefined): Promise<TaskCard>;
   /** Moves a task to `escalated` and records why in one atomic step —
    *  there's no valid intermediate state where a task is `escalated`
    *  without an `escalationContext`, so this never exists as two calls
@@ -146,7 +150,7 @@ export interface ResultMeta {
 }
 
 /** What `PATCH /tasks/:id` may change on a card that hasn't started. */
-export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs"] as const;
+export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs", "key"] as const;
 export type CardEdit = Partial<Pick<TaskCard, (typeof EDITABLE_CARD_FIELDS)[number]>>;
 
 export type BoardEvent =
@@ -159,6 +163,7 @@ export type BoardEvent =
   | { type: "task.superseded"; task: TaskCard }
   | { type: "task.allowed-tools"; task: TaskCard }
   | { type: "task.not-before"; task: TaskCard }
+  | { type: "task.pr"; task: TaskCard }
   | { type: "task.decided"; decision: RoutingDecision }
   | { type: "task.result"; result: TaskResult }
   | { type: "task.override"; taskId: string; routerPick: string; humanPick: string; actor?: string; reason?: string; at: string }
@@ -204,6 +209,9 @@ interface TaskRow {
   extraAllowedTools: string | null;
   createdByPrincipalId: string | null;
   authorizedByPrincipalId: string | null;
+  cardKey: string | null;
+  round: number | null;
+  pr: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -234,6 +242,9 @@ function rowToCard(row: TaskRow): TaskCard {
     mergeTarget: row.mergeTarget ?? undefined,
     createdByPrincipalId: row.createdByPrincipalId ?? undefined,
     authorizedByPrincipalId: row.authorizedByPrincipalId ?? undefined,
+    key: row.cardKey ?? undefined,
+    round: row.round ?? undefined,
+    pr: row.pr ? (JSON.parse(row.pr) as TaskPullRequest) : undefined,
     resumeSessionId: row.resumeSessionId ?? undefined,
     suggestedGrants: row.suggestedGrants ? (JSON.parse(row.suggestedGrants) as string[]) : undefined,
     doneAt: row.doneAt ?? undefined,
@@ -304,7 +315,10 @@ export class SqliteBoard implements Board {
         scheduleId TEXT,
         mergeTarget TEXT,
         createdByPrincipalId TEXT,
-        authorizedByPrincipalId TEXT
+        authorizedByPrincipalId TEXT,
+        cardKey TEXT,
+        round INTEGER,
+        pr TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -348,6 +362,11 @@ export class SqliteBoard implements Board {
       // who stands behind its run.
       "ALTER TABLE tasks ADD COLUMN createdByPrincipalId TEXT;",
       "ALTER TABLE tasks ADD COLUMN authorizedByPrincipalId TEXT;",
+      // docs/SDD-coordinator.md §3.3: the card's short name, its round
+      // within the lineage and the PR it was delivered as.
+      "ALTER TABLE tasks ADD COLUMN cardKey TEXT;",
+      "ALTER TABLE tasks ADD COLUMN round INTEGER;",
+      "ALTER TABLE tasks ADD COLUMN pr TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -578,7 +597,7 @@ export class SqliteBoard implements Board {
       if (parent?.authorizedByPrincipalId) full.authorizedByPrincipalId = parent.authorizedByPrincipalId;
     }
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget, createdByPrincipalId, authorizedByPrincipalId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget, createdByPrincipalId, authorizedByPrincipalId, cardKey, round, pr) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -607,6 +626,9 @@ export class SqliteBoard implements Board {
         full.mergeTarget ?? null,
         full.createdByPrincipalId ?? null,
         full.authorizedByPrincipalId ?? null,
+        full.key ?? null,
+        full.round ?? null,
+        full.pr ? JSON.stringify(full.pr) : null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
@@ -673,6 +695,7 @@ export class SqliteBoard implements Board {
     if ("model" in fields) set("model", fields.model ?? null);
     if ("harnessOverride" in fields) set("harnessOverride", fields.harnessOverride ?? null);
     if ("mergeTarget" in fields) set("mergeTarget", fields.mergeTarget ?? null);
+    if ("key" in fields) set("cardKey", fields.key ?? null);
     if ("extraAllowedTools" in fields) set("extraAllowedTools", fields.extraAllowedTools?.length ? JSON.stringify(fields.extraAllowedTools) : null);
     if ("extraAllowedDirs" in fields) set("extraAllowedDirs", fields.extraAllowedDirs?.length ? JSON.stringify(fields.extraAllowedDirs) : null);
     if (sets.length === 0) return existing;
@@ -706,6 +729,15 @@ export class SqliteBoard implements Board {
     this.db.run("UPDATE tasks SET notBefore = ? WHERE id = ?", [notBefore ?? null, id]);
     const updated: TaskCard = { ...existing, notBefore };
     this.events.emit("event", { type: "task.not-before", task: updated } satisfies BoardEvent);
+    return updated;
+  }
+
+  async setPullRequest(id: string, pr: TaskPullRequest | undefined): Promise<TaskCard> {
+    const existing = await this.get(id);
+    if (!existing) throw new Error(`task not found: ${id}`);
+    this.db.run("UPDATE tasks SET pr = ? WHERE id = ?", [pr ? JSON.stringify(pr) : null, id]);
+    const updated: TaskCard = { ...existing, pr };
+    this.events.emit("event", { type: "task.pr", task: updated } satisfies BoardEvent);
     return updated;
   }
 

@@ -517,6 +517,20 @@ export interface TaskCard {
    *  worktree branches off the repo's HEAD and the merge fast-forwards
    *  HEAD. docs/SDD-merge-target.md. */
   mergeTarget?: string;
+  /** A short name people use for this piece of work, such as "A4"
+   *  (docs/SDD-coordinator.md §3.3). Unique per project among live cards
+   *  until workstreams exist; every attempt and review of the same work
+   *  carries it. */
+  key?: string;
+  /** Which attempt this is within its review lineage: 1 for the first,
+   *  and one more for each pushback re-attempt. A review card carries
+   *  the round it reviews. Unset on cards made before rounds were
+   *  recorded: read it with `roundOf`. */
+  round?: number;
+  /** The pull request this card's work was delivered as
+   *  (docs/SDD-coordinator.md §4.5). `head` is the full commit sha the
+   *  PR pointed at when it was recorded. */
+  pr?: TaskPullRequest;
   /** A task-level override of the routed agent's own declared
    *  `mcpAccess` — same "task override beats the manifest-level default"
    *  shape as `harnessOverride`/`model` above, just for MCP grants
@@ -714,6 +728,20 @@ export interface TaskCard {
  *  same shape as claude-cli, just a different tool/account pair (see
  *  docs/SDD-codex-cli-harness.md). */
 export type HarnessTool = "claude-cli" | "anthropic-api" | "codex-cli";
+
+/** TaskCard.pr. */
+export interface TaskPullRequest {
+  number: number;
+  url: string;
+  /** Full 40-character commit sha. */
+  head: string;
+}
+
+/** The attempt number of a card, for cards made before `round` was
+ *  stored too: one more than its pushback count. */
+export function roundOf(task: Pick<TaskCard, "round" | "pushbackCount">): number {
+  return task.round ?? (task.pushbackCount ?? 0) + 1;
+}
 
 export interface Harness {
   id: string;

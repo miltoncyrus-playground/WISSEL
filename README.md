@@ -248,6 +248,15 @@ Task tab's optional **Start at** (your browser's time, sent as UTC) sets
 it, the card shows a "Starts 23:00" chip (with the date when it isn't
 today) until it's picked up, and the card's drawer changes or clears it.
 
+A card can carry a short `key` such as `A4`, on `POST /tasks` or
+`PATCH /tasks/:id` (`null` clears it). It is unique per project among
+live cards, and every attempt and review of the same work keeps it.
+`round` counts the attempts in a review lineage: 1 first, one more per
+pushback, and a review carries the round it reviews. `POST /tasks/:id/pr
+{pr: {number, url, head}}` records the pull request the work became,
+with `head` as the full commit sha (`null` clears it)
+(`docs/SDD-coordinator.md` §3.3).
+
 `bun run usage:report [--since 2026-10-10] [--agent implementer]` shows
 where agent spend goes: per agent the runs, cost, turns, context per turn
 and output, and what runs cut off by a session limit cost
