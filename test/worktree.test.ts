@@ -190,6 +190,7 @@ test("mergeTaskWorktree reports a commit failure instead of merging a half-commi
   const runner = async (cmd: string[]) => {
     const key = cmd.join(" ");
     if (key === "git rev-parse -q --verify MERGE_HEAD") return { stdout: "", stderr: "", exitCode: 1 };
+    if (key === "git status --porcelain --untracked-files=all -z") return { stdout: " M file.txt\0", stderr: "", exitCode: 0 };
     if (key === "git status --porcelain") return { stdout: " M file.txt\n", stderr: "", exitCode: 0 };
     if (cmd[0] === "git" && cmd[1] === "add") return { stdout: "", stderr: "", exitCode: 0 };
     if (cmd[1] === "commit") return { stdout: "", stderr: "commit failed: hook rejected", exitCode: 1 };
@@ -294,6 +295,7 @@ test("mergeTaskWorktree finishes a resolved merge with a finished integrator: gi
     if (line === "git rev-parse -q --verify MERGE_HEAD") return { stdout: "abc\n", stderr: "", exitCode: 0 };
     if (line === "git ls-files -u -z") return { stdout: "100644 aaa 2\tf.txt\0", stderr: "", exitCode: 0 };
     if (line === "git diff --name-only --no-renames -z HEAD") return { stdout: "f.txt\0", stderr: "", exitCode: 0 };
+    if (line === "git status --porcelain --untracked-files=all -z") return { stdout: "", stderr: "", exitCode: 0 };
     if (line === "git add -A") return { stdout: "", stderr: "", exitCode: 0 };
     if (line === "git commit --no-edit --cleanup=strip") return { stdout: "", stderr: "", exitCode: 0 };
     if (line === "git status --porcelain") return { stdout: "", stderr: "", exitCode: 0 };
@@ -306,12 +308,14 @@ test("mergeTaskWorktree finishes a resolved merge with a finished integrator: gi
     writeFileSync(join(wt, "f.txt"), "a\nours\ntheirs\nz\n");
     const result = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, { runner, conflictIntegrator: async () => ({ finished: true, cardId: "int-1" }) });
     expect(result.outcome).toBe("error");
-    expect(seen.slice(0, 6)).toEqual([
+    expect(seen.slice(0, 8)).toEqual([
       "git rev-parse -q --verify MERGE_HEAD",
       "git ls-files -u -z",
       "git diff --name-only --no-renames -z HEAD",
+      "git status --porcelain --untracked-files=all -z",
       "git add -A",
       "git commit --no-edit --cleanup=strip",
+      "git status --porcelain --untracked-files=all -z",
       "git status --porcelain",
     ]);
   } finally {

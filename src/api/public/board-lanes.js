@@ -18,6 +18,7 @@ var BOARD_LANES = [
   { id: "queued", label: "Queued" },
   { id: "working", label: "Working" },
   { id: "in-review", label: "In review" },
+  { id: "next-step", label: "Next step" },
   { id: "done", label: "Done" },
 ];
 
@@ -32,6 +33,7 @@ var STATUS_DISPLAY = {
   running: { lane: "working", label: "Running", color: "--sig-running" },
   dispatched: { lane: "working", label: "Dispatched", color: "--accent" },
   reviewing: { lane: "working", label: "Reviewing", color: "--accent" },
+  "review-in-progress": { lane: "in-review", label: "Review in progress", color: "--accent" },
   "pending-review": { lane: "in-review", label: "Pending review", color: "--sig-running" },
   done: { lane: "done", label: "Done", color: "--sig-done" },
   review: { lane: NEEDS_YOU, label: "Review", color: "--no-match" },
@@ -66,11 +68,20 @@ function statusDef(status) {
   return Object.prototype.hasOwnProperty.call(STATUS_DISPLAY, status) ? STATUS_DISPLAY[status] : undefined;
 }
 
-// A BOARD_LANES id or NEEDS_YOU. An unknown status (a value added to
+// A BOARD_LANES id or NEEDS_YOU. The server's TaskCard.needsYou
+// (src/services/needs-you.ts) decides first: lane "human" is the Needs
+// a human strip, and a finished review card on lane "next-step" (an
+// approved merge, a passed review report, a merge waiting on another)
+// goes to the Next step lane. A queued card on "next-step" (waiting on a
+// stuck dependency) stays queued. Without needsYou (an older server),
+// the status table decides. An unknown status (a value added to
 // types.ts but not to STATUS_DISPLAY) goes to Needs you rather than
 // vanishing: a human should look at a card the board can't place.
 function taskPlacement(t) {
   if (hasPendingMcpApproval(t)) return NEEDS_YOU;
+  var ny = t.needsYou;
+  if (ny && ny.lane === "human") return NEEDS_YOU;
+  if (ny && ny.lane === "next-step" && t.status === "review") return "next-step";
   var def = statusDef(taskDisplayStatus(t));
   return def ? def.lane : NEEDS_YOU;
 }
@@ -85,7 +96,8 @@ function statusColor(status) {
   return def ? def.color : "--ink-muted";
 }
 
-// Why a card is in Needs you, in a few words.
+// Why a card is in Needs you, in a few words (a pipeline run's reason
+// strings these together, so they stay short).
 function needsYouReason(t) {
   if (hasPendingMcpApproval(t)) {
     var req = t.pendingMcpApproval;
@@ -110,12 +122,58 @@ function needsYouReason(t) {
   }
 }
 
+// A single card's Needs a human / Next step line: the server's
+// needsYou.line when there is one, else needsYouReason.
+function needsYouLine(t) {
+  return t.needsYou && t.needsYou.line ? t.needsYou.line : needsYouReason(t);
+}
+
 // When a done card became done: doneAt, stamped by Board.move on every
 // move to done. null for a card that predates the field (or a bad
 // value); partitionBoard keeps those visible rather than guess.
 function doneTime(t) {
   var ms = Date.parse(t.doneAt || "");
   return isNaN(ms) ? null : ms;
+}
+
+// A reviewer's card (spawnReviewerTask, src/core/orchestrator.ts: its
+// parentTaskId is the card it reviews) is the same piece of work as the
+// pending-review card it reviews, so the board draws it once: the
+// pending-review card in In review, and no reviewer card in Working.
+// A reviewer card that failed or finished still shows where it is.
+var REVIEWER_OPEN = { inbox: true, ready: true, running: true, dispatched: true };
+
+function isReviewerCard(t) {
+  return !!t.parentTaskId && (t.routedTo === "reviewer" || (t.labels || []).indexOf("review") >= 0);
+}
+
+// { <pending-review card id>: "queued" | "running" } for every card a
+// live reviewer card is reviewing right now. "running" wins when several.
+function reviewsInFlight(tasks) {
+  var pending = {};
+  (tasks || []).forEach(function (t) {
+    if (t.status === "pending-review" && !t.archivedAt && !t.supersededBy) pending[t.id] = true;
+  });
+  var out = {};
+  (tasks || []).forEach(function (t) {
+    if (t.archivedAt || t.supersededBy || !isReviewerCard(t) || !REVIEWER_OPEN[t.status] || !pending[t.parentTaskId]) return;
+    var state = t.status === "running" || t.status === "dispatched" ? "running" : "queued";
+    if (out[t.parentTaskId] !== "running") out[t.parentTaskId] = state;
+  });
+  return out;
+}
+
+// Whether `t` is a live reviewer card whose pending-review card stands
+// for it on the board (see reviewsInFlight).
+function folded(t, inFlight) {
+  return isReviewerCard(t) && !!REVIEWER_OPEN[t.status] && Object.prototype.hasOwnProperty.call(inFlight, t.parentTaskId);
+}
+
+// The status a card's tag shows on the board: "review-in-progress" for a
+// pending-review card while its reviewer runs, else taskDisplayStatus.
+function boardDisplayStatus(t, inFlight) {
+  if (t.status === "pending-review" && inFlight && inFlight[t.id] === "running") return "review-in-progress";
+  return taskDisplayStatus(t);
 }
 
 // `opts.now` (ms), `opts.showAllDone`, `opts.showSuperseded`.
@@ -127,10 +185,12 @@ function doneTime(t) {
 function partitionBoard(tasks, opts) {
   opts = opts || {};
   var now = typeof opts.now === "number" ? opts.now : Date.now();
-  var out = { needsYou: [], lanes: {}, superseded: [], doneTotal: 0, doneHidden: 0 };
+  var inFlight = reviewsInFlight(tasks);
+  var out = { needsYou: [], lanes: {}, superseded: [], doneTotal: 0, doneHidden: 0, reviewsInFlight: inFlight };
   BOARD_LANES.forEach(function (l) { out.lanes[l.id] = []; });
   (tasks || []).forEach(function (t) {
     if (t.archivedAt) return;
+    if (folded(t, inFlight)) return;
     if (t.supersededBy) {
       if (opts.showSuperseded) out.superseded.push(t);
       return;
@@ -154,11 +214,14 @@ if (typeof module !== "undefined" && module.exports) {
     STATUS_DISPLAY: STATUS_DISPLAY,
     DONE_WINDOW_MS: DONE_WINDOW_MS,
     taskDisplayStatus: taskDisplayStatus,
+    boardDisplayStatus: boardDisplayStatus,
+    reviewsInFlight: reviewsInFlight,
     hasPendingMcpApproval: hasPendingMcpApproval,
     taskPlacement: taskPlacement,
     statusLabel: statusLabel,
     statusColor: statusColor,
     needsYouReason: needsYouReason,
+    needsYouLine: needsYouLine,
     doneTime: doneTime,
     partitionBoard: partitionBoard,
   };

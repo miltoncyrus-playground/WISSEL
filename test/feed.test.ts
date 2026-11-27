@@ -285,3 +285,15 @@ test("formatDuration", () => {
   expect(formatDuration(45)).toBe("45 s");
   expect(formatDuration(312)).toBe("5 min");
 });
+
+describe("needsYouAction reads the server's needsYou lane", () => {
+  const base = { id: "a1b2c3d4-0000-4000-8000-000000000001", title: "t", body: "", labels: [], status: "review" as const };
+  test("a next-step card is no Needs you item; a human one uses its line and action", () => {
+    const next = { ...base, needsYou: { kind: "merge" as const, lane: "next-step" as const, value: "merge", line: "Approved", why: "w", action: { label: "Merge", href: "/tasks/x/merge", method: "POST" as const } } };
+    expect(needsYouAction(next, new Set())).toBeNull();
+    const human = { ...base, needsYou: { kind: "report" as const, lane: "human" as const, value: "report:fail", line: "Review failed: 0 HIGH / 2 MED", why: "w", checklist: ["a"], action: { label: "Open", href: "/app#/board/x", method: "GET" as const } } };
+    expect(needsYouAction(human, new Set())).toEqual({ detail: "Review failed: 0 HIGH / 2 MED", link: { label: "Open", href: "/app#/board/x" } });
+    // No needsYou (an older caller): the status decides, as before.
+    expect(needsYouAction(base, new Set())!.detail).toBe("Ready for your review");
+  });
+});
