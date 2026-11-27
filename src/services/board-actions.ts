@@ -287,6 +287,7 @@ export async function editTask(board: Board, task: TaskCard, patch: unknown, dep
     key: task.key,
     waitsFor: task.waitsFor,
     files: task.files,
+    workstreamId: task.workstreamId,
     ...Object.fromEntries(keys.map((k) => [k, given[k] === null ? undefined : given[k]])),
   };
   const check = await validateNewTask(candidate, { ...deps, editing: task });
@@ -297,7 +298,7 @@ export async function editTask(board: Board, task: TaskCard, patch: unknown, dep
 }
 
 function editTypeError(given: Record<string, unknown>): string | undefined {
-  for (const k of ["title", "body", "repo", "model", "harnessOverride", "mergeTarget", "key"]) {
+  for (const k of ["title", "body", "repo", "model", "harnessOverride", "mergeTarget", "key", "workstreamId"]) {
     const v = given[k];
     if (k in given && v !== null && typeof v !== "string") return `${k} must be a string (or null to clear it)`;
   }

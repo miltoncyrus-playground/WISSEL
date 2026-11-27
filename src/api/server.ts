@@ -24,6 +24,7 @@ import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle
 import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
+import { workstreamCheck, WorkstreamStore, type WorkstreamInput } from "../services/workstreams.ts";
 import { describeCondition, findOverlaps, overlapWarning, StartConditionChecker } from "../services/start-conditions.ts";
 
 /** How often the host guard reads the host. */
@@ -615,6 +616,8 @@ export function createApp(
   // card waits in review, so a short-lived answer stays true.
   const worktreeChangedCache = new Map<string, { at: number; value: boolean | undefined }>();
   const ownerTasks = opts.ownerTasks ?? (board instanceof SqliteBoard ? new OwnerTaskStore(board.db, board) : undefined);
+  // Workstreams and roles (docs/SDD-coordinator.md §3.1, §4.13).
+  const workstreams = board instanceof SqliteBoard ? new WorkstreamStore(board.db) : undefined;
   hostGuard =
     opts.hostGuard ??
     (process.env.WISSEL_HOST_GUARD === "1" && ownerTasks
@@ -1063,6 +1066,49 @@ export function createApp(
       }
 
       // Restart when idle (docs/SDD-coordinator.md §4.12, §5).
+      // Workstreams (docs/SDD-coordinator.md §3.1, §5). A project's role
+      // changes only through its own route, by the owner, confirmed.
+      if (workstreams && (url.pathname === "/workstreams" || url.pathname.startsWith("/workstreams/"))) {
+        const seg = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+        const projectIds = new Set((await projects.list()).map((p) => p.id));
+        const exists = (id: string) => projectIds.has(id);
+        if (seg.length === 1 && req.method === "GET") return json(workstreams.list());
+        if (seg.length === 1 && req.method === "POST") {
+          const check = workstreamCheck(await req.json().catch(() => undefined), exists);
+          if (!check.ok) return json({ error: check.error }, 400);
+          const made = workstreams.create(check.input as WorkstreamInput);
+          return made.ok ? json(made.workstream, 201) : json({ error: made.error }, 409);
+        }
+        const ws = seg[1] ? workstreams.get(seg[1]) : undefined;
+        if (!ws) return notFound();
+        if (seg.length === 2 && req.method === "GET") return json(ws);
+        if (seg.length === 2 && req.method === "PATCH") {
+          const check = workstreamCheck(await req.json().catch(() => undefined), exists, true);
+          if (!check.ok) return json({ error: check.error }, 400);
+          const r = workstreams.update(ws.id, check.input);
+          return r.ok ? json(r.workstream) : json({ error: r.error }, r.status);
+        }
+        if (seg.length === 2 && req.method === "DELETE") {
+          const live = (await board.list()).filter((t) => t.workstreamId === ws.id && !t.archivedAt && t.status !== "done" && t.status !== "failed");
+          if (live.length > 0) return json({ error: `${live.length} open card(s) belong to this workstream; finish or move them first` }, 409);
+          workstreams.delete(ws.id);
+          return new Response(null, { status: 204 });
+        }
+        if (seg.length === 5 && seg[2] === "projects" && seg[4] === "role" && req.method === "POST") {
+          if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner changes a role" }, 403);
+          const body = ((await req.json().catch(() => ({}))) ?? {}) as { role?: unknown; confirm?: unknown };
+          const r = workstreams.setRole(ws.id, seg[3]!, body.role, body.confirm);
+          if (!r.ok) return json({ error: r.error }, r.status);
+          if (!r.changed && r.from !== r.to) {
+            // The confirm step: nothing changed yet, and nothing is
+            // recorded as a policy change.
+            return json({ confirmRequired: true, from: r.from, to: r.to, message: `This changes the role of project ${seg[3]} in "${ws.name}" from ${r.from} to ${r.to}. Send the same request with "confirm": true to apply it.` }, 409);
+          }
+          return json(r.workstream);
+        }
+        return notFound();
+      }
+
       // The PR watcher (docs/SDD-coordinator.md §4.7): every watched
       // card's PR as last seen; POST looks again now.
       if (url.pathname === "/admin/pr-watch") {
@@ -1798,7 +1844,7 @@ export function createApp(
           // The checks live in src/services/task-input.ts so a task
           // schedule's template (docs/SDD-schedules.md §3.2) is refused
           // by exactly these rules too.
-          const check = await validateNewTask(body, { board: board as Board, registry, router, harnesses, modelsCachePath, now: new Date(), projectHarnessFor });
+          const check = await validateNewTask(body, { board: board as Board, registry, router, harnesses, modelsCachePath, now: new Date(), projectHarnessFor, workstreamExists: (id) => workstreams?.get(id) !== undefined });
           if (!check.ok) return json({ error: check.error }, 400);
           const task = await board.create(check.task);
           // Named files that another open card or PR also names: said in
@@ -1812,7 +1858,7 @@ export function createApp(
           const task = await board.get(parts[1]!);
           if (!task) return notFound();
           const patch = await req.json().catch(() => undefined);
-          return outcome(await editTask(board as Board, task, patch, { board: board as Board, registry, router, harnesses, modelsCachePath, now: new Date(), projectHarnessFor }));
+          return outcome(await editTask(board as Board, task, patch, { board: board as Board, registry, router, harnesses, modelsCachePath, now: new Date(), projectHarnessFor, workstreamExists: (id) => workstreams?.get(id) !== undefined }));
         }
 
         if (parts.length === 2 && req.method === "GET") {
