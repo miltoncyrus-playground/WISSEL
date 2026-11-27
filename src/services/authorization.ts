@@ -247,7 +247,8 @@ const UUIDISH = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export function describeAction(method: string, pathname: string): { kind: string; target: string; taskId?: string } {
   const parts = pathname.split("/").filter(Boolean);
   if (method === "POST" && parts.length === 1 && parts[0] === "tasks") return { kind: "card.start", target: "/tasks" };
-  const template = parts.map((p, i) => (i > 0 && (UUIDISH.test(p) || /^\d+$/.test(p) || (i === 1 && parts[0] !== "auth")) ? ":id" : p));
+  // An /auth or /admin route's second segment is a name, not an id.
+  const template = parts.map((p, i) => (i > 0 && (UUIDISH.test(p) || /^\d+$/.test(p) || (i === 1 && parts[0] !== "auth" && parts[0] !== "admin")) ? ":id" : p));
   const taskId = parts[0] === "tasks" && parts[1] ? decodeURIComponent(parts[1]) : undefined;
   return { kind: `${method} /${template.join("/")}`, target: parts[1] ? decodeURIComponent(parts[1]) : pathname, ...(taskId ? { taskId } : {}) };
 }

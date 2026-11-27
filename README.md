@@ -516,6 +516,23 @@ on its channel, so quiet hours queue it. A restart never sends a backlog.
 `GET /workstreams/:id/digest` previews it, and `POST` sends it now
 (`src/services/digests.ts`, §4.11).
 
+While a team moves from an external coordinator to Wissel, each duty
+switches over on its own (`src/services/duties.ts`, §4.13). The duties
+are status, host, landing, review, channel-read, claims, ready-to-merge
+and arming. A duty the external coordinator still owns is denied by the
+gate, so nothing is done twice. `GET /workstreams/:id/duties` lists
+them, and `POST /workstreams/:id/duties/:duty {owner: "external" |
+"wissel"}` switches one.
+
+**Shadow** (`POST /admin/shadow {on}`) runs the whole coordinator
+record-only. The gate allows in shadow mode and nothing acts. `GET
+/workstreams/:id/shadow-report` sets what Wissel would have done beside
+what actually happened: channel entries, PRs opened, armed and merged.
+
+Both switches are owner only, take a confirm step (the first call
+answers 409 with what would change, `"confirm": true` applies it), and
+each is a policy revision.
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human

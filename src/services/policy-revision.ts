@@ -21,6 +21,9 @@ export const POLICY_ACTION_KINDS: ReadonlySet<string> = new Set([
   "PATCH /workstreams/:id",
   "DELETE /workstreams/:id",
   "POST /workstreams/:id/projects/:id/role",
+  // Duty switches and Shadow (§4.13).
+  ...["status", "host", "landing", "review", "channel-read", "claims", "ready-to-merge", "arming"].map((d) => `POST /workstreams/:id/duties/${d}`),
+  "POST /admin/shadow",
 ]);
 
 export interface PolicyRevision {

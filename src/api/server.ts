@@ -30,7 +30,8 @@ import { isForward, loadChatConfig, moveComment, slackAdapter, ticketStage, Trac
 import { ChannelOutbox, channelMessageError, docScribeAdapter, flushChannel, type ChannelAdapter, type ChannelMessage } from "../services/channel.ts";
 import { DECISION_LABEL, DecisionStore, decisionBrief, IMPLEMENTED_KINDS, type DecisionOutput, type ImplementedKind } from "../services/decisions.ts";
 import { ACTION_KINDS, workstreamCheck, WorkstreamStore, type Workstream, type WorkstreamInput } from "../services/workstreams.ts";
-import { DEFAULT_HARD_LIMITS, GateLog, loadHardLimits, type HardLimits } from "../services/policy-gate.ts";
+import { DEFAULT_HARD_LIMITS, GateLog, loadHardLimits, type Duty, type HardLimits } from "../services/policy-gate.ts";
+import { DUTIES, DutyStore, shadowReport } from "../services/duties.ts";
 import { ActionExecutor, EXECUTOR_FLUSH_MS, OutboundQueue, type ExecutorAction } from "../services/executor.ts";
 import { boardInboxEvent, InboxDispatcher, InboxStore, prInboxEvents, type InboxHandler } from "../services/inbox.ts";
 
@@ -749,11 +750,14 @@ export function createApp(
   // done by a performer per kind. Channel, chat and tracker performers
   // come with their adapters (cards 17, 18).
   const outbound = board instanceof SqliteBoard ? new OutboundQueue(board.db) : undefined;
+  const dutyStore = board instanceof SqliteBoard ? new DutyStore(board.db) : undefined;
   const executor =
     gateLog && outbound && workstreams
       ? new ActionExecutor({
           gateLog,
           queue: outbound,
+          // Duty switches and Shadow (§4.13) feed the gate's context.
+          ...(dutyStore ? { duties: (id: string | undefined) => dutyStore.owners(id), shadow: () => dutyStore.shadow() } : {}),
           workstream: (id) => (id ? workstreams.get(id) : undefined),
           hardLimits: opts.hardLimits ?? DEFAULT_HARD_LIMITS,
           mainBranchFor: async (a) => {
@@ -1374,6 +1378,22 @@ export function createApp(
         return notFound();
       }
 
+      // Shadow for the whole instance (§4.13): everything record-only.
+      // Owner only, confirmed; a policy change.
+      if (url.pathname === "/admin/shadow" && dutyStore) {
+        if (req.method === "GET") return json({ on: dutyStore.shadow() });
+        if (req.method === "POST") {
+          if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner switches Shadow" }, 403);
+          const body = ((await req.json().catch(() => ({}))) ?? {}) as { on?: unknown; confirm?: unknown };
+          if (typeof body.on !== "boolean") return json({ error: "on must be true or false" }, 400);
+          if (body.on === dutyStore.shadow()) return json({ on: body.on });
+          if (body.confirm !== true) return json({ confirmRequired: true, message: `This turns Shadow ${body.on ? "on: the coordinator records what it would do and acts on nothing" : "off: the coordinator acts on what the gate allows"}. Send it again with "confirm": true.` }, 409);
+          dutyStore.setShadow(body.on);
+          return json({ on: body.on });
+        }
+        return json({ error: "use GET or POST" }, 405);
+      }
+
       // Restart when idle (docs/SDD-coordinator.md §4.12, §5).
       // Flip a decision to its alternative (§5); the owner's call.
       if (decisions && /^\/decisions\/[^/]+\/flip$/.test(url.pathname) && req.method === "POST") {
@@ -1417,6 +1437,23 @@ export function createApp(
         // The quiet-hours queue, and the one way to ask the executor to
         // act: every action goes through the gate (§4.3, §5).
         if (seg.length === 3 && seg[2] === "outbound" && req.method === "GET") return json(outbound?.list({ workstreamId: ws.id }) ?? []);
+        // Duty switches (§4.13): who owns each duty while a team moves
+        // over. Owner only, confirmed; a policy change.
+        if (seg.length === 3 && seg[2] === "duties" && req.method === "GET") return json(dutyStore?.list(ws.id) ?? []);
+        if (seg.length === 4 && seg[2] === "duties" && req.method === "POST" && dutyStore) {
+          if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner switches a duty" }, 403);
+          const duty = seg[3] as Duty;
+          if (!DUTIES.includes(duty)) return json({ error: `duty must be one of: ${DUTIES.join(", ")}` }, 400);
+          const body = ((await req.json().catch(() => ({}))) ?? {}) as { owner?: unknown; confirm?: unknown };
+          if (body.owner !== "external" && body.owner !== "wissel") return json({ error: 'owner must be "external" or "wissel"' }, 400);
+          const from = dutyStore.list(ws.id).find((d) => d.duty === duty)!.owner;
+          if (from === body.owner) return json(dutyStore.list(ws.id).find((d) => d.duty === duty));
+          if (body.confirm !== true) return json({ confirmRequired: true, from, to: body.owner, message: `This hands the ${duty} duty of "${ws.name}" from ${from === "wissel" ? "Wissel" : "the external coordinator"} to ${body.owner === "wissel" ? "Wissel" : "the external coordinator"}. Send it again with "confirm": true to apply it.` }, 409);
+          return json(dutyStore.set(ws.id, duty, body.owner));
+        }
+        if (seg.length === 3 && seg[2] === "shadow-report" && req.method === "GET") {
+          return json(shadowReport(ws.id, gateLog?.list(ws.id, 1000) ?? [], inbox?.list({ workstreamId: ws.id, limit: 1000 }) ?? [], await board.list()));
+        }
         // The digest: preview it, or send it now (§4.11).
         if (seg.length === 3 && seg[2] === "digest" && req.method === "GET") return json({ text: await digestText(ws) });
         if (seg.length === 3 && seg[2] === "digest" && req.method === "POST") {
