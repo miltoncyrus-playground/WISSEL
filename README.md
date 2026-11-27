@@ -263,9 +263,17 @@ and output, and what runs cut off by a session limit cost
 - **Top bar.** Project switcher, **+ New**, the account line (one chip per
   enabled harness with what's running on it and which model,
   `GET /status/accounts`), and a version badge (`GET /version`).
-- **Needs you.** Every card in `review`, `escalated`, `failed` or
-  `no-match`, plus pending MCP approvals.
-- **Lanes.** Queued, Working, In review, Done (last 24h by default). A
+- **Needs a human.** Only cards that need a decision (the server's
+  `needsYou.lane: "human"`, `src/services/needs-you.ts`): an MCP approval,
+  a grant, an escalation, a failed or unmatched card, a review report that
+  FAILed, or changes nobody reviewed. Each one says why in full and lists
+  the steps as tick-boxes (kept per browser), with its one button.
+- **Lanes.** Queued, Working, In review, Next step, Done (last 24h by
+  default). Next step holds finished work waiting on one mechanical step:
+  an approved merge, a passed review report (Close,
+  `POST /tasks/:id/close`), a merge that waits on another. A review in
+  flight shows once, in In review, tagged "Review in progress"; the
+  reviewer's own card isn't drawn in Working. A
   second view, **By feature**, shows one swimlane per root card with its
   subtasks and follow-ups.
 - **Pipeline runs** show as one card with step progress. Clicking opens
@@ -416,7 +424,7 @@ top bar.
 - **Command palette.** Cmd-K or Ctrl-K (or the search button): jump to a
   screen, open a card by title, run a pipeline by name, New card (opens
   Ask).
-- **Board tab.** Running, Needs you, Review and Done today from `/tasks`,
+- **Board tab.** Running, Needs a human, Next step, Review and Done today from `/tasks`,
   a read-only card view at `#/board/<id>`, and a link to the full board.
 - **Live.** One shared `EventSource('/events')` keeps every screen
   current.
@@ -687,6 +695,7 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_PARALLEL_HINT` | off | `1` adds a paragraph to every claude-cli run's prompt asking for independent reads and checks in one turn and parallel read-only sub-agents. See `docs/SDD-parallel-hint.md`. |
 | `WISSEL_AUTO_MERGE` | on | `0`, `off`, `false` or `no` stops an approved review from landing its card by itself (the reviewer agent's `autoMerge`): the card waits in `review` for a human **Merge**. `docs/SDD-merge-target.md`. |
 | `WISSEL_INTEGRATIONS_PATH` | `integrations.yaml` | Where the ticket tracker config is read from. The env vars it names (`JIRA_EMAIL`, `JIRA_API_TOKEN` in the example) hold the credentials. See "Git and tickets". |
+| `WISSEL_REVIEW_GUARD` | off | `1` checks what a write-tier card actually changed before handing it to the reviewer: a worktree with no changes goes straight to `review` for a human (no reviewer, so a report-only card can't loop on pushbacks), and a rework whose diff is identical to what the last review saw escalates instead of being reviewed again. Empty sandbox stub files don't count as changes. |
 | `WISSEL_SWEEP_SPEND_CEILING_USD` | unlimited | Stop the automatic sweep once recorded spend for the current UTC day reaches this. |
 | `WISSEL_MEMORY_CURATION` | off | Periodically distill session history into `memory/lessons.md`. |
 | `WISSEL_MEMORY_INTERVAL_HOURS` | 24 | How often curation checks if it's due. |

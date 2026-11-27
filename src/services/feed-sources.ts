@@ -1,5 +1,5 @@
 import { stat } from "node:fs/promises";
-import type { TaskCard } from "../core/types.ts";
+import type { NeedsYou, TaskCard } from "../core/types.ts";
 import { audioFilePath } from "../executors/tts.ts";
 import type { Board, ResultMeta } from "./board.ts";
 import { buildFeed, type FeedCursor, type FeedPage, type FeedRun } from "./feed.ts";
@@ -39,6 +39,10 @@ export interface FeedSourceDeps {
   audioDir: string;
   /** Ids of harnesses switched off right now. */
   disabledHarnesses?: () => string[];
+  /** TaskCard.needsYou for the cards that need Milton (needsYouFor), so
+   *  the feed's Needs you items are the board's Needs a human cards.
+   *  Without it, the feed reads card statuses alone. */
+  needsYou?: (tasks: TaskCard[]) => Promise<ReadonlyMap<string, NeedsYou>>;
 }
 
 export interface FeedQuery {
@@ -157,8 +161,9 @@ export function createFeedSource(deps: FeedSourceDeps) {
   return {
     async read(q: FeedQuery): Promise<FeedPage> {
       const { tasks, results, lines, runs } = await readAll();
+      const needs = deps.needsYou ? await deps.needsYou(tasks) : undefined;
       return buildFeed({
-        tasks,
+        tasks: needs ? tasks.map((t) => (needs.has(t.id) ? { ...t, needsYou: needs.get(t.id)! } : t)) : tasks,
         results,
         runs: runs.map((r) => r.feed),
         telemetry: lines,

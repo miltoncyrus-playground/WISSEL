@@ -184,6 +184,7 @@ kbd {
 .task-dot { flex: none; width: 8px; height: 8px; margin-top: 7px; border-radius: 50%; background: var(--muted); }
 .lane-running .task-dot { background: var(--violet); }
 .lane-needs-you .task-dot { background: var(--coral); }
+.lane-next-step .task-dot { background: var(--accent); opacity: 0.6; }
 .lane-review .task-dot { background: var(--violet); opacity: 0.6; }
 .lane-done-today .task-dot { background: var(--accent); }
 .task-text { display: grid; min-width: 0; }
@@ -205,6 +206,12 @@ kbd {
   font: inherit; font-size: 13px; text-decoration: underline; cursor: pointer;
 }
 .task-action { display: grid; gap: 4px; justify-items: start; }
+/* Needs a human: why in full, then the steps as tick-boxes. */
+.task-why { color: var(--text); font-size: 13px; line-height: 1.45; }
+.task-checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.task-checks label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.4; cursor: pointer; min-height: 24px; }
+.task-checks input { margin: 2px 0 0; flex: none; width: 16px; height: 16px; accent-color: var(--accent); }
+.task-checks input:checked + span { color: var(--muted); text-decoration: line-through; }
 
 /* The Scheduled section (docs/SDD-schedules.md §3.8): a task row with
    the toggle and Run now on its right. */
@@ -243,6 +250,7 @@ kbd {
 }
 .pill.lane-running, .pill.lane-review { background: var(--violet); }
 .pill.lane-needs-you { background: var(--coral); }
+.pill.lane-next-step { background: var(--accent); }
 .pill.lane-done-today { background: var(--accent); }
 
 /* ---------- Palette ---------- */

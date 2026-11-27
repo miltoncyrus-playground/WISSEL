@@ -63,9 +63,22 @@ describe("partitionLanes", () => {
     expect(lanes["done-today"].map((t) => t.id)).toEqual(["d-new", "d-old"]);
   });
 
-  test("has exactly the four lanes the SDD names, in order", () => {
-    expect(LANES.map((l) => l.label)).toEqual(["Running", "Needs you", "Review", "Done today"]);
+  test("has exactly the five lanes, in order", () => {
+    expect(LANES.map((l) => l.label)).toEqual(["Running", "Needs a human", "Next step", "Review", "Done today"]);
     expect(Object.keys(partitionLanes([], NOW)).sort()).toEqual(LANES.map((l) => l.id).sort());
+  });
+});
+
+describe("laneOf and the server's needsYou lane", () => {
+  const ny = (lane: "human" | "next-step") => ({ kind: "merge" as const, lane, value: "merge", line: "l", why: "w", action: { label: "Merge", href: "/x", method: "POST" as const } });
+  test("human goes to Needs a human, a finished next step to Next step, a queued next step stays hidden", () => {
+    const start = startOfLocalDay(NOW);
+    expect(laneOf(card("a", { status: "review", needsYou: ny("human") }), start)).toBe("needs-you");
+    expect(laneOf(card("a", { status: "review", needsYou: ny("next-step") }), start)).toBe("next-step");
+    expect(laneOf(card("a", { status: "inbox", needsYou: ny("next-step") }), start)).toBeNull();
+    expect(laneOf(card("a", { status: "inbox", needsYou: ny("human") }), start)).toBe("needs-you");
+    // An older server (no lane): the status decides, as before.
+    expect(laneOf(card("a", { status: "review" }), start)).toBe("needs-you");
   });
 });
 
@@ -82,5 +95,23 @@ describe("needsYouReason", () => {
     expect(needsYouReason(card("a", { status: "review" }))).toBe("Ready for your review");
     expect(needsYouReason(card("a", { status: "escalated" }))).toBe("Reviewer escalated it");
     expect(needsYouReason(card("a", { status: "no-match" }))).toBe("No agent matched");
+  });
+});
+
+describe("a review in flight draws once", () => {
+  test("the reviewer's live card leaves Running; the card it reviews says Review in progress", () => {
+    const impl = card("impl", { status: "pending-review" });
+    const rev = card("rev", { status: "running", routedTo: "reviewer", parentTaskId: "impl", labels: ["review"] });
+    const lanes = partitionLanes([impl, rev], NOW);
+    expect(lanes.running).toEqual([]);
+    expect(lanes.review.map((t) => [t.id, t.reviewInProgress])).toEqual([["impl", true]]);
+  });
+
+  test("a queued reviewer folds too, without the in-progress mark; a lone reviewer still shows", () => {
+    const impl = card("impl", { status: "pending-review" });
+    const queued = card("rev", { status: "ready", routedTo: "reviewer", parentTaskId: "impl" });
+    expect(partitionLanes([impl, queued], NOW).review[0]!.reviewInProgress).toBeUndefined();
+    const lone = card("rev", { status: "running", routedTo: "reviewer", parentTaskId: "gone" });
+    expect(partitionLanes([lone], NOW).running.map((t) => t.id)).toEqual(["rev"]);
   });
 });
