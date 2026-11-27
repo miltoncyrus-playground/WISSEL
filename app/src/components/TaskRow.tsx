@@ -7,6 +7,7 @@ import { cardTicket } from "../ticket";
 import type { TaskCard } from "../types";
 import { agentName, useAgents } from "../useAgents";
 import { useProjects } from "../useProjects";
+import { statusText, useUiMode } from "../uiMode";
 import { Avatar } from "./Avatar";
 
 /** One card as a link to its detail (`#/board/<id>`). The lane picks
@@ -19,8 +20,9 @@ export function TaskRow({ task, lane, onChanged }: { task: TaskCard; lane: LaneI
   const agents = useAgents();
   const ticket = cardTicket(task, useProjects());
   const agent = task.routedTo ? agentName(agents, task.routedTo) : undefined;
-  const view = lane === "needs-you" ? needsYouView(task) : null;
-  const sub = view ? view.line : [ticket, agent, task.harness].filter(Boolean).join(" · ") || task.status;
+  const mode = useUiMode();
+  const view = lane === "needs-you" ? needsYouView(task, mode) : null;
+  const sub = view ? view.line : [ticket, agent, task.harness].filter(Boolean).join(" · ") || statusText(task.status, mode);
   const starts = startsChip(task.notBefore, Date.now());
   const extra = view && (view.reason || view.blocker || view.action);
   return (
@@ -44,7 +46,15 @@ function NeedsYouExtra({ view, title, onChanged }: { view: NeedsYouView; title: 
   const [open, setOpen] = useState(false);
   return (
     <div className="task-needs">
-      {view.reason && (
+      {view.reason && view.outputHidden && (
+        <>
+          <button type="button" className="link-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+            {open ? "Hide the agent's output" : "Show the agent's output"}
+          </button>
+          {open && <p className="task-sub task-reason" data-user-content="">{view.reason}</p>}
+        </>
+      )}
+      {view.reason && !view.outputHidden && (
         <>
           <p className={view.reasonLong && !open ? "task-sub task-reason is-clipped" : "task-sub task-reason"}>{view.reason}</p>
           {view.reasonLong && (

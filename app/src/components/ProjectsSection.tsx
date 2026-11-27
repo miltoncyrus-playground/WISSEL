@@ -1,3 +1,4 @@
+import { statusText, useUiMode } from "../uiMode";
 import { useState } from "react";
 import { fetchProjectGit } from "../api";
 import { routeHash } from "../routes";
@@ -87,6 +88,7 @@ function ProjectRow({ project }: { project: ProjectInfo }) {
 }
 
 function ProjectTickets({ git }: { git: ProjectGit }) {
+  const mode = useUiMode();
   if (git.tickets.length === 0) return <p className="empty">No branches.</p>;
   return (
     <div className="project-tickets">
@@ -97,7 +99,7 @@ function ProjectTickets({ git }: { git: ProjectGit }) {
             <ul className="ticket-cards">
               {t.cards.map((c) => (
                 <li key={c.id}>
-                  <a href={routeHash({ screen: "board", taskId: c.id })}>{c.title || c.id.slice(0, 8)}</a> <span className="pill">{c.status}</span>
+                  <a href={routeHash({ screen: "board", taskId: c.id })}>{c.title || c.id.slice(0, 8)}</a> <span className="pill">{statusText(c.status, mode)}</span>
                 </li>
               ))}
             </ul>
@@ -108,7 +110,9 @@ function ProjectTickets({ git }: { git: ProjectGit }) {
           </p>
           {t.worktrees.length > 0 && (
             <p className="task-sub">
-              {t.worktrees.length} worktree{t.worktrees.length === 1 ? "" : "s"} open
+              {mode === "user"
+                ? `${t.worktrees.length} open ${t.worktrees.length === 1 ? "copy" : "copies"} of the repository`
+                : `${t.worktrees.length} worktree${t.worktrees.length === 1 ? "" : "s"} open`}
             </p>
           )}
         </div>

@@ -17,6 +17,7 @@ import { AgentsContext, useAgentsLoader } from "./useAgents";
 import { ProjectsContext, useProjectsLoader } from "./useProjects";
 import { useAsk } from "./useAsk";
 import { PlayerContext, useShellPlayer } from "./usePlayer";
+import { readUiMode, UiModeContext } from "./uiMode";
 
 /** Rail + Live panel from here up; tab bar below (SDD §3.1). The shell
  *  gets `is-desktop` or `is-phone` from this; index.css lays out on
@@ -29,6 +30,9 @@ const CLOCK_TICK_MS = 60_000;
 
 export function App() {
   const route = useHashRoute();
+  // Operator or user mode (docs/SDD-board-ui-for-teams.md §3), read once
+  // here and passed down; operator unless the URL or a stored choice says.
+  const [uiMode] = useState(readUiMode);
   const data = useBoardData();
   const desktop = useMediaQuery(DESKTOP_QUERY);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -102,6 +106,7 @@ export function App() {
   // The one <audio> (SDD §3.3) sits outside everything that changes
   // with the route or the breakpoint, so playback never stops.
   return (
+    <UiModeContext.Provider value={uiMode}>
     <AgentsContext.Provider value={agents}>
       <ProjectsContext.Provider value={projects}>
       <PlayerContext.Provider value={player.api}>
@@ -122,5 +127,6 @@ export function App() {
       </PlayerContext.Provider>
       </ProjectsContext.Provider>
     </AgentsContext.Provider>
+    </UiModeContext.Provider>
   );
 }

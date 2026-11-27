@@ -1,3 +1,4 @@
+import { term, useUiMode } from "../uiMode";
 import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { chipsOf, confirmCardsOf, controlChipsOf, costText, isSendKey, MAX_MESSAGE_LENGTH, PENDING_STATE_WORDS, quickReplies, sendable, type Chip, type ResultChip } from "../ask";
 import { Avatar } from "../components/Avatar";
@@ -32,7 +33,8 @@ export function AskScreen({
   const input = useRef<HTMLTextAreaElement>(null);
   const end = useRef<HTMLDivElement>(null);
   const podcasts = usePodcasts();
-  const replies = useMemo(() => quickReplies(pipelines), [pipelines]);
+  const mode = useUiMode();
+  const replies = useMemo(() => quickReplies(pipelines, mode), [pipelines, mode]);
   // A note's text lands in the box for Milton to check, never sent as is.
   const voice = useVoiceNote((text) => {
     setDraft((d) => withTranscript(d, text));
@@ -106,7 +108,7 @@ export function AskScreen({
       {!ask.loaded ? (
         <p className="empty">Loading…</p>
       ) : empty ? (
-        <p className="lede">Ask for a card, a pipeline run, a retry, or what is going on. Merges and deletes wait for your Confirm. Secrets and settings stay on the board.</p>
+        <p className="lede">Ask for {mode === "user" ? "a piece of work" : "a card"}, a pipeline run, a retry, or what is going on. Merges and deletes wait for your Confirm. Secrets and settings stay on the board.</p>
       ) : null}
 
       <ol className="chat" role="log" aria-label="Messages">
@@ -235,6 +237,7 @@ function Message({
   now: number;
   resolve: Resolve;
 }) {
+  const mode = useUiMode();
   const assistant = message.role === "assistant";
   const chips = assistant ? chipsOf(message, tasks, episodes, tasksLoaded) : [];
   const results = assistant ? controlChipsOf(message, now) : [];
@@ -245,7 +248,7 @@ function Message({
       <span className="sr-only">{message.role === "user" ? "You:" : "wissel:"}</span>
       <p className="msg-text">{message.text}</p>
       {chips.length > 0 && (
-        <ul className="chips" aria-label="Cards">
+        <ul className="chips" aria-label={term("cards", mode, true)}>
           {chips.map((c) => (
             <ChipView key={c.key} chip={c} />
           ))}

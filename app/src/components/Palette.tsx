@@ -1,3 +1,4 @@
+import { term, useUiMode } from "../uiMode";
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { matchCommands, type Command } from "../commands";
 import { Icon } from "./Icon";
@@ -12,6 +13,7 @@ interface PaletteProps {
 /** The command palette: a modal <dialog> (focus is held inside and
  *  Escape closes it, natively) with a combobox over the matches. */
 export function Palette({ open, commands, onClose, onRun }: PaletteProps) {
+  const mode = useUiMode();
   const dialog = useRef<HTMLDialogElement>(null);
   const input = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -73,12 +75,12 @@ export function Palette({ open, commands, onClose, onRun }: PaletteProps) {
             ref={input}
             type="text"
             role="combobox"
-            aria-label="Search screens, cards and pipelines"
+            aria-label={`Search screens, ${term("cards", mode)} and pipelines`}
             aria-expanded="true"
             aria-controls={listId}
             aria-autocomplete="list"
             aria-activedescendant={matches.length ? optionId(active) : undefined}
-            placeholder="Jump to, open a card, run a pipeline"
+            placeholder={mode === "user" ? "Jump to, open a piece of work, run a pipeline" : "Jump to, open a card, run a pipeline"}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}

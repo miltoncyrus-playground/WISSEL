@@ -9,6 +9,7 @@
 // ready cards are queued, not shown here: the full board has them,
 // except one the server marks needsYou (blocked-on a stuck dependency).
 
+import { presentationOf, statusText, type UiMode } from "./uiMode";
 import type { NeedsYou, TaskCard } from "./types";
 
 export type LaneId = "running" | "needs-you" | "review" | "done-today";
@@ -96,13 +97,26 @@ export interface NeedsYouView {
   blocker?: string;
   /** The one button; absent on an older server. */
   action?: NeedsYou["action"];
+  /** User mode: the reason is the agent's raw output, shown on request. */
+  outputHidden?: boolean;
 }
 
-export function needsYouView(t: TaskCard): NeedsYouView {
+export function needsYouView(t: TaskCard, mode: UiMode = "operator"): NeedsYouView {
   const ny = t.needsYou;
   const view: NeedsYouView = { line: needsYouReason(t), reasonLong: false };
+  // User mode: a failure says what happened and what to do (§4.10); the
+  // raw reason stays, behind "Show the agent's output".
+  const p = presentationOf(t, mode);
+  if (p) {
+    view.line = p.sentence;
+    view.outputHidden = true;
+    if (p.action) view.action = p.action;
+  }
+  if (mode === "user" && !p && ny?.kind === "blocked-on" && ny.blocker) {
+    view.line = ny.line.replace(/which is \S+$/, `which is ${statusText(ny.blocker.status, mode)}`);
+  }
   if (!ny) return view;
-  view.action = ny.action;
+  view.action ??= ny.action;
   if (REASON_KINDS.has(ny.kind) && ny.reason) {
     view.reason = ny.reason;
     view.reasonLong = ny.reason.length > REASON_CHARS || ny.reason.split("\n").length > REASON_LINES;
@@ -111,6 +125,6 @@ export function needsYouView(t: TaskCard): NeedsYouView {
     if (ny.rounds !== undefined) view.round = `round ${ny.rounds}`;
     if (ny.grants?.length) view.grants = [...ny.grants];
   }
-  if (BLOCKER_KINDS.has(ny.kind) && ny.blocker) view.blocker = `${ny.blocker.id8} · ${ny.blocker.status}`;
+  if (BLOCKER_KINDS.has(ny.kind) && ny.blocker) view.blocker = `${ny.blocker.id8} · ${statusText(ny.blocker.status, mode)}`;
   return view;
 }
