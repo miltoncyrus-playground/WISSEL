@@ -279,6 +279,27 @@ account or tool config (`CLAUDE_*`, `ANTHROPIC_*`, `CODEX_*`,
 or anything that looks like a credential (`*TOKEN*`, `*SECRET*`,
 `*PASSWORD*`, `*_KEY`) are refused: the board never holds a secret.
 
+A project's `delivery` setting decides how a finished card lands. Unset,
+or `{"mode": "local-merge"}`, merges it into your checkout as before.
+`{"mode": "pull-request", "branchPattern": "feat/{key?}-{slug}",
+"hostGates": [["bun", "run", "test:e2e"]], "gateRetries": 1, "draft":
+true}` turns Merge into delivery:
+1. fetch the remote's main branch (`base`, default the card's
+   `mergeTarget` or the checked-out branch; `remote`, default `origin`)
+   and build the landing commit against it;
+2. run the merge gate, then the host gates, re-running a failed command
+   once with `gateRetries: 1`;
+3. only if all pass, push to the card's own branch and open a PR, or
+   reuse the open one.
+
+The PR is recorded on the card. The PR body ends with the card id, the
+principal behind it and the policy revision. Your checkout is never
+touched and the card's worktree is kept. Pushes are never forced: a
+rejected push stops and reports. The branch can never be the main branch
+or another long-lived one. PRs are opened with `gh`, as the account it
+is signed in as (`src/services/delivery.ts`, `docs/SDD-coordinator.md`
+§4.5).
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human

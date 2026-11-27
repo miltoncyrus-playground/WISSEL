@@ -53,7 +53,10 @@ export type TelemetryEvent =
       taskId: string;
       repo: string;
       branch: string;
-      outcome: "landed" | "gate-failed" | "conflict" | "blocked-local-changes" | "head-moved" | "error";
+      outcome: "landed" | "delivered" | "gate-failed" | "conflict" | "blocked-local-changes" | "head-moved" | "error";
+      /** Only on `delivered`: the PR opened or reused, and its head. */
+      prNumber?: number;
+      prHead?: string;
       gate: "none" | "passed" | "failed" | "skipped";
       gateRuns: { argv: string[]; exitCode: number | null; durationMs: number; timedOut: boolean }[];
       gateMs: number;
