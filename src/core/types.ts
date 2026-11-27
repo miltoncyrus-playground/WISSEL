@@ -783,6 +783,28 @@ export interface TaskPullRequest {
   url: string;
   /** Full 40-character commit sha. */
   head: string;
+  /** What the PR watcher last saw (src/services/pr-watcher.ts,
+   *  docs/SDD-coordinator.md §4.7). Unset until its first look. */
+  watch?: PrWatch;
+}
+
+/** A card's life past `done` once it is a PR: open, ready to merge
+ *  (the reviewed head, checks green, nothing in the way), merged, or
+ *  closed without merging. */
+export type PrLifecycle = "landed" | "ready" | "merged" | "closed";
+
+export interface PrWatch {
+  lifecycle: PrLifecycle;
+  /** Checks on the PR's current head. */
+  checks: { state: "passing" | "failing" | "pending" | "none"; headSha: string; failing: string[] };
+  mergeable: "clean" | "dirty" | "blocked" | "behind" | "unknown";
+  /** Auto-merge is on for the PR. */
+  armed: boolean;
+  draft: boolean;
+  base: string;
+  /** Why the PR may not be armed now, or null when it may be (§4.7). */
+  armBlockedBy: string | null;
+  observedAt: string;
 }
 
 /** The attempt number of a card, for cards made before `round` was

@@ -2,9 +2,11 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { RunUsage, ScheduleOutcome } from "../core/types.ts";
 import type { HarnessLimitEvent } from "../core/harness-limit.ts";
+import type { PrChangedEvent } from "./pr-watcher.ts";
 
 export type TelemetryEvent =
   | HarnessLimitEvent
+  | PrChangedEvent
   | { type: "dispatch"; taskId: string; agentId: string; model?: string; estimatedCost?: number }
   | {
       type: "result";

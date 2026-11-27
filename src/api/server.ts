@@ -22,6 +22,7 @@ import { validateProjectSettings } from "../services/project-settings.ts";
 import { PipelineHeldError, PipelineNotFoundError, PipelineRepoRequiredError, resumePipelineStep, runPipelineNow, type PipelineRunDeps } from "../core/pipeline-runner.ts";
 import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle.ts";
 import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
+import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 
 /** How often the host guard reads the host. */
 const HOST_GUARD_INTERVAL_MS = 30_000;
@@ -156,6 +157,13 @@ export interface CreateAppOptions {
    *  when WISSEL_HOST_GUARD=1, reading the host every 30 s. A test's own
    *  is refreshed by the test. */
   hostGuard?: HostGuard;
+  /** Look at every delivered card's PR once a minute (src/services/
+   *  pr-watcher.ts). The server's start-up turns it on unless
+   *  WISSEL_PR_WATCH=0; tests leave it off and tick a watcher of their
+   *  own through POST /admin/pr-watch. */
+  prWatch?: boolean;
+  /** The runner the PR watcher calls `git` and `gh` with (runViaBun). */
+  prWatchRunner?: CommandRunner;
   /** Starts the automatic sweep-on-every-event loop. Off by default —
    *  matches the pre-existing WISSEL_ORCHESTRATOR gate. */
   orchestratorEnabled?: boolean;
@@ -615,6 +623,22 @@ export function createApp(
           },
         })
       : undefined);
+  const prWatcher = new PrWatcher({
+    cards: () => board.list(),
+    setPullRequest: (id, pr) => board.setPullRequest(id, pr),
+    runner: opts.prWatchRunner ?? runViaBun,
+    mainBranchFor: async (repo) => {
+      const base = (await projects.settingsFor(repo))?.delivery;
+      if (base?.mode === "pull-request" && base.base) return base.base;
+      const head = await (opts.prWatchRunner ?? runViaBun)(["git", "symbolic-ref", "-q", "--short", "HEAD"], { cwd: repo }).catch(() => undefined);
+      return head && head.exitCode === 0 ? head.stdout.trim() : undefined;
+    },
+    ...(telemetry ? { record: (e) => telemetry.record(e) } : {}),
+  });
+  if (opts.prWatch) {
+    const tick = () => void prWatcher.tick().catch((e) => console.error(`pr watcher: ${(e as Error).message}`));
+    setInterval(tick, PR_WATCH_INTERVAL_MS).unref?.();
+  }
   if (hostGuard && !opts.hostGuard) {
     const guard = hostGuard;
     const tick = () => void guard.refresh().catch((e) => console.error(`host guard: ${(e as Error).message}`));
@@ -1020,6 +1044,15 @@ export function createApp(
       }
 
       // Restart when idle (docs/SDD-coordinator.md §4.12, §5).
+      // The PR watcher (docs/SDD-coordinator.md §4.7): every watched
+      // card's PR as last seen; POST looks again now.
+      if (url.pathname === "/admin/pr-watch") {
+        if (req.method === "POST") await prWatcher.tick();
+        if (req.method !== "GET" && req.method !== "POST") return json({ error: "use GET or POST" }, 405);
+        const cards = (await board.list()).filter((c) => c.pr);
+        return json(cards.map((c) => ({ taskId: c.id, title: c.title, ...(c.key ? { key: c.key } : {}), pr: c.pr })));
+      }
+
       // The host guard's last reading (docs/SDD-coordinator.md §4.12).
       if (url.pathname === "/admin/host-guard" && req.method === "GET") {
         return json({ enabled: hostGuard !== undefined, holding: hostGuard?.holding() ?? null });
@@ -2444,6 +2477,7 @@ if (import.meta.main) {
     hostname: bind.hostname,
     fetch: withAuthorizationRecords(createApp(board, registry, telemetry, {
       authorization: { log: authorizationLog, principalFor, policy },
+      prWatch: process.env.WISSEL_PR_WATCH !== "0",
       orchestratorEnabled,
       autoChain,
       executeWriteTier,
