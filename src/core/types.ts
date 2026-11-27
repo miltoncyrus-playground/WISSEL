@@ -579,6 +579,13 @@ export interface TaskCard {
    *  (docs/SDD-coordinator.md §4.5). `head` is the full commit sha the
    *  PR pointed at when it was recorded. */
   pr?: TaskPullRequest;
+  /** Start conditions (docs/SDD-coordinator.md §4.8): the sweep leaves
+   *  the card alone until every one holds, as it does for dependsOn. */
+  waitsFor?: StartCondition[];
+  /** Repo-relative paths the work will touch, as its brief or plan names
+   *  them. Used to warn when another open card or PR touches the same
+   *  ones (src/services/start-conditions.ts findOverlaps). */
+  files?: string[];
   /** A task-level override of the routed agent's own declared
    *  `mcpAccess` — same "task override beats the manifest-level default"
    *  shape as `harnessOverride`/`model` above, just for MCP grants
@@ -776,6 +783,13 @@ export interface TaskCard {
  *  same shape as claude-cli, just a different tool/account pair (see
  *  docs/SDD-codex-cli-harness.md). */
 export type HarnessTool = "claude-cli" | "anthropic-api" | "codex-cli";
+
+/** One TaskCard.waitsFor condition. `pr-merged` names the PR on GitHub
+ *  (`org/repo`); `path-on-main` names a registered project's checkout. */
+export type StartCondition =
+  | { kind: "card-done"; cardId: string }
+  | { kind: "pr-merged"; repo: string; number: number }
+  | { kind: "path-on-main"; repo: string; path: string };
 
 /** TaskCard.pr. */
 export interface TaskPullRequest {

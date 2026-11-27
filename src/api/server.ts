@@ -14,7 +14,7 @@ import { addMcpServer } from "../core/mcp-manifest.ts";
 import { Registry } from "../core/registry.ts";
 import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
-import { Orchestrator, carriedCardSettings, grantAndRetry, finishResult, resolveHandoffAllowlist, wireAutoIntegrator } from "../core/orchestrator.ts";
+import { Orchestrator, carriedCardSettings, grantAndRetry, finishResult, resolveHandoffAllowlist, resolveLiveTip, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts, reconcileLandedMerges } from "../core/crash-recovery.ts";
 import { worktreeHasChanges, type MergeContext } from "../services/worktree.ts";
 import { validateMergeGate } from "../services/merge-gate.ts";
@@ -24,6 +24,7 @@ import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle
 import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
+import { describeCondition, findOverlaps, overlapWarning, StartConditionChecker } from "../services/start-conditions.ts";
 
 /** How often the host guard reads the host. */
 const HOST_GUARD_INTERVAL_MS = 30_000;
@@ -541,6 +542,16 @@ export function createApp(
       await schedules.disableForPipeline(id, "pipeline deleted");
     },
   };
+  // Start conditions and overlap warnings (docs/SDD-coordinator.md §4.8).
+  const conditionChecker = new StartConditionChecker({ runner: opts.prWatchRunner ?? runViaBun });
+  const warnOverlaps = (task: TaskCard, tasks: TaskCard[]) => {
+    const list = findOverlaps(task, tasks);
+    const line = overlapWarning(task, list);
+    if (!line) return list;
+    console.warn(`overlap: ${line}`);
+    void telemetry?.record({ type: "card.overlap", taskId: task.id, with: list.map((o) => o.id), files: [...new Set(list.flatMap((o) => o.files))] });
+    return list;
+  };
   // Restart when idle: while one is pending, nothing new starts (the
   // sweep, Run, pipeline runs), and the process exits 75 once no card
   // is running.
@@ -766,6 +777,11 @@ export function createApp(
       executeWriteTier: executeWriteTier || autoChain,
       chainOnly: autoChain,
       holdNewWork,
+      startConditions: async (task, byId) => {
+        const unmet = await conditionChecker.firstUnmet(task.waitsFor ?? [], byId, (t) => resolveLiveTip(t, byId));
+        return unmet ? describeCondition(unmet) : undefined;
+      },
+      onStart: (task, tasks) => void warnOverlaps(task, tasks),
       merge: mergeContext,
       harnesses,
       maxConcurrentTasks: opts.maxConcurrentTasks,
@@ -1785,7 +1801,10 @@ export function createApp(
           const check = await validateNewTask(body, { board: board as Board, registry, router, harnesses, modelsCachePath, now: new Date(), projectHarnessFor });
           if (!check.ok) return json({ error: check.error }, 400);
           const task = await board.create(check.task);
-          return json(task, 201);
+          // Named files that another open card or PR also names: said in
+          // the answer and the log, never refused (§4.8).
+          const overlaps = task.files?.length ? warnOverlaps(task, await board.list()) : [];
+          return json(overlaps.length ? { ...task, overlaps } : task, 201);
         }
 
         // docs/SDD-card-edit.md: change a card that hasn't started.

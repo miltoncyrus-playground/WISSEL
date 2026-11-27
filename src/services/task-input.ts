@@ -13,6 +13,7 @@ import { validateExtraAllowedTools } from "../core/allowed-tools.ts";
 import { validateNotBefore } from "../core/not-before.ts";
 import { validateMergeTarget } from "./worktree.ts";
 import type { Project, ScheduleTaskTemplate, TaskCard } from "../core/types.ts";
+import { cardFilesError, startConditionsError } from "./start-conditions.ts";
 import { appendCardRules, CARD_TEMPLATE_KINDS, renderCardTemplate, type CardTemplateKind } from "../core/card-templates.ts";
 
 export type NewTask = Omit<TaskCard, "id" | "status">;
@@ -60,6 +61,17 @@ export async function validateNewTask(input: NewTask, deps: NewTaskDeps): Promis
   // orchestrator, and POST /tasks/:id/pr), never sent with a new card.
   delete body.round;
   delete body.pr;
+  // Start conditions and named files (docs/SDD-coordinator.md §4.8).
+  if (body.waitsFor !== undefined && body.waitsFor !== null) {
+    const refused = await startConditionsError(body.waitsFor, async (id) => (await deps.board.get(id)) !== undefined);
+    if (refused) return { ok: false, error: refused };
+    if (body.waitsFor.length === 0) body.waitsFor = undefined;
+  } else body.waitsFor = undefined;
+  if (body.files !== undefined && body.files !== null) {
+    const refused = cardFilesError(body.files);
+    if (refused) return { ok: false, error: refused };
+    body.files = body.files.length ? [...new Set(body.files)] : undefined;
+  } else body.files = undefined;
   if (body.key !== undefined && body.key !== null) {
     const refused = await cardKeyRefusal(deps.board, body.key, body.repo, deps.editing);
     if (refused) return { ok: false, error: refused };

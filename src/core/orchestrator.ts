@@ -1502,6 +1502,13 @@ function buildIntegratorBody(parent: TaskCard, subtasks: TaskCard[]): string {
 }
 
 export interface OrchestratorOptions {
+  /** Why a card's `waitsFor` doesn't hold yet (docs/SDD-coordinator.md
+   *  §4.8), or undefined when it all does. The sweep skips the card
+   *  until then. */
+  startConditions?: (task: TaskCard, byId: Map<string, TaskCard>) => Promise<string | undefined>;
+  /** Called just before the sweep starts a card, with the whole board,
+   *  for the overlap warning (§4.8). */
+  onStart?: (task: TaskCard, tasks: TaskCard[]) => void;
   /** Why no new card may start right now (a pending restart when idle,
    *  src/services/restart-when-idle.ts), or undefined. While it says
    *  something the sweep starts nothing and Run is refused; running cards
@@ -1602,6 +1609,8 @@ export class Orchestrator {
    *  last logged. Used only to log once per task (per reason), not on
    *  every sweep. */
   private waitingForHarness = new Map<string, string>();
+  /** Tasks held by an unmet start condition, and the one last logged. */
+  private waitingForCondition = new Map<string, string>();
 
   constructor(
     private board: Board & { events: EventEmitter },
@@ -1743,10 +1752,26 @@ export class Orchestrator {
       // forever doesn't block its dependents forever too.
       const blocked = deps.some((depId) => resolveLiveTip(byId.get(depId), byId)?.status !== "done");
       if (blocked) continue;
+      if (task.waitsFor?.length && this.opts.startConditions) {
+        const unmet = await this.opts.startConditions(task, byId);
+        if (unmet) {
+          if (this.waitingForCondition.get(task.id) !== unmet) {
+            this.waitingForCondition.set(task.id, unmet);
+            console.log(`orchestrator: task ${task.id} waiting for ${unmet}`);
+          }
+          continue;
+        }
+        this.waitingForCondition.delete(task.id);
+      }
 
       if (this.atConcurrencyCap()) continue;
       if (overSpendCeiling) continue;
 
+      try {
+        this.opts.onStart?.(task, tasks);
+      } catch (e) {
+        console.error(`orchestrator: start hook failed for ${task.id}: ${(e as Error).message}`);
+      }
       this.inFlight.add(task.id);
       pending.push(this.process(task).finally(() => this.inFlight.delete(task.id)));
     }

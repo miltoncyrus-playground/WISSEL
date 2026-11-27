@@ -6,6 +6,9 @@ import type { PrChangedEvent } from "./pr-watcher.ts";
 
 export type TelemetryEvent =
   | HarnessLimitEvent
+  /** A card names files another open card or PR also names
+   *  (src/services/start-conditions.ts). */
+  | { type: "card.overlap"; taskId: string; with: string[]; files: string[] }
   | PrChangedEvent
   | { type: "dispatch"; taskId: string; agentId: string; model?: string; estimatedCost?: number }
   | {

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { McpApprovalRequest, RoutingDecision, TaskCard, TaskPullRequest, TaskResult } from "../core/types.ts";
+import type { McpApprovalRequest, RoutingDecision, StartCondition, TaskCard, TaskPullRequest, TaskResult } from "../core/types.ts";
 
 /** What `escalate` stores when a caller passes an empty or whitespace-only
  *  reason, so an escalated card never shows a blank escalation panel. */
@@ -150,7 +150,7 @@ export interface ResultMeta {
 }
 
 /** What `PATCH /tasks/:id` may change on a card that hasn't started. */
-export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs", "key"] as const;
+export const EDITABLE_CARD_FIELDS = ["title", "body", "labels", "repo", "model", "harnessOverride", "mergeTarget", "extraAllowedTools", "extraAllowedDirs", "key", "waitsFor", "files"] as const;
 export type CardEdit = Partial<Pick<TaskCard, (typeof EDITABLE_CARD_FIELDS)[number]>>;
 
 export type BoardEvent =
@@ -212,6 +212,8 @@ interface TaskRow {
   cardKey: string | null;
   round: number | null;
   pr: string | null;
+  waitsFor: string | null;
+  files: string | null;
 }
 
 function rowToCard(row: TaskRow): TaskCard {
@@ -245,6 +247,8 @@ function rowToCard(row: TaskRow): TaskCard {
     key: row.cardKey ?? undefined,
     round: row.round ?? undefined,
     pr: row.pr ? (JSON.parse(row.pr) as TaskPullRequest) : undefined,
+    waitsFor: row.waitsFor ? (JSON.parse(row.waitsFor) as StartCondition[]) : undefined,
+    files: row.files ? (JSON.parse(row.files) as string[]) : undefined,
     resumeSessionId: row.resumeSessionId ?? undefined,
     suggestedGrants: row.suggestedGrants ? (JSON.parse(row.suggestedGrants) as string[]) : undefined,
     doneAt: row.doneAt ?? undefined,
@@ -318,7 +322,9 @@ export class SqliteBoard implements Board {
         authorizedByPrincipalId TEXT,
         cardKey TEXT,
         round INTEGER,
-        pr TEXT
+        pr TEXT,
+        waitsFor TEXT,
+        files TEXT
       );
     `);
     // Heals a pre-existing on-disk DB from before these columns existed —
@@ -367,6 +373,9 @@ export class SqliteBoard implements Board {
       "ALTER TABLE tasks ADD COLUMN cardKey TEXT;",
       "ALTER TABLE tasks ADD COLUMN round INTEGER;",
       "ALTER TABLE tasks ADD COLUMN pr TEXT;",
+      // docs/SDD-coordinator.md §4.8: start conditions and named files.
+      "ALTER TABLE tasks ADD COLUMN waitsFor TEXT;",
+      "ALTER TABLE tasks ADD COLUMN files TEXT;",
     ]) {
       try {
         this.db.run(ddl);
@@ -597,7 +606,7 @@ export class SqliteBoard implements Board {
       if (parent?.authorizedByPrincipalId) full.authorizedByPrincipalId = parent.authorizedByPrincipalId;
     }
     this.db.run(
-      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget, createdByPrincipalId, authorizedByPrincipalId, cardKey, round, pr) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO tasks (id, title, body, labels, repo, status, routedTo, dependsOn, parentTaskId, harness, pushbackCount, reviewLineageId, supersededBy, escalationContext, model, harnessOverride, pipelineId, pipelineRunId, pipelineStepId, mcpAccessOverride, extraAllowedDirs, extraAllowedTools, notBefore, scheduleId, mergeTarget, createdByPrincipalId, authorizedByPrincipalId, cardKey, round, pr, waitsFor, files) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         full.id,
         full.title,
@@ -629,6 +638,8 @@ export class SqliteBoard implements Board {
         full.key ?? null,
         full.round ?? null,
         full.pr ? JSON.stringify(full.pr) : null,
+        full.waitsFor?.length ? JSON.stringify(full.waitsFor) : null,
+        full.files?.length ? JSON.stringify(full.files) : null,
       ],
     );
     this.events.emit("event", { type: "task.created", task: full } satisfies BoardEvent);
@@ -696,6 +707,8 @@ export class SqliteBoard implements Board {
     if ("harnessOverride" in fields) set("harnessOverride", fields.harnessOverride ?? null);
     if ("mergeTarget" in fields) set("mergeTarget", fields.mergeTarget ?? null);
     if ("key" in fields) set("cardKey", fields.key ?? null);
+    if ("waitsFor" in fields) set("waitsFor", fields.waitsFor?.length ? JSON.stringify(fields.waitsFor) : null);
+    if ("files" in fields) set("files", fields.files?.length ? JSON.stringify(fields.files) : null);
     if ("extraAllowedTools" in fields) set("extraAllowedTools", fields.extraAllowedTools?.length ? JSON.stringify(fields.extraAllowedTools) : null);
     if ("extraAllowedDirs" in fields) set("extraAllowedDirs", fields.extraAllowedDirs?.length ? JSON.stringify(fields.extraAllowedDirs) : null);
     if (sets.length === 0) return existing;
