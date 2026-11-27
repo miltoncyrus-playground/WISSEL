@@ -191,8 +191,9 @@ test("mergeTaskWorktree reports a commit failure instead of merging a half-commi
     const key = cmd.join(" ");
     if (key === "git rev-parse -q --verify MERGE_HEAD") return { stdout: "", stderr: "", exitCode: 1 };
     if (key === "git status --porcelain --untracked-files=all -z") return { stdout: " M file.txt\0", stderr: "", exitCode: 0 };
+    if (key === "git status --porcelain --untracked-files=all --no-renames -z") return { stdout: " M file.txt\0", stderr: "", exitCode: 0 };
     if (key === "git status --porcelain") return { stdout: " M file.txt\n", stderr: "", exitCode: 0 };
-    if (cmd[0] === "git" && cmd[1] === "add") return { stdout: "", stderr: "", exitCode: 0 };
+    if (key.startsWith("git --literal-pathspecs add -- ")) return { stdout: "", stderr: "", exitCode: 0 };
     if (cmd[1] === "commit") return { stdout: "", stderr: "commit failed: hook rejected", exitCode: 1 };
     throw new Error(`unexpected command reached after commit failure: ${key}`);
   };
@@ -274,7 +275,7 @@ test("mergeTaskWorktree refuses a resolved but unfinished merge when the integra
     expect(asked).toEqual([[task.id, "abc"]]);
     expect(notFinished).toMatchObject({ ok: false, outcome: "conflict", conflictHead: "abc" });
     expect(notFinished.message).toContain("the conflict integrator card int-1 is running, not finished (review or done)");
-    expect(notFinished.message).toContain("git add -A && git commit --no-edit");
+    expect(notFinished.message).toContain("staging the resolved files by name there (`git add -- <file>...`) and running `git commit --no-edit`");
     expect(seenNotFinished.some((c) => c.startsWith("git add") || c.startsWith("git commit"))).toBe(false);
 
     const seenBare: string[] = [];
@@ -287,7 +288,7 @@ test("mergeTaskWorktree refuses a resolved but unfinished merge when the integra
   }
 });
 
-test("mergeTaskWorktree finishes a resolved merge with a finished integrator: git add -A, then commit --no-edit --cleanup=strip, then the normal path", async () => {
+test("mergeTaskWorktree finishes a resolved merge with a finished integrator: stages the changed files by name, then commit --no-edit --cleanup=strip, then the normal path", async () => {
   const seen: string[] = [];
   const runner = async (cmd: string[]) => {
     const line = cmd.join(" ");
@@ -296,7 +297,8 @@ test("mergeTaskWorktree finishes a resolved merge with a finished integrator: gi
     if (line === "git ls-files -u -z") return { stdout: "100644 aaa 2\tf.txt\0", stderr: "", exitCode: 0 };
     if (line === "git diff --name-only --no-renames -z HEAD") return { stdout: "f.txt\0", stderr: "", exitCode: 0 };
     if (line === "git status --porcelain --untracked-files=all -z") return { stdout: "", stderr: "", exitCode: 0 };
-    if (line === "git add -A") return { stdout: "", stderr: "", exitCode: 0 };
+    if (line === "git status --porcelain --untracked-files=all --no-renames -z") return { stdout: "UU f.txt\0", stderr: "", exitCode: 0 };
+    if (line === "git --literal-pathspecs add -- f.txt") return { stdout: "", stderr: "", exitCode: 0 };
     if (line === "git commit --no-edit --cleanup=strip") return { stdout: "", stderr: "", exitCode: 0 };
     if (line === "git status --porcelain") return { stdout: "", stderr: "", exitCode: 0 };
     // The branch is gone from this fake repo: the normal path stops here
@@ -308,12 +310,13 @@ test("mergeTaskWorktree finishes a resolved merge with a finished integrator: gi
     writeFileSync(join(wt, "f.txt"), "a\nours\ntheirs\nz\n");
     const result = await mergeTaskWorktree("/repo", { path: wt, branch: "wissel/t1" }, task, { runner, conflictIntegrator: async () => ({ finished: true, cardId: "int-1" }) });
     expect(result.outcome).toBe("error");
-    expect(seen.slice(0, 8)).toEqual([
+    expect(seen.slice(0, 9)).toEqual([
       "git rev-parse -q --verify MERGE_HEAD",
       "git ls-files -u -z",
       "git diff --name-only --no-renames -z HEAD",
       "git status --porcelain --untracked-files=all -z",
-      "git add -A",
+      "git status --porcelain --untracked-files=all --no-renames -z",
+      "git --literal-pathspecs add -- f.txt",
       "git commit --no-edit --cleanup=strip",
       "git status --porcelain --untracked-files=all -z",
       "git status --porcelain",

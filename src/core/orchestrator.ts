@@ -1016,7 +1016,7 @@ async function escalateConflictCap(board: Board, task: TaskCard, worktree: TaskW
   const note = [
     `${MAX_CONFLICT_INTEGRATORS} conflict integrator cards (${cardIds.join(", ")}) have already been spawned for this card, one per conflict, and the repo's HEAD moved again: ` +
       `this merge conflicted once more and no further integrator is spawned. A human must resolve this conflict in the worktree ${worktree.path} ` +
-      `(edit the files, \`git add -A && git commit --no-edit\` there), then Merge again.`,
+      `(edit the files, stage them by name with \`git add -- <file>...\`, then \`git commit --no-edit\` there), then Merge again.`,
     "",
     conflictMessage,
   ].join("\n");
