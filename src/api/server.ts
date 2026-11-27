@@ -25,6 +25,7 @@ import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle
 import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
+import { isForward, loadChatConfig, moveComment, slackAdapter, ticketStage, TrackerState, transitionFor, workCards, type ChatAdapter, type TicketStage } from "../services/tracker-rules.ts";
 import { ChannelOutbox, channelMessageError, docScribeAdapter, flushChannel, type ChannelAdapter, type ChannelMessage } from "../services/channel.ts";
 import { DECISION_LABEL, DecisionStore, decisionBrief, IMPLEMENTED_KINDS, type DecisionOutput, type ImplementedKind } from "../services/decisions.ts";
 import { ACTION_KINDS, workstreamCheck, WorkstreamStore, type WorkstreamInput } from "../services/workstreams.ts";
@@ -250,6 +251,8 @@ export interface CreateAppOptions {
    *  none. Injectable so tests never reach a real tracker. Undefined is
    *  "not set up". */
   tickets?: TicketsSetup;
+  /** The chat adapter (integrations.yaml `chat:`), for chat.post. */
+  chat?: ChatAdapter;
   /** Used only by `POST /mcp-servers/:id/enable`'s re-validation check —
    *  injectable so tests never hit a real filesystem PATH lookup or
    *  network probe. Defaults to the real environment/fetch. */
@@ -762,6 +765,10 @@ export function createApp(
           },
           performers: {
             "card.start": async (a) => {
+              // A workstream's ticket comes before its first card, when a
+              // tracker is set up (§4.10).
+              const startWs = a.workstreamId ? workstreams.get(a.workstreamId) : undefined;
+              if (startWs && !startWs.ticket && opts.tickets?.provider) throw new Error(`workstream "${startWs.name}" needs a ticket before its first card`);
               const started = prepareCardStart((a.payload?.card ?? {}) as CardStart, undefined);
               if (!started.ok) throw new Error(started.error);
               const card = { ...started.task, ...(a.workstreamId ? { workstreamId: a.workstreamId } : {}) };
@@ -784,6 +791,36 @@ export function createApp(
               const r = await restart.request();
               if (!r.ok) throw new Error(r.error);
               return "restart when idle requested";
+            },
+            // The tracker (§4.10): only with writeBack on, which the
+            // handover keeps off until the owner turns it on.
+            "ticket.transition": async (a) => {
+              const provider = opts.tickets?.provider;
+              const key = a.payload?.key;
+              const stage = a.payload?.stage as TicketStage | undefined;
+              if (!provider) throw new Error("no ticket tracker is set up");
+              if (!provider.writeBack) throw new Error("tracker writeBack is off, so the ticket was not moved");
+              if (typeof key !== "string" || !stage) throw new Error("ticket.transition needs payload.key and payload.stage");
+              const id = await transitionFor(provider, key, stage);
+              if (!id) throw new Error(`${key} has no transition to "${stage}"`);
+              await provider.transition(key, id);
+              return `moved ${key} to ${stage}`;
+            },
+            "ticket.comment": async (a) => {
+              const provider = opts.tickets?.provider;
+              if (!provider) throw new Error("no ticket tracker is set up");
+              if (!provider.writeBack) throw new Error("tracker writeBack is off, so nothing was commented");
+              if (typeof a.payload?.key !== "string" || typeof a.payload?.text !== "string") throw new Error("ticket.comment needs payload.key and payload.text");
+              await provider.comment(a.payload.key, a.payload.text);
+              return `commented on ${a.payload.key}`;
+            },
+            "chat.post": async (a) => {
+              if (!opts.chat) throw new Error("no chat adapter is set up (integrations.yaml chat:)");
+              const ws = a.workstreamId ? workstreams.get(a.workstreamId) : undefined;
+              const channel = a.target?.channel;
+              if (!ws?.chat || channel !== ws.chat.channel || typeof a.payload?.text !== "string") throw new Error("chat.post needs the workstream's chat channel and payload.text");
+              const { ts } = await opts.chat.post(channel, a.payload.text);
+              return `posted to ${channel} (${ts})`;
             },
             // A channel message joins the outbox; the adapter posts the
             // batch at the next interval (§4.9).
@@ -860,6 +897,36 @@ export function createApp(
       setInterval(() => void read(), readEvery).unref?.();
     }
   }
+  // Tracker rules (§4.10): after each change to a workstream's cards, its
+  // ticket moves forward through the gate, once per stage. A move that
+  // didn't happen (writeBack off) is tried once per stage per run.
+  const trackerState = board instanceof SqliteBoard ? new TrackerState(board.db) : undefined;
+  const trackerTried = new Set<string>();
+  const evaluateTracker = async (workstreamId: string) => {
+    const ws = workstreams?.get(workstreamId);
+    if (!ws?.ticket || !executor || !trackerState) return;
+    const cards = workCards(await board.list(), ws.id);
+    const stage = ticketStage(cards);
+    if (!stage || !isForward(trackerState.get(ws.id), stage) || trackerTried.has(`${ws.id}:${stage}`)) return;
+    trackerTried.add(`${ws.id}:${stage}`);
+    const base = { workstreamId: ws.id, ...(ws.projects[0] ? { projectId: ws.projects[0].projectId } : {}) };
+    const moved = await executor.execute({ ...base, kind: "ticket.transition", payload: { key: ws.ticket, stage } });
+    if (moved.status === "done") {
+      trackerState.set(ws.id, stage);
+      await executor.execute({ ...base, kind: "ticket.comment", payload: { key: ws.ticket, text: moveComment(stage, cards) } });
+    }
+    console.log(`tracker: ${ws.ticket} -> ${stage}: ${moved.status}${"error" in moved ? ` (${moved.error})` : ""}`);
+  };
+  const pendingTracker = new Set<string>();
+  board.events?.on("event", (e: BoardEvent) => {
+    const id = "task" in e && e.task?.workstreamId;
+    if (!id || pendingTracker.has(id)) return;
+    pendingTracker.add(id);
+    queueMicrotask(() => {
+      pendingTracker.delete(id);
+      void evaluateTracker(id).catch((err) => console.error(`tracker: ${(err as Error).message}`));
+    });
+  });
   if (executor && opts.prWatch) {
     const flush = () => void executor.flush().catch((e) => console.error(`executor: ${(e as Error).message}`));
     setInterval(flush, EXECUTOR_FLUSH_MS).unref?.();
@@ -2706,6 +2773,8 @@ if (import.meta.main) {
   // variables it names. A missing or unusable file leaves the board on
   // git alone.
   const tickets = await loadTicketProvider(process.env.WISSEL_INTEGRATIONS_PATH ?? "integrations.yaml", process.env);
+  const chatSetup = await loadChatConfig(process.env.WISSEL_INTEGRATIONS_PATH ?? "integrations.yaml");
+  const chat = chatSetup.config ? slackAdapter(chatSetup.config, process.env) : undefined;
   // Hard limits are code plus this file, read once here: never from a
   // channel or a card (docs/SDD-coordinator.md §6).
   const hardLimits = await loadHardLimits(process.env.WISSEL_HARD_LIMITS_PATH ?? "hard-limits.yaml");
@@ -2811,6 +2880,7 @@ if (import.meta.main) {
     fetch: withAuthorizationRecords(createApp(board, registry, telemetry, {
       authorization: { log: authorizationLog, principalFor, policy },
       prWatch: process.env.WISSEL_PR_WATCH !== "0",
+      ...(chat ? { chat } : {}),
       hardLimits,
       orchestratorEnabled,
       autoChain,

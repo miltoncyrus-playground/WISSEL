@@ -480,6 +480,28 @@ scribe didn't confirm is marked failed. `GET /workstreams/:id/channel`
 shows the outbox, and `POST .../channel/flush` posts now. Reading the
 channel back is off unless `WISSEL_CHANNEL_READ_MS` is set.
 
+A workstream's `ticket` follows its cards (`src/services/tracker-rules.ts`,
+§4.10). Its decision, review and merge-forward cards don't count. The
+ticket moves forward only, once per stage:
+- "in progress" when its first card starts;
+- "in review" once every card is an open PR;
+- "done" once all are merged.
+
+Each move is a gated `ticket.transition` plus one `ticket.comment` naming
+the merged PRs. Both write only when the tracker's `writeBack` is on. It
+stays off for now, so a move is decided and logged but nothing is
+written. With a tracker set up, a workstream needs its ticket before its
+first card.
+
+Chat is a Slack adapter for `chat.post`, which posts only to the
+workstream's `chat` channel. Set it up in `integrations.yaml`:
+
+```yaml
+chat:
+  kind: slack
+  tokenEnv: TEAM_SLACK_BOT   # the variable's NAME; the token is never stored
+```
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
