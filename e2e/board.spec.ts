@@ -1283,8 +1283,10 @@ test.describe("Board view", () => {
     const widths = await page.locator("#kanbanBody .kcol").evaluateAll((cols) => cols.map((c) => c.getBoundingClientRect().width));
     expect(widths.length).toBe(5);
     for (const w of widths) expect(Math.abs(w - widths[0]!)).toBeLessThan(1);
-    const cardWidth = (await doneCol.locator(".kcard").first().boundingBox())!.width;
-    expect(cardWidth).toBeLessThanOrEqual(widths[0]! + 1);
+    // Polled: under a loaded run the board can still be redrawing the
+    // card when this reads it, and a detached card has no box.
+    const card = doneCol.locator(".kcard").first();
+    await expect.poll(async () => (await card.boundingBox())?.width ?? Infinity).toBeLessThanOrEqual(widths[0]! + 1);
     await expect(doneCol.locator(".lane-label")).toHaveText("Done (1)");
     // Nothing needs a human, so the Needs you strip isn't there at all.
     await expect(page.locator("#needsYou")).toBeHidden();
