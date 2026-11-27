@@ -71,7 +71,13 @@ export class PipelineNotFoundError extends Error {}
 export interface PipelineRunDeps extends Omit<PipelineRunnerContext, "onRootCreated" | "scheduleId"> {
   board: Board;
   registry: Registry;
+  /** Why no new run may start (a pending restart when idle), or
+   *  undefined. A run already going carries on. */
+  holdNewWork?: () => string | undefined;
 }
+
+/** runPipelineNow refused because new work is held (restart pending). */
+export class PipelineHeldError extends Error {}
 
 export interface RunPipelineNowOptions {
   onRootCreated?: (root: TaskCard) => void;
@@ -96,6 +102,8 @@ export async function runPipelineNow(
   input: string | undefined,
   opts: RunPipelineNowOptions = {},
 ): Promise<TaskCard> {
+  const hold = deps.holdNewWork?.();
+  if (hold) throw new PipelineHeldError(hold);
   const pipeline = await deps.pipelines.get(pipelineId);
   if (!pipeline) throw new PipelineNotFoundError(`pipeline not found: ${pipelineId}`);
   const needing = stepsNeedingRepo(pipeline, deps.registry);

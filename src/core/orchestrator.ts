@@ -1442,6 +1442,11 @@ function buildIntegratorBody(parent: TaskCard, subtasks: TaskCard[]): string {
 }
 
 export interface OrchestratorOptions {
+  /** Why no new card may start right now (a pending restart when idle,
+   *  src/services/restart-when-idle.ts), or undefined. While it says
+   *  something the sweep starts nothing and Run is refused; running cards
+   *  carry on. */
+  holdNewWork?: () => string | undefined;
   /** Off by default — the documented design is "wissel decides, agetor
    *  executes," and every existing deployment keeps that unless it
    *  opts in. When true, a registered write-tier Executor (see
@@ -1625,6 +1630,7 @@ export class Orchestrator {
     const tasks = await this.board.list();
     const byId = new Map(tasks.map((t) => [t.id, t]));
     this.scheduleRetryWake(tasks);
+    if (this.opts.holdNewWork?.()) return;
     const pending: Promise<void>[] = [];
 
     // Computed once per sweep() call, not per task — see
@@ -1737,6 +1743,8 @@ export class Orchestrator {
    * one in that lineage.
    */
   async runNow(taskId: string, executors: Executor[]): Promise<void> {
+    const hold = this.opts.holdNewWork?.();
+    if (hold) throw new Error(hold);
     if (this.inFlight.has(taskId)) throw new Error(`task ${taskId} is already running`);
     const task = await this.board.get(taskId);
     if (!task) throw new Error(`task not found: ${taskId}`);

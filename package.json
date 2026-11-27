@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "bun run --watch src/api/server.ts",
     "serve": "bun run build:editor && bun run build:app && bun run src/api/server.ts",
+    "serve:supervised": "sh scripts/serve-supervised.sh",
     "build:editor": "cd pipeline-editor && npm run build",
     "build:app": "cd app && npm run build",
     "agents": "bun run src/cli.ts agents",
