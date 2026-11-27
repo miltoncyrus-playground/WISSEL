@@ -314,19 +314,25 @@ A project's `reviewPolicy` (`{"maxRounds": 2, "blocks": ["HIGH"],
   attempt's brief), then the project rules. A review with no text
   refuses the round and escalates (`docs/SDD-coordinator.md` §4.6).
 
-A project's `reviewPolicy` (`{"maxRounds": 2, "blocks": ["HIGH"],
-"atCap": "spec-question"}`) shapes its review loop:
-- The reviewer's verdict may carry `severity` counts (`high`, `med`,
-  `medWithScenario`, `low`). An approval with a severity listed in
-  `blocks` becomes a fix round that says why.
-- `maxRounds` replaces the default cap of 5. At the cap, `atCap` decides:
-  `ask-decider` (the default) and `spec-question` escalate with their
-  own note, and `accept` moves the work to review for you to merge.
-- When the project has a `fix-round` card template, each fix round's
-  whole brief is rendered from it with `{review}` (the full review
-  text), `{round}`, `{key}`, `{title}` and `{body}` (the first
-  attempt's brief), then the project rules. A review with no text
-  refuses the round and escalates (`docs/SDD-coordinator.md` §4.6).
+Once a minute the PR watcher looks at every card delivered as a PR,
+until the PR is merged or closed. It reads, with `gh pr view` (read-only):
+- the checks, and the head commit they ran on;
+- whether the PR can merge: clean, dirty, blocked or behind;
+- whether auto-merge is armed;
+- whether it is merged or closed.
+
+What it sees is kept on the card as `pr.watch`, so the card's life
+carries on past done:
+- `landed`: the PR is open;
+- `ready`: it is the reviewed head on the main branch, every check is
+  green and nothing is in the way;
+- `merged`, or `closed` without merging.
+
+Each change is logged and recorded as a `pr.changed` telemetry event.
+`armBlockedBy` says why the PR may not be armed for auto-merge yet. The
+watcher never arms one: that waits for roles (`docs/SDD-coordinator.md`
+§4.13). `GET /admin/pr-watch` lists the watched cards, and `POST` looks
+again now (`src/services/pr-watcher.ts`, §4.7).
 
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
@@ -836,6 +842,7 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_HOST_GUARD_MIN_MEMORY_PCT` | `20` | Hold when less than this share of memory is available. |
 | `WISSEL_HOST_GUARD_MIN_DISK_GB` | `30` | Hold when the disk under `~/.wissel` (worktrees) has less free than this. |
 | `WISSEL_HOST_GUARD_MIN_TEMP_GB` | `2` | Hold when a project's temp directory (its `env.TMPDIR`, else the system's) has less free than this. |
+| `WISSEL_PR_WATCH` | on | `0` stops the PR watcher, which reads every delivered card's PR once a minute with `gh` (read-only). |
 | `WISSEL_SUPERVISOR` | unset | `script` when `bun run serve:supervised` started Wissel (the script sets it). With it, or under systemd, `POST /admin/restart-when-idle` is allowed; with neither it is refused. |
 | `WISSEL_OWNER_HANDLE` | the OS user | Handle of the single-owner principal every action is attributed to (`GET /me`, `GET /audit`). Read once, on the first start against a database. |
 | `WISSEL_DB_PATH` | `~/.wissel/board.sqlite` | Board database. |
