@@ -12,6 +12,7 @@ const ALL_SPECS = [
   "app.spec.ts",
   "ask-control.spec.ts",
   "ask.spec.ts",
+  "board-user-mode.spec.ts",
   "board.spec.ts",
   "feed.spec.ts",
   "listen.spec.ts",
@@ -136,6 +137,7 @@ describe("resolveAffectedSpecs", () => {
   test("board-routes.js resolves to every spec that navigates the board, not the full suite", () => {
     const result = resolveAffectedSpecs([{ path: "src/api/public/board-routes.js" }], ALL_SPECS);
     expect(result.specs).toEqual([
+      "board-user-mode.spec.ts",
       "board.spec.ts",
       "live-task-output.spec.ts",
       "new-task.spec.ts",
@@ -170,6 +172,7 @@ describe("resolveAffectedSpecs", () => {
     ]) {
       const result = resolveAffectedSpecs([{ path }], ALL_SPECS);
       expect(result.specs).toEqual([
+        "board-user-mode.spec.ts",
         "board.spec.ts",
         "live-task-output.spec.ts",
         "new-task.spec.ts",

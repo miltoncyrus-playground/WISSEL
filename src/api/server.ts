@@ -97,6 +97,34 @@ import { PolicyRevisions } from "../services/policy-revision.ts";
 import type { Executor, NeedsYou, PipelineGraph, RoutingDecision, TaskCard, TaskResult } from "../core/types.ts";
 
 const PUBLIC_DIR = new URL("./public/", import.meta.url);
+
+/** /user-mode.js: src/api/public/user-mode-client.js and the src/core
+ *  modules it imports, bundled into one classic script on first request
+ *  and kept for the life of the process. A failed build serves a stub
+ *  that leaves operator mode, the default, exactly as it is. */
+let userModeScript: Promise<string> | undefined;
+export function buildUserModeScript(): Promise<string> {
+  userModeScript ??= Bun.build({
+    entrypoints: [Bun.fileURLToPath(new URL("user-mode-client.js", PUBLIC_DIR))],
+    format: "iife",
+    target: "browser",
+  }).then(async (r) => {
+    const out = r.success ? r.outputs[0] : undefined;
+    if (!out) throw new Error(r.logs.map(String).join("\n") || "no output");
+    return out.text();
+  });
+  return userModeScript;
+}
+async function userModeScriptResponse(): Promise<Response> {
+  const headers = { "Content-Type": "text/javascript; charset=utf-8" };
+  try {
+    return new Response(await buildUserModeScript(), { headers });
+  } catch (e) {
+    userModeScript = undefined;
+    console.error(`/user-mode.js: bundling failed, serving the operator-mode stub: ${(e as Error).message}`);
+    return new Response(`console.error("user mode unavailable: bundling failed");`, { headers });
+  }
+}
 // src/api/server.ts -> ../../pipeline-editor/dist/ = <repo root>/pipeline-editor/dist/
 const DEFAULT_PIPELINE_EDITOR_DIST = new URL("../../pipeline-editor/dist/", import.meta.url);
 
@@ -783,6 +811,10 @@ export function createApp(
       // recovery.md §3.2/§4) — same "static sibling file, zero build
       // step, directly import-able by bun test" reasoning as
       // render-task-output.js above.
+      if (url.pathname === "/user-mode.js" && req.method === "GET") {
+        return userModeScriptResponse();
+      }
+
       if (url.pathname === "/render-merge-health.js" && req.method === "GET") {
         return new Response(Bun.file(new URL("render-merge-health.js", PUBLIC_DIR)));
       }
