@@ -463,6 +463,23 @@ A workstream card whose PR checks go red starts a `triage-red` on its
 own. `POST /workstreams/:id/decisions/start {kind, context, projectId?,
 subjectId?}` starts one by hand.
 
+A workstream's channel is where its decisions show up for people
+(`src/services/channel.ts`, §4.9). Wissel stays authoritative: an
+allowed `channel.post` adds a message to Wissel's channel outbox, and the
+workstream's adapter copies the batch out once per interval. Message
+kinds: claim, release, ready-to-merge (with the full head sha), question
+(options and a lean), answer, decision, status and handover.
+
+The first adapter is `claude-docs`, with the workstream's `channel`
+being `{adapter: "claude-docs", target: <doc link>}`. Its scribe is one
+short `claude -p` run per batch on the first enabled claude-cli account,
+allowed only the Claude Docs tools. It appends the lines to the doc and
+returns the block id of each, which Wissel records. An empty outbox
+starts no run, a failed run leaves the batch pending, and a line the
+scribe didn't confirm is marked failed. `GET /workstreams/:id/channel`
+shows the outbox, and `POST .../channel/flush` posts now. Reading the
+channel back is off unless `WISSEL_CHANNEL_READ_MS` is set.
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
@@ -972,6 +989,8 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_HOST_GUARD_MIN_DISK_GB` | `30` | Hold when the disk under `~/.wissel` (worktrees) has less free than this. |
 | `WISSEL_HOST_GUARD_MIN_TEMP_GB` | `2` | Hold when a project's temp directory (its `env.TMPDIR`, else the system's) has less free than this. |
 | `WISSEL_HARD_LIMITS_PATH` | `hard-limits.yaml` | The coordinator's hard limits, read once at start: `production` (`accounts`, `clusters`, `hosts`, patterns with `*`) and `readOnlyRepos`. Missing means only the built-in limits. |
+| `WISSEL_CHANNEL_INTERVAL_MS` | `900000` (15 min) | How often each workstream's pending channel messages are posted, as one scribe run per workstream. `0` posts only on `POST /workstreams/:id/channel/flush`. |
+| `WISSEL_CHANNEL_READ_MS` | `0` (off) | How often the channel is read back for other people's entries (one scribe run per workstream each time); they land in the inbox as untrusted `channel.entry` events. |
 | `WISSEL_PR_WATCH` | on | `0` stops the PR watcher, which reads every delivered card's PR once a minute with `gh` (read-only). |
 | `WISSEL_SUPERVISOR` | unset | `script` when `bun run serve:supervised` started Wissel (the script sets it). With it, or under systemd, `POST /admin/restart-when-idle` is allowed; with neither it is refused. |
 | `WISSEL_OWNER_HANDLE` | the OS user | Handle of the single-owner principal every action is attributed to (`GET /me`, `GET /audit`). Read once, on the first start against a database. |
