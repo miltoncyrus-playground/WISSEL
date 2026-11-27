@@ -21,6 +21,10 @@ import { validateMergeGate } from "../services/merge-gate.ts";
 import { validateProjectSettings } from "../services/project-settings.ts";
 import { PipelineHeldError, PipelineNotFoundError, PipelineRepoRequiredError, resumePipelineStep, runPipelineNow, type PipelineRunDeps } from "../core/pipeline-runner.ts";
 import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle.ts";
+import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
+
+/** How often the host guard reads the host. */
+const HOST_GUARD_INTERVAL_MS = 30_000;
 import { ScheduleRunner, type ScheduleRunnerOptions } from "../core/schedule-runner.ts";
 import { SqliteScheduleStore, type ScheduleStore } from "../services/schedules.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
@@ -148,6 +152,10 @@ export interface CreateAppOptions {
    *  that reads the supervisor from the environment and exits the
    *  process; tests pass their own. */
   restart?: RestartWhenIdle;
+  /** The host guard (docs/SDD-coordinator.md §4.12). Unset: one is made
+   *  when WISSEL_HOST_GUARD=1, reading the host every 30 s. A test's own
+   *  is refreshed by the test. */
+  hostGuard?: HostGuard;
   /** Starts the automatic sweep-on-every-event loop. Off by default —
    *  matches the pre-existing WISSEL_ORCHESTRATOR gate. */
   orchestratorEnabled?: boolean;
@@ -535,7 +543,11 @@ export function createApp(
       exit: (code) => process.exit(code),
     });
   board.events?.on("event", () => void restart.check());
-  const holdNewWork = () => restart.holding();
+  // The host guard (WISSEL_HOST_GUARD=1, or a test's own) holds new
+  // work while the host is short of room; set up below, once owner
+  // tasks exist.
+  let hostGuard: HostGuard | undefined;
+  const holdNewWork = () => restart.holding() ?? hostGuard?.holding();
   // What every pipeline run starts with: POST /pipelines/:id/run, Ask and
   // the schedule ticker all go through runPipelineNow with this.
   const pipelineRunDeps: PipelineRunDeps = { board: board as Board, registry, executors: manualExecutors, pipelines, harnesses, telemetry, memoryPath: opts.memoryPath, holdNewWork };
@@ -571,6 +583,32 @@ export function createApp(
   // card waits in review, so a short-lived answer stays true.
   const worktreeChangedCache = new Map<string, { at: number; value: boolean | undefined }>();
   const ownerTasks = opts.ownerTasks ?? (board instanceof SqliteBoard ? new OwnerTaskStore(board.db, board) : undefined);
+  hostGuard =
+    opts.hostGuard ??
+    (process.env.WISSEL_HOST_GUARD === "1" && ownerTasks
+      ? new HostGuard({
+          thresholds: thresholdsFromEnv(process.env),
+          tempDirs: async () => {
+            const running = await board.list({ status: "running" });
+            const dirs = new Map<string, string[]>([[tmpdir(), []]]);
+            for (const p of await projects.list()) {
+              const dir = p.env?.TMPDIR ?? tmpdir();
+              dirs.set(dir, [...(dirs.get(dir) ?? []), ...running.filter((t) => t.repo === p.path).map((t) => t.title)]);
+            }
+            return [...dirs].map(([path, runningCards]) => ({ path, runningCards }));
+          },
+          raise: async (title, why, steps) => {
+            if (ownerTasks.list("open").some((t) => t.title === title)) return;
+            await ownerTasks.create({ title, why, steps, check: ["bun", "run", "host:check"] });
+          },
+        })
+      : undefined);
+  if (hostGuard && !opts.hostGuard) {
+    const guard = hostGuard;
+    const tick = () => void guard.refresh().catch((e) => console.error(`host guard: ${(e as Error).message}`));
+    tick();
+    setInterval(tick, HOST_GUARD_INTERVAL_MS).unref?.();
+  }
   const needsYouOpts: NeedsYouOptions = {
     ownerTaskFor: (cardId) => ownerTasks?.byCard(cardId),
     async worktreeChanged(task, worktree) {
@@ -970,6 +1008,11 @@ export function createApp(
       }
 
       // Restart when idle (docs/SDD-coordinator.md §4.12, §5).
+      // The host guard's last reading (docs/SDD-coordinator.md §4.12).
+      if (url.pathname === "/admin/host-guard" && req.method === "GET") {
+        return json({ enabled: hostGuard !== undefined, holding: hostGuard?.holding() ?? null });
+      }
+
       if (url.pathname === "/admin/restart-when-idle") {
         if (req.method === "GET") return json(await restart.state());
         if (req.method === "POST") {
