@@ -22,13 +22,14 @@ import { validateMergeGate } from "../services/merge-gate.ts";
 import { validateProjectSettings } from "../services/project-settings.ts";
 import { PipelineHeldError, PipelineNotFoundError, PipelineRepoRequiredError, resumePipelineStep, runPipelineNow, type PipelineRunDeps } from "../core/pipeline-runner.ts";
 import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle.ts";
-import { HostGuard, thresholdsFromEnv } from "../services/host-guard.ts";
+import { HostGuard, readHost, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
+import { buildDigest, DigestRuns, dueDigests } from "../services/digests.ts";
 import { isForward, loadChatConfig, moveComment, slackAdapter, ticketStage, TrackerState, transitionFor, workCards, type ChatAdapter, type TicketStage } from "../services/tracker-rules.ts";
 import { ChannelOutbox, channelMessageError, docScribeAdapter, flushChannel, type ChannelAdapter, type ChannelMessage } from "../services/channel.ts";
 import { DECISION_LABEL, DecisionStore, decisionBrief, IMPLEMENTED_KINDS, type DecisionOutput, type ImplementedKind } from "../services/decisions.ts";
-import { ACTION_KINDS, workstreamCheck, WorkstreamStore, type WorkstreamInput } from "../services/workstreams.ts";
+import { ACTION_KINDS, workstreamCheck, WorkstreamStore, type Workstream, type WorkstreamInput } from "../services/workstreams.ts";
 import { DEFAULT_HARD_LIMITS, GateLog, loadHardLimits, type HardLimits } from "../services/policy-gate.ts";
 import { ActionExecutor, EXECUTOR_FLUSH_MS, OutboundQueue, type ExecutorAction } from "../services/executor.ts";
 import { boardInboxEvent, InboxDispatcher, InboxStore, prInboxEvents, type InboxHandler } from "../services/inbox.ts";
@@ -927,6 +928,39 @@ export function createApp(
       void evaluateTracker(id).catch((err) => console.error(`tracker: ${(err as Error).message}`));
     });
   });
+  // Digests (§4.11): Wissel's own numbers, no model call, out through the
+  // gate to the workstream's chat, else its channel.
+  const digestRuns = board instanceof SqliteBoard ? new DigestRuns(board.db) : undefined;
+  const digestText = async (ws: Workstream) =>
+    buildDigest({
+      ws,
+      cards: await board.list(),
+      ownerTasks: ownerTasks?.list("open") ?? [],
+      queued: outbound?.list({ workstreamId: ws.id, queuedOnly: true }).length ?? 0,
+      ...(opts.maxConcurrentTasks ? { cap: opts.maxConcurrentTasks } : {}),
+      host: readHost(join(homedir(), ".wissel"), [tmpdir()]),
+      now: new Date(),
+    });
+  const sendDigest = async (ws: Workstream) => {
+    if (!executor) return undefined;
+    const text = await digestText(ws);
+    const base = { workstreamId: ws.id, ...(ws.projects[0] ? { projectId: ws.projects[0].projectId } : {}) };
+    if (ws.chat) return executor.execute({ ...base, kind: "chat.post", target: { channel: ws.chat.channel }, payload: { text } });
+    if (ws.channel) return executor.execute({ ...base, kind: "channel.post", target: { channel: ws.channel.target }, payload: { message: { kind: "status", text: text.slice(0, 2000) } } });
+    return undefined;
+  };
+  if (digestRuns && workstreams && opts.prWatch) {
+    const since = new Date();
+    const tick = async () => {
+      const now = new Date();
+      for (const { ws, key } of dueDigests(workstreams.list(), digestRuns, since, now)) {
+        digestRuns.mark(key, now);
+        const r = await sendDigest(ws);
+        console.log(`digest: ${ws.name}: ${r?.status ?? "no chat or channel"}`);
+      }
+    };
+    setInterval(() => void tick().catch((e) => console.error(`digest: ${(e as Error).message}`)), 60_000).unref?.();
+  }
   if (executor && opts.prWatch) {
     const flush = () => void executor.flush().catch((e) => console.error(`executor: ${(e as Error).message}`));
     setInterval(flush, EXECUTOR_FLUSH_MS).unref?.();
@@ -1383,6 +1417,12 @@ export function createApp(
         // The quiet-hours queue, and the one way to ask the executor to
         // act: every action goes through the gate (§4.3, §5).
         if (seg.length === 3 && seg[2] === "outbound" && req.method === "GET") return json(outbound?.list({ workstreamId: ws.id }) ?? []);
+        // The digest: preview it, or send it now (§4.11).
+        if (seg.length === 3 && seg[2] === "digest" && req.method === "GET") return json({ text: await digestText(ws) });
+        if (seg.length === 3 && seg[2] === "digest" && req.method === "POST") {
+          const r = await sendDigest(ws);
+          return r ? json(r) : json({ error: "this workstream has no chat or channel to send a digest to" }, 409);
+        }
         // The channel outbox, and posting it now (§4.9).
         if (seg.length === 3 && seg[2] === "channel" && req.method === "GET") return json(channelOutbox?.list(ws.id) ?? []);
         if (seg.length === 4 && seg[2] === "channel" && seg[3] === "flush" && req.method === "POST" && channelOutbox) {
