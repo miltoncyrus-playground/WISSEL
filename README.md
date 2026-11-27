@@ -405,6 +405,31 @@ the gate and decision cards take them. `GET /inbox?unhandled=1&
 workstream=<id>` and `GET /workstreams/:id/inbox` list them
 (`src/services/inbox.ts`, §4.1).
 
+Everything the coordinator does goes through one policy gate
+(`src/services/policy-gate.ts`, §4.2). It is a pure function answering
+allow, ask the decider, ask the owner, queue or deny, and the first
+matching rule wins:
+1. a hard limit;
+2. the project's `never` list;
+3. a duty an external coordinator owns;
+4. Shadow (record only);
+5. quiet hours, which queue outward actions;
+6. `mustAsk`;
+7. the role table, with `decideAlone` for decisions;
+8. otherwise, ask the owner.
+
+The hard limits are code plus `hard-limits.yaml`, never set from a
+channel or a card. They deny:
+- production targets you list;
+- read-only repos;
+- pushing to main or another long-lived branch;
+- arming a PR whose base isn't main, or whose checks aren't green;
+- posting outside the workstream's channel and chat.
+
+Every decision goes to an append-only gate log (`GET
+/workstreams/:id/gate-log`). A property test over random actions checks
+that nothing a deny rule matches is ever allowed.
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
@@ -913,6 +938,7 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_HOST_GUARD_MIN_MEMORY_PCT` | `20` | Hold when less than this share of memory is available. |
 | `WISSEL_HOST_GUARD_MIN_DISK_GB` | `30` | Hold when the disk under `~/.wissel` (worktrees) has less free than this. |
 | `WISSEL_HOST_GUARD_MIN_TEMP_GB` | `2` | Hold when a project's temp directory (its `env.TMPDIR`, else the system's) has less free than this. |
+| `WISSEL_HARD_LIMITS_PATH` | `hard-limits.yaml` | The coordinator's hard limits, read once at start: `production` (`accounts`, `clusters`, `hosts`, patterns with `*`) and `readOnlyRepos`. Missing means only the built-in limits. |
 | `WISSEL_PR_WATCH` | on | `0` stops the PR watcher, which reads every delivered card's PR once a minute with `gh` (read-only). |
 | `WISSEL_SUPERVISOR` | unset | `script` when `bun run serve:supervised` started Wissel (the script sets it). With it, or under systemd, `POST /admin/restart-when-idle` is allowed; with neither it is refused. |
 | `WISSEL_OWNER_HANDLE` | the OS user | Handle of the single-owner principal every action is attributed to (`GET /me`, `GET /audit`). Read once, on the first start against a database. |
