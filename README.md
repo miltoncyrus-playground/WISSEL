@@ -704,6 +704,7 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_PORT` | 8787 | HTTP port. |
 | `WISSEL_BIND` | `127.0.0.1` | Address the board listens on. Anything outside loopback refuses to start without `WISSEL_ALLOW_OPEN_BIND=1`. |
 | `WISSEL_ALLOW_OPEN_BIND` | off | Allow a non-loopback `WISSEL_BIND`. The board has no sign-in yet: start-up warns and raises an owner task. |
+| `WISSEL_OWNER_HANDLE` | the OS user | Handle of the single-owner principal every action is attributed to (`GET /me`, `GET /audit`). Read once, on the first start against a database. |
 | `WISSEL_DB_PATH` | `~/.wissel/board.sqlite` | Board database. |
 | `WISSEL_TELEMETRY_PATH` | `~/.wissel/telemetry.jsonl` | Per-run cost and outcome log. |
 | `WISSEL_HARNESSES_PATH` | `harnesses.yaml` | Harness manifest. |

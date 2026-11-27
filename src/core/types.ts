@@ -438,6 +438,12 @@ export interface NeedsYou {
 
 export interface TaskCard {
   id: string;
+  /** The principal that created this card (docs/SDD-identity-and-
+   *  permissions.md §3.6). Unset for a card the system spawned. */
+  createdByPrincipalId?: string;
+  /** The principal whose authority this card runs under: its creator,
+   *  or for a spawned card the parent's. */
+  authorizedByPrincipalId?: string;
   title: string;
   body: string;
   labels: string[];
