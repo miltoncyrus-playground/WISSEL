@@ -19,7 +19,8 @@ import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts, reconcileLa
 import { worktreeHasChanges, type MergeContext } from "../services/worktree.ts";
 import { validateMergeGate } from "../services/merge-gate.ts";
 import { validateProjectSettings } from "../services/project-settings.ts";
-import { PipelineNotFoundError, PipelineRepoRequiredError, resumePipelineStep, runPipelineNow, type PipelineRunDeps } from "../core/pipeline-runner.ts";
+import { PipelineHeldError, PipelineNotFoundError, PipelineRepoRequiredError, resumePipelineStep, runPipelineNow, type PipelineRunDeps } from "../core/pipeline-runner.ts";
+import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle.ts";
 import { ScheduleRunner, type ScheduleRunnerOptions } from "../core/schedule-runner.ts";
 import { SqliteScheduleStore, type ScheduleStore } from "../services/schedules.ts";
 import { startMemoryScheduler, getMemoryCurationHistory } from "../core/memory-scheduler.ts";
@@ -143,6 +144,10 @@ export interface CreateAppOptions {
   ownerTasks?: OwnerTaskStore;
   /** Runs an owner task's `check`; runViaBun unless a test fakes it. */
   ownerTaskRunner?: CommandRunner;
+  /** Restart when idle (docs/SDD-coordinator.md §4.12). Defaults to one
+   *  that reads the supervisor from the environment and exits the
+   *  process; tests pass their own. */
+  restart?: RestartWhenIdle;
   /** Starts the automatic sweep-on-every-event loop. Off by default —
    *  matches the pre-existing WISSEL_ORCHESTRATOR gate. */
   orchestratorEnabled?: boolean;
@@ -519,9 +524,21 @@ export function createApp(
       await schedules.disableForPipeline(id, "pipeline deleted");
     },
   };
+  // Restart when idle: while one is pending, nothing new starts (the
+  // sweep, Run, pipeline runs), and the process exits 75 once no card
+  // is running.
+  const restart =
+    opts.restart ??
+    new RestartWhenIdle({
+      runningCount: async () => (await board.list({ status: "running" })).length,
+      supervisor: detectSupervisor(process.env),
+      exit: (code) => process.exit(code),
+    });
+  board.events?.on("event", () => void restart.check());
+  const holdNewWork = () => restart.holding();
   // What every pipeline run starts with: POST /pipelines/:id/run, Ask and
   // the schedule ticker all go through runPipelineNow with this.
-  const pipelineRunDeps: PipelineRunDeps = { board: board as Board, registry, executors: manualExecutors, pipelines, harnesses, telemetry, memoryPath: opts.memoryPath };
+  const pipelineRunDeps: PipelineRunDeps = { board: board as Board, registry, executors: manualExecutors, pipelines, harnesses, telemetry, memoryPath: opts.memoryPath, holdNewWork };
   const scheduleRunner = new ScheduleRunner({
     store: schedules,
     board: board as Board,
@@ -671,6 +688,7 @@ export function createApp(
     {
       executeWriteTier: executeWriteTier || autoChain,
       chainOnly: autoChain,
+      holdNewWork,
       merge: mergeContext,
       harnesses,
       maxConcurrentTasks: opts.maxConcurrentTasks,
@@ -949,6 +967,17 @@ export function createApp(
           return r.ok ? json(r.task) : json({ error: r.error, ...(r.task ? { task: r.task } : {}) }, r.status);
         }
         return notFound();
+      }
+
+      // Restart when idle (docs/SDD-coordinator.md §4.12, §5).
+      if (url.pathname === "/admin/restart-when-idle") {
+        if (req.method === "GET") return json(await restart.state());
+        if (req.method === "POST") {
+          const r = await restart.request();
+          return r.ok ? json(r.state, 202) : json({ error: r.error }, 409);
+        }
+        if (req.method === "DELETE") return json(await restart.cancel());
+        return json({ error: "use GET, POST or DELETE" }, 405);
       }
 
       if (opts.authorization && url.pathname === "/me" && req.method === "GET") {
@@ -1352,6 +1381,7 @@ export function createApp(
           } catch (e) {
             if (e instanceof PipelineRepoRequiredError) return json({ error: e.message }, 400);
             if (e instanceof PipelineNotFoundError) return notFound();
+            if (e instanceof PipelineHeldError) return json({ error: e.message }, 409);
             throw e;
           }
           return json(root, 201);
@@ -2392,6 +2422,8 @@ if (import.meta.main) {
   });
   if (conciergeScript) console.log(`ask: scripted concierge from ${conciergeScript} (WISSEL_CONCIERGE_SCRIPT), no model calls`);
   console.log(`wissel board api on ${bind.hostname}:${port} (db: ${dbPath})`);
+  const supervisor = detectSupervisor(process.env);
+  console.log(supervisor ? `restart when idle: available (supervisor: ${supervisor})` : "restart when idle: off, nothing would start Wissel again (run it under systemd or `bun run serve:supervised`)");
   if (bind.open) console.error(bind.warning);
   const v = getVersionInfo();
   console.log(`version: ${v.commitShort}${v.dirty ? "+dirty" : ""} (${v.branch})`);
