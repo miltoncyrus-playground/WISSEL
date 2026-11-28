@@ -128,6 +128,8 @@ import { OwnerTaskStore, ownerTaskError, type NewOwnerTask, type OwnerTaskStatus
 import { isLoopback, resolveBind } from "../core/bind.ts";
 import { authMode, IdentityStore } from "../services/identity.ts";
 import { callerOf, principalOf, withIdentityRoutes, withSignIn } from "./sign-in.ts";
+import { wasPermitted, withPermissions } from "./permission-door.ts";
+import { GrantStore } from "../services/permissions.ts";
 import { raiseOpenBindTask } from "../services/open-bind-task.ts";
 import { AuthorizationLog, OWNER_PRINCIPAL_ID, withAuthorizationRecords } from "../services/authorization.ts";
 import { PolicyRevisions } from "../services/policy-revision.ts";
@@ -171,7 +173,7 @@ export interface CreateAppOptions {
    *  `GET /me` names. The bootstrap wraps the app with
    *  withAuthorizationRecords so every write is recorded; unset (most
    *  tests) means no audit routes. */
-  authorization?: { log: AuthorizationLog; principalFor: (req: Request) => string; policy?: PolicyRevisions };
+  authorization?: { log: AuthorizationLog; principalFor: (req: Request) => string; policy?: PolicyRevisions; permitted?: (req: Request) => boolean };
   /** Owner tasks (docs/SDD-coordinator.md §3.4): defaults to a store in
    *  the board's own database when the board is a SqliteBoard. */
   ownerTasks?: OwnerTaskStore;
@@ -509,6 +511,10 @@ export function createApp(
   // (docs/SDD-project-settings.md §7); the routes further down use the
   // same store.
   const projects: ProjectStore = opts.projects ?? new SqliteProjectStore((board as SqliteBoard).db);
+  // The owner-only coordinator switches (roles, duties, Shadow, flips,
+  // imports, lessons): the owner, or anyone the permission check let
+  // through for that route (docs/SDD-identity-and-permissions.md §4.3).
+  const ownerOrPermitted = (req: Request) => opts.authorization?.permitted?.(req) ?? opts.authorization?.principalFor(req) === OWNER_PRINCIPAL_ID;
   const settingsFor = (repo: string) => projects.settingsFor(repo);
   // The harness a project asks its new cards to run on (docs/SDD-project-harness.md).
   const projectHarnessFor = async (repo: string) => (await projects.settingsFor(repo))?.harness;
@@ -1508,7 +1514,7 @@ export function createApp(
       if (url.pathname === "/admin/shadow" && dutyStore) {
         if (req.method === "GET") return json({ on: dutyStore.shadow() });
         if (req.method === "POST") {
-          if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner switches Shadow" }, 403);
+          if (opts.authorization && !ownerOrPermitted(req)) return json({ error: "only the owner switches Shadow" }, 403);
           const body = ((await req.json().catch(() => ({}))) ?? {}) as { on?: unknown; confirm?: unknown };
           if (typeof body.on !== "boolean") return json({ error: "on must be true or false" }, 400);
           if (body.on === dutyStore.shadow()) return json({ on: body.on });
@@ -1522,7 +1528,7 @@ export function createApp(
       // Restart when idle (docs/SDD-coordinator.md §4.12, §5).
       // Flip a decision to its alternative (§5); the owner's call.
       if (decisions && /^\/decisions\/[^/]+\/flip$/.test(url.pathname) && req.method === "POST") {
-        if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner flips a decision" }, 403);
+        if (opts.authorization && !ownerOrPermitted(req)) return json({ error: "only the owner flips a decision" }, 403);
         const d = decisions.flip(decodeURIComponent(url.pathname.split("/")[2]!));
         return d ? json(d) : notFound();
       }
@@ -1566,7 +1572,7 @@ export function createApp(
         // over. Owner only, confirmed; a policy change.
         if (seg.length === 3 && seg[2] === "duties" && req.method === "GET") return json(dutyStore?.list(ws.id) ?? []);
         if (seg.length === 4 && seg[2] === "duties" && req.method === "POST" && dutyStore) {
-          if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner switches a duty" }, 403);
+          if (opts.authorization && !ownerOrPermitted(req)) return json({ error: "only the owner switches a duty" }, 403);
           const duty = seg[3] as Duty;
           if (!DUTIES.includes(duty)) return json({ error: `duty must be one of: ${DUTIES.join(", ")}` }, 400);
           const body = ((await req.json().catch(() => ({}))) ?? {}) as { owner?: unknown; confirm?: unknown };
@@ -1582,7 +1588,7 @@ export function createApp(
         // Import an existing coordinator's state (§7): nothing is created;
         // dryRun reports without changing anything. A policy change.
         if (seg.length === 3 && seg[2] === "import" && req.method === "POST") {
-          if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner imports" }, 403);
+          if (opts.authorization && !ownerOrPermitted(req)) return json({ error: "only the owner imports" }, 403);
           const body = ((await req.json().catch(() => undefined)) ?? {}) as ImportBody;
           const dryRun = body.dryRun === true;
           const { items, invalid } = parseItems(body.items);
@@ -1685,7 +1691,7 @@ export function createApp(
           return new Response(null, { status: 204 });
         }
         if (seg.length === 5 && seg[2] === "projects" && seg[4] === "role" && req.method === "POST") {
-          if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner changes a role" }, 403);
+          if (opts.authorization && !ownerOrPermitted(req)) return json({ error: "only the owner changes a role" }, 403);
           const body = ((await req.json().catch(() => ({}))) ?? {}) as { role?: unknown; confirm?: unknown };
           const r = workstreams.setRole(ws.id, seg[3]!, body.role, body.confirm);
           if (!r.ok) return json({ error: r.error }, r.status);
@@ -1795,7 +1801,7 @@ export function createApp(
         if (seg.length === 1 && req.method === "GET") return json(lessons);
         if (seg.length === 2 && seg[1] === "proposals" && req.method === "GET") return json(proposals(lessons, lessonDecisions));
         if (seg.length === 3 && (seg[2] === "approve" || seg[2] === "reject") && req.method === "POST") {
-          if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner decides a lesson" }, 403);
+          if (opts.authorization && !ownerOrPermitted(req)) return json({ error: "only the owner decides a lesson" }, 403);
           const p = proposals(lessons, lessonDecisions).find((x) => x.key === seg[1]);
           if (!p) return notFound();
           if (seg[2] === "reject") {
@@ -3078,6 +3084,21 @@ if (import.meta.main) {
   const signInMode = authMode(process.env);
   const identity = new IdentityStore(board.db);
   const principalFor = principalOf;
+  // Permissions (card 6): one check in front of every route.
+  const grants = new GrantStore(board.db);
+  const placeProjects = new SqliteProjectStore(board.db);
+  const placeWorkstreams = new WorkstreamStore(board.db);
+  const placeOf = async (from: "instance" | "task" | "project" | "workstream", parts: string[]) => {
+    const id = parts[1];
+    if (!id || from === "instance") return undefined;
+    if (from === "project") return { projectId: id, ...(placeWorkstreams.forProject(id) ? { workstreamId: placeWorkstreams.forProject(id)!.id } : {}) };
+    if (from === "workstream") return { workstreamId: id };
+    const card = await board.get(id);
+    if (!card) return undefined;
+    const project = card.repo ? (await placeProjects.list()).find((p) => p.path === card.repo) : undefined;
+    const ws = card.workstreamId ?? (project ? placeWorkstreams.forProject(project.id)?.id : undefined);
+    return { ...(project ? { projectId: project.id } : {}), ...(ws ? { workstreamId: ws } : {}) };
+  };
   const registry = await Registry.load();
   // Opened before telemetry so every event can carry the policy revision.
   const policy = new PolicyRevisions(board.db);
@@ -3213,8 +3234,8 @@ if (import.meta.main) {
   Bun.serve({
     port,
     hostname: bind.hostname,
-    fetch: withSignIn(withAuthorizationRecords(withIdentityRoutes(createApp(board, registry, telemetry, {
-      authorization: { log: authorizationLog, principalFor, policy },
+    fetch: withSignIn(withAuthorizationRecords(withPermissions(withIdentityRoutes(createApp(board, registry, telemetry, {
+      authorization: { log: authorizationLog, principalFor, policy, permitted: wasPermitted },
       prWatch: process.env.WISSEL_PR_WATCH !== "0",
       ...(chat ? { chat } : {}),
       hardLimits,
@@ -3247,7 +3268,7 @@ if (import.meta.main) {
       stt,
       schedulesEnabled: true,
       ...scripted,
-    }), identity), authorizationLog, { principalFor, policy, onCardCreated: (id, principalId) => board.attribute(id, principalId) }), { mode: signInMode, identity, secure: (process.env.WISSEL_PUBLIC_URL ?? "").startsWith("https://") }),
+    }), identity, grants), { grants, placeOf }), authorizationLog, { principalFor, policy, onCardCreated: (id, principalId) => board.attribute(id, principalId) }), { mode: signInMode, identity, secure: (process.env.WISSEL_PUBLIC_URL ?? "").startsWith("https://") }),
   });
   if (signInMode === "tokens") {
     console.log("sign-in: on (WISSEL_AUTH=tokens); every request needs a session or an API token");

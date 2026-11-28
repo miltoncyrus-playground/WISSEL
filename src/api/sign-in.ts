@@ -13,6 +13,7 @@
 // client sends can name a principal.
 import { OWNER_PRINCIPAL_ID } from "../services/authorization.ts";
 import { cookieValue, isOpenPath, loginPage, SESSION_COOKIE, sessionCookie, type Caller, type IdentityStore } from "../services/identity.ts";
+import type { GrantStore } from "../services/permissions.ts";
 
 type Fetch = (req: Request) => Response | Promise<Response>;
 
@@ -75,23 +76,40 @@ export function withSignIn(inner: Fetch, opts: SignInOptions): Fetch {
   };
 }
 
-/** Members and tokens (§5). Inside the authorization records, so each
- *  write is recorded like any other. Until card 6's permissions, only the
- *  owner manages members; anyone signed in manages their own tokens. */
-export function withIdentityRoutes(inner: Fetch, identity: IdentityStore): Fetch {
+/** Members, grants and tokens (§5). Inside the permission check and the
+ *  authorization records, so each write is checked and recorded like any
+ *  other: the route table asks member.manage for adding, disabling and
+ *  minting for others, and GrantStore checks a grant's own scope. Anyone
+ *  signed in manages their own tokens. */
+export function withIdentityRoutes(inner: Fetch, identity: IdentityStore, grants?: GrantStore): Fetch {
   return async (req) => {
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
-    if (parts[0] !== "members" && parts[0] !== "tokens") return inner(req);
+    if (parts[0] !== "members" && parts[0] !== "tokens" && parts[0] !== "grants") return inner(req);
     const me = principalOf(req);
-    const ownerOnly = () => (me === OWNER_PRINCIPAL_ID ? undefined : json({ error: "only the owner manages members" }, 403));
+    // Without grants (card 5's wiring), the owner alone manages members.
+    const ownerOnly = () => (grants || me === OWNER_PRINCIPAL_ID ? undefined : json({ error: "only the owner manages members" }, 403));
     const body = async () => ((await req.json().catch(() => ({}))) ?? {}) as Record<string, unknown>;
+
+    if (parts[0] === "grants") {
+      if (parts.length === 2 && req.method === "DELETE" && grants) {
+        const r = grants.revoke(me, decodeURIComponent(parts[1]!));
+        return r.ok ? json(r.grant) : json({ error: r.error }, r.status);
+      }
+      return json({ error: "no such grants route" }, 404);
+    }
 
     if (parts[0] === "members") {
       if (parts.length === 1 && req.method === "GET") {
-        const refused = ownerOnly();
-        if (refused) return refused;
-        return json(identity.principals().map((p) => ({ ...p, tokens: identity.tokens(p.id) })));
+        // The owner, or anyone holding member.manage at some scope (a
+        // workstream owner).
+        if (grants ? me !== OWNER_PRINCIPAL_ID && !grants.grantsOf(me).some((g) => g.permissions.includes("member.manage")) : me !== OWNER_PRINCIPAL_ID) return json({ error: "listing members needs member.manage" }, 403);
+        return json(identity.principals().map((p) => ({ ...p, tokens: identity.tokens(p.id), ...(grants ? { grants: grants.grantsOf(p.id) } : {}) })));
+      }
+      if (parts.length === 3 && parts[2] === "grants" && req.method === "POST" && grants) {
+        const b = await body();
+        const r = grants.grant(me, decodeURIComponent(parts[1]!), b.scope, b.permissions, b.expiresAt);
+        return r.ok ? json(r.grant, 201) : json({ error: r.error }, r.status);
       }
       if (parts.length === 1 && req.method === "POST") {
         const refused = ownerOnly();
