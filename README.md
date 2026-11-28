@@ -625,6 +625,14 @@ claims, and would-be hard-limit violations (target zero). The bundled
 day is an invented example; a team's own recording uses the same
 shapes.
 
+The **decision-quality eval** (`bun run eval:decision-quality`, §8) has
+the real `decider` answer 10 fixed, invented cases: red gates,
+conflicts, open questions, a plan and owner comments. It judges schema
+validity and agreement with each case's known good answer in code, and
+passes at 9 of 10 valid and 8 of 10 agreeing. Each run's scores are kept
+in `eval/history/decision-quality.jsonl`, so they can be compared over
+time. It makes real model calls (see `eval/README.md`).
+
 The **coordinator window** is in the app at `/app#/coordinator`, and on
 desktop through the rail's Coordinator link (§4.14). On the classic
 board, the top bar's **Coordinator** button docks the same window on the
