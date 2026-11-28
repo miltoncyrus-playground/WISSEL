@@ -26,6 +26,7 @@ import { HostGuard, readHost, thresholdsFromEnv } from "../services/host-guard.t
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
 import { buildDigest, DigestRuns, dueDigests } from "../services/digests.ts";
+import { importItems, parseItems, type ImportBody, type ImportReport } from "../services/import.ts";
 import { isForward, loadChatConfig, moveComment, slackAdapter, ticketStage, TrackerState, transitionFor, workCards, type ChatAdapter, type TicketStage } from "../services/tracker-rules.ts";
 import { ChannelOutbox, channelMessageError, docScribeAdapter, flushChannel, type ChannelAdapter, type ChannelMessage } from "../services/channel.ts";
 import { DECISION_LABEL, DecisionStore, decisionBrief, IMPLEMENTED_KINDS, type DecisionOutput, type ImplementedKind } from "../services/decisions.ts";
@@ -70,7 +71,7 @@ import { pipelineAudioBytes, pipelineAudioResponse } from "../services/pipeline-
 import { getRepoDiff } from "../services/repo-diff.ts";
 import { getProjectGitStatus } from "../services/project-status.ts";
 import { getProjectGitOverview, groupWork } from "../services/project-git.ts";
-import { getProjectPrs, getProjectRuns, withPrCache } from "../services/github-status.ts";
+import { getProjectPrs, getProjectRuns, parseGithubRemote, withPrCache } from "../services/github-status.ts";
 import { loadTicketProvider, type TicketsSetup } from "../services/integrations.ts";
 import { KEY_RE, TicketError } from "../services/ticket-provider.ts";
 import { generateProjectEli5 } from "../services/project-eli5.ts";
@@ -888,14 +889,15 @@ export function createApp(
     // it is off unless an interval is set.
     const readEvery = Number(process.env.WISSEL_CHANNEL_READ_MS ?? 0);
     if (readEvery > 0) {
-      const cursors = new Map<string, string>();
+      // The cursor is kept, so a restart (or an import, §7) picks up
+      // where reading stopped.
       const read = async () => {
         for (const ws of workstreams?.list() ?? []) {
           const a = channelAdapterFor(ws.id);
           if (!a) continue;
-          const got = await a.adapter.read(a.target, cursors.get(ws.id)).catch((e) => (console.error(`channel: reading ${ws.name}: ${(e as Error).message}`), undefined));
+          const got = await a.adapter.read(a.target, dutyStore?.setting(`channelCursor:${ws.id}`)).catch((e) => (console.error(`channel: reading ${ws.name}: ${(e as Error).message}`), undefined));
           if (!got) continue;
-          if (got.cursor) cursors.set(ws.id, got.cursor);
+          if (got.cursor) dutyStore?.setSetting(`channelCursor:${ws.id}`, got.cursor);
           for (const entry of got.entries) dispatcher?.push({ id: `channel:${ws.id}:${entry.entryId}`, source: "channel", kind: "channel.entry", workstreamId: ws.id, payload: entry });
         }
       };
@@ -1453,6 +1455,56 @@ export function createApp(
         }
         if (seg.length === 3 && seg[2] === "shadow-report" && req.method === "GET") {
           return json(shadowReport(ws.id, gateLog?.list(ws.id, 1000) ?? [], inbox?.list({ workstreamId: ws.id, limit: 1000 }) ?? [], await board.list()));
+        }
+        // Import an existing coordinator's state (§7): nothing is created;
+        // dryRun reports without changing anything. A policy change.
+        if (seg.length === 3 && seg[2] === "import" && req.method === "POST") {
+          if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner imports" }, 403);
+          const body = ((await req.json().catch(() => undefined)) ?? {}) as ImportBody;
+          const dryRun = body.dryRun === true;
+          const { items, invalid } = parseItems(body.items);
+          const report: ImportReport = { dryRun, matched: [], unmatched: [], conflicts: [], invalid };
+          Object.assign(
+            report,
+            await importItems(ws, items, dryRun, {
+              cards: await board.list(),
+              prUrlFor: async (card, n) => {
+                if (!card.repo) return undefined;
+                const remote = await runViaBun(["git", "remote", "get-url", "origin"], { cwd: card.repo }).catch(() => undefined);
+                const slug = remote && remote.exitCode === 0 ? parseGithubRemote(remote.stdout) : undefined;
+                return slug ? `https://github.com/${slug}/pull/${n}` : undefined;
+              },
+              setKey: async (card, key, workstreamId) => void (await board.updateFields(card.id, { key, workstreamId })),
+              setRound: async (card, round) => void (board instanceof SqliteBoard ? board.db.run("UPDATE tasks SET round = ? WHERE id = ?", [round, card.id]) : undefined),
+              setPr: async (card, pr) => void (await board.setPullRequest(card.id, pr)),
+            }),
+          );
+          if (body.rules) {
+            const { projectId, ...rules } = body.rules;
+            const check = validateProjectSettings(rules);
+            if (!ws.projects.some((p) => p.projectId === projectId)) report.rules = "not applied: rules.projectId is not in this workstream";
+            else if (!check.ok) report.rules = `not applied: ${check.error}`;
+            else {
+              if (!dryRun) await projects.setSettings(projectId, check.patch);
+              report.rules = `${dryRun ? "would apply" : "applied"} ${Object.keys(check.patch).join(", ")} to project ${projectId}`;
+            }
+          }
+          if (body.channelCursor !== undefined) {
+            if (typeof body.channelCursor !== "string" || !body.channelCursor.trim()) report.channelCursor = "not applied: channelCursor must be text";
+            else {
+              if (!dryRun) dutyStore?.setSetting(`channelCursor:${ws.id}`, body.channelCursor);
+              report.channelCursor = `${dryRun ? "would start" : "reading starts"} after ${body.channelCursor}`;
+            }
+          }
+          if (body.schedule) {
+            const check = workstreamCheck(body.schedule, () => true, true);
+            if (!check.ok) report.schedule = `not applied: ${check.error}`;
+            else {
+              if (!dryRun) workstreams.update(ws.id, check.input);
+              report.schedule = `${dryRun ? "would set" : "set"} ${Object.keys(check.input).join(", ")}`;
+            }
+          }
+          return json(report);
         }
         // The digest: preview it, or send it now (§4.11).
         if (seg.length === 3 && seg[2] === "digest" && req.method === "GET") return json({ text: await digestText(ws) });

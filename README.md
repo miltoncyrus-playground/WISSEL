@@ -533,6 +533,22 @@ Both switches are owner only, take a confirm step (the first call
 answers 409 with what would change, `"confirm": true` applies it), and
 each is a policy revision.
 
+A team that already has a coordinator imports its state with `POST
+/workstreams/:id/import` (owner only, a policy change;
+`src/services/import.ts`, §7). Import creates nothing:
+- `items`, as JSONL or a list of `{key, cardId?, pr?, sha?, round?}`,
+  match cards already on the board, by id or by key in the workstream.
+  A match gets its key, workstream, round and PR (which needs the full
+  head `sha`). A different existing key or PR, or a key another card
+  already uses, is reported as a conflict and left alone.
+- `rules {projectId, cardRules?, cardTemplates?}` become that project's
+  settings.
+- `channelCursor` is where channel reading starts.
+- `schedule {digests?, quietHours?}` goes onto the workstream.
+
+`"dryRun": true` reports all of it and changes nothing. Then: Shadow for
+a day or two, and hand over one duty at a time.
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human

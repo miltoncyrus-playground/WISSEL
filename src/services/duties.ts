@@ -55,6 +55,15 @@ export class DutyStore {
     return { workstreamId, duty, owner, changedAt };
   }
 
+  /** A coordinator setting, such as a workstream's channel cursor. */
+  setting(key: string): string | undefined {
+    return (this.db.query("SELECT value FROM coordinator_settings WHERE key = ?").get(key) as { value: string } | null)?.value;
+  }
+
+  setSetting(key: string, value: string): void {
+    this.db.run("INSERT INTO coordinator_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [key, value]);
+  }
+
   shadow(): boolean {
     return (this.db.query("SELECT value FROM coordinator_settings WHERE key = 'shadow'").get() as { value: string } | null)?.value === "on";
   }
