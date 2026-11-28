@@ -48,6 +48,10 @@ export function Rail({ current, onOpenPalette }: NavProps) {
           </li>
         ))}
       </ul>
+      <a className="rail-board" href={routeHash({ screen: "coordinator" })} aria-current={current === "coordinator" ? "page" : undefined}>
+        <Icon name="coordinator" size={18} />
+        <span>Coordinator</span>
+      </a>
       <a className="rail-board" href="/board">
         <Icon name="external" size={18} />
         <span>Open full board</span>

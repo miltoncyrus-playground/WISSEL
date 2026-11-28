@@ -13,6 +13,7 @@ import { BoardScreen, CardDetail } from "./screens/BoardScreen";
 import { FeedScreen } from "./screens/FeedScreen";
 import { ListenScreen } from "./screens/ListenScreen";
 import { YouScreen } from "./screens/YouScreen";
+import { CoordinatorScreen } from "./screens/CoordinatorScreen";
 import { AgentsContext, useAgentsLoader } from "./useAgents";
 import { ProjectsContext, useProjectsLoader } from "./useProjects";
 import { useAsk } from "./useAsk";
@@ -84,7 +85,7 @@ export function App() {
     }
   }, []);
 
-  const title = SCREENS.find((s) => s.id === route.screen)?.label ?? "";
+  const title = route.screen === "coordinator" ? "Coordinator" : (SCREENS.find((s) => s.id === route.screen)?.label ?? "");
 
   useEffect(() => {
     document.title = `${title} · wissel`;
@@ -97,6 +98,8 @@ export function App() {
     screen = <FeedScreen now={now} />;
   } else if (route.screen === "listen") {
     screen = <ListenScreen now={now} />;
+  } else if (route.screen === "coordinator") {
+    screen = <CoordinatorScreen workstreamId={route.workstreamId} />;
   } else if (route.screen === "ask") {
     screen = <AskScreen ask={ask} tasks={data.tasks} tasksLoaded={data.loaded} pipelines={data.pipelines} now={now} />;
   } else {

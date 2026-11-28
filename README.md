@@ -577,6 +577,20 @@ claims, and would-be hard-limit violations (target zero). The bundled
 day is an invented example; a team's own recording uses the same
 shapes.
 
+The **coordinator window** is in the app at `/app#/coordinator`, and on
+desktop through the rail's Coordinator link (§4.14). It lists the
+workstreams, and each one's window (`#/coordinator/<id>`) has a header:
+each project's role and decider, Shadow, the channel, chat and quiet
+hours. It then has four tabs:
+- **Conversation:** what reached the inbox, your messages (Send), and
+  open owner tasks with their steps as tick-boxes and a Done that runs
+  the task's check.
+- **Decisions:** each decision with Flip.
+- **Log:** the channel outbox and the gate's decisions.
+- **Settings:** each project's role, each duty's owner, and Shadow. A
+  change shows the server's own confirm text first, and only Confirm
+  applies it.
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
