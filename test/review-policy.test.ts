@@ -61,7 +61,9 @@ describe("the reviewPolicy setting", () => {
     expect(validateProjectSettings({ reviewPolicy: { maxRounds: 11 } }).ok).toBe(false);
     expect(validateProjectSettings({ reviewPolicy: { blocks: ["LOW"] } }).ok).toBe(false);
     expect(validateProjectSettings({ reviewPolicy: { atCap: "merge" } }).ok).toBe(false);
-    expect(validateProjectSettings({ reviewPolicy: { tiers: [] } })).toMatchObject({ ok: false, error: expect.stringContaining('"tiers"') });
+    expect(validateProjectSettings({ reviewPolicy: { reviewers: [] } })).toMatchObject({ ok: false, error: expect.stringContaining('"reviewers"') });
+    // Card 8b: tiers, carryForward, keepPass and otherModels.
+    expect(validateProjectSettings({ reviewPolicy: { tiers: [] } })).toEqual({ ok: true, patch: { reviewPolicy: null } });
   });
 });
 

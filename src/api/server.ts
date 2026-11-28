@@ -15,7 +15,7 @@ import { addMcpServer } from "../core/mcp-manifest.ts";
 import { Registry } from "../core/registry.ts";
 import { buildAccountStatus } from "../core/account-status.ts";
 import { Router } from "../core/router.ts";
-import { Orchestrator, carriedCardSettings, grantAndRetry, finishResult, pushBackGateFailure, resolveHandoffAllowlist, resolveLiveTip, wireAutoIntegrator } from "../core/orchestrator.ts";
+import { Orchestrator, startReReview, carriedCardSettings, grantAndRetry, finishResult, pushBackGateFailure, resolveHandoffAllowlist, resolveLiveTip, wireAutoIntegrator } from "../core/orchestrator.ts";
 import { reconcileOrphanedTasks, reconcileInterruptedReviewVerdicts, reconcileLandedMerges } from "../core/crash-recovery.ts";
 import { worktreeHasChanges, type MergeContext } from "../services/worktree.ts";
 import { validateMergeGate } from "../services/merge-gate.ts";
@@ -926,6 +926,15 @@ export function createApp(
       setInterval(() => void read(), readEvery).unref?.();
     }
   }
+  // A passing review's carry-forward (§4.6) to the workstream's ticket,
+  // through the gate and the tracker's ticket.comment, which refuses
+  // while writeBack is off; the orchestrator then makes a card instead.
+  mergeContext.commentOnTicket = async (card, text) => {
+    const ws = card.workstreamId ? workstreams?.get(card.workstreamId) : undefined;
+    if (!ws?.ticket || !executor) return false;
+    const out = await executor.execute({ workstreamId: ws.id, ...(ws.projects[0] ? { projectId: ws.projects[0].projectId } : {}), kind: "ticket.comment", payload: { key: ws.ticket, text } });
+    return out.status === "done";
+  };
   // Tracker rules (§4.10): after each change to a workstream's cards, its
   // ticket moves forward through the gate, once per stage. A move that
   // didn't happen (writeBack off) is tried once per stage per run.
@@ -2555,6 +2564,22 @@ export function createApp(
           const task = await board.get(parts[1]!);
           if (!task) return notFound();
           return outcome(await setTaskPullRequest(board as Board, task, await req.json().catch(() => undefined)));
+        }
+
+        // Starts a review of a delivered card's PR (docs/SDD-coordinator.md
+        // §4.6, §4.7): of what changed since the reviewed head, or of the
+        // whole PR when nothing has. Its PASS lets the PR be armed at this
+        // head; its FAIL starts a fix round on the same branch.
+        if (parts.length === 3 && parts[2] === "re-review" && req.method === "POST") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          if (!task.pr) return json({ error: "this card has no pull request to review" }, 409);
+          if (task.supersededBy) return json({ error: "a later attempt of this card is the live one" }, 409);
+          const from = task.pr.reviewedHead ?? task.pr.head;
+          const worktree = (await board.getResult(task.id))?.worktree?.path;
+          const card = await startReReview(board as Board, task, { from: from === task.pr.head ? "" : from, to: task.pr.head, files: [] }, worktree);
+          if (!card) return json({ error: "a re-review of this head is already open" }, 409);
+          return json(card, 201);
         }
 
         // mergeTask and discardTask (src/services/board-actions.ts) are

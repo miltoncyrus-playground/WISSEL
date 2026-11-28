@@ -10,7 +10,7 @@
  * before they existed.
  */
 
-import type { Project, ReviewPolicy } from "../core/types.ts";
+import type { Project, ReviewPolicy, ReviewTier, ReviewerSpec } from "../core/types.ts";
 import { grantError, MAX_EXTRA_ALLOWED_TOOLS } from "../core/allowed-tools.ts";
 import { MAX_REF_PATTERNS, patternError } from "./ticket-refs.ts";
 import { validateDelivery } from "./delivery.ts";
@@ -32,6 +32,38 @@ export const PROJECT_SETTING_KEYS: readonly ProjectSettingKey[] = ["sandboxAllow
 export type ProjectSettingsPatch = { [K in ProjectSettingKey]?: NonNullable<ProjectSettings[K]> | null };
 
 export type ProjectSettingsCheck = { ok: true; patch: ProjectSettingsPatch } | { ok: false; error: string };
+
+const MODEL_ID = /^[a-z0-9][a-z0-9.\-_:]{0,79}$/i;
+const TIER_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const TIER_WHEN = /^(always|label:[^\s]{1,60}|files>=[1-9][0-9]{0,3})$/;
+
+/** The checked tiers, undefined when absent, or why they're refused. */
+export function reviewTiersCheck(v: unknown): ReviewTier[] | undefined | string {
+  if (v === undefined) return undefined;
+  const shape = 'reviewPolicy.tiers must be a list like [{ "id": "risky", "when": "label:auth", "reviewers": [{ "model": "other-than-coder", "mode": "adversarial" }], "maxRounds": 3 }]';
+  if (!Array.isArray(v) || v.length > 10) return shape;
+  const out: ReviewTier[] = [];
+  for (const t of v) {
+    if (!t || typeof t !== "object" || Array.isArray(t)) return shape;
+    const r = t as Record<string, unknown>;
+    const extra = Object.keys(r).find((k) => !["id", "when", "reviewers", "maxRounds"].includes(k));
+    if (extra) return `unknown review tier field "${extra}"; expected id, when, reviewers, maxRounds`;
+    if (typeof r.id !== "string" || !TIER_ID.test(r.id)) return "a review tier's id must be lowercase letters, digits and hyphens";
+    if (out.some((o) => o.id === r.id)) return `review tier "${r.id}" is named twice`;
+    if (r.when !== undefined && !(typeof r.when === "string" && TIER_WHEN.test(r.when))) return `review tier "${r.id}": when must be "always", "label:<name>" or "files>=<n>"`;
+    if (!Array.isArray(r.reviewers) || r.reviewers.length < 1 || r.reviewers.length > 3) return `review tier "${r.id}" needs 1 to 3 reviewers`;
+    const reviewers: ReviewerSpec[] = [];
+    for (const x of r.reviewers) {
+      const e = x as Record<string, unknown>;
+      if (!e || typeof e !== "object" || typeof e.model !== "string" || !(e.model === "other-than-coder" || MODEL_ID.test(e.model))) return `review tier "${r.id}": each reviewer needs a model ("other-than-coder" or a model id)`;
+      if (e.mode !== undefined && e.mode !== "standard" && e.mode !== "adversarial") return `review tier "${r.id}": a reviewer's mode is standard or adversarial`;
+      reviewers.push({ model: e.model, mode: (e.mode as ReviewerSpec["mode"]) ?? "standard" });
+    }
+    if (r.maxRounds !== undefined && !(Number.isInteger(r.maxRounds) && (r.maxRounds as number) >= 0 && (r.maxRounds as number) <= 10)) return `review tier "${r.id}": maxRounds must be a whole number from 0 to 10`;
+    out.push({ id: r.id, ...(r.when !== undefined ? { when: r.when as string } : {}), reviewers, ...(r.maxRounds !== undefined ? { maxRounds: r.maxRounds as number } : {}) });
+  }
+  return out;
+}
 
 /** One DNS label: letters, digits, inner hyphens, at most 63 chars. */
 const LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
@@ -197,8 +229,13 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
     else {
       if (typeof v !== "object" || Array.isArray(v)) return { ok: false, error: 'reviewPolicy must be an object: { "maxRounds": 2, "blocks": ["HIGH"], "atCap": "ask-decider" }' };
       const r = v as Record<string, unknown>;
-      const extra = Object.keys(r).find((k) => !["maxRounds", "blocks", "atCap"].includes(k));
-      if (extra) return { ok: false, error: `unknown reviewPolicy field "${extra}"; expected maxRounds, blocks, atCap` };
+      const extra = Object.keys(r).find((k) => !["maxRounds", "blocks", "atCap", "tiers", "carryForward", "keepPass", "otherModels"].includes(k));
+      if (extra) return { ok: false, error: `unknown reviewPolicy field "${extra}"; expected maxRounds, blocks, atCap, tiers, carryForward, keepPass, otherModels` };
+      const tiers = reviewTiersCheck(r.tiers);
+      if (typeof tiers === "string") return { ok: false, error: tiers };
+      if (r.carryForward !== undefined && !["ticket", "card", "drop"].includes(r.carryForward as string)) return { ok: false, error: "reviewPolicy.carryForward must be ticket, card or drop" };
+      if (r.keepPass !== undefined && !(Array.isArray(r.keepPass) && r.keepPass.every((k) => k === "text" || k === "test"))) return { ok: false, error: "reviewPolicy.keepPass must list any of text, test" };
+      if (r.otherModels !== undefined && !(Array.isArray(r.otherModels) && r.otherModels.length <= 10 && r.otherModels.every((m) => typeof m === "string" && MODEL_ID.test(m)))) return { ok: false, error: "reviewPolicy.otherModels must list up to 10 model ids" };
       if (r.maxRounds !== undefined && !(Number.isInteger(r.maxRounds) && (r.maxRounds as number) >= 0 && (r.maxRounds as number) <= 10)) return { ok: false, error: "reviewPolicy.maxRounds must be a whole number from 0 to 10" };
       const blockKinds = ["HIGH", "MED", "MED-with-scenario"];
       if (r.blocks !== undefined && !(Array.isArray(r.blocks) && r.blocks.every((b) => typeof b === "string" && blockKinds.includes(b)))) return { ok: false, error: `reviewPolicy.blocks must list any of ${blockKinds.join(", ")}` };
@@ -207,6 +244,10 @@ export function validateProjectSettings(body: unknown): ProjectSettingsCheck {
         ...(r.maxRounds !== undefined ? { maxRounds: r.maxRounds as number } : {}),
         ...(r.blocks !== undefined && (r.blocks as string[]).length ? { blocks: dedupe(r.blocks as string[]) as NonNullable<ReviewPolicy["blocks"]> } : {}),
         ...(r.atCap !== undefined ? { atCap: r.atCap as NonNullable<ReviewPolicy["atCap"]> } : {}),
+        ...(tiers && tiers.length ? { tiers } : {}),
+        ...(r.carryForward !== undefined ? { carryForward: r.carryForward as NonNullable<ReviewPolicy["carryForward"]> } : {}),
+        ...(Array.isArray(r.keepPass) && r.keepPass.length ? { keepPass: dedupe(r.keepPass as string[]) as NonNullable<ReviewPolicy["keepPass"]> } : {}),
+        ...(Array.isArray(r.otherModels) && r.otherModels.length ? { otherModels: dedupe(r.otherModels as string[]) } : {}),
       };
       patch.reviewPolicy = Object.keys(policy).length > 0 ? policy : null;
     }
