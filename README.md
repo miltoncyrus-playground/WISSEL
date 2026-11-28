@@ -494,6 +494,17 @@ happens. The kinds:
   /decisions/:id/flip`).
 - **`triage-red`:** `retry` (deliver again), `fix-round` (back with the
   reason) or `spec-question` (an owner task).
+- **`resolve-conflict`:** starts by itself when merge-forward's conflict
+  integrator gives up (its card failed or escalated, or the card went
+  past the integrator cap), one at a time per card. The answer is:
+  - `card`, with how to resolve each file: a fix round on the same
+    branch, reviewed and delivered again;
+  - or `ask`: an owner task with the question.
+- **`read-owner-comments`:** the owner's comments, given as its context.
+  Each answer is posted to the workstream's channel as a gated `answer`
+  line. Each follow-up starts as a card, unless held, like a plan.
+  Nothing reads an owner review doc by itself yet: start one with `POST
+  /workstreams/:id/decisions/start`.
 
 A `follow` project turns the same answer into a question for its decider.
 A workstream card whose PR checks go red starts a `triage-red` on its

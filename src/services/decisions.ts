@@ -20,6 +20,11 @@
 //   as a Decision that can be flipped to its alternative.
 // - triage-red: red gates after the retry get retry, fix-round or
 //   spec-question, with the reason.
+// - resolve-conflict: a merge-forward the conflict integrator gave up on
+//   gets a resolution (a fix round on the same branch) or ask (an owner
+//   task with the question).
+// - read-owner-comments: the owner's comments get answers (posted to the
+//   channel) and follow-up cards (started unless held).
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { StartCondition } from "../core/types.ts";
@@ -27,7 +32,7 @@ import { lastFencedBlock } from "../executors/fenced-block.ts";
 import type { DecisionKind } from "./workstreams.ts";
 
 export const DECISION_LABEL = "decision";
-export const IMPLEMENTED_KINDS = ["plan-batch", "decide-default", "triage-red"] as const;
+export const IMPLEMENTED_KINDS = ["plan-batch", "decide-default", "triage-red", "resolve-conflict", "read-owner-comments"] as const;
 export type ImplementedKind = (typeof IMPLEMENTED_KINDS)[number];
 
 export interface PlannedCard {
@@ -42,7 +47,10 @@ export interface PlannedCard {
 export type DecisionOutput =
   | { kind: "plan-batch"; cards: PlannedCard[] }
   | { kind: "decide-default"; text: string; alternative: string; lean: string }
-  | { kind: "triage-red"; verdict: "retry" | "fix-round" | "spec-question"; reason: string };
+  | { kind: "triage-red"; verdict: "retry" | "fix-round" | "spec-question"; reason: string }
+  | { kind: "resolve-conflict"; verdict: "card"; resolution: string }
+  | { kind: "resolve-conflict"; verdict: "ask"; question: string; reason: string }
+  | { kind: "read-owner-comments"; answers: { comment: string; answer: string }[]; followUps: { title: string; body: string }[] };
 
 const str = (v: unknown, max = 4000) => typeof v === "string" && v.trim().length > 0 && v.length <= max;
 
@@ -76,6 +84,28 @@ export function parseDecision(raw: string, expected?: DecisionKind): DecisionOut
     if (!str(o.text) || !str(o.alternative) || !str(o.lean)) return null;
     return { kind: "decide-default", text: o.text as string, alternative: o.alternative as string, lean: o.lean as string };
   }
+  if (o.kind === "resolve-conflict") {
+    if (o.verdict === "card") return str(o.resolution, 8000) ? { kind: "resolve-conflict", verdict: "card", resolution: o.resolution as string } : null;
+    if (o.verdict === "ask") return str(o.question, 2000) && str(o.reason) ? { kind: "resolve-conflict", verdict: "ask", question: o.question as string, reason: o.reason as string } : null;
+    return null;
+  }
+  if (o.kind === "read-owner-comments") {
+    const answers = o.answers ?? [];
+    const followUps = o.followUps ?? [];
+    if (!Array.isArray(answers) || answers.length > 20 || !Array.isArray(followUps) || followUps.length > 10) return null;
+    if (answers.length === 0 && followUps.length === 0) return null;
+    const a: { comment: string; answer: string }[] = [];
+    for (const x of answers as Array<Record<string, unknown>>) {
+      if (!x || !str(x.comment, 500) || !str(x.answer, 2000)) return null;
+      a.push({ comment: x.comment as string, answer: x.answer as string });
+    }
+    const f: { title: string; body: string }[] = [];
+    for (const x of followUps as Array<Record<string, unknown>>) {
+      if (!x || !str(x.title, 200) || !str(x.body, 8000)) return null;
+      f.push({ title: x.title as string, body: x.body as string });
+    }
+    return { kind: "read-owner-comments", answers: a, followUps: f };
+  }
   if (o.kind === "triage-red") {
     if (o.verdict !== "retry" && o.verdict !== "fix-round" && o.verdict !== "spec-question") return null;
     if (!str(o.reason)) return null;
@@ -88,12 +118,16 @@ const SCHEMA: Record<ImplementedKind, string> = {
   "plan-batch": '{"kind": "plan-batch", "cards": [{"key": "A5", "title": "...", "body": "...", "files": ["src/..."], "waitsFor": []}]}  (1 to 10 cards)',
   "decide-default": '{"kind": "decide-default", "text": "the default you would take", "alternative": "the other reasonable choice", "lean": "why the default"}',
   "triage-red": '{"kind": "triage-red", "verdict": "retry" | "fix-round" | "spec-question", "reason": "..."}',
+  "resolve-conflict": '{"kind": "resolve-conflict", "verdict": "card", "resolution": "how to resolve each conflicting file, and why"}  or  {"kind": "resolve-conflict", "verdict": "ask", "question": "what only the owner can decide", "reason": "..."}',
+  "read-owner-comments": '{"kind": "read-owner-comments", "answers": [{"comment": "the comment, quoted short", "answer": "..."}], "followUps": [{"title": "...", "body": "..."}]}  (at most 20 answers and 10 follow-ups; at least one of either)',
 };
 
 const ASK: Record<ImplementedKind, string> = {
   "plan-batch": "There are free slots and few ready cards. Propose the next small cards for this workstream, each one concern and at most a day's work, in the order they should run.",
   "decide-default": "An open question has no answer. Pick the default a careful engineer would take, name the alternative, and say why.",
   "triage-red": "The gates are red after their one retry. Decide: retry (a flaky or infrastructure failure), fix-round (the work is wrong; say what to fix), or spec-question (the brief can't be met as written).",
+  "resolve-conflict": "Merging main into this card's branch conflicts, and the conflict integrator gave up. Decide: card (you can say how to resolve it: for each conflicting file, which side's change to keep or how to combine them, so a fix round can apply it), or ask (resolving it needs a decision about the product only the owner can make).",
+  "read-owner-comments": "The owner left these comments. Answer each one you can from the workstream's state, and propose a follow-up card for each one that asks for work. Don't promise anything a card doesn't do.",
 };
 
 /** A decision card's brief: what to decide, the context fenced as

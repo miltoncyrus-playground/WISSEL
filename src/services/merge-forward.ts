@@ -20,7 +20,7 @@ import type { Board } from "./board.ts";
 import type { Registry } from "../core/registry.ts";
 import type { TaskCard } from "../core/types.ts";
 import { mergeTaskWorktree, type MergeContext } from "./worktree.ts";
-import { afterMergeAttempt, conflictIntegratorState, startReReview, withConflictIntegratorCheck } from "../core/orchestrator.ts";
+import { afterMergeAttempt, conflictIntegratorCards, conflictIntegratorState, startReReview, withConflictIntegratorCheck } from "../core/orchestrator.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
 import { keepsPass } from "./review-tiers.ts";
 
@@ -32,13 +32,27 @@ export function mergeForwardTitle(card: Pick<TaskCard, "title">): string {
   return `Merge forward: ${card.title}`;
 }
 
-export type MergeForwardOutcome = "delivered" | "waiting" | "busy" | "failed" | "pushback";
+export type MergeForwardOutcome = "delivered" | "waiting" | "busy" | "failed" | "pushback" | "gave-up";
+
+/** Why the conflict integrator gave up on `card`'s conflict, or
+ *  undefined while it hasn't: its latest card failed or escalated, or the
+ *  card itself escalated (a conflict past the integrator cap). */
+export async function integratorGaveUp(board: Board, card: Pick<TaskCard, "id">): Promise<string | undefined> {
+  const cards = await conflictIntegratorCards(board, card);
+  const latest = cards[cards.length - 1];
+  if (latest && (latest.status === "failed" || latest.status === "escalated")) return `the conflict integrator card ${latest.id.slice(0, 8)} ${latest.status}`;
+  if ((await board.get(card.id))?.status === "escalated") return "the card escalated: its conflicts went past the conflict integrator cap";
+  return undefined;
+}
 
 export interface MergeForwardDeps {
   board: Board;
   registry: Registry;
   merge: MergeContext;
   log?: (line: string) => void;
+  /** Called once when the conflict integrator gives up (§4.4): starts a
+   *  resolve-conflict decision. */
+  onGaveUp?: (card: TaskCard, reason: string, detail: string) => Promise<unknown>;
 }
 
 /** The live merge-forward card for `card` (not done, failed or archived). */
@@ -93,7 +107,15 @@ export async function mergeForward(deps: MergeForwardDeps, card: TaskCard): Prom
   if (mf && mf.status !== "review") return "busy";
   if (mf) {
     const integrator = await conflictIntegratorState(board, card);
-    if (!integrator.finished) return "waiting";
+    if (!integrator.finished) {
+      const gaveUp = await integratorGaveUp(board, card);
+      if (!gaveUp) return "waiting";
+      const detail = (await board.getResult(mf.id))?.summary ?? "";
+      await board.recordResult({ taskId: mf.id, agentId: MERGE_FORWARD_OWNER, ok: false, summary: `Stopped: ${gaveUp}. A resolve-conflict decision decides what happens next.\n\n${detail}` });
+      await board.move(mf.id, "failed");
+      await deps.onGaveUp?.(card, gaveUp, detail).catch((e) => log(`merge forward: resolve-conflict for ${card.title} failed: ${(e as Error).message}`));
+      return "gave-up";
+    }
   }
   const worktree = (await board.getResult(card.id))?.worktree;
   if (!mf) {
@@ -128,6 +150,13 @@ export async function mergeForward(deps: MergeForwardDeps, card: TaskCard): Prom
   }
   if (res.outcome === "conflict") {
     await afterMergeAttempt(board, deps.registry, card, worktree, res);
+    // Past the integrator cap the card escalates instead of getting one.
+    const gaveUp = await integratorGaveUp(board, card);
+    if (gaveUp) {
+      await finish("failed", false, `Stopped: ${gaveUp}. A resolve-conflict decision decides what happens next.\n\n${res.message}`);
+      await deps.onGaveUp?.(card, gaveUp, res.message).catch((e) => log(`merge forward: resolve-conflict for ${card.title} failed: ${(e as Error).message}`));
+      return "gave-up";
+    }
     await finish("review", false, `Main conflicts with this PR; a conflict integrator card resolves it in the worktree, then this runs again.\n\n${res.message}`);
     return "waiting";
   }
