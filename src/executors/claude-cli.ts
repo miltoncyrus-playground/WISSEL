@@ -54,6 +54,15 @@ export type CommandRunner = (
   opts: { cwd: string; env?: Record<string, string>; onChunk?: (line: unknown) => void; stdin?: string },
 ) => Promise<CommandResult>;
 
+/** A failed run's reason, the real one first: claude's own result text
+ *  (e.g. "You're out of usage credits"), then what it printed as errors
+ *  or warnings, then raw output it couldn't be parsed from. Before this a
+ *  warning on stderr hid the result's message from the card. */
+export function failureText(result: string | undefined, stderr: string, stdout: string): string {
+  const parts = [result, stderr, stdout].map((s) => (s ?? "").trim()).filter(Boolean);
+  return [...new Set(parts)].join(" · ") || "(no output)";
+}
+
 export async function runViaBun(
   cmd: string[],
   opts: { cwd: string; env?: Record<string, string>; onChunk?: (line: unknown) => void; stdin?: string },
@@ -607,7 +616,7 @@ export async function runClaude(opts: RunClaudeOptions): Promise<TaskResult> {
         };
       }
     }
-    return { ...fail(task, agent, `claude exited ${exitCode}: ${(stderr || stdout).trim()}`, parsed?.total_cost_usd, mcpCalls), ...runFacts(parsed, resumeId, remoteSessionUrl, sandbox) };
+    return { ...fail(task, agent, `claude exited ${exitCode}: ${failureText(parsed?.result, stderr, parsed ? "" : stdout)}`, parsed?.total_cost_usd, mcpCalls), ...runFacts(parsed, resumeId, remoteSessionUrl, sandbox) };
   }
 
   if (!parsed) {
