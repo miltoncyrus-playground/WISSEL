@@ -500,11 +500,18 @@ happens. The kinds:
   - `card`, with how to resolve each file: a fix round on the same
     branch, reviewed and delivered again;
   - or `ask`: an owner task with the question.
-- **`read-owner-comments`:** the owner's comments, given as its context.
-  Each answer is posted to the workstream's channel as a gated `answer`
-  line. Each follow-up starts as a card, unless held, like a plan.
-  Nothing reads an owner review doc by itself yet: start one with `POST
-  /workstreams/:id/decisions/start`.
+- **`read-owner-comments`:** the owner's comments. A workstream's
+  `reviewDoc` (`{"adapter": "claude-docs", "target": "<doc link>"}`) is
+  read once a day, checked hourly (`WISSEL_OWNER_COMMENTS=0` turns that
+  off). The reader is a read-only scribe: `claude -p` allowed only the
+  Claude Docs read and query tools. New comments since the last read
+  (the cursor is kept) start one decision.
+  - Each answer is posted to the workstream's channel as a gated
+    `answer` line.
+  - Each follow-up starts as a card, unless held, like a plan.
+  - `POST /workstreams/:id/owner-comments/read` reads now.
+  - `POST /workstreams/:id/decisions/start` starts the decision with
+    comments you give it.
 
 A `follow` project turns the same answer into a question for its decider.
 A workstream card whose PR checks go red starts a `triage-red` on its
@@ -1162,6 +1169,7 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_HOST_GUARD_MIN_TEMP_GB` | `2` | Hold when a project's temp directory (its `env.TMPDIR`, else the system's) has less free than this. |
 | `WISSEL_HARD_LIMITS_PATH` | `hard-limits.yaml` | The coordinator's hard limits, read once at start: `production` (`accounts`, `clusters`, `hosts`, patterns with `*`) and `readOnlyRepos`. Missing means only the built-in limits. |
 | `WISSEL_CHANNEL_INTERVAL_MS` | `900000` (15 min) | How often each workstream's pending channel messages are posted, as one scribe run per workstream. `0` posts only on `POST /workstreams/:id/channel/flush`. |
+| `WISSEL_OWNER_COMMENTS` | on | `0` stops the daily read of each workstream's `reviewDoc` for owner comments (checked hourly, one read-only scribe run per doc a day). |
 | `WISSEL_CHANNEL_READ_MS` | `0` (off) | How often the channel is read back for other people's entries (one scribe run per workstream each time); they land in the inbox as untrusted `channel.entry` events. |
 | `WISSEL_PR_WATCH` | on | `0` stops the PR watcher, which reads every delivered card's PR once a minute with `gh` (read-only). |
 | `WISSEL_SUPERVISOR` | unset | `script` when `bun run serve:supervised` started Wissel (the script sets it). With it, or under systemd, `POST /admin/restart-when-idle` is allowed; with neither it is refused. |

@@ -62,6 +62,9 @@ export interface Workstream {
   projects: WorkstreamProject[];
   channel?: { adapter: string; target: string };
   chat?: { adapter: string; channel: string };
+  /** The owner's review doc (§4.4 read-owner-comments): read once a day
+   *  for new comments, which a read-owner-comments decision answers. */
+  reviewDoc?: { adapter: string; target: string };
   quietHours?: { start: string; end: string; timezone: string };
   digests?: { cron: string; timezone: string }[];
   createdAt: string;
@@ -115,7 +118,7 @@ export function workstreamProjectCheck(v: unknown, projectExists: (id: string) =
 export function workstreamCheck(v: unknown, projectExists: (id: string) => boolean, partial = false): { ok: true; input: Partial<WorkstreamInput> } | { ok: false; error: string } {
   if (v === null || typeof v !== "object" || Array.isArray(v)) return { ok: false, error: "body must be a workstream object" };
   const w = v as Record<string, unknown>;
-  const fields = ["name", "ticket", "spec", "projects", "channel", "chat", "quietHours", "digests"];
+  const fields = ["name", "ticket", "spec", "projects", "channel", "chat", "reviewDoc", "quietHours", "digests"];
   const extra = Object.keys(w).find((k) => !fields.includes(k));
   if (extra) return { ok: false, error: `unknown workstream field "${extra}"; expected ${fields.join(", ")}` };
   const out: Partial<WorkstreamInput> = {};
@@ -148,6 +151,7 @@ export function workstreamCheck(v: unknown, projectExists: (id: string) => boole
   for (const [key, inner] of [
     ["channel", "target"],
     ["chat", "channel"],
+    ["reviewDoc", "target"],
   ] as const) {
     if (w[key] === undefined) continue;
     const c = w[key] as Record<string, unknown> | null;
