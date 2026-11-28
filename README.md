@@ -1276,9 +1276,33 @@ identity provider (`docs/SDD-identity-and-permissions.md` §4.2, card 5).
 - **Storage:** only hashes of sessions, tokens and links are stored,
   never a secret.
 
-Sign-in doesn't narrow anything yet: anyone signed in can do what the
-owner can, except managing members and the owner-only coordinator
-switches. With sign-in on, a non-loopback `WISSEL_BIND` no longer needs
+**Permissions** (§3.3, §4.3, card 6): one check in front of every route,
+denied by default.
+- **The owner** holds everything. Everyone else holds what their
+  grants say. A new member holds nothing, so they can sign in and see
+  nothing until granted.
+- **What a route needs:** each write route declares its permissions in
+  `WRITE_ROUTES` (`src/services/permissions.ts`), and where it lands: a
+  card's project and workstream, a project, a workstream, or the
+  instance. A write route the table doesn't declare is the owner's
+  alone. Reads need `board.read`, and `GET /audit` needs `audit.read`.
+  A refusal is a 403 naming the missing permissions, recorded in the
+  audit as denied.
+- **Grants:** `POST /members/:id/grants {scope, permissions,
+  expiresAt?}`, where `scope` is `{"kind": "instance"}`, `{"kind":
+  "workstream", "id"}` or `{"kind": "project", "id"}`. A workstream grant
+  covers that workstream's cards and projects. `DELETE /grants/:id`
+  revokes one, and `GET /members` lists each member's grants.
+- **Who grants:** a grant needs `member.manage` at its scope, so a
+  workstream owner grants within their workstream. A granter can hand
+  out only what they hold there. `host.admin` and `member.manage` at
+  instance scope come only from the owner, and an agent principal can
+  never hold a grant.
+- **The coordinator switches:** the owner-only ones (roles, duties,
+  Shadow, flips, imports, lessons) honour a granted `role.change`,
+  `duty.switch` or `policy.edit`.
+
+With sign-in on, a non-loopback `WISSEL_BIND` no longer needs
 `WISSEL_ALLOW_OPEN_BIND`.
 
 ## Known gaps
