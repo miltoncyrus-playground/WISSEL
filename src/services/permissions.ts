@@ -233,6 +233,7 @@ export const WRITE_ROUTES: RouteRule[] = [
   r("POST", "/tasks/*/allowed-tools", ["card.grant-tools"], "task"),
   r("POST", "/tasks/*/pr", ["pr.open"], "task"),
   r("POST", "/tasks/*/re-review", ["card.run"], "task"),
+  r("POST", "/tasks/*/reauthorize", ["card.run"], "task"),
   r("POST", "/tasks/*/merge", ["card.merge"], "task"),
   r("POST", "/tasks/*/close", ["card.discard"], "task"),
   r("POST", "/tasks/*/discard", ["card.discard"], "task"),

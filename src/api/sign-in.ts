@@ -81,7 +81,7 @@ export function withSignIn(inner: Fetch, opts: SignInOptions): Fetch {
  *  other: the route table asks member.manage for adding, disabling and
  *  minting for others, and GrantStore checks a grant's own scope. Anyone
  *  signed in manages their own tokens. */
-export function withIdentityRoutes(inner: Fetch, identity: IdentityStore, grants?: GrantStore): Fetch {
+export function withIdentityRoutes(inner: Fetch, identity: IdentityStore, grants?: GrantStore, onDisabled?: (principalId: string, handle: string) => Promise<string | undefined>): Fetch {
   return async (req) => {
     const url = new URL(req.url);
     const parts = url.pathname.split("/").filter(Boolean);
@@ -124,8 +124,13 @@ export function withIdentityRoutes(inner: Fetch, identity: IdentityStore, grants
       if (parts.length === 3 && parts[2] === "disable" && req.method === "POST") {
         const refused = ownerOnly();
         if (refused) return refused;
-        const r = identity.disable(decodeURIComponent(parts[1]!));
-        return r.ok ? json(r.principal) : json({ error: r.error }, r.status);
+        const id = decodeURIComponent(parts[1]!);
+        const was = identity.principal(id);
+        const r = identity.disable(id);
+        if (!r.ok) return json({ error: r.error }, r.status);
+        // Their cards stop and ask (leavers.ts), once, on the first disable.
+        const note = was && !was.disabledAt ? await onDisabled?.(id, r.principal.handle) : undefined;
+        return json({ ...r.principal, ...(note ? { cards: note } : {}) });
       }
       if (parts.length === 3 && parts[2] === "tokens" && req.method === "POST") {
         const refused = ownerOnly();

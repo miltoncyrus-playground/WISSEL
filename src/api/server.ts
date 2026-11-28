@@ -26,7 +26,7 @@ import { HostGuard, readHost, thresholdsFromEnv } from "../services/host-guard.t
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { MERGE_FORWARD_LABEL, mergeForward } from "../services/merge-forward.ts";
 import { docCommentReader, readOwnerComments, type CommentReader } from "../services/owner-comments.ts";
-import { holdCard, planHoldMinutes, planStartsAt, plannedCards, releaseCard } from "../services/plan-hold.ts";
+import { isHeld, holdCard, planHoldMinutes, planStartsAt, plannedCards, releaseCard } from "../services/plan-hold.ts";
 import { buildDigest, DigestRuns, dueDigests } from "../services/digests.ts";
 import { LessonDecisions, lessonsForFiles, parseLessons, proposals, ruleText } from "../services/lessons.ts";
 import { importItems, parseItems, type ImportBody, type ImportReport } from "../services/import.ts";
@@ -130,6 +130,7 @@ import { authMode, IdentityStore } from "../services/identity.ts";
 import { callerOf, principalOf, withIdentityRoutes, withSignIn } from "./sign-in.ts";
 import { wasPermitted, withPermissions } from "./permission-door.ts";
 import { GrantStore } from "../services/permissions.ts";
+import { leaverTask, stopCardsOf } from "../services/leavers.ts";
 import { raiseOpenBindTask } from "../services/open-bind-task.ts";
 import { AuthorizationLog, OWNER_PRINCIPAL_ID, withAuthorizationRecords } from "../services/authorization.ts";
 import { PolicyRevisions } from "../services/policy-revision.ts";
@@ -1421,6 +1422,9 @@ export function createApp(
 
       // The "+ New" drawer's live-card search (docs/SDD-ui-cleanup.md
       // §3.3). Same static-sibling reasoning.
+      if (url.pathname === "/board-members.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("board-members.js", PUBLIC_DIR)));
+      }
       if (url.pathname === "/board-dock.js" && req.method === "GET") {
         return new Response(Bun.file(new URL("board-dock.js", PUBLIC_DIR)));
       }
@@ -1746,6 +1750,7 @@ export function createApp(
             ...(q.get("principal") ? { principalId: q.get("principal")! } : {}),
             ...(q.get("task") ? { taskId: q.get("task")! } : {}),
             ...(q.get("kind") ? { kind: q.get("kind")! } : {}),
+            ...(["allowed", "denied", "failed", "queued"].includes(q.get("outcome") ?? "") ? { outcome: q.get("outcome") as "allowed" | "denied" | "failed" | "queued" } : {}),
           }),
         );
       }
@@ -2665,6 +2670,23 @@ export function createApp(
           return outcome(await setTaskNotBefore(board as Board, task, notBefore, new Date()));
         }
 
+        // Re-authorize (docs/SDD-identity-and-permissions.md §11 q5): a
+        // disabled member's card kept by the caller runs on the caller's
+        // authority from now on, and is released if it was held.
+        if (parts.length === 3 && parts[2] === "reauthorize" && req.method === "POST") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          if (!(board instanceof SqliteBoard)) return json({ error: "re-authorizing needs the board database" }, 409);
+          const by = opts.authorization?.principalFor(req) ?? OWNER_PRINCIPAL_ID;
+          board.reauthorize(task.id, by);
+          const now = (await board.get(task.id))!;
+          if (isHeld(now)) {
+            const r = await releaseCard(board as Board, now);
+            if (!r.ok) return json({ error: r.error }, r.status);
+          }
+          return json(await board.get(task.id));
+        }
+
         // Hold and Release (docs/SDD-coordinator.md §4.14): a card that
         // hasn't started is kept from starting, or let go to start now.
         if (parts.length === 3 && (parts[2] === "hold" || parts[2] === "release") && req.method === "POST") {
@@ -3268,7 +3290,13 @@ if (import.meta.main) {
       stt,
       schedulesEnabled: true,
       ...scripted,
-    }), identity, grants), { grants, placeOf }), authorizationLog, { principalFor, policy, onCardCreated: (id, principalId) => board.attribute(id, principalId) }), { mode: signInMode, identity, secure: (process.env.WISSEL_PUBLIC_URL ?? "").startsWith("https://") }),
+    }), identity, grants, async (principalId, handle) => {
+      // Leavers stop and ask (src/services/leavers.ts).
+      const out = await stopCardsOf(board, principalId, new Date());
+      const task = leaverTask(handle, out);
+      if (task) await new OwnerTaskStore(board.db, board).create({ ...task, blocks: [] });
+      return task ? `${out.held.length} held, ${out.running.length} still running; an owner task lists them` : undefined;
+    }), { grants, placeOf }), authorizationLog, { principalFor, policy, onCardCreated: (id, principalId) => board.attribute(id, principalId) }), { mode: signInMode, identity, secure: (process.env.WISSEL_PUBLIC_URL ?? "").startsWith("https://") }),
   });
   if (signInMode === "tokens") {
     console.log("sign-in: on (WISSEL_AUTH=tokens); every request needs a session or an API token");

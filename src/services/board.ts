@@ -595,6 +595,13 @@ export class SqliteBoard implements Board {
   /** Records who made a card and who stands behind it, once: a field
    *  already set is never overwritten, so attribution cannot be moved
    *  after the fact (docs/SDD-identity-and-permissions.md §4.4). */
+  /** A deliberate re-authorization (a leaver's card kept by someone
+   *  else): the card runs on `principalId`'s authority from now on. Who
+   *  made it stays as it was; the authorization record says who moved it. */
+  reauthorize(id: string, principalId: string): void {
+    this.db.run("UPDATE tasks SET authorizedByPrincipalId = ? WHERE id = ?", [principalId, id]);
+  }
+
   attribute(id: string, principalId: string): void {
     this.db.run(
       "UPDATE tasks SET createdByPrincipalId = COALESCE(createdByPrincipalId, ?), authorizedByPrincipalId = COALESCE(authorizedByPrincipalId, ?) WHERE id = ?",

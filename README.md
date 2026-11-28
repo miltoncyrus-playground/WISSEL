@@ -1302,6 +1302,26 @@ denied by default.
   Shadow, flips, imports, lessons) honour a granted `role.change`,
   `duty.switch` or `policy.edit`.
 
+**On the board** (card 7):
+- **Setup > Members** lists everyone with their grants per scope (each
+  with Revoke) and their live tokens. From it you can:
+  - add a member (their first token is shown once);
+  - grant (scope plus permission boxes);
+  - mint a token;
+  - disable a member, after a confirm.
+- **Setup > Audit** lists the authorization records, newest first,
+  filterable by member, outcome and action (`GET /audit?principal=
+  &outcome=&kind=`). Denied rows are marked.
+
+**Leavers stop and ask:** disabling a member revokes their sessions and
+tokens at once. Every card they authorized that hasn't started is held,
+and an owner task lists those cards and the ones still running, which
+finish.
+- **Keep a card:** `POST /tasks/:id/reauthorize` (`card.run`) makes it
+  run on your authority from then on and releases it. Who made the card
+  is kept, and the audit records who moved it.
+- **Drop a card:** Discard or Archive it.
+
 With sign-in on, a non-loopback `WISSEL_BIND` no longer needs
 `WISSEL_ALLOW_OPEN_BIND`.
 

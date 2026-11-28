@@ -96,6 +96,9 @@ export interface RecordQuery {
   principalId?: string;
   taskId?: string;
   kind?: string;
+  /** Only allowed, denied, failed or queued rows: the denied ones are
+   *  the interesting ones (§4.9). */
+  outcome?: AuthorizationOutcome;
 }
 
 export class AuthorizationLog {
@@ -230,6 +233,7 @@ export class AuthorizationLog {
     const args: (string | number)[] = [];
     if (q.principalId) { where.push("principalId = ?"); args.push(q.principalId); }
     if (q.kind) { where.push("actionKind = ?"); args.push(q.kind); }
+    if (q.outcome) { where.push("outcome = ?"); args.push(q.outcome); }
     if (q.taskId) { where.push("(actionTarget = ? OR json_extract(effect, '$.taskId') = ?)"); args.push(q.taskId, q.taskId); }
     const limit = Math.max(1, Math.min(1000, Math.floor(q.limit ?? 100)));
     const sql = `SELECT * FROM authorization_records ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY seq DESC LIMIT ${limit}`;
