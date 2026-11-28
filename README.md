@@ -565,6 +565,18 @@ proposals, and `POST /lessons/:key/approve` or `.../reject` decides one
 (owner only). Prompt injection stays as `WISSEL_MEMORY_INJECTION` says:
 scoped lessons aren't injected yet.
 
+On its own, through the gate, Wissel posts a **claim** to a workstream's
+channel when one of its cards starts, and a **ready-to-merge** (with the
+full head) when its PR becomes ready. In Shadow those are would-records,
+and the **replay eval** (`bun run eval:replay [day.jsonl
+coordinator.json]`, `src/services/replay.ts`, §8) measures them. It runs
+a recorded day (cards, moves, PR states, channel entries) through an
+in-memory Wissel in Shadow. It then compares the would-records with what
+the team's coordinator did: ready-to-merge agreement (target 95%),
+claims, and would-be hard-limit violations (target zero). The bundled
+day is an invented example; a team's own recording uses the same
+shapes.
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human
