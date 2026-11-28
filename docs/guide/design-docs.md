@@ -16,6 +16,7 @@ The specs behind each part, in `docs/`.
 - `docs/SDD-write-tier-sandbox.md`: write-tier Bash in Claude Code's OS sandbox, denial counting, project allow rules.
 - `docs/SDD-git-jira-visibility.md`: git state and tickets on the board, the Jira integration and write-back.
 - `docs/SDD-schedules.md`: schedules for pipelines and tasks, and "Start at" for a card; §7 is the switch-over from systemd.
+- `docs/SDD-settings-tab.md`: instance settings in Setup > Settings, live, with the start-up variables that stay.
 
 ---
 
