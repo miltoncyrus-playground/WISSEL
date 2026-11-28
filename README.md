@@ -1313,6 +1313,20 @@ denied by default.
   filterable by member, outcome and action (`GET /audit?principal=
   &outcome=&kind=`). Denied rows are marked.
 
+**Agents** (§4.8, card 8): with sign-in on, each card run is its own
+`agent` principal, with no grants and never any.
+- **Its token:** its process gets a token in `WISSEL_TOKEN`, with
+  `WISSEL_CARD_ID` and `WISSEL_API_URL`. The token reaches only that
+  card, to read: `GET /tasks/<its card>` and below, and `/me`.
+- **Everything else** is a 403, recorded under that run's principal.
+  The blast radius of a prompt injection is one card, not anyone's
+  session.
+- **Lifetime:** the token is revoked when the run ends, however it
+  ends, and lasts at most a day.
+- **Storage:** only its hash is stored.
+
+Without sign-in no token is issued, since nothing checks one.
+
 **Leavers stop and ask:** disabling a member revokes their sessions and
 tokens at once. Every card they authorized that hasn't started is held,
 and an owner task lists those cards and the ones still running, which

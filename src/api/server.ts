@@ -191,6 +191,8 @@ export interface CreateAppOptions {
   /** The owner review doc's comment reader (tests); else the claude-docs
    *  read-only scribe. */
   commentReader?: CommentReader;
+  /** A card run's own credentials (identity card 8), for the orchestrator. */
+  cardCredentials?: (task: TaskCard) => { env: Record<string, string>; revoke: () => void } | undefined;
   /** The host guard (docs/SDD-coordinator.md §4.12). Unset: one is made
    *  when WISSEL_HOST_GUARD=1, reading the host every 30 s. A test's own
    *  is refreshed by the test. */
@@ -1227,6 +1229,7 @@ export function createApp(
         return unmet ? describeCondition(unmet) : undefined;
       },
       onStart: (task, tasks) => void warnOverlaps(task, tasks),
+      ...(opts.cardCredentials ? { credentials: opts.cardCredentials } : {}),
       merge: mergeContext,
       harnesses,
       maxConcurrentTasks: opts.maxConcurrentTasks,
@@ -3258,6 +3261,17 @@ if (import.meta.main) {
     hostname: bind.hostname,
     fetch: withSignIn(withAuthorizationRecords(withPermissions(withIdentityRoutes(createApp(board, registry, telemetry, {
       authorization: { log: authorizationLog, principalFor, policy, permitted: wasPermitted },
+      // With sign-in on, each card run gets an agent principal and a
+      // token that reaches only its card (§4.8). Without sign-in nothing
+      // checks tokens, so none is issued.
+      ...(signInMode === "tokens"
+        ? {
+            cardCredentials: (task: TaskCard) => {
+              const t = identity.issueCardToken(task.id, task.title);
+              return { env: { WISSEL_TOKEN: t.secret, WISSEL_CARD_ID: task.id, WISSEL_API_URL: (process.env.WISSEL_PUBLIC_URL ?? `http://localhost:${port}`).replace(/\/$/, "") }, revoke: () => identity.revokeCardToken(t.principalId) };
+            },
+          }
+        : {}),
       prWatch: process.env.WISSEL_PR_WATCH !== "0",
       ...(chat ? { chat } : {}),
       hardLimits,

@@ -27,6 +27,9 @@ export const SESSION_COOKIE = "wissel_session";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const BOOTSTRAP_TTL_MS = 15 * 60 * 1000;
 const TOKEN_PREFIX = "wsl_";
+/** A card run's token (card 8): reaches only that card. */
+const CARD_TOKEN_PREFIX = "wsc_";
+export const CARD_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const HANDLE = /^[a-z][a-z0-9-]{1,31}$/;
 
 export function authMode(env: Record<string, string | undefined>): "owner" | "tokens" {
@@ -64,6 +67,8 @@ export interface Caller {
   via: "session" | "token";
   /** The token's name, when it came from one. */
   tokenName?: string;
+  /** A card run's agent: the one card its token reaches. */
+  cardId?: string;
 }
 
 export class IdentityStore {
@@ -77,6 +82,8 @@ export class IdentityStore {
     db.run(`CREATE TABLE IF NOT EXISTS api_tokens (
       id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, principalId TEXT NOT NULL, name TEXT NOT NULL,
       permissions TEXT NOT NULL, createdAt TEXT NOT NULL, lastUsedAt TEXT, expiresAt TEXT, revokedAt TEXT)`);
+    db.run(`CREATE TABLE IF NOT EXISTS card_tokens (
+      hash TEXT PRIMARY KEY, principalId TEXT NOT NULL, taskId TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL, revokedAt TEXT)`);
     db.run(`CREATE TABLE IF NOT EXISTS bootstrap_links (
       hash TEXT PRIMARY KEY, expiresAt TEXT NOT NULL, usedAt TEXT)`);
   }
@@ -192,6 +199,25 @@ export class IdentityStore {
     this.db.run("UPDATE api_tokens SET revokedAt = ? WHERE id = ? AND revokedAt IS NULL", [this.now().toISOString(), id]);
   }
 
+  // ---- card runs (§4.8) ----
+
+  /** A new agent principal for one run of `taskId`, and its token. The
+   *  agent holds no grants and never can (permissions.ts). */
+  issueCardToken(taskId: string, title?: string): { secret: string; principalId: string } {
+    const at = this.now();
+    const principalId = `agent-${randomUUID()}`;
+    const handle = `card-${taskId.slice(0, 8)}-${randomBytes(3).toString("hex")}`;
+    this.db.run("INSERT INTO principals (id, kind, handle, display, createdAt) VALUES (?, 'agent', ?, ?, ?)", [principalId, handle, `Run of ${title ? `"${title.slice(0, 60)}"` : taskId.slice(0, 8)}`, at.toISOString()]);
+    const s = secret(CARD_TOKEN_PREFIX);
+    this.db.run("INSERT INTO card_tokens (hash, principalId, taskId, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)", [hashSecret(s), principalId, taskId, at.toISOString(), new Date(at.getTime() + CARD_TOKEN_TTL_MS).toISOString()]);
+    return { secret: s, principalId };
+  }
+
+  /** Ends a run's token: called when the run finishes, however it ends. */
+  revokeCardToken(principalId: string): void {
+    this.db.run("UPDATE card_tokens SET revokedAt = ? WHERE principalId = ? AND revokedAt IS NULL", [this.now().toISOString(), principalId]);
+  }
+
   // ---- the check ----
 
   /** Who a request is from, or undefined: a live session cookie, else a
@@ -199,6 +225,13 @@ export class IdentityStore {
   authenticate(req: Request): Caller | undefined {
     const at = this.now().toISOString();
     const bearer = /^Bearer\s+(\S+)$/i.exec(req.headers.get("authorization") ?? "")?.[1];
+    if (bearer?.startsWith(CARD_TOKEN_PREFIX)) {
+      const c = this.db.query("SELECT * FROM card_tokens WHERE hash = ?").get(hashSecret(bearer)) as Record<string, string | null> | null;
+      if (!c || c.revokedAt || c.expiresAt! <= at) return undefined;
+      const p = this.principal(c.principalId!);
+      if (!p || p.kind !== "agent" || p.disabledAt) return undefined;
+      return { principal: p, via: "token", cardId: c.taskId! };
+    }
     if (bearer) {
       const t = this.db.query("SELECT * FROM api_tokens WHERE hash = ?").get(hashSecret(bearer)) as Record<string, string | null> | null;
       if (!t || t.revokedAt || (t.expiresAt && t.expiresAt <= at)) return undefined;
