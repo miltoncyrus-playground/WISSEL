@@ -30,6 +30,8 @@ import type { AgentDef, Executor, Harness, HarnessTool, RoutingDecision, Subtask
 import { roundOf } from "./types.ts";
 import type { ReviewPolicy, ReviewSeverity } from "./types.ts";
 import { appendCardRules, renderCardTemplate } from "./card-templates.ts";
+import { randomUUID } from "node:crypto";
+import { carryForwardText, combineVerdicts, reviewerBody, reviewerModel, tierFor } from "../services/review-tiers.ts";
 
 /** What finishResult needs to drive a pipeline step's own follow-up work
  *  (see the `task.pipelineId !== undefined` branch below) — passed
@@ -334,7 +336,7 @@ export async function finishResult(
         if (fingerprint) await writeReviewedFingerprint(runner.runner, path, fingerprint);
       }
       await board.move(result.taskId, "pending-review");
-      await spawnReviewerTask(board, task, result, agent);
+      await spawnReviewerTask(board, task, result, agent, runner);
     }
     return;
   }
@@ -392,7 +394,7 @@ export async function finishResult(
  * undefined, or `"diff"`) gets a byte-identical body to today — see
  * docs/SDD-mcp-orchestration.md §3.4.
  */
-async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result: TaskResult, implementerAgent: AgentDef): Promise<void> {
+async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result: TaskResult, implementerAgent: AgentDef, runner?: CommandRunner | MergeContext): Promise<void> {
   const reviewLineageId = implementerTask.reviewLineageId ?? implementerTask.id;
   const reviewed =
     implementerAgent.reviewTarget === "tool-calls" && result.mcpCalls
@@ -405,9 +407,7 @@ async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result
   const body = result.permissionDenials?.length
     ? `${reviewed}\n\n---\nThe implementer was refused only these commands on this attempt: ${result.permissionDenials.join(", ")}. Its other commands ran normally; do not conclude that nothing ran.`
     : reviewed;
-  await board.create({
-    title: `Review: ${implementerTask.title}`,
-    body,
+  const common = {
     labels: ["review"],
     repo: result.worktree?.path ?? implementerTask.repo,
     parentTaskId: implementerTask.id,
@@ -421,7 +421,29 @@ async function spawnReviewerTask(board: Board, implementerTask: TaskCard, result
     // before this, a review card was created unpinned and could run on
     // any enabled account.
     ...inheritedPlacement(implementerTask),
-  });
+  };
+  // A review tier (docs/SDD-coordinator.md §4.6) names the reviewers:
+  // one review card each, on its own model and mode. Several reviewers
+  // share a panel id, and the verdict waits for all of them.
+  const review = implementerTask.repo && runner ? await toMergeContext(runner).reviewPolicyFor?.(implementerTask.repo).catch(() => undefined) : undefined;
+  const tier = tierFor(review?.policy, implementerTask);
+  if (!tier) {
+    await board.create({ title: `Review: ${implementerTask.title}`, body, ...common });
+    return;
+  }
+  const coderModel = implementerTask.model ?? implementerAgent.costProfile?.model;
+  const panel = tier.reviewers.length > 1 ? randomUUID() : undefined;
+  for (const [i, spec] of tier.reviewers.entries()) {
+    const chosen = reviewerModel(spec, coderModel, review?.policy?.otherModels);
+    const seat = { index: i + 1, of: tier.reviewers.length };
+    await board.create({
+      title: seat.of > 1 ? `Review ${seat.index}/${seat.of}: ${implementerTask.title}` : `Review: ${implementerTask.title}`,
+      body: reviewerBody(body, spec, chosen.note, seat),
+      ...common,
+      ...(chosen.model ? { model: chosen.model } : {}),
+      review: { tier: tier.id, mode: spec.mode, ...(panel ? { panel } : {}) },
+    });
+  }
 }
 
 /**
@@ -493,7 +515,11 @@ async function handleReviewVerdict(board: Board, registry: Registry, result: Tas
  *  just created, never already merged. `"no-op"` covers a reviewer or
  *  implementer task that vanished (deleted) mid-flight — nothing left to
  *  resolve either way. */
-export type ReviewVerdictOutcome = "done" | "review" | "unresolved" | "pushback" | "escalated" | "no-op";
+export type ReviewVerdictOutcome = "done" | "review" | "unresolved" | "pushback" | "escalated" | "no-op" | "waiting";
+
+/** Panels whose combined verdict is being acted on: the last two
+ *  reviewers can report together, and only one of them acts. */
+const resolvingPanels = new Set<string>();
 
 /**
  * Everything `handleReviewVerdict` does once its reviewer task is
@@ -517,6 +543,44 @@ export async function resumeAfterReviewVerdict(
   const implementerTask = await board.get(reviewerTask.parentTaskId);
   if (!implementerTask) return "no-op"; // the implementer task it was reviewing is gone
 
+  // A panel of reviewers (§4.6): act once, when the last one reports, on
+  // their combined verdict.
+  const panelId = reviewerTask.review?.panel;
+  if (panelId) {
+    if (resolvingPanels.has(panelId)) return "no-op";
+    resolvingPanels.add(panelId);
+    try {
+      const panel = (await board.list()).filter((c) => c.parentTaskId === implementerTask.id && c.review?.panel === panelId);
+      if (panel.some((c) => c.status !== "done" && c.status !== "failed")) return "waiting";
+      // Another reviewer's report already acted on this round: the card
+      // left pending-review, or a fix round superseded it.
+      if (implementerTask.status !== "pending-review" || implementerTask.supersededBy) return "no-op";
+      const results = await Promise.all(
+        panel.map(async (c, i) => {
+          const r = c.id === reviewerTask.id ? result : await board.getResult(c.id);
+          const label = `Reviewer ${i + 1}${c.review?.mode === "adversarial" ? " (adversarial)" : ""}${c.model ? `, ${c.model}` : ""}`;
+          // A reviewer that failed counts as asking for changes, with why.
+          const settled: TaskResult = r?.verdict ? r : { taskId: c.id, agentId: "reviewer", ok: false, summary: r?.summary ?? "no result", verdict: "changes_requested", reviewFeedback: `This reviewer did not finish (${(r?.summary ?? "no result").slice(0, 300)}), so the panel can't approve.` };
+          return { label, result: settled };
+        }),
+      );
+      result = { ...result, ...combineVerdicts(results) };
+      return await resumeAfterCombinedVerdict(board, registry, reviewerTask, implementerTask, result, runner);
+    } finally {
+      resolvingPanels.delete(panelId);
+    }
+  }
+  return resumeAfterCombinedVerdict(board, registry, reviewerTask, implementerTask, result, runner);
+}
+
+async function resumeAfterCombinedVerdict(
+  board: Board,
+  registry: Registry,
+  reviewerTask: TaskCard,
+  implementerTask: TaskCard,
+  result: TaskResult,
+  runner: CommandRunner | MergeContext,
+): Promise<ReviewVerdictOutcome> {
   // The project's review policy (docs/SDD-coordinator.md §4.6). Without
   // one, everything below behaves exactly as before.
   const review = implementerTask.repo ? await toMergeContext(runner).reviewPolicyFor?.(implementerTask.repo).catch(() => undefined) : undefined;
@@ -527,6 +591,16 @@ export async function resumeAfterReviewVerdict(
   }
 
   if (result.verdict === "approve") {
+    await carryForward(board, implementerTask, result, policy, toMergeContext(runner));
+    // A re-review of a delivered PR (§4.7) merges nothing: its PASS makes
+    // the head it reviewed the PR's reviewed head, so it may be armed. A
+    // FAIL goes on below as any review does: a fix round on the same
+    // branch, which is reviewed and delivered again.
+    const rr = reviewerTask.review?.reReview;
+    if (rr) {
+      if (implementerTask.pr && implementerTask.pr.head === rr.to) await toMergeContext(runner).recordPullRequest?.(implementerTask.id, { ...implementerTask.pr, reviewedHead: rr.to });
+      return "done";
+    }
     return resumeAfterApproval(board, registry, implementerTask, runner);
   }
 
@@ -547,7 +621,7 @@ export async function resumeAfterReviewVerdict(
   }
 
   const pushbackCount = implementerTask.pushbackCount ?? 0;
-  const maxRounds = policy?.maxRounds ?? MAX_PUSHBACKS;
+  const maxRounds = tierFor(policy, implementerTask)?.maxRounds ?? policy?.maxRounds ?? MAX_PUSHBACKS;
   const lineageId = implementerTask.reviewLineageId ?? implementerTask.id;
   if (pushbackCount >= maxRounds) {
     // At the cap the policy decides; "accept" hands the work to a human
@@ -590,6 +664,64 @@ export async function resumeAfterReviewVerdict(
   await spawnPushbackImplementer(board, implementerTask, reviewerTask.id, feedback);
   return "pushback";
 }
+
+/** A passing review's non-blocking findings, where the policy's
+ *  carryForward says (§4.6). "ticket" comments on the workstream's
+ *  ticket when the tracker allows it, else falls back to a card. The
+ *  card is held (escalated, never started by the sweep): Retry starts it. */
+export async function carryForward(board: Board, card: TaskCard, result: TaskResult, policy: ReviewPolicy | undefined, ctx: MergeContext): Promise<"none" | "ticket" | "card"> {
+  const where = policy?.carryForward ?? "drop";
+  const text = where === "drop" ? undefined : carryForwardText(result);
+  if (!text) return "none";
+  const heading = `Findings a passing review left on "${card.title}"${card.key ? ` (${card.key})` : ""}`;
+  if (where === "ticket" && ctx.commentOnTicket) {
+    try {
+      if (await ctx.commentOnTicket(card, `${heading}:\n\n${text}`)) return "ticket";
+    } catch (e) {
+      console.error(`carry forward: ticket comment for ${card.id} failed: ${(e as Error).message}`);
+    }
+  }
+  const followUp = await board.create({
+    title: `Follow-up: ${card.title}`,
+    body: `${heading}. They didn't block the merge; this card is for fixing them.\n\n${text}`,
+    labels: [...new Set([...card.labels.filter((l) => l !== "review"), CARRY_FORWARD_LABEL])],
+    ...(card.repo ? { repo: card.repo } : {}),
+    parentTaskId: card.id,
+    routedTo: CARRY_FORWARD_OWNER,
+    ...(card.workstreamId ? { workstreamId: card.workstreamId } : {}),
+    ...inheritedPlacement(card),
+  });
+  await board.escalate(followUp.id, `Held: findings a passing review carried forward${where === "ticket" ? " (the ticket couldn't take them: tracker writes are off or no ticket is set)" : ""}. Retry starts a card to fix them; close it to leave them.`);
+  return "card";
+}
+
+/** Starts a re-review of a delivered card's PR (§4.7): the change from
+ *  the reviewed head `from` to `to`. One at a time per card and head. */
+export async function startReReview(board: Board, card: TaskCard, rr: { from: string; to: string; files: string[] }, worktreePath?: string): Promise<TaskCard | undefined> {
+  const live = (await board.list()).find((t) => t.parentTaskId === card.id && t.review?.reReview?.to === rr.to && !t.archivedAt && t.status !== "done" && t.status !== "failed");
+  if (live) return undefined;
+  const whole = !rr.from || rr.from === rr.to;
+  const scope = whole
+    ? `Review the PR's whole change: what this branch adds on top of main (\`git diff $(git merge-base HEAD origin/main) HEAD\`).`
+    : `It was reviewed and passed at ${rr.from.slice(0, 12)}. It is now at ${rr.to.slice(0, 12)}, after main was merged in${rr.files.length ? `, and the merge changed these files beyond what main brought: ${rr.files.join(", ")}` : ""}. Review only that change (\`git show --cc ${rr.to.slice(0, 12)}\` for a merge, \`git diff ${rr.from.slice(0, 12)} ${rr.to.slice(0, 12)}${rr.files.length ? ` -- ${rr.files.join(" ")}` : ""}\`), not the whole PR again.`;
+  return board.create({
+    title: `Re-review: ${card.title}`,
+    body: `A re-review of PR${card.pr ? ` #${card.pr.number}` : ""} for "${card.title}". ${scope}\n\nPASS lets the PR be armed at this head; FAIL starts a fix round on the same branch.\n\n---\nThe card's brief:\n\n${card.body}`,
+    labels: ["review"],
+    repo: worktreePath ?? card.repo,
+    parentTaskId: card.id,
+    reviewLineageId: card.reviewLineageId ?? card.id,
+    pushbackCount: 0,
+    ...(card.key ? { key: card.key } : {}),
+    round: roundOf(card),
+    ...inheritedPlacement(card),
+    review: { ...(card.review?.tier ? { tier: card.review.tier } : {}), reReview: rr },
+  });
+}
+
+export const CARRY_FORWARD_LABEL = "carry-forward";
+/** Set as routedTo so the sweep never routes a held follow-up. */
+export const CARRY_FORWARD_OWNER = "wissel-carry-forward";
 
 /** "2 HIGH findings" when the counts include a severity the policy
  *  blocks, else undefined. */
@@ -934,6 +1066,8 @@ async function spawnPushbackImplementer(
     pushbackCount: newPushbackCount,
     round: newPushbackCount + 1,
     ...carriedCardSettings(implementerTask),
+    // The tier stays with the work across rounds (docs/SDD-coordinator.md §4.6).
+    ...(implementerTask.review?.tier ? { review: { tier: implementerTask.review.tier } } : {}),
   });
 
   await board.setSupersededBy(implementerTask.id, nextAttempt.id);

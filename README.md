@@ -313,6 +313,37 @@ A project's `reviewPolicy` (`{"maxRounds": 2, "blocks": ["HIGH"],
   text), `{round}`, `{key}`, `{title}` and `{body}` (the first
   attempt's brief), then the project rules. A review with no text
   refuses the round and escalates (`docs/SDD-coordinator.md` §4.6).
+- `tiers` name who reviews:
+  `[{"id": "risky", "when": "label:auth", "reviewers": [{"model": "other-than-coder", "mode": "adversarial"}, {"model": "claude-sonnet-5-5"}], "maxRounds": 3}]`.
+  - A card's tier is its own `review: {"tier": "risky"}` (set on create
+    or edit), else the first tier whose `when` matches (`always`,
+    `label:<name>` or `files>=<n>`), else one reviewer as before.
+  - Each reviewer gets its own review card, on its model.
+    `other-than-coder` takes the first of `otherModels` that isn't the
+    coder's model; with none, the review runs on the reviewer's own model
+    and its card says so. `adversarial` asks the reviewer to look for how
+    the change breaks.
+  - With several reviewers, the verdict waits for all of them. It
+    approves only if all approve, and a fix round gets every reviewer's
+    full text. A tier's `maxRounds` overrides the policy's.
+- `carryForward` (`card`, `ticket` or `drop`, the default) says where a
+  passing review's non-blocking findings go:
+  - `card`: a held follow-up card. It is escalated, so it never starts
+    by itself: Retry starts it.
+  - `ticket`: a comment on the workstream's ticket, through the gate.
+    While tracker writes are off, it becomes the card instead.
+- `keepPass` (`["text"]`, `["test"]` or both) decides what happens when
+  a PR changes after its review passed. The PR records the head the
+  review passed on, and it can only be armed at that head.
+  - A merge-forward that merges main in cleanly keeps the PASS.
+  - So does one whose conflict resolution touched only the kinds of
+    file `keepPass` names (Markdown and `docs/`, or tests).
+  - Anything else starts a narrow re-review of what the resolution
+    changed. Its PASS lets the PR be armed at the new head, and its
+    FAIL starts a fix round on the same branch.
+  - `POST /tasks/:id/re-review` starts one by hand. It reviews the
+    change since the reviewed head, or the whole PR when nothing has
+    changed since.
 
 Once a minute the PR watcher looks at every card delivered as a PR,
 until the PR is merged or closed. It reads, with `gh pr view` (read-only):

@@ -207,6 +207,57 @@ export interface ReviewPolicy {
    *  behaviour), escalate as a question about the spec, or accept the
    *  work for a human to merge. */
   atCap?: "ask-decider" | "spec-question" | "accept";
+  /** Review tiers (§4.6): who reviews a card, and how many rounds it
+   *  gets. The tier is the card's `reviewTier`, else the first tier whose
+   *  `when` matches the card, else today's single reviewer. */
+  tiers?: ReviewTier[];
+  /** Where a passing review's non-blocking findings go: a backlog card
+   *  ("card"), the ticket ("ticket", through the tracker's ticket.comment,
+   *  which refuses while tracker writes are off; then a card), or nowhere
+   *  ("drop", the default). */
+  carryForward?: "ticket" | "card" | "drop";
+  /** After a PASS, a change that touches only these kinds of files keeps
+   *  the PASS instead of starting a new review: "text" (Markdown, text and
+   *  docs/) and "test" (test/, e2e/, *.test.* and *.spec.*). */
+  keepPass?: ("text" | "test")[];
+  /** Models a reviewer set to "other-than-coder" may run on: the first
+   *  one that isn't the coder's. Unset or all equal: the reviewer's own
+   *  model, and the review card says so. */
+  otherModels?: string[];
+}
+
+/** One review tier (§4.6). `when` is "always", "label:<name>" or
+ *  "files>=<n>" (the card names at least n files). */
+export interface ReviewTier {
+  id: string;
+  when?: string;
+  reviewers: ReviewerSpec[];
+  /** Overrides the policy's maxRounds for cards in this tier. */
+  maxRounds?: number;
+}
+
+export interface ReviewerSpec {
+  /** "other-than-coder", or a model id. */
+  model: string;
+  /** "adversarial" asks the reviewer to look for the way the change
+   *  fails, not to confirm that it works. */
+  mode: "standard" | "adversarial";
+}
+
+/** What a review card knows about the review it is part of. */
+export interface CardReview {
+  /** The tier, set on the card under review (by a template, plan-batch
+   *  or the API). */
+  tier?: string;
+  /** Shared by the review cards of one round when a tier has several
+   *  reviewers: the verdict is read once all of them have reported. */
+  panel?: string;
+  /** "standard" or "adversarial", on a review card from a tier. */
+  mode?: ReviewerSpec["mode"];
+  /** A re-review of a delivered PR (§4.7): the reviewed head and the head
+   *  it moved to. Its verdict never merges anything: a PASS makes `to`
+   *  the reviewed head, a FAIL escalates the delivered card. */
+  reReview?: { from: string; to: string; files: string[] };
 }
 
 /** Token use of one `claude -p` run, from the `usage` and `num_turns`
@@ -583,6 +634,9 @@ export interface TaskCard {
    *  (docs/SDD-coordinator.md §4.5). `head` is the full commit sha the
    *  PR pointed at when it was recorded. */
   pr?: TaskPullRequest;
+  /** Review tier and review-card details (docs/SDD-coordinator.md §4.6).
+   *  Only `review.tier` is set from outside; the rest is Wissel's. */
+  review?: CardReview;
   /** Start conditions (docs/SDD-coordinator.md §4.8): the sweep leaves
    *  the card alone until every one holds, as it does for dependsOn. */
   waitsFor?: StartCondition[];
@@ -801,6 +855,11 @@ export interface TaskPullRequest {
   url: string;
   /** Full 40-character commit sha. */
   head: string;
+  /** The head a review passed on. Unset on a PR recorded before this
+   *  existed: then `head` is taken as reviewed. A merge-forward moves
+   *  `head` and leaves this, so the PR can't be armed until a re-review
+   *  (or the policy's keepPass) catches it up. */
+  reviewedHead?: string;
   /** What the PR watcher last saw (src/services/pr-watcher.ts,
    *  docs/SDD-coordinator.md §4.7). Unset until its first look. */
   watch?: PrWatch;

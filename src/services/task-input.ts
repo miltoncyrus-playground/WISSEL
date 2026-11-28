@@ -31,7 +31,7 @@ export interface NewTaskDeps {
   projectHarnessFor?: (repo: string) => Promise<string | undefined>;
   /** Set when an existing card is being edited: its own key, and the
    *  attempts and reviews of the same work, don't count as a clash. */
-  editing?: Pick<TaskCard, "id" | "reviewLineageId">;
+  editing?: Pick<TaskCard, "id" | "reviewLineageId" | "review">;
   /** Whether a workstream id is known (WorkstreamStore). Without it a
    *  card can't name a workstream. */
   workstreamExists?: (id: string) => boolean;
@@ -58,12 +58,32 @@ export type NewTaskCheck = { ok: true; task: NewTask } | { ok: false; error: str
 
 /** On success `task` is the body normalized the way it is stored
  *  (tool grants normalized, `notBefore` in UTC). */
+/** Why `review` from outside is refused: it may only be
+ *  `{ "tier": "<id>" }` (or null to clear it). */
+export function reviewTierError(review: unknown): string | undefined {
+  if (review === undefined || review === null) return undefined;
+  if (typeof review !== "object" || Array.isArray(review)) return 'review must be an object: { "tier": "<tier id>" }';
+  const extra = Object.keys(review).find((k) => k !== "tier" && k !== "panel" && k !== "mode" && k !== "reReview");
+  if (extra) return `unknown review field "${extra}"; only tier can be set`;
+  const tier = (review as Record<string, unknown>).tier;
+  if (tier !== undefined && tier !== null && !(typeof tier === "string" && /^[a-z0-9][a-z0-9-]{0,39}$/.test(tier))) return "review.tier must be a tier id (lowercase letters, digits and hyphens)";
+  return undefined;
+}
+
 export async function validateNewTask(input: NewTask, deps: NewTaskDeps): Promise<NewTaskCheck> {
   const body: NewTask = { ...input };
   // The round and the pull request are recorded by Wissel itself (the
   // orchestrator, and POST /tasks/:id/pr), never sent with a new card.
   delete body.round;
   delete body.pr;
+  // Of the review details only the tier comes from outside
+  // (docs/SDD-coordinator.md §4.6); a panel or re-review is Wissel's.
+  const tierError = reviewTierError(body.review);
+  if (tierError) return { ok: false, error: tierError };
+  const tier = (body.review as { tier?: string } | null | undefined)?.tier ?? undefined;
+  const { tier: _oldTier, ...kept } = deps.editing?.review ?? {};
+  const review = { ...kept, ...(tier ? { tier } : {}) };
+  body.review = Object.keys(review).length ? review : undefined;
   if (body.workstreamId !== undefined && body.workstreamId !== null) {
     if (typeof body.workstreamId !== "string" || !deps.workstreamExists?.(body.workstreamId)) return { ok: false, error: `no such workstream: ${JSON.stringify(body.workstreamId)}` };
   } else body.workstreamId = undefined;

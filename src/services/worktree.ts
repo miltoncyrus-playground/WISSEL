@@ -423,6 +423,13 @@ export interface MergeContext {
   recordPullRequest?: (taskId: string, pr: TaskPullRequest) => Promise<void>;
   /** The repo's review policy, its fix-round template and its card rules
    *  (docs/SDD-coordinator.md §4.6), read when a review verdict lands. */
+  /** Comments on the ticket of `card`'s workstream for a review's
+   *  carry-forward (§4.6). Resolves false when the ticket can't take it
+   *  (no ticket, or tracker writes are off). */
+  commentOnTicket?: (card: TaskCard, text: string) => Promise<boolean>;
+  /** Set by merge-forward: a delivery that only brings main in keeps
+   *  the PR's reviewed head instead of taking the new one (§4.7). */
+  keepReviewedHead?: boolean;
   reviewPolicyFor?: (repo: string) => Promise<{ policy?: ReviewPolicy; fixRoundTemplate?: string; cardRules?: string } | undefined>;
   /** Acts on a decision card's output (docs/SDD-coordinator.md §4.4),
    *  through the gate. Called once its result is recorded. */
@@ -778,7 +785,10 @@ async function deliver(
     if (!made.ok) return failed(`pushed ${to.branch}, but the PR couldn't be opened: ${made.error}`);
     opened = { number: made.number, url: made.url };
   }
-  const pr: TaskPullRequest = { number: opened.number, url: opened.url, head: landing };
+  // A delivery after a review is reviewed at `landing`; a merge-forward
+  // keeps the head that was reviewed until a re-review or keepPass moves it.
+  const reviewedHead = ctx.keepReviewedHead ? (task.pr?.reviewedHead ?? task.pr?.head) : landing;
+  const pr: TaskPullRequest = { number: opened.number, url: opened.url, head: landing, ...(reviewedHead ? { reviewedHead } : {}) };
   try {
     await ctx.recordPullRequest?.(task.id, pr);
   } catch (e) {

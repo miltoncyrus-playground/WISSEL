@@ -20,7 +20,9 @@ import type { Board } from "./board.ts";
 import type { Registry } from "../core/registry.ts";
 import type { TaskCard } from "../core/types.ts";
 import { mergeTaskWorktree, type MergeContext } from "./worktree.ts";
-import { afterMergeAttempt, conflictIntegratorState, withConflictIntegratorCheck } from "../core/orchestrator.ts";
+import { afterMergeAttempt, conflictIntegratorState, startReReview, withConflictIntegratorCheck } from "../core/orchestrator.ts";
+import type { CommandRunner } from "../executors/claude-cli.ts";
+import { keepsPass } from "./review-tiers.ts";
 
 export const MERGE_FORWARD_LABEL = "merge-forward";
 /** Set as routedTo so the sweep never routes a merge-forward card. */
@@ -42,6 +44,43 @@ export interface MergeForwardDeps {
 /** The live merge-forward card for `card` (not done, failed or archived). */
 export async function liveMergeForward(board: Board, card: Pick<TaskCard, "id">): Promise<TaskCard | undefined> {
   return (await board.list()).find((t) => t.parentTaskId === card.id && t.labels.includes(MERGE_FORWARD_LABEL) && !t.archivedAt && t.status !== "done" && t.status !== "failed");
+}
+
+/** The files the card's own commits from `from` to `to` change, beyond
+ *  what main brought in: each first-parent commit's files, and for a
+ *  merge commit only the files that differ from every parent (the
+ *  conflict resolution). Undefined when git can't say. */
+export async function forwardChangedFiles(runner: CommandRunner, cwd: string, from: string, to: string): Promise<string[] | undefined> {
+  const list = await runner(["git", "rev-list", "--first-parent", "--parents", `${from}..${to}`], { cwd });
+  if (list.exitCode !== 0) return undefined;
+  const files = new Set<string>();
+  for (const line of list.stdout.split("\n").filter(Boolean)) {
+    const [sha, ...parents] = line.trim().split(/\s+/);
+    const args = parents.length > 1 ? ["diff-tree", "-r", "--cc", "--name-only", "--no-commit-id", sha!] : ["diff-tree", "-r", "--name-only", "--no-commit-id", sha!];
+    const out = await runner(["git", ...args], { cwd });
+    if (out.exitCode !== 0) return undefined;
+    for (const f of out.stdout.split("\n").map((s) => s.trim()).filter(Boolean)) files.add(f);
+  }
+  return [...files].sort();
+}
+
+/** After a merge-forward delivered: keep the PASS when the forward
+ *  changed nothing of the card's own (a clean merge) or only what the
+ *  policy's keepPass allows; else start a narrow re-review. What it did,
+ *  in a line, or undefined when the PR's head didn't move. */
+export async function afterForward(deps: MergeForwardDeps, card: TaskCard, worktreePath: string): Promise<string | undefined> {
+  const now = await deps.board.get(card.id);
+  const pr = now?.pr;
+  const from = card.pr?.reviewedHead ?? card.pr?.head;
+  if (!now || !pr || !from || pr.head === from) return undefined;
+  const files = await forwardChangedFiles(deps.merge.runner, worktreePath, from, pr.head);
+  const policy = card.repo ? (await deps.merge.reviewPolicyFor?.(card.repo).catch(() => undefined))?.policy : undefined;
+  if (files !== undefined && keepsPass(files, policy?.keepPass)) {
+    await deps.merge.recordPullRequest?.(card.id, { ...pr, reviewedHead: pr.head });
+    return files.length ? `The review's PASS carries to ${pr.head.slice(0, 12)}: the merge changed only ${files.join(", ")}, which the review policy's keepPass allows.` : `The review's PASS carries to ${pr.head.slice(0, 12)}: main merged in cleanly.`;
+  }
+  const rr = await startReReview(deps.board, now, { from, to: pr.head, files: files ?? [] }, worktreePath);
+  return rr ? `The merge changed ${files?.length ? files.join(", ") : "files git couldn't list"}, so a re-review (${rr.id.slice(0, 8)}) checks it before the PR can be armed.` : "A re-review of this head is already open.";
 }
 
 /** Brings a delivered card's PR up to date with main. Safe to call on
@@ -79,9 +118,12 @@ export async function mergeForward(deps: MergeForwardDeps, card: TaskCard): Prom
     await finish("failed", false, "The card's worktree is gone, so there is nothing to merge main into. Deliver the card again from a fresh attempt.");
     return "failed";
   }
-  const res = await mergeTaskWorktree(card.repo, worktree, card, withConflictIntegratorCheck(board, deps.merge));
+  // Bringing main in keeps the reviewed head (§4.7): the PR can't be
+  // armed at the new head until keepPass or a re-review says so.
+  const res = await mergeTaskWorktree(card.repo, worktree, card, withConflictIntegratorCheck(board, { ...deps.merge, keepReviewedHead: true }));
   if (res.outcome === "delivered") {
-    await finish("done", true, res.message);
+    const after = await afterForward(deps, card, worktree.path);
+    await finish("done", true, after ? `${res.message}\n\n${after}` : res.message);
     return "delivered";
   }
   if (res.outcome === "conflict") {

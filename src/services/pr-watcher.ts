@@ -60,7 +60,7 @@ export function armBlockedBy(w: Omit<PrWatch, "armBlockedBy" | "lifecycle" | "ob
 
 /** What one `gh pr view` answer means for the card, or undefined when
  *  the answer can't be read. */
-export function readPrWatch(raw: RawPr, pr: Pick<TaskPullRequest, "head">, mainBranch: string, now: Date): PrWatch | undefined {
+export function readPrWatch(raw: RawPr, pr: Pick<TaskPullRequest, "head" | "reviewedHead">, mainBranch: string, now: Date): PrWatch | undefined {
   if (typeof raw.number !== "number" || typeof raw.headRefOid !== "string") return undefined;
   const state = raw.state === "MERGED" ? "merged" : raw.state === "CLOSED" ? "closed" : "open";
   const summary = summarizeChecks(raw.statusCheckRollup);
@@ -71,7 +71,7 @@ export function readPrWatch(raw: RawPr, pr: Pick<TaskPullRequest, "head">, mainB
     draft: raw.isDraft === true,
     base: raw.baseRefName ?? "",
   };
-  const blocked = armBlockedBy(base, pr.head, mainBranch, state);
+  const blocked = armBlockedBy(base, pr.reviewedHead ?? pr.head, mainBranch, state);
   const lifecycle: PrLifecycle = state === "merged" ? "merged" : state === "closed" ? "closed" : blocked === null ? "ready" : "landed";
   return { ...base, lifecycle, armBlockedBy: blocked, observedAt: now.toISOString() };
 }
