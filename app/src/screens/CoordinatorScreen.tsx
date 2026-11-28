@@ -52,6 +52,9 @@ export interface WindowActions {
   onShadow: (on: boolean) => void;
   /** Quick actions (§4.14): the digest now, restart when idle, cancel it. */
   onStatus: () => void;
+  /** Plans that start unless held (§4.14). */
+  onHold: (cardId: string) => void;
+  onRelease: (cardId: string) => void;
   onRestart: (cancel: boolean) => void;
 }
 
@@ -92,6 +95,28 @@ export function WorkstreamWindow({ data, tab, projectName, actions, status }: { 
       <div role="tabpanel" aria-label={TABS.find((t) => t.id === tab)!.label}>
         {tab === "conversation" && (
           <>
+            {data.plans.length > 0 ? (
+              <ul className="ws-plans" aria-label="Planned cards">
+                {data.plans.map((p) => (
+                  <li key={p.id} className="ws-plan">
+                    <span className="ws-plan-title">
+                      {p.key ? `${p.key}: ` : ""}
+                      {p.title}
+                    </span>{" "}
+                    <span className="ws-plan-when">{p.held ? "held" : p.startsAt ? `starts at ${p.startsAt.slice(11, 16)}` : "starting"}</span>{" "}
+                    {p.held ? (
+                      <button type="button" onClick={() => actions.onRelease(p.id)} aria-label={`Release: ${p.title}`}>
+                        Release
+                      </button>
+                    ) : (
+                      <button type="button" onClick={() => actions.onHold(p.id)} aria-label={`Hold: ${p.title}`}>
+                        Hold
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
             <ul className="ws-owner-tasks" aria-label="Owner tasks">
               {data.ownerTasks.map((t) => (
                 <li key={t.id} className="ws-owner-task">
@@ -284,6 +309,8 @@ export function CoordinatorScreen({ workstreamId }: { workstreamId?: string }) {
               }),
           onTab: setTab,
           onFlip: (id) => void write(() => post(`/decisions/${encodeURIComponent(id)}/flip`)),
+          onHold: (id) => void write(() => post(`/tasks/${encodeURIComponent(id)}/hold`)),
+          onRelease: (id) => void write(() => post(`/tasks/${encodeURIComponent(id)}/release`)),
           onDone: (id) => void write(() => post(`/owner-tasks/${encodeURIComponent(id)}/done`)),
           onSend: (text) => void write(() => post("/inbox", { text, workstreamId: data.ws.id })),
           onRole: (projectId, role) => void write(() => post(`/workstreams/${w}/projects/${encodeURIComponent(projectId)}/role`, { role }), () => post(`/workstreams/${w}/projects/${encodeURIComponent(projectId)}/role`, { role, confirm: true })),

@@ -16,6 +16,10 @@ const data: WindowData = {
     channel: { adapter: "claude-docs", target: "https://claude.ai/artifact/x" },
     quietHours: { start: "22:00", end: "07:00", timezone: "Europe/Madrid" },
   },
+  plans: [
+    { id: "k1", key: "A5", title: "Add the export", startsAt: "2026-11-28T09:40:00Z", held: false },
+    { id: "k2", title: "Split the form", held: true },
+  ],
   decisions: [{ id: "d1", text: "Use UTC", alternative: "Local time", by: "wissel", status: "taken", at: "2026-11-28T09:00:00Z" }],
   ownerTasks: [{ id: "o1", title: "Rotate the key", why: "It expires Friday.", steps: ["Rotate it", "Update the secret"], status: "open", check: ["true"] }],
   inbox: [
@@ -27,7 +31,7 @@ const data: WindowData = {
   gateLog: [{ id: "g1", action: { kind: "channel.post", message: "claim" }, verdict: "allow", rule: "shadow", mode: "shadow", at: "x" }],
   shadow: true,
 };
-const noop: WindowActions = { onTab: () => {}, onFlip: () => {}, onDone: () => {}, onSend: () => {}, onRole: () => {}, onDuty: () => {}, onShadow: () => {}, onStatus: () => {}, onRestart: () => {} };
+const noop: WindowActions = { onTab: () => {}, onFlip: () => {}, onDone: () => {}, onSend: () => {}, onRole: () => {}, onDuty: () => {}, onShadow: () => {}, onStatus: () => {}, onRestart: () => {}, onHold: () => {}, onRelease: () => {} };
 const render = (tab: WindowTab) => renderToStaticMarkup(<WorkstreamWindow data={data} tab={tab} projectName={() => "shop"} actions={noop} />);
 
 describe("routes", () => {
@@ -61,6 +65,16 @@ describe("the window", () => {
     expect(html).toContain('aria-label="Quick actions"');
     expect(html).toContain("Status now");
     expect(html).toContain("Restart when idle");
+  });
+
+  test("planned cards: when each starts, Hold, and Release for a held one", () => {
+    const html = render("conversation");
+    expect(html).toContain('aria-label="Planned cards"');
+    expect(html).toContain("A5: Add the export");
+    expect(html).toContain("starts at 09:40");
+    expect(html).toContain('aria-label="Hold: Add the export"');
+    expect(html).toContain("held");
+    expect(html).toContain('aria-label="Release: Split the form"');
   });
 
   test("the status line shows what Status now returned", () => {

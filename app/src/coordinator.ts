@@ -76,8 +76,18 @@ export interface GateRecordInfo {
   at: string;
 }
 
+/** A card that hasn't started: it starts at `startsAt` unless held. */
+export interface PlannedInfo {
+  id: string;
+  key?: string;
+  title: string;
+  startsAt?: string;
+  held: boolean;
+}
+
 export interface WindowData {
   ws: Workstream;
+  plans: PlannedInfo[];
   decisions: Decision[];
   ownerTasks: OwnerTaskInfo[];
   inbox: InboxEventInfo[];
@@ -98,8 +108,9 @@ export const fetchWorkstreams = () => get<Workstream[]>("/workstreams");
 /** Everything the window shows for one workstream. */
 export async function fetchWindow(id: string): Promise<WindowData> {
   const w = encodeURIComponent(id);
-  const [ws, decisions, ownerTasks, inbox, duties, channel, gateLog, shadow] = await Promise.all([
+  const [ws, plans, decisions, ownerTasks, inbox, duties, channel, gateLog, shadow] = await Promise.all([
     get<Workstream>(`/workstreams/${w}`),
+    get<PlannedInfo[]>(`/workstreams/${w}/plans`).catch(() => []),
     get<Decision[]>(`/workstreams/${w}/decisions`),
     get<OwnerTaskInfo[]>("/owner-tasks?status=open"),
     get<InboxEventInfo[]>(`/workstreams/${w}/inbox?limit=100`),
@@ -108,7 +119,7 @@ export async function fetchWindow(id: string): Promise<WindowData> {
     get<GateRecordInfo[]>(`/workstreams/${w}/gate-log?limit=100`),
     get<{ on: boolean }>("/admin/shadow").then((s) => s.on, () => false),
   ]);
-  return { ws, decisions, ownerTasks, inbox, duties, channel, gateLog, shadow };
+  return { ws, plans, decisions, ownerTasks, inbox, duties, channel, gateLog, shadow };
 }
 
 /** A write's answer: done, a confirm step the server asks for (its own

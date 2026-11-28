@@ -35,7 +35,7 @@ test.describe("Coordinator window", () => {
   });
 
   test("tabs, Flip, owner task Done, and the confirm step on a role change", async ({ page, request }) => {
-    const { ws, task } = await setup(request);
+    const { ws, task, project } = await setup(request);
     await page.goto(`/app#/coordinator/${ws.id}`);
     const window = page.getByRole("region", { name: `Coordinator for ${ws.name}` });
     await expect(window.getByRole("heading", { level: 1 })).toContainText(ws.name);
@@ -47,6 +47,20 @@ test.describe("Coordinator window", () => {
     await expect(ownerTask.getByRole("checkbox")).toHaveCount(2);
     await ownerTask.getByRole("button", { name: "Done" }).click();
     await expect(window.locator(".ws-owner-task", { hasText: task.title })).toHaveCount(0);
+
+    // Plans start unless held: a planned card shows when it starts; Hold
+    // keeps it, Release lets it go (no sweep runs in e2e, so it stays).
+    const plan = await (await request.post("/tasks", { data: { title: `Add the export ${Date.now()}`, body: "x", labels: [], repo: project.path, workstreamId: ws.id, notBefore: new Date(Date.now() + 3_600_000).toISOString() } })).json();
+    made.cards.push(plan.id);
+    await page.reload();
+    const planned = window.getByRole("list", { name: "Planned cards" }).locator(".ws-plan", { hasText: plan.title });
+    await expect(planned).toContainText("starts at");
+    await planned.getByRole("button", { name: `Hold: ${plan.title}` }).click();
+    await expect(planned).toContainText("held");
+    expect((await (await request.get(`/tasks/${plan.id}`)).json()).waitsFor).toEqual([expect.objectContaining({ kind: "held" })]);
+    await planned.getByRole("button", { name: `Release: ${plan.title}` }).click();
+    await expect(planned.getByRole("button", { name: `Hold: ${plan.title}` })).toBeVisible();
+    expect((await (await request.get(`/tasks/${plan.id}`)).json()).notBefore).toBeUndefined();
 
     // Quick action: Status now shows the digest, from Wissel's own data.
     await window.getByRole("button", { name: "Status now" }).click();
