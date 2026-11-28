@@ -1649,6 +1649,10 @@ export interface OrchestratorOptions {
   /** Called just before the sweep starts a card, with the whole board,
    *  for the overlap warning (§4.8). */
   onStart?: (task: TaskCard, tasks: TaskCard[]) => void;
+  /** A card run's own credentials (docs/SDD-identity-and-permissions.md
+   *  §4.8, card 8): an agent principal and a token that reaches only this
+   *  card, put into the run's environment and revoked when it ends. */
+  credentials?: (task: TaskCard) => { env: Record<string, string>; revoke: () => void } | undefined;
   /** Why no new card may start right now (a pending restart when idle,
    *  src/services/restart-when-idle.ts), or undefined. While it says
    *  something the sweep starts nothing and Run is refused; running cards
@@ -2161,11 +2165,16 @@ export class Orchestrator {
       await this.board.move(task.id, "running");
 
       let result: TaskResult;
+      // The run's own token rides in the harness env, which every executor
+      // hands to the agent's process.
+      const cred = harness ? this.opts.credentials?.(task) : undefined;
+      const runHarness = harness && cred ? { ...harness, env: { ...(harness.env ?? {}), ...cred.env } } : harness;
       try {
-        result = await executor!.run(task, agent, harness);
+        result = await executor!.run(task, agent, runHarness);
       } catch (e) {
         result = { taskId: task.id, agentId: agent.id, ok: false, summary: `executor threw: ${(e as Error).message}` };
       } finally {
+        cred?.revoke();
         if (harness) this.opts.harnesses!.release(harness.id);
       }
       await recordHarnessLimit(this.telemetry, result, harness, principalId);

@@ -6,7 +6,7 @@
 import type { GrantStore, Place, PlaceFrom } from "../services/permissions.ts";
 import { requirementFor } from "../services/permissions.ts";
 import { OWNER_PRINCIPAL_ID } from "../services/authorization.ts";
-import { principalOf } from "./sign-in.ts";
+import { callerOf, principalOf } from "./sign-in.ts";
 
 type Fetch = (req: Request) => Response | Promise<Response>;
 
@@ -30,6 +30,16 @@ export function withPermissions(inner: Fetch, opts: PermissionDoorOptions): Fetc
     const who = principalOf(req);
     const need = requirementFor(req.method, url.pathname);
     const deny = (error: string) => new Response(JSON.stringify({ error }), { status: 403, headers: { "Content-Type": "application/json" } });
+    // A card run's token reaches only its own card, to read (§4.8): the
+    // blast radius of a prompt injection is one card.
+    const card = callerOf(req)?.cardId;
+    if (card) {
+      const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+      const own = (req.method === "GET" || req.method === "HEAD") && ((parts[0] === "tasks" && parts[1] === card) || url.pathname === "/me");
+      if (!own) return deny("a card's token reaches only its own card, to read");
+      permitted.add(req);
+      return inner(req);
+    }
     // The owner holds everything: no place to look up, no grant to read.
     if (who === OWNER_PRINCIPAL_ID) {
       permitted.add(req);
