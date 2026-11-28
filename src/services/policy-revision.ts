@@ -26,6 +26,8 @@ export const POLICY_ACTION_KINDS: ReadonlySet<string> = new Set([
   "POST /admin/shadow",
   // Importing a coordinator's rules and schedule (§7).
   "POST /workstreams/:id/import",
+  // An approved lesson can become a project's card rule (§4.15).
+  "POST /lessons/:id/approve",
 ]);
 
 export interface PolicyRevision {

@@ -549,6 +549,22 @@ A team that already has a coordinator imports its state with `POST
 `"dryRun": true` reports all of it and changes nothing. Then: Shadow for
 a day or two, and hand over one duty at a time.
 
+Each curated lesson in `memory/lessons.md` gets a scope, the first line
+under its `##` heading (`src/services/lessons.ts`, §4.15):
+- **`Scope: wissel`:** a problem with Wissel's own environment.
+  Approving it raises an owner task to file it as an issue. It never
+  becomes a prompt line.
+- **`Scope: project`:** a standing rule. Approving it with a `projectId`
+  appends it to that project's `cardRules`, and nothing is applied
+  without that approval.
+- **`Scope: path:<glob>`:** code knowledge for an area. It matches a
+  card through the card's planned `files` (`GET /tasks/:id/lessons`).
+
+`GET /lessons` lists the lessons, `GET /lessons/proposals` the owner's
+proposals, and `POST /lessons/:key/approve` or `.../reject` decides one
+(owner only). Prompt injection stays as `WISSEL_MEMORY_INJECTION` says:
+scoped lessons aren't injected yet.
+
 An owner task is something only the owner can do, such as signing in
 again or freeing a disk. `POST /owner-tasks {title, why, steps, check?,
 blocks?}` raises one: a card labelled `owner` shows in Needs a human

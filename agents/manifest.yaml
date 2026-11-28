@@ -922,6 +922,13 @@ agents:
         consolidate against it — merge new lessons into the existing
         structure rather than appending blindly, and drop anything
         that's stale, redundant, or superseded.
+      - Every lesson is a `## Title` section whose first line is its
+        scope, one of:
+          Scope: wissel        (a problem with Wissel's own environment)
+          Scope: project       (a standing rule for the project's cards)
+          Scope: path:<glob>   (code knowledge for one area, such as
+                                path:src/services/**)
+        Keep a lesson's existing Scope line when you merge it.
       - If there is nothing worth keeping at all (no prior file and no
         durable lesson from this batch), your final message must still
         be valid, minimal markdown for the file — never empty output

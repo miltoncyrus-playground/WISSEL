@@ -26,6 +26,7 @@ import { HostGuard, readHost, thresholdsFromEnv } from "../services/host-guard.t
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { mergeForward } from "../services/merge-forward.ts";
 import { buildDigest, DigestRuns, dueDigests } from "../services/digests.ts";
+import { LessonDecisions, lessonsForFiles, parseLessons, proposals, ruleText } from "../services/lessons.ts";
 import { importItems, parseItems, type ImportBody, type ImportReport } from "../services/import.ts";
 import { isForward, loadChatConfig, moveComment, slackAdapter, ticketStage, TrackerState, transitionFor, workCards, type ChatAdapter, type TicketStage } from "../services/tracker-rules.ts";
 import { ChannelOutbox, channelMessageError, docScribeAdapter, flushChannel, type ChannelAdapter, type ChannelMessage } from "../services/channel.ts";
@@ -653,6 +654,7 @@ export function createApp(
   // card waits in review, so a short-lived answer stays true.
   const worktreeChangedCache = new Map<string, { at: number; value: boolean | undefined }>();
   const ownerTasks = opts.ownerTasks ?? (board instanceof SqliteBoard ? new OwnerTaskStore(board.db, board) : undefined);
+  const lessonDecisions = board instanceof SqliteBoard ? new LessonDecisions(board.db) : undefined;
   // Workstreams and roles (docs/SDD-coordinator.md §3.1, §4.13).
   const workstreams = board instanceof SqliteBoard ? new WorkstreamStore(board.db) : undefined;
   // The event inbox (§4.1): every coordinator trigger, once each.
@@ -1653,6 +1655,42 @@ export function createApp(
       // `content: undefined` (never an error) means curation hasn't
       // produced a file yet — the board UI's Memory tab shows that as an
       // empty state, not a fetch failure.
+      // Lesson scopes and promotions (docs/SDD-coordinator.md §4.15): the
+      // curated lessons with their scope, and the owner's proposals. A
+      // card rule is applied only on approval.
+      if (lessonDecisions && (url.pathname === "/lessons" || url.pathname.startsWith("/lessons/"))) {
+        const lessons = parseLessons((await readMemoryLessons(opts.memoryPath ?? DEFAULT_MEMORY_PATH)) ?? "");
+        const seg = url.pathname.split("/").filter(Boolean);
+        if (seg.length === 1 && req.method === "GET") return json(lessons);
+        if (seg.length === 2 && seg[1] === "proposals" && req.method === "GET") return json(proposals(lessons, lessonDecisions));
+        if (seg.length === 3 && (seg[2] === "approve" || seg[2] === "reject") && req.method === "POST") {
+          if (opts.authorization && opts.authorization.principalFor(req) !== OWNER_PRINCIPAL_ID) return json({ error: "only the owner decides a lesson" }, 403);
+          const p = proposals(lessons, lessonDecisions).find((x) => x.key === seg[1]);
+          if (!p) return notFound();
+          if (seg[2] === "reject") {
+            lessonDecisions.decide(p.key, "rejected");
+            return json({ ...p, status: "rejected" });
+          }
+          if (p.kind === "card-rule") {
+            const body = ((await req.json().catch(() => ({}))) ?? {}) as { projectId?: unknown };
+            const project = typeof body.projectId === "string" ? (await projects.list()).find((x) => x.id === body.projectId) : undefined;
+            if (!project) return json({ error: "approving a card rule needs projectId, the project it becomes a rule of" }, 400);
+            const current = project.cardRules?.trim();
+            const next = current ? `${current}\n${ruleText(p)}` : ruleText(p);
+            const check = validateProjectSettings({ cardRules: next });
+            if (!check.ok) return json({ error: check.error }, 400);
+            await projects.setSettings(project.id, check.patch);
+            lessonDecisions.decide(p.key, "approved", project.id);
+            return json({ ...p, status: "approved", projectId: project.id });
+          }
+          // A Wissel problem: an owner task to file it, never a prompt line.
+          const made = ownerTasks ? await ownerTasks.create({ title: `File a Wissel issue: ${p.title}`, why: `The memory curator found a problem with Wissel's own environment: ${p.body.slice(0, 3000)}`, steps: ["File it as a Wissel issue", "Press Done"] }) : undefined;
+          lessonDecisions.decide(p.key, "approved");
+          return json({ ...p, status: "approved", ...(made?.ok ? { ownerTaskId: made.task.id } : {}) });
+        }
+        return notFound();
+      }
+
       if (url.pathname === "/memory" && req.method === "GET") {
         const content = await readMemoryLessons(opts.memoryPath ?? DEFAULT_MEMORY_PATH);
         return json({ content, path: opts.memoryPath ?? DEFAULT_MEMORY_PATH, injected: opts.injectMemory ?? false });
@@ -2312,6 +2350,14 @@ export function createApp(
         }
 
         // docs/SDD-card-edit.md: change a card that hasn't started.
+        // The path lessons a card's planned files match (§4.15): a preview;
+        // nothing is added to its prompt.
+        if (parts.length === 3 && parts[2] === "lessons" && req.method === "GET") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          return json(lessonsForFiles(parseLessons((await readMemoryLessons(opts.memoryPath ?? DEFAULT_MEMORY_PATH)) ?? ""), task.files));
+        }
+
         if (parts.length === 2 && req.method === "PATCH") {
           const task = await board.get(parts[1]!);
           if (!task) return notFound();
