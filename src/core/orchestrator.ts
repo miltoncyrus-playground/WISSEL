@@ -1131,7 +1131,7 @@ async function tryAutoMerge(board: Board, registry: Registry, result: TaskResult
  *  (conflictIntegratorTitle + CONFLICT_LABEL), oldest first, whatever
  *  its status. One per conflict, so usually one; several once the repo
  *  moved again between conflicts (maybeSpawnConflictIntegrator). */
-async function conflictIntegratorCards(board: Board, task: Pick<TaskCard, "id">): Promise<TaskCard[]> {
+export async function conflictIntegratorCards(board: Board, task: Pick<TaskCard, "id">): Promise<TaskCard[]> {
   const title = conflictIntegratorTitle(task);
   return (await board.list()).filter((t) => t.title === title && t.labels.includes(CONFLICT_LABEL));
 }

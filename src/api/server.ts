@@ -723,6 +723,16 @@ export function createApp(
       workstreamId,
     });
   };
+  // The conflict integrator gave up on a merge-forward (§4.4): one
+  // resolve-conflict decision per card at a time.
+  const onConflictGaveUp = async (card: TaskCard, reason: string, detail: string) => {
+    const ws = card.workstreamId ? workstreams?.get(card.workstreamId) : undefined;
+    if (!ws) return;
+    const live = (await board.list()).some((t) => t.labels.includes("decision:resolve-conflict") && t.labels.includes(`subject:${card.id}`) && !t.archivedAt && t.status !== "done" && t.status !== "failed");
+    if (live) return;
+    const project = (await projects.list()).find((x) => x.path === card.repo);
+    await startDecisionCard("resolve-conflict", ws.id, project?.id, `Merging main into the PR${card.pr ? ` #${card.pr.number}` : ""} of "${card.title}" conflicts, and ${reason}.\n\nWhat the merge said:\n${detail.slice(0, 6000)}\n\nThe card's brief:\n${card.body.slice(0, 3000)}`, card.id);
+  };
   board.events?.on("event", (e: BoardEvent) => {
     const ev = boardInboxEvent(e);
     if (ev) dispatcher?.push(ev);
@@ -764,7 +774,7 @@ export function createApp(
       for (const ev of prInboxEvents(e, ws)) dispatcher?.push(ev);
     },
     // A dirty PR is brought up to date with main (card 10).
-    onDirty: (card) => mergeForward({ board: board as Board, registry, merge: mergeContext }, card),
+    onDirty: (card) => mergeForward({ board: board as Board, registry, merge: mergeContext, onGaveUp: (c, r, d) => onConflictGaveUp(c, r, d) }, card),
   });
   if (opts.prWatch) {
     const tick = () => void prWatcher.tick().catch((e) => console.error(`pr watcher: ${(e as Error).message}`));
@@ -882,9 +892,40 @@ export function createApp(
                 const d = decisions!.add({ workstreamId: a.workstreamId, text: out.text, alternative: out.alternative, lean: out.lean, by: "wissel", ...(sourceCardId ? { sourceCardId } : {}) });
                 return `took decision ${d.id}: ${out.text}`;
               }
+              if (out.kind === "read-owner-comments") {
+                // Answers go to the channel as gated `answer` lines;
+                // follow-ups start as cards, unless held, like a plan.
+                const ws = workstreams.get(a.workstreamId);
+                const where = { workstreamId: a.workstreamId, ...(a.projectId ? { projectId: a.projectId } : {}) };
+                const said: string[] = [];
+                for (const x of out.answers) {
+                  if (!ws?.channel) {
+                    said.push("answer: no channel");
+                    continue;
+                  }
+                  const text = `"${x.comment.slice(0, 300)}": ${x.answer}`.slice(0, 2000);
+                  const r = await executor!.execute({ kind: "channel.post", message: "answer", ...where, target: { channel: ws.channel.target }, payload: { message: { kind: "answer", text } } });
+                  said.push(`answer: ${r.status}`);
+                }
+                const project = a.projectId ? (await projects.list()).find((x) => x.id === a.projectId) : undefined;
+                const startsAt = planStartsAt(new Date(), planHoldMinutes());
+                for (const f of out.followUps) {
+                  const r = await executor!.execute({ kind: "card.start", ...where, payload: { card: { title: f.title, body: f.body, labels: [], ...(project ? { repo: project.path } : {}), ...(startsAt ? { notBefore: startsAt } : {}) } } });
+                  said.push(`follow-up "${f.title}": ${r.status}`);
+                }
+                return `owner comments: ${out.answers.length} answer(s), ${out.followUps.length} follow-up(s): ${said.join("; ")}`;
+              }
               const subject = typeof a.payload?.subjectId === "string" ? await board.get(a.payload.subjectId) : undefined;
+              if (out.kind === "resolve-conflict") {
+                if (!subject) throw new Error("resolve-conflict needs the card it is about");
+                // A resolution is a fix round on the same branch, in the
+                // card's worktree; it is reviewed and delivered again.
+                if (out.verdict === "card") return `resolution: ${await pushBackGateFailure(board as Board, subject, `Resolve the conflict with main. The resolve-conflict decision says how:\n\n${out.resolution}`)}`;
+                const r = await ownerTasks!.create({ title: `Merge conflict: ${subject.title}`, why: `Main conflicts with this card's PR and the conflict integrator gave up. ${out.reason}\n\nThe question: ${out.question}`, steps: ["Answer the question in the card's brief", "Retry the card, or dismiss this"], blocks: [] });
+                return r.ok ? `conflict question raised: owner task ${r.task.id}` : `conflict question: ${r.error}`;
+              }
               if (!subject) throw new Error("triage-red needs the card it is about");
-              if (out.verdict === "retry") return `retry: ${await mergeForward({ board: board as Board, registry, merge: mergeContext }, subject)}`;
+              if (out.verdict === "retry") return `retry: ${await mergeForward({ board: board as Board, registry, merge: mergeContext, onGaveUp: (c, r, d) => onConflictGaveUp(c, r, d) }, subject)}`;
               if (out.verdict === "fix-round") return `fix round: ${await pushBackGateFailure(board as Board, subject, `Triage: ${out.reason}`)}`;
               const r = await ownerTasks!.create({ title: `Spec question: ${subject.title}`, why: `The gates stay red and triage says the brief can't be met as written: ${out.reason}`, steps: ["Answer the question in the card's brief", "Retry the card, or dismiss this"], blocks: [] });
               return r.ok ? `spec question raised: owner task ${r.task.id}` : `spec question: ${r.error}`;
@@ -892,7 +933,7 @@ export function createApp(
             "pr.merge-forward": async (a) => {
               const card = typeof a.payload?.taskId === "string" ? await board.get(a.payload.taskId) : undefined;
               if (!card) throw new Error("pr.merge-forward needs payload.taskId of a delivered card");
-              return `merge forward: ${await mergeForward({ board: board as Board, registry, merge: mergeContext }, card)}`;
+              return `merge forward: ${await mergeForward({ board: board as Board, registry, merge: mergeContext, onGaveUp: (c, r, d) => onConflictGaveUp(c, r, d) }, card)}`;
             },
           },
           ask: async (a, record, forWhom) => {
