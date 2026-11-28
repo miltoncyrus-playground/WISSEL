@@ -17,6 +17,7 @@ The specs behind each part, in `docs/`.
 - `docs/SDD-git-jira-visibility.md`: git state and tickets on the board, the Jira integration and write-back.
 - `docs/SDD-schedules.md`: schedules for pipelines and tasks, and "Start at" for a card; §7 is the switch-over from systemd.
 - `docs/SDD-settings-tab.md`: instance settings in Setup > Settings, live, with the start-up variables that stay.
+- `docs/SDD-coordinator-session.md`: a live coordinator session per workstream, shown as a chat in the coordinator window.
 
 ---
 
