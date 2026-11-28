@@ -1161,7 +1161,10 @@ Flags accept `1` or `true`; anything else is off.
 | `WISSEL_MERGE_HEALTH_INTERVAL_HOURS` | 1 | Merge-health check interval. |
 | `WISSEL_PORT` | 8787 | HTTP port. |
 | `WISSEL_BIND` | `127.0.0.1` | Address the board listens on. Anything outside loopback refuses to start without `WISSEL_ALLOW_OPEN_BIND=1`. |
-| `WISSEL_ALLOW_OPEN_BIND` | off | Allow a non-loopback `WISSEL_BIND`. The board has no sign-in yet: start-up warns and raises an owner task. |
+| `WISSEL_ALLOW_OPEN_BIND` | off | Allow a non-loopback `WISSEL_BIND` without sign-in: start-up warns and raises an owner task. Not needed with `WISSEL_AUTH=tokens`. |
+| `WISSEL_AUTH` | off (single owner) | `tokens` turns sign-in on: every request but health, version and the sign-in page needs a session or an API token (see Sign-in below). |
+| `WISSEL_PUBLIC_URL` | `http://localhost:<port>` | The board's address as people reach it: the base of the bootstrap link, and `https://` makes the session cookie `Secure`. |
+| `WISSEL_TOKEN` | unset | The CLI's API token when sign-in is on (sent as `Authorization: Bearer`). |
 | `WISSEL_HOST_GUARD` | off | `1` turns on the host guard: new cards are held while the host is short of room, and an owner task says why. |
 | `WISSEL_HOST_GUARD_LOAD_PER_CORE` | `3` | Hold when the 1-minute load reaches this many per core. |
 | `WISSEL_HOST_GUARD_MIN_MEMORY_PCT` | `20` | Hold when less than this share of memory is available. |
@@ -1248,6 +1251,35 @@ Optional, git-ignored; copy `integrations.example.yaml`. Names a Jira site
 and the environment variables holding the email and API token, an optional
 project filter, and `writeBack`. Only the first entry is used. Setup is
 walked through under "Git and tickets".
+
+### Sign-in
+
+Off by default: in single-owner mode the owner stands behind every
+request, and every write is recorded as theirs (`GET /audit`).
+`WISSEL_AUTH=tokens` turns sign-in on, with tokens only: there is no
+identity provider (`docs/SDD-identity-and-permissions.md` §4.2, card 5).
+- **The owner's first sign-in** is a one-time link Wissel prints on
+  start while the owner has no live session or token:
+  `sign-in: open …/auth/bootstrap/<secret> within 15 minutes`. It works
+  once and signs in as the existing owner, so the history stays theirs.
+- **Adding people:** the owner adds a person with `POST /members {handle,
+  display}`. The answer includes their first token, shown once. They
+  paste it into `/auth/login`, which gives their browser a session (an
+  HttpOnly, SameSite=Lax cookie, kept 30 days).
+- **Tokens:** anyone signed in mints their own with `POST /tokens
+  {name, expiresAt?}` (the secret shown once), lists them with `GET
+  /tokens`, and revokes one with `DELETE /tokens/:id`. A script sends a
+  token as `Authorization: Bearer`; the CLI reads it from `WISSEL_TOKEN`.
+- **Removing people:** `POST /members/:id/disable` revokes all of that
+  person's sessions and tokens at once. `GET /members` lists everyone
+  with their tokens. `POST /auth/logout` ends a session.
+- **Storage:** only hashes of sessions, tokens and links are stored,
+  never a secret.
+
+Sign-in doesn't narrow anything yet: anyone signed in can do what the
+owner can, except managing members and the owner-only coordinator
+switches. With sign-in on, a non-loopback `WISSEL_BIND` no longer needs
+`WISSEL_ALLOW_OPEN_BIND`.
 
 ## Known gaps
 

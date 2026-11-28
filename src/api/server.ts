@@ -125,7 +125,9 @@ import { createReplyAudio, ReplyAudioError } from "../services/reply-audio.ts";
 import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
 import { needsYouFor, needsYouLogLine, type NeedsYouOptions } from "../services/needs-you.ts";
 import { OwnerTaskStore, ownerTaskError, type NewOwnerTask, type OwnerTaskStatus } from "../services/owner-tasks.ts";
-import { resolveBind } from "../core/bind.ts";
+import { isLoopback, resolveBind } from "../core/bind.ts";
+import { authMode, IdentityStore } from "../services/identity.ts";
+import { callerOf, principalOf, withIdentityRoutes, withSignIn } from "./sign-in.ts";
 import { raiseOpenBindTask } from "../services/open-bind-task.ts";
 import { AuthorizationLog, OWNER_PRINCIPAL_ID, withAuthorizationRecords } from "../services/authorization.ts";
 import { PolicyRevisions } from "../services/policy-revision.ts";
@@ -1723,7 +1725,8 @@ export function createApp(
 
       if (opts.authorization && url.pathname === "/me" && req.method === "GET") {
         const p = opts.authorization.log.principal(opts.authorization.principalFor(req));
-        return p ? json({ principal: p, grants: [{ permission: "*", scope: "instance" }] }) : notFound();
+        const tokenName = callerOf(req)?.tokenName;
+        return p ? json({ principal: p, grants: [{ permission: "*", scope: "instance" }], ...(tokenName ? { token: tokenName } : {}) }) : notFound();
       }
       if (opts.authorization?.policy && url.pathname === "/policy" && req.method === "GET") {
         return json({ revision: opts.authorization.policy.current(), history: opts.authorization.policy.history() });
@@ -3068,8 +3071,13 @@ if (import.meta.main) {
   // implicit owner stands behind every request until sign-in exists, and
   // every write gets an authorization record.
   const authorizationLog = new AuthorizationLog(board.db);
-  const owner = authorizationLog.ensureOwner(process.env.WISSEL_OWNER_HANDLE);
-  const principalFor = () => owner.id;
+  authorizationLog.ensureOwner(process.env.WISSEL_OWNER_HANDLE);
+  // Sign-in (docs/SDD-identity-and-permissions.md §4.2, card 5): off
+  // unless WISSEL_AUTH=tokens; then the signed-in caller stands behind
+  // each request, else the owner, as in single-owner mode.
+  const signInMode = authMode(process.env);
+  const identity = new IdentityStore(board.db);
+  const principalFor = principalOf;
   const registry = await Registry.load();
   // Opened before telemetry so every event can carry the policy revision.
   const policy = new PolicyRevisions(board.db);
@@ -3205,7 +3213,7 @@ if (import.meta.main) {
   Bun.serve({
     port,
     hostname: bind.hostname,
-    fetch: withAuthorizationRecords(createApp(board, registry, telemetry, {
+    fetch: withSignIn(withAuthorizationRecords(withIdentityRoutes(createApp(board, registry, telemetry, {
       authorization: { log: authorizationLog, principalFor, policy },
       prWatch: process.env.WISSEL_PR_WATCH !== "0",
       ...(chat ? { chat } : {}),
@@ -3239,8 +3247,17 @@ if (import.meta.main) {
       stt,
       schedulesEnabled: true,
       ...scripted,
-    }), authorizationLog, { principalFor, policy, onCardCreated: (id, principalId) => board.attribute(id, principalId) }),
+    }), identity), authorizationLog, { principalFor, policy, onCardCreated: (id, principalId) => board.attribute(id, principalId) }), { mode: signInMode, identity, secure: (process.env.WISSEL_PUBLIC_URL ?? "").startsWith("https://") }),
   });
+  if (signInMode === "tokens") {
+    console.log("sign-in: on (WISSEL_AUTH=tokens); every request needs a session or an API token");
+    // The owner's first sign-in: printed, never stored as a secret (only
+    // its hash is), single use, 15 minutes.
+    if (!identity.ownerHasAccess()) {
+      const base = (process.env.WISSEL_PUBLIC_URL ?? `http://${isLoopback(bind.hostname) || bind.hostname === "0.0.0.0" ? "localhost" : bind.hostname}:${port}`).replace(/\/$/, "");
+      console.log(`sign-in: open ${base}/auth/bootstrap/${identity.issueBootstrap()} within 15 minutes to sign in as the owner (works once)`);
+    }
+  }
   if (conciergeScript) console.log(`ask: scripted concierge from ${conciergeScript} (WISSEL_CONCIERGE_SCRIPT), no model calls`);
   console.log(`wissel board api on ${bind.hostname}:${port} (db: ${dbPath})`);
   const supervisor = detectSupervisor(process.env);
