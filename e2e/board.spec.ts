@@ -1937,6 +1937,9 @@ test.describe("Needs you and four lanes", () => {
       for (const [where, id] of [["kanbanBody", queuedId], ["kanbanBody", doneId], ["needsYou", failedId]] as const) {
         const kt = page.locator(`#${where} .kcard[data-task-id="${id}"] .kt`);
         await expect(kt).toHaveAttribute("title", title);
+        // The lane's styles can land a frame after the card: until then
+        // line-height reads "normal" and the line count is NaN.
+        await expect.poll(() => kt.evaluate((el) => getComputedStyle(el).lineHeight)).not.toBe("normal");
         const m = await kt.evaluate((el) => {
           const lh = parseFloat(getComputedStyle(el).lineHeight);
           return { clipped: el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1, lines: Math.round(el.clientHeight / lh) };

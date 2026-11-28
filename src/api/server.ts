@@ -126,6 +126,7 @@ import { loadScriptedConciergeRunner } from "../services/concierge-script.ts";
 import { needsYouFor, needsYouLogLine, type NeedsYouOptions } from "../services/needs-you.ts";
 import { OwnerTaskStore, ownerTaskError, type NewOwnerTask, type OwnerTaskStatus } from "../services/owner-tasks.ts";
 import { isLoopback, resolveBind } from "../core/bind.ts";
+import { harnessLimitTask, type HarnessLimitEvent } from "../core/harness-limit.ts";
 import { authMode, IdentityStore } from "../services/identity.ts";
 import { callerOf, principalOf, withIdentityRoutes, withSignIn } from "./sign-in.ts";
 import { wasPermitted, withPermissions } from "./permission-door.ts";
@@ -769,6 +770,13 @@ export function createApp(
       }
     }, 60 * 60 * 1000).unref?.();
   }
+  const raiseHarnessLimitTask = async (e: HarnessLimitEvent, harness: { env?: Record<string, string> }) => {
+    const task = harnessLimitTask(e, harness.env?.CLAUDE_CONFIG_DIR);
+    if (!task || !ownerTasks) return;
+    if (ownerTasks.list("open").some((t) => t.title === task.title)) return;
+    const r = await ownerTasks.create({ ...task, blocks: [] });
+    if (!r.ok) console.error(`harness limit: owner task not raised: ${r.error}`);
+  };
   /** Starts a decision card: the router sends it to the decider agent. */
   const startDecisionCard = async (kind: ImplementedKind, workstreamId: string, projectId: string | undefined, context: string, subjectId?: string) => {
     const project = projectId ? (await projects.list()).find((x) => x.id === projectId) : undefined;
@@ -1234,6 +1242,9 @@ export function createApp(
       },
       onStart: (task, tasks) => void warnOverlaps(task, tasks),
       ...(opts.cardCredentials ? { credentials: opts.cardCredentials } : {}),
+      // An account problem (out of credits, signed out, an untrusted
+      // folder) raises one owner task, not a red card per run.
+      onHarnessLimit: (e, harness) => void raiseHarnessLimitTask(e, harness),
       merge: mergeContext,
       harnesses,
       maxConcurrentTasks: opts.maxConcurrentTasks,

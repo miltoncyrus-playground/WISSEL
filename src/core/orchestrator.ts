@@ -3,7 +3,7 @@ import type { Board, BoardEvent } from "../services/board.ts";
 import type { PipelineStore } from "../services/pipelines.ts";
 import type { TelemetryLog } from "../services/telemetry.ts";
 import { cardPrincipal, HarnessOverrideError, type HarnessPool } from "./harness-pool.ts";
-import { describeHarnessLimit, harnessLimitEvent } from "./harness-limit.ts";
+import { describeHarnessLimit, harnessLimitEvent, type HarnessLimitEvent } from "./harness-limit.ts";
 import type { Registry } from "./registry.ts";
 import type { Router } from "./router.ts";
 import type { CommandRunner } from "../executors/claude-cli.ts";
@@ -134,11 +134,12 @@ function audioTelemetry(result: TaskResult): { bytes: number; synthesisSeconds: 
  *  naming whose account it is (src/core/harness-limit.ts), plus one log
  *  line. Nothing else changes: the 429 reschedule and the failure path
  *  run as before. */
-export async function recordHarnessLimit(telemetry: TelemetryLog | undefined, result: TaskResult, harness: Harness | undefined, principalId: string): Promise<void> {
+export async function recordHarnessLimit(telemetry: TelemetryLog | undefined, result: TaskResult, harness: Harness | undefined, principalId: string, onLimit?: (e: HarnessLimitEvent, harness: Harness) => void): Promise<void> {
   const event = harnessLimitEvent(result, harness, principalId);
   if (!event) return;
   console.warn(`harness limit: ${describeHarnessLimit(event)}`);
   await telemetry?.record(event);
+  onLimit?.(event, harness!);
 }
 
 export async function finishResult(
@@ -1653,6 +1654,9 @@ export interface OrchestratorOptions {
    *  §4.8, card 8): an agent principal and a token that reaches only this
    *  card, put into the run's environment and revoked when it ends. */
   credentials?: (task: TaskCard) => { env: Record<string, string>; revoke: () => void } | undefined;
+  /** An account problem a run hit (out of credits, signed out, an
+   *  untrusted folder): the server raises one owner task for it. */
+  onHarnessLimit?: (e: HarnessLimitEvent, harness: Harness) => void;
   /** Why no new card may start right now (a pending restart when idle,
    *  src/services/restart-when-idle.ts), or undefined. While it says
    *  something the sweep starts nothing and Run is refused; running cards
@@ -2177,7 +2181,7 @@ export class Orchestrator {
         cred?.revoke();
         if (harness) this.opts.harnesses!.release(harness.id);
       }
-      await recordHarnessLimit(this.telemetry, result, harness, principalId);
+      await recordHarnessLimit(this.telemetry, result, harness, principalId, this.opts.onHarnessLimit);
       await finishResult(this.board, this.registry, result, this.telemetry, this.opts.merge, this.opts.memoryPath);
     } catch (e) {
       console.error(`orchestrator: unexpected error processing task ${task.id}: ${(e as Error).message}`);

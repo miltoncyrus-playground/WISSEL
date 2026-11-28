@@ -16,6 +16,19 @@ check. Closing releases the waiting cards. `GET /owner-tasks?status=open`
 lists them (`src/services/owner-tasks.ts`, `docs/SDD-coordinator.md`
 §3.4).
 
+Wissel raises one itself when an account stops working:
+- **Out of usage credits:** add credits, or pin the account to a model
+  it can use.
+- **Signed out:** sign in again.
+- **A folder the account hasn't trusted:** the task gives the exact
+  `cd <folder> && CLAUDE_CONFIG_DIR=<the account's config> claude`
+  command.
+
+It's one task per account and problem while it's open, so a dozen
+failed cards don't mean a dozen tasks. Each failed card's line leads
+with claude's own reason (for example "You're out of usage credits"),
+ahead of any warnings claude printed.
+
 ## Restarting when idle
 
 To restart without interrupting cards, use `POST /admin/restart-when-idle`.
