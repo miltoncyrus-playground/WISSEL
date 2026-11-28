@@ -199,12 +199,13 @@ export class InboxDispatcher {
 }
 
 /** The inbox event for a board change, or undefined when it isn't one
- *  the coordinator reacts to: a card reaching review, failed or
- *  escalated. The id is stable per card, status and round. */
+ *  the coordinator reacts to: a card starting (running), or reaching
+ *  review, failed or escalated. The id is stable per card, status and
+ *  round. */
 export function boardInboxEvent(e: BoardEvent): NewInboxEvent | undefined {
   if (e.type !== "task.moved") return undefined;
   const t = e.task;
-  if (t.status !== "review" && t.status !== "failed" && t.status !== "escalated") return undefined;
+  if (t.status !== "running" && t.status !== "review" && t.status !== "failed" && t.status !== "escalated") return undefined;
   return {
     id: `board:${t.id}:${t.status}:${t.round ?? (t.pushbackCount ?? 0) + 1}`,
     source: "board",

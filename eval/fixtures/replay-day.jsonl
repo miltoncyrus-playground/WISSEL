@@ -1,0 +1,21 @@
+// An invented day for the replay eval (docs/SDD-coordinator.md §8): no
+// team, person or repository in it is real. A recorded day drops in with
+// the same shapes (src/services/replay.ts).
+{"type":"card","key":"A1","title":"Add retry to the importer","files":["src/importer/retry.ts"]}
+{"type":"card","key":"A2","title":"Rename the export job","files":["src/jobs/export.ts"]}
+{"type":"card","key":"A3","title":"Show the export status","files":["app/src/export.tsx"]}
+{"type":"card","key":"A4","title":"Draft the import guide","files":["docs/import.md"]}
+{"type":"move","key":"A1","status":"running"}
+{"type":"move","key":"A2","status":"running"}
+{"type":"move","key":"A3","status":"running"}
+{"type":"channel","entryId":"e1","author":"decider","text":"A2 waits for the schema change"}
+{"type":"move","key":"A1","status":"review"}
+{"type":"pr","key":"A1","number":101,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","mergeStateStatus":"CLEAN","checks":"PENDING","isDraft":false}
+{"type":"pr","key":"A1","number":101,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"OPEN","mergeStateStatus":"CLEAN","checks":"SUCCESS","isDraft":false}
+{"type":"move","key":"A2","status":"review"}
+{"type":"pr","key":"A2","number":102,"head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"OPEN","mergeStateStatus":"DIRTY","checks":"SUCCESS","isDraft":false}
+{"type":"move","key":"A3","status":"review"}
+{"type":"pr","key":"A3","number":103,"head":"cccccccccccccccccccccccccccccccccccccccc","state":"OPEN","mergeStateStatus":"CLEAN","checks":"FAILURE","isDraft":false}
+{"type":"pr","key":"A3","number":103,"head":"cccccccccccccccccccccccccccccccccccccccc","state":"OPEN","mergeStateStatus":"CLEAN","checks":"SUCCESS","isDraft":false}
+{"type":"move","key":"A4","status":"running"}
+{"type":"pr","key":"A1","number":101,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"MERGED","mergeStateStatus":"CLEAN","checks":"SUCCESS","isDraft":false}

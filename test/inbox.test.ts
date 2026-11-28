@@ -68,10 +68,11 @@ describe("the dispatcher", () => {
 describe("sources", () => {
   const card = (over: Partial<TaskCard>): TaskCard => ({ id: "t1", title: "Add retries", body: "", labels: [], status: "review", key: "A4", workstreamId: "ws1", round: 2, ...over });
 
-  test("a board move to review, failed or escalated is an event, stable per card, status and round; anything else isn't", () => {
+  test("a board move to running, review, failed or escalated is an event, stable per card, status and round; anything else isn't", () => {
     expect(boardInboxEvent({ type: "task.moved", task: card({}) })).toEqual({ id: "board:t1:review:2", source: "board", kind: "card.review", workstreamId: "ws1", payload: { taskId: "t1", title: "Add retries", key: "A4", status: "review" } });
     expect(boardInboxEvent({ type: "task.moved", task: card({ status: "escalated" }) })!.id).toBe("board:t1:escalated:2");
-    expect(boardInboxEvent({ type: "task.moved", task: card({ status: "running" }) })).toBeUndefined();
+    expect(boardInboxEvent({ type: "task.moved", task: card({ status: "running" }) })!.kind).toBe("card.running");
+    expect(boardInboxEvent({ type: "task.moved", task: card({ status: "done" }) })).toBeUndefined();
     expect(boardInboxEvent({ type: "task.created", task: card({}) })).toBeUndefined();
   });
 
@@ -100,7 +101,10 @@ describe("in the app", () => {
     await board.move(t.id, "review");
     await new Promise((r) => setTimeout(r, 10));
     const events = (await call("GET", "/inbox")).body as InboxEvent[];
-    expect(events.map((e) => [e.kind, e.outcome])).toEqual([["card.review", "unrouted"]]);
+    expect(events.map((e) => [e.kind, e.outcome]).sort()).toEqual([
+      ["card.review", "unrouted"],
+      ["card.running", "handled"],
+    ]);
     const msg = await call("POST", "/inbox", { text: "Pause new cards tonight." });
     expect(msg).toMatchObject({ status: 201, body: { source: "owner", kind: "owner.message", payload: { text: "Pause new cards tonight." } } });
     expect((await call("POST", "/inbox", { text: " " })).status).toBe(400);

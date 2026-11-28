@@ -24,7 +24,7 @@ import { PipelineHeldError, PipelineNotFoundError, PipelineRepoRequiredError, re
 import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle.ts";
 import { HostGuard, readHost, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
-import { mergeForward } from "../services/merge-forward.ts";
+import { MERGE_FORWARD_LABEL, mergeForward } from "../services/merge-forward.ts";
 import { buildDigest, DigestRuns, dueDigests } from "../services/digests.ts";
 import { LessonDecisions, lessonsForFiles, parseLessons, proposals, ruleText } from "../services/lessons.ts";
 import { importItems, parseItems, type ImportBody, type ImportReport } from "../services/import.ts";
@@ -668,6 +668,26 @@ export function createApp(
     ? new InboxDispatcher(
         inbox,
         inboxHandlers({
+          // Wissel's own channel lines (§4.9): a claim when a workstream
+          // card starts, ready-to-merge when its PR is ready. Through the
+          // gate, so Shadow records them and a duty switched to the
+          // external coordinator denies them.
+          "card.running": async (e) => {
+            const p = e.payload as { taskId?: string };
+            const card = p.taskId ? await board.get(p.taskId) : undefined;
+            const ws = card?.workstreamId ? workstreams?.get(card.workstreamId) : undefined;
+            if (!card || !ws?.channel || !executor || card.labels.includes(DECISION_LABEL) || card.labels.includes(MERGE_FORWARD_LABEL) || card.labels.includes("review")) return;
+            const project = (await projects.list()).find((x) => x.path === card.repo);
+            await executor.execute({ kind: "channel.post", message: "claim", workstreamId: ws.id, ...(project ? { projectId: project.id } : {}), target: { channel: ws.channel.target }, payload: { message: { kind: "claim", text: `Taking ${card.key ?? card.title}`, cardId: card.id, ...(card.key ? { key: card.key } : {}) } } });
+          },
+          "pr.ready": async (e) => {
+            const p = e.payload as { taskId?: string; headSha?: string };
+            const card = p.taskId ? await board.get(p.taskId) : undefined;
+            const ws = card?.workstreamId ? workstreams?.get(card.workstreamId) : undefined;
+            if (!card?.pr || !ws?.channel || !executor || !p.headSha) return;
+            const project = (await projects.list()).find((x) => x.path === card.repo);
+            await executor.execute({ kind: "channel.post", message: "ready-to-merge", workstreamId: ws.id, ...(project ? { projectId: project.id } : {}), target: { channel: ws.channel.target }, payload: { message: { kind: "ready-to-merge", text: `${card.key ?? card.title} is ready to merge`, cardId: card.id, ...(card.key ? { key: card.key } : {}), pr: { number: card.pr.number, url: card.pr.url }, headSha: p.headSha } } });
+          },
           "pr.checks-failing": async (e) => {
             const p = e.payload as { taskId?: string; number?: number; headSha?: string };
             const card = p.taskId ? await board.get(p.taskId) : undefined;
