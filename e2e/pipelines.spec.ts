@@ -63,9 +63,12 @@ test.describe("Pipelines page", () => {
     await expect(row.locator(".pl-last")).toHaveText("No runs yet");
     await expect(row.getByRole("link", { name: `Edit ${pipeline.name}` })).toHaveAttribute("href", `#/pipelines/edit/${pipeline.id}`);
 
-    const listed = (await (await request.get("/pipelines")).json()) as unknown[];
-    await expect(page.locator("#pipelinesCount")).toHaveText(String(listed.length));
-    await expect(page.locator("#pipelinesList .pl-row")).toHaveCount(listed.length);
+    // The count matches the rows the page shows. Not compared with a later
+    // GET /pipelines: other spec files add pipelines to the shared server
+    // between the two reads.
+    const rows = await page.locator("#pipelinesList .pl-row").count();
+    expect(rows).toBeGreaterThan(0);
+    await expect(page.locator("#pipelinesCount")).toHaveText(String(rows));
   });
 
   test("a pipeline saved after the page loaded shows up on the next visit", async ({ page, request }) => {

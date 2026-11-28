@@ -35,9 +35,18 @@ const EXPLAIN = handoffData(read("explain-summary.md"));
 const QUICK_READ = SCRIPT.quickRead as { headline: string; oneLine: string; source: string }[];
 const GATHER_SOURCES = (GATHER.stories as { sources: string[] }[]).flatMap((s) => s.sources);
 
+/** Noon today, local time: the clock the page runs on. Fixed, so "1 h
+ *  ago" reads the same at any hour; just after midnight an hour ago is
+ *  "yesterday". */
+const NOON = (() => {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  return d;
+})();
+
 function episodes() {
   const hour = 3_600_000;
-  const at = (h: number) => new Date(Date.now() - h * hour).toISOString();
+  const at = (h: number) => new Date(NOON.getTime() - h * hour).toISOString();
   const base = { durationSeconds: 30, quickRead: null as unknown };
   return [
     {
@@ -144,6 +153,9 @@ test("GET /podcasts answers a list on the real server, and refuses a bad limit",
 for (const vp of VIEWPORTS) {
   test.describe(`Listen at ${vp.width}px`, () => {
     test.use({ viewport: { width: vp.width, height: vp.height } });
+    test.beforeEach(async ({ page }) => {
+      await page.clock.setFixedTime(NOON);
+    });
 
     test("episodes by pipeline, Quick read with sources, flags and expandable detail; real controls, no sideways scroll", async ({ page }) => {
       await servePodcasts(page);

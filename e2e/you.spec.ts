@@ -237,8 +237,11 @@ for (const vp of VIEWPORTS) {
       const id = await routedCard(request, title, "implementer", "running");
 
       // Board tab (and the Live panel on desktop): the card's row shows
-      // the implementer's face, working.
+      // the implementer's face, working. Reloaded: a hash-only goto keeps
+      // the page, and under a loaded run the card's /events update can
+      // come later than the check below. The live part is tested after.
       await page.goto("/app#/board");
+      await page.reload();
       const row = page.locator(".lane-running.task-row", { hasText: title }).first();
       const face = row.locator(".avatar");
       await expect(face).toHaveText("Im");
