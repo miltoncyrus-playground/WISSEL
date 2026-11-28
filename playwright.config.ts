@@ -130,6 +130,9 @@ export default defineConfig({
     url: `http://localhost:${PORT}/health`,
     reuseExistingServer: false,
     env: {
+      // A stand-in `claude` first on PATH (e2e/fixtures/bin/claude): a
+      // pipeline run's steps finish without starting a real agent.
+      PATH: `${join(process.cwd(), "e2e", "fixtures", "bin")}:${process.env.PATH ?? ""}`,
       WISSEL_PORT: String(PORT),
       WISSEL_DB_PATH: ":memory:",
       WISSEL_TELEMETRY_PATH: "/tmp/wissel-e2e-telemetry.jsonl",
