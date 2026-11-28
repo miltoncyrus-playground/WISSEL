@@ -7,6 +7,8 @@ dist/
 bun.lockb
 test-results/
 playwright-report/
+# Eval scores kept over time on this machine (eval:decision-quality)
+eval/history/
 # eval:stt voice notes: made from Kokoro or recorded locally, never committed
 eval/fixtures/stt/*.opus
 
