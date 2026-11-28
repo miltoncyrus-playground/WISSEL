@@ -3155,7 +3155,7 @@ if (import.meta.main) {
   const board = new SqliteBoard(dbPath);
   // Raised here, before createApp starts the orchestrator, so the router
   // can never see the owner task while it is still in inbox.
-  if (bind.open) await raiseOpenBindTask(board, bind.hostname, port);
+  if (bind.open) await raiseOpenBindTask(new OwnerTaskStore(board.db, board), board, bind.hostname, port);
   // Single-owner mode (docs/SDD-identity-and-permissions.md §4.10): one
   // implicit owner stands behind every request until sign-in exists, and
   // every write gets an authorization record.

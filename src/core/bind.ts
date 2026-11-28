@@ -56,16 +56,3 @@ export function resolveBind(env: Record<string, string | undefined>): BindResolu
       `Anyone who can reach this host can create, run and merge work. Unset WISSEL_BIND to close it.`,
   };
 }
-
-/** The owner task's body: what is open, why it matters, how to close it. */
-export function openBindTaskBody(hostname: string, port: number): string {
-  return [
-    `Wissel started with WISSEL_BIND=${hostname} and WISSEL_ALLOW_OPEN_BIND=1, so the board on port ${port} answers on more than loopback.`,
-    "",
-    "The board has no sign-in yet: anyone who can reach this host can create cards, run agents and merge their work.",
-    "",
-    `To close it: unset WISSEL_BIND (it defaults to ${DEFAULT_BIND}) and restart. If the exposure is intended, mark this done.`,
-    "",
-    "See docs/SDD-identity-and-permissions.md §4.1.",
-  ].join("\n");
-}
