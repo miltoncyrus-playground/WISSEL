@@ -58,7 +58,8 @@ switch (command) {
  * decision (not a fresh recompute) is what actually happened.
  */
 async function printWhy(taskId: string): Promise<void> {
-  const res = await fetch(`${apiUrl}/tasks/${taskId}/decision`);
+  // With sign-in on, WISSEL_TOKEN is the CLI's API token.
+  const res = await fetch(`${apiUrl}/tasks/${taskId}/decision`, process.env.WISSEL_TOKEN ? { headers: { authorization: `Bearer ${process.env.WISSEL_TOKEN}` } } : {});
   if (res.status === 404) {
     console.log(`no routing decision recorded for task ${taskId}`);
     return;

@@ -32,6 +32,9 @@ export function resolveBind(env: Record<string, string | undefined>): BindResolu
   const raw = env.WISSEL_BIND?.trim();
   const hostname = raw ? raw : DEFAULT_BIND;
   if (isLoopback(hostname)) return { ok: true, hostname, open: false };
+  // With sign-in on (WISSEL_AUTH=tokens, card 5), a wider bind isn't an
+  // open door: every request needs a session or a token.
+  if (env.WISSEL_AUTH?.trim() === "tokens") return { ok: true, hostname, open: false };
 
   const allowed = ["1", "true"].includes(env.WISSEL_ALLOW_OPEN_BIND ?? "");
   if (!allowed) {
