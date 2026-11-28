@@ -566,7 +566,10 @@ test.describe("Board view", () => {
     await expect(rounds).toHaveCount(6);
     for (let i = 1; i <= 6; i++) {
       await expect(rounds.nth(i - 1).locator(".er-head")).toHaveText(`Attempt ${i}`);
-      await expect(rounds.nth(i - 1).locator(".er-feedback")).toHaveText(`round ${i}: still not right`);
+      // Each round leads with its own feedback. The last one also carries
+      // the cap note the escalation adds after the history ("Escalated:
+      // the reviewer requested changes 6 times ..."), so it starts with it.
+      await expect(rounds.nth(i - 1).locator(".er-feedback")).toHaveText(i < 6 ? `round ${i}: still not right` : /^round 6: still not right\s+Escalated: the reviewer requested changes 6 times/);
     }
 
     // The three human-resolution actions, replacing Merge/Discard/Mark-
@@ -1695,9 +1698,10 @@ test.describe("Shell and navigation", () => {
     expect(nav.y).toBe(0);
     expect(nav.width).toBeGreaterThan(1200);
     expect(nav.height).toBeLessThanOrEqual(64);
-    // Every link sits on that one row.
+    // Every link sits on that one row, however many the header has (it
+    // grew past the original nine as tabs were added).
     const tops = await page.locator("#sidebar a.nav-item").evaluateAll((els) => els.map((e) => Math.round(e.getBoundingClientRect().top)));
-    expect(tops).toHaveLength(9);
+    expect(tops.length).toBeGreaterThanOrEqual(9);
     expect(new Set(tops).size).toBe(1);
   });
 
