@@ -210,13 +210,12 @@ test.describe("pipeline editor in the board shell", () => {
     await page.screenshot({ path: `${SCREENSHOT_DIR}/04-reloaded-identical.png` });
 
     // --- Run -> the "+ New" drawer -> real POST /pipelines/:id/run --------
-    // Real agent (triager, executor: readonly, cheapest CLI-executor
-    // agent in the manifest at ~$0.03/task) — a genuine end-to-end
-    // dispatch, not a mock. NOT quick-answer: its `executor: api` calls
-    // anthropic-api.ts directly, which needs real Anthropic API
-    // credentials the e2e fixture harness never promises. triager's
-    // readonly/CLI executor authenticates via the already-logged-in
-    // local `claude` CLI session.
+    // A real dispatch through triager's readonly CLI executor, down to
+    // spawning `claude -p`. The `claude` it finds is the e2e stand-in
+    // (e2e/fixtures/bin/claude, first on the server's PATH), so the run
+    // is hermetic: no real agent, no cost, no dependence on this
+    // machine's sign-in. NOT quick-answer: its `executor: api` calls
+    // anthropic-api.ts directly, which needs real API credentials.
     await page.locator("#pipelineEditorRoot").getByRole("button", { name: "Run", exact: true }).click();
     await expect(page.locator("#newPipelinePanel")).toBeVisible();
     await expect(page.locator("#prPipeline")).toHaveValue(pipelineId);

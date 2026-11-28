@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# A stand-in for the `claude` CLI on the e2e server's PATH
+# (playwright.config.ts), so no e2e run starts a real agent, spends money
+# or depends on this machine's sign-in. It answers `--version`, `auth
+# status` (signed in) and, for `claude -p`, prints one successful result
+# in the shape
+# src/executors/claude-cli.ts parses (`--output-format json` and
+# `stream-json` alike: one `type: "result"` line).
+case " $* " in
+  *" --version "*) echo "2.1.0 (Claude Code, e2e stand-in)"; exit 0 ;;
+  *" auth status "*) echo '{"loggedIn":true,"authMethod":"claude.ai","email":"e2e@example.invalid"}'; exit 0 ;;
+  *" -p "*) ;;
+  *) exit 0 ;;
+esac
+# Drain the prompt if it came on stdin, so the caller never blocks.
+[ -t 0 ] || cat >/dev/null
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"E2E stand-in answer: done.","session_id":"e2e-stand-in","num_turns":1,"total_cost_usd":0,"usage":{"input_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":1}}'
