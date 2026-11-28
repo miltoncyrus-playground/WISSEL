@@ -1327,6 +1327,23 @@ denied by default.
 
 Without sign-in no token is issued, since nothing checks one.
 
+**Approvals** (§4.5, card 9): an approval covers one thing, once, for
+one person, while the thing it covers is unchanged.
+- **Arming a PR:** `POST /tasks/:id/arm` (`pr.arm`) issues you an
+  approval bound to the reviewed head. It's refused until the PR watcher
+  has seen the PR ready. `POST /approvals/:id/confirm` then arms
+  auto-merge with `gh pr merge --auto --merge --match-head-commit
+  <reviewed head>`, so the code host refuses too if the head moved in
+  between.
+- **When a confirm is refused:** reuse, expiry, a confirm by anyone
+  other than the person it was issued to, and a moved head are each
+  refused with their reason. `GET /approvals` lists your open ones, and
+  `POST /approvals/:id/cancel` drops one.
+- **Ask's Confirm and Undo** follow the same rules. Each records who
+  asked and a hash of the actions with the cards they touch. Only that
+  person can confirm, and a card that changed since (moved, edited,
+  superseded) refuses the Confirm: ask again.
+
 **Leavers stop and ask:** disabling a member revokes their sessions and
 tokens at once. Every card they authorized that hasn't started is held,
 and an owner task lists those cards and the ones still running, which

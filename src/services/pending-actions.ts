@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { TaskCard } from "../core/types.ts";
 import type { ControlAction } from "./concierge-actions.ts";
 import type { ExecutedAction, PendingView } from "./conversations.ts";
 
@@ -9,6 +10,12 @@ import type { ExecutedAction, PendingView } from "./conversations.ts";
 // POST /ask/actions/:id/confirm takes one; the model has no way to. A
 // pending action is used at most once, within PENDING_TTL_MS, in the
 // conversation it was made in. Anything else fails closed.
+//
+// Bound to who and what (docs/SDD-identity-and-permissions.md §3.5, §4.5,
+// card 9): a pending action records the principal who asked and a hash
+// of the actions with the cards they touch, as those cards were. Only
+// that principal can confirm it, and only while the cards are unchanged;
+// otherwise it is refused and nothing runs.
 
 /** How long a pending action can be confirmed. */
 export const PENDING_TTL_MS = 10 * 60_000;
@@ -32,17 +39,46 @@ export interface PendingAction {
   resolution?: "confirmed" | "cancelled";
   /** What a Confirm ran, once it did. */
   outcome?: ExecutedAction[];
+  /** Who asked: only they can confirm it. Unset on rows from before. */
+  principalId?: string;
+  /** sha-256 of the actions and the cards they touch, as proposed. */
+  contentHash?: string;
 }
 
 /** Why a take or cancel was refused. */
-export type PendingRefusal = "not-found" | "wrong-conversation" | "expired" | "used";
+export type PendingRefusal = "not-found" | "wrong-conversation" | "expired" | "used" | "wrong-principal" | "changed";
 
 export const REFUSAL_TEXT: Record<PendingRefusal, string> = {
   "not-found": "no such pending action",
   "wrong-conversation": "that action belongs to another chat",
   expired: "that action expired; ask again",
   used: "that action was already confirmed or cancelled",
+  "wrong-principal": "only the person who asked can confirm this",
+  changed: "what this would act on changed since you were asked; ask again",
 };
+
+/** The fields of a card an approval covers: a change to any of them
+ *  means the person approved something else. Times are left out. */
+export function cardFingerprint(c: TaskCard | undefined): unknown {
+  if (!c) return null;
+  return [c.id, c.title, c.body, c.status, c.labels, c.repo ?? null, c.model ?? null, c.harnessOverride ?? null, c.extraAllowedTools ?? null, c.supersededBy ?? null, c.pr?.head ?? null, c.archivedAt ? "archived" : null];
+}
+
+/** The card ids a list of actions touches. */
+export function actionCardIds(actions: ControlAction[]): string[] {
+  const ids = new Set<string>();
+  for (const a of actions as Array<Record<string, unknown>>) {
+    if (typeof a.taskId === "string") ids.add(a.taskId);
+    if (Array.isArray(a.taskIds)) for (const id of a.taskIds) if (typeof id === "string") ids.add(id);
+  }
+  return [...ids].sort();
+}
+
+/** sha-256 of the actions and the cards they touch, as they are now. */
+export async function contentHashOf(actions: ControlAction[], getCard: (id: string) => Promise<TaskCard | undefined>): Promise<string> {
+  const cards = await Promise.all(actionCardIds(actions).map(async (id) => cardFingerprint(await getCard(id))));
+  return createHash("sha256").update(JSON.stringify([actions, cards])).digest("hex");
+}
 
 interface Row {
   id: string;
@@ -56,6 +92,8 @@ interface Row {
   usedAt: string | null;
   resolution: string | null;
   outcome: string | null;
+  principalId: string | null;
+  contentHash: string | null;
 }
 
 function fromRow(r: Row): PendingAction {
@@ -71,6 +109,8 @@ function fromRow(r: Row): PendingAction {
     ...(r.usedAt ? { usedAt: r.usedAt } : {}),
     ...(r.resolution === "confirmed" || r.resolution === "cancelled" ? { resolution: r.resolution } : {}),
     ...(r.outcome ? { outcome: JSON.parse(r.outcome) as ExecutedAction[] } : {}),
+    ...(r.principalId ? { principalId: r.principalId } : {}),
+    ...(r.contentHash ? { contentHash: r.contentHash } : {}),
   };
 }
 
@@ -105,16 +145,24 @@ export class SqlitePendingActionStore {
       );
     `);
     this.db.run("CREATE INDEX IF NOT EXISTS ask_pending_by_message ON ask_pending_actions (messageId);");
+    // Card 9: who asked, and what it covers. Healed onto older databases.
+    for (const ddl of ["ALTER TABLE ask_pending_actions ADD COLUMN principalId TEXT;", "ALTER TABLE ask_pending_actions ADD COLUMN contentHash TEXT;"]) {
+      try {
+        this.db.run(ddl);
+      } catch {
+        // already there
+      }
+    }
   }
 
-  create(input: { conversationId: string; messageId: string; kind: PendingKind; actions: ControlAction[]; lines: string[] }, now = new Date()): PendingAction {
+  create(input: { conversationId: string; messageId: string; kind: PendingKind; actions: ControlAction[]; lines: string[]; principalId?: string; contentHash?: string }, now = new Date()): PendingAction {
     const p: PendingAction = {
       id: randomUUID(),
       ...input,
       createdAt: now.toISOString(),
       expiresAt: new Date(now.getTime() + this.ttlMs).toISOString(),
     };
-    this.db.run("INSERT INTO ask_pending_actions (id, conversationId, messageId, kind, actions, lines, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
+    this.db.run("INSERT INTO ask_pending_actions (id, conversationId, messageId, kind, actions, lines, createdAt, expiresAt, principalId, contentHash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
       p.id,
       p.conversationId,
       p.messageId,
@@ -123,6 +171,8 @@ export class SqlitePendingActionStore {
       JSON.stringify(p.lines),
       p.createdAt,
       p.expiresAt,
+      p.principalId ?? null,
+      p.contentHash ?? null,
     ]);
     return p;
   }
@@ -158,8 +208,16 @@ export class SqlitePendingActionStore {
     return { ok: true, pending: this.get(id)! };
   }
 
-  /** Takes it for a Confirm. The caller runs it, then calls finish. */
-  take(id: string, conversationId: string, now = new Date()) {
+  /** Takes it for a Confirm. The caller runs it, then calls finish.
+   *  `by` is who confirms and `contentHash` what the actions would act on
+   *  now: a pending action bound to someone else, or to cards that have
+   *  changed since, is refused and stays open for its own person. */
+  take(id: string, conversationId: string, now = new Date(), check: { by?: string; contentHash?: string } = {}): { ok: true; pending: PendingAction } | { ok: false; reason: PendingRefusal } {
+    const p = this.get(id);
+    if (p && p.conversationId === conversationId && !p.usedAt) {
+      if (p.principalId && check.by !== undefined && check.by !== p.principalId) return { ok: false, reason: "wrong-principal" };
+      if (p.contentHash && check.contentHash !== undefined && check.contentHash !== p.contentHash) return { ok: false, reason: "changed" };
+    }
     return this.use(id, conversationId, "confirmed", now);
   }
 

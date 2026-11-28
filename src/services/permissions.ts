@@ -234,6 +234,7 @@ export const WRITE_ROUTES: RouteRule[] = [
   r("POST", "/tasks/*/pr", ["pr.open"], "task"),
   r("POST", "/tasks/*/re-review", ["card.run"], "task"),
   r("POST", "/tasks/*/reauthorize", ["card.run"], "task"),
+  r("POST", "/tasks/*/arm", ["pr.arm"], "task"),
   r("POST", "/tasks/*/merge", ["card.merge"], "task"),
   r("POST", "/tasks/*/close", ["card.discard"], "task"),
   r("POST", "/tasks/*/discard", ["card.discard"], "task"),
@@ -310,6 +311,8 @@ export const WRITE_ROUTES: RouteRule[] = [
   r("POST", "/members/*/tokens", ["member.manage"]),
   r("POST", "/members/*/grants", "self"), // GrantStore.grant checks member.manage at the grant's scope
   r("DELETE", "/grants/*", "self"), // GrantStore.revoke checks member.manage at the grant's scope
+  r("POST", "/approvals/*/confirm", "self"), // ApprovalStore: only the principal it was issued to
+  r("POST", "/approvals/*/cancel", "self"),
   r("POST", "/tokens", "self"),
   r("DELETE", "/tokens/*", "self"),
   r("POST", "/auth/logout", "self"),
@@ -317,7 +320,7 @@ export const WRITE_ROUTES: RouteRule[] = [
 
 /** Reads anyone signed in may make about themselves; /members checks
  *  member.manage itself (at any scope, for a workstream owner). */
-const SELF_READS = new Set(["/me", "/tokens", "/members"]);
+const SELF_READS = new Set(["/me", "/tokens", "/members", "/approvals"]);
 
 export function matchRoute(method: string, pathname: string, table: RouteRule[] = WRITE_ROUTES): RouteRule | undefined {
   const parts = pathname.split("/").filter(Boolean);

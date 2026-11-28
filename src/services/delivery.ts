@@ -146,6 +146,9 @@ export interface CodeHost {
   /** The open PR for `branch`, if any. */
   findOpen(repo: string, branch: string): Promise<{ number: number; url: string } | undefined>;
   open(repo: string, req: { branch: string; base: string; title: string; body: string; draft: boolean }): Promise<{ ok: true; number: number; url: string } | { ok: false; error: string }>;
+  /** Turns auto-merge on, pinned to `headSha`: the code host refuses if
+   *  the head moved (identity card 9). */
+  arm?(repo: string, number: number, headSha: string): Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
 function parsePrUrl(text: string): { number: number; url: string } | undefined {
@@ -170,6 +173,10 @@ export function ghCodeHost(runner: CommandRunner): CodeHost {
       const pr = parsePrUrl(r.stdout);
       if (r.exitCode !== 0 || !pr) return { ok: false, error: `gh pr create failed: ${(r.stderr || r.stdout).trim().slice(0, 500)}` };
       return { ok: true, ...pr };
+    },
+    async arm(repo, number, headSha) {
+      const r = await runner(["gh", "pr", "merge", String(number), "--auto", "--merge", "--match-head-commit", headSha], { cwd: repo });
+      return r.exitCode === 0 ? { ok: true } : { ok: false, error: `gh pr merge --auto failed: ${(r.stderr || r.stdout).trim().slice(0, 500)}` };
     },
   };
 }
