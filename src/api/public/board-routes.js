@@ -30,6 +30,8 @@ var BOARD_ROUTES = {
   "setup/mcp": { page: "mcpPanel", nav: "setup/mcp" },
   "setup/projects": { page: "projectsPanel", nav: "setup/projects" },
   "setup/memory": { page: "memoryPanel", nav: "setup/memory" },
+  "setup/members": { page: "membersPage", nav: "setup/members" },
+  "setup/audit": { page: "auditPage", nav: "setup/audit" },
   "setup/settings": { page: "settingsPage", nav: "setup/settings" },
 };
 

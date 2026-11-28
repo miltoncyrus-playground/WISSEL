@@ -65,6 +65,8 @@ const BOARD_HTML_DEFAULT_SPECS: string[] = [
   // User mode re-words the whole board (src/api/public/user-mode-client.js)
   // and proves operator mode unchanged, so any board change can break it.
   "board-user-mode.spec.ts",
+  // Setup > Members and Audit (board-members.js) live in board.html.
+  "members.spec.ts",
 ];
 
 /** board.html itself (not its JS modules) also carries the header link

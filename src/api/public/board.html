@@ -126,6 +126,22 @@
   .nav-icon { width: 16px; height: 16px; flex: none; display: inline-flex; }
   .nav-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
   .main-col { min-width: 0; display: flex; flex-direction: column; }
+  /* Setup > Members and Audit (board-members.js). */
+  .mb-add { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+  .mb-add label { display: grid; gap: 4px; font-size: 12.5px; font-weight: 600; }
+  .mb-table, .au-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .mb-table th, .mb-table td, .au-table th, .au-table td { text-align: left; vertical-align: top; padding: 8px; border-bottom: 1px solid var(--line); }
+  .mb-grants { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+  .mb-actions { white-space: nowrap; }
+  .mb-actions .danger { color: var(--critical); }
+  .mb-disabled { opacity: 0.6; }
+  .mb-grant-form fieldset { display: flex; flex-wrap: wrap; gap: 4px 12px; border: 1px solid var(--line); margin: 8px 0; }
+  .mb-perm { font-size: 12px; font-weight: 500; }
+  .mb-secret { padding: 10px 14px; border: 1px solid var(--accent); margin-bottom: 12px; word-break: break-all; }
+  .mb-error { color: var(--critical); min-height: 1em; }
+  .au-denied td { background: color-mix(in srgb, var(--critical) 8%, transparent); }
+  .link-btn { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; text-decoration: underline; }
+  .muted { color: var(--ink-muted); }
   /* The coordinator window docked on the right (docs/SDD-coordinator.md
      §4.14, src/api/public/board-dock.js): beside the board on a wide
      screen, over it on a narrow one. */
@@ -1017,6 +1033,14 @@
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.5 2.5h7l2 2v9h-9z"/><path d="M6 7h4M6 9.5h4M6 12h2.5"/></svg></span>
       <span class="nav-label">Memory</span>
     </a>
+    <a class="nav-item" href="#/setup/members" data-route="setup/members" title="Members">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5"/><path d="M1.5 13.5c0-2.5 2-4 4.5-4s4.5 1.5 4.5 4"/><path d="M11 3.5a2.2 2.2 0 0 1 0 4.4M12.5 9.8c1.3.5 2 1.8 2 3.7"/></svg></span>
+      <span class="nav-label">Members</span>
+    </a>
+    <a class="nav-item" href="#/setup/audit" data-route="setup/audit" title="Audit">
+      <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M3.5 2.5h9v11h-9z"/><path d="M6 6h4M6 8.5h4M6 11h2.5"/></svg></span>
+      <span class="nav-label">Audit</span>
+    </a>
     <a class="nav-item" href="#/setup/settings" data-route="setup/settings" title="Settings">
       <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2.5 4.5h6M11.5 4.5h2M2.5 11.5h2M7.5 11.5h6"/><circle cx="10" cy="4.5" r="1.5"/><circle cx="6" cy="11.5" r="1.5"/></svg></span>
       <span class="nav-label">Settings</span>
@@ -1184,6 +1208,42 @@
     <section class="panel-flush section-gap">
       <div class="panel-head"><h2>Curation history</h2><span class="count" id="memoryHistoryCount"></span></div>
       <div style="padding: 16px;" id="memoryHistory"></div>
+    </section>
+  </section>
+
+  <!-- Members and Audit (docs/SDD-identity-and-permissions.md §4.9),
+       drawn by src/api/public/board-members.js. -->
+  <section id="membersPage" data-page hidden>
+    <p class="eyebrow">Members</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Who can use this board, and what each person may do where. The owner holds everything; a new member holds nothing until granted. Disabling someone stops their sessions and tokens at once, and the cards they authorized wait for you.</p>
+    <p class="mb-error" id="membersError" role="alert"></p>
+    <div class="mb-secret" id="membersSecret" hidden><span data-secret-for></span>: <code></code></div>
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Add a member</h2></div>
+      <form id="memberAddForm" class="mb-add" style="padding: 16px;">
+        <label>Handle <input name="handle" required pattern="[a-z][a-z0-9-]{1,31}" placeholder="dana"></label>
+        <label>Name <input name="display" placeholder="Dana"></label>
+        <button type="submit">Add</button>
+      </form>
+    </section>
+    <section class="panel-flush section-gap">
+      <div class="panel-head"><h2>Members</h2></div>
+      <div style="padding: 16px; overflow-x: auto;" id="membersList">Loading…</div>
+    </section>
+  </section>
+
+  <section id="auditPage" data-page hidden>
+    <p class="eyebrow">Audit</p>
+    <p class="lede" style="margin-top: -8px; margin-bottom: 20px;">Every write anyone made, before it ran and how it ended, newest first. The denied rows are the interesting ones.</p>
+    <p class="mb-error" id="auditError" role="alert"></p>
+    <form id="auditFilters" class="mb-add">
+      <label>Member <select name="principal"><option value="">Anyone</option></select></label>
+      <label>Outcome <select name="outcome"><option value="">Any</option><option value="denied">Denied</option><option value="failed">Failed</option><option value="allowed">Allowed</option><option value="queued">Queued</option></select></label>
+      <label>Action <input name="kind" placeholder="e.g. POST /tasks/:id/merge"></label>
+      <button type="submit">Filter</button>
+    </form>
+    <section class="panel-flush section-gap">
+      <div style="padding: 16px; overflow-x: auto;" id="auditList">Loading…</div>
     </section>
   </section>
 
@@ -1727,6 +1787,7 @@
 <script src="/board-runs.js"></script>
 <script src="/board-run-canvas.js"></script>
 <script src="/board-dock.js"></script>
+<script src="/board-members.js"></script>
 <script src="/board-news.js"></script>
 <script src="/board-schedules.js"></script>
 <script src="/board-work.js"></script>
@@ -6963,6 +7024,8 @@
     // last time this page was open should show up without a manual
     // page reload, and this is cheap (two small local reads).
     if (route === "setup/memory") loadMemoryTab();
+    if (route === "setup/members") { initMembersPage(document); loadMembersPage(document); }
+    if (route === "setup/audit") { initAuditPage(document); loadAuditPage(document); }
     if (route === "pipelines") loadPipelinesPage();
     if (def.editor) showPipelineEditor(def, parsed.params || {}, !wasEditor);
     runCanvasId = route === RUN_CANVAS_ROUTE ? parsed.params.runId : null;
