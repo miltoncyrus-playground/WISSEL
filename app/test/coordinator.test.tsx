@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 import { eventLine, type WindowData } from "../src/coordinator";
-import { parseRoute, routeHash } from "../src/routes";
+import { isEmbedded, parseRoute, routeHash } from "../src/routes";
 import { WorkstreamList, WorkstreamWindow, type WindowActions, type WindowTab } from "../src/screens/CoordinatorScreen";
 
 // docs/SDD-coordinator.md §4.14, phase 4 card 22 (and 12b): the window's
@@ -40,6 +40,12 @@ describe("routes", () => {
     expect(parseRoute("#/coordinator/ws%201")).toEqual({ screen: "coordinator", workstreamId: "ws 1", known: true });
     expect(parseRoute("#/coordinator/a/b")).toEqual({ screen: "coordinator", known: false });
     expect(routeHash({ screen: "coordinator", workstreamId: "ws 1" })).toBe("#/coordinator/ws%201");
+  });
+
+  test("?embed=1 is the app inside the board's coordinator dock", () => {
+    expect(isEmbedded("?embed=1")).toBe(true);
+    expect(isEmbedded("?embed=0")).toBe(false);
+    expect(isEmbedded("")).toBe(false);
   });
 });
 

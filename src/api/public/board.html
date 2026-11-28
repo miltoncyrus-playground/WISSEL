@@ -126,6 +126,18 @@
   .nav-icon { width: 16px; height: 16px; flex: none; display: inline-flex; }
   .nav-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
   .main-col { min-width: 0; display: flex; flex-direction: column; }
+  /* The coordinator window docked on the right (docs/SDD-coordinator.md
+     §4.14, src/api/public/board-dock.js): beside the board on a wide
+     screen, over it on a narrow one. */
+  .dock-btn { font: inherit; font-size: 12.5px; font-weight: 700; padding: 5px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); color: var(--ink-1); cursor: pointer; }
+  .dock-btn[aria-expanded="true"] { border-color: var(--accent); }
+  .coord-dock { position: fixed; top: 0; right: 0; bottom: 0; z-index: 40; width: min(440px, 100vw); display: flex; flex-direction: column; background: var(--page); border-left: 1px solid var(--border); box-shadow: -4px 0 16px rgba(0, 0, 0, 0.08); }
+  .coord-dock[hidden] { display: none; }
+  .coord-dock-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-weight: 800; font-size: 13px; }
+  .coord-dock-head a { margin-left: auto; font-weight: 600; font-size: 12px; color: var(--ink-muted); }
+  .coord-dock-head button { font: inherit; font-size: 18px; line-height: 1; border: 0; background: none; color: var(--ink-muted); cursor: pointer; padding: 2px 6px; }
+  .coord-dock iframe { flex: 1; width: 100%; border: 0; background: var(--page); }
+  @media (min-width: 1100px) { body.dock-open .shell { margin-right: min(440px, 100vw); } }
   /* The top bar wraps: its controls on the first row, the account line
      on a full-width row of its own below them (see .accounts-line). A
      narrow window wraps the controls too instead of pushing the page
@@ -1032,6 +1044,7 @@
     <span class="count" id="taskCount"><span class="live-dot"></span>connecting…</span>
     <span class="version-badge" id="versionBadge"></span>
     <a class="app-link" id="appLink" href="/app">Try the new app</a>
+    <button type="button" class="dock-btn" id="dockBtn" aria-expanded="false" aria-controls="coordinatorDock" title="The coordinator window, docked beside the board">Coordinator</button>
     <button type="button" class="new-btn" id="newBtn" aria-haspopup="dialog" aria-expanded="false" aria-controls="newDrawer">+ New</button>
   </header>
 
@@ -1713,6 +1726,7 @@
 <script src="/board-pipelines.js"></script>
 <script src="/board-runs.js"></script>
 <script src="/board-run-canvas.js"></script>
+<script src="/board-dock.js"></script>
 <script src="/board-news.js"></script>
 <script src="/board-schedules.js"></script>
 <script src="/board-work.js"></script>
@@ -7669,5 +7683,14 @@
   })();
 })();
 </script>
+<aside class="coord-dock" id="coordinatorDock" aria-label="Coordinator" hidden>
+  <div class="coord-dock-head">
+    <span>Coordinator</span>
+    <a href="/app#/coordinator" target="_blank" rel="noopener">Open in the app</a>
+    <button type="button" id="dockClose" aria-label="Close the coordinator">×</button>
+  </div>
+  <iframe id="dockFrame" title="Coordinator window"></iframe>
+</aside>
+<script>initCoordinatorDock(document, window);</script>
 </body>
 </html>

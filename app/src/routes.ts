@@ -68,6 +68,11 @@ export function parseRoute(hash: string): Route {
   return { screen: head, known: false };
 }
 
+/** `?embed=1`: the app shown inside the board's coordinator dock. */
+export function isEmbedded(search: string): boolean {
+  return new URLSearchParams(search).get("embed") === "1";
+}
+
 export function routeHash(route: { screen: ScreenId; taskId?: string; workstreamId?: string }): string {
   if (route.workstreamId) return `#/${route.screen}/${encodeURIComponent(route.workstreamId)}`;
   return route.taskId ? `#/${route.screen}/${encodeURIComponent(route.taskId)}` : `#/${route.screen}`;
