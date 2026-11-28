@@ -89,6 +89,28 @@ test.describe("Coordinator window", () => {
     await expect(window.getByRole("list", { name: "Gate log" })).toContainText("decision");
   });
 
+  test("docked beside the board: the app's window in embed mode, remembered across reloads", async ({ page, request }) => {
+    const { ws } = await setup(request);
+    await page.goto("/board");
+    const dock = page.getByRole("complementary", { name: "Coordinator" });
+    await expect(dock).toBeHidden();
+    await page.getByRole("button", { name: "Coordinator", exact: true }).click();
+    await expect(dock).toBeVisible();
+    const frame = page.frameLocator("#dockFrame");
+    // Embed mode: the list, without the app's rail or tab bar.
+    await frame.getByRole("link", { name: ws.name }).click();
+    await expect(frame.getByRole("region", { name: `Coordinator for ${ws.name}` })).toBeVisible();
+    await expect(frame.getByRole("navigation")).toHaveCount(0);
+    // Reopened on the same window after a reload.
+    await page.reload();
+    await expect(dock).toBeVisible();
+    await expect(page.frameLocator("#dockFrame").getByRole("region", { name: `Coordinator for ${ws.name}` })).toBeVisible();
+    await dock.getByRole("button", { name: "Close the coordinator" }).click();
+    await expect(dock).toBeHidden();
+    await page.reload();
+    await expect(dock).toBeHidden();
+  });
+
   test("the list links each workstream's window", async ({ page, request }) => {
     const { ws } = await setup(request);
     await page.goto("/app#/coordinator");

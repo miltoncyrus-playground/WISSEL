@@ -1371,6 +1371,9 @@ export function createApp(
 
       // The "+ New" drawer's live-card search (docs/SDD-ui-cleanup.md
       // §3.3). Same static-sibling reasoning.
+      if (url.pathname === "/board-dock.js" && req.method === "GET") {
+        return new Response(Bun.file(new URL("board-dock.js", PUBLIC_DIR)));
+      }
       if (url.pathname === "/board-new.js" && req.method === "GET") {
         return new Response(Bun.file(new URL("board-new.js", PUBLIC_DIR)));
       }

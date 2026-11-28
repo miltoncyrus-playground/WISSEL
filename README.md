@@ -626,7 +626,11 @@ day is an invented example; a team's own recording uses the same
 shapes.
 
 The **coordinator window** is in the app at `/app#/coordinator`, and on
-desktop through the rail's Coordinator link (§4.14). It lists the
+desktop through the rail's Coordinator link (§4.14). On the classic
+board, the top bar's **Coordinator** button docks the same window on the
+right: beside the board on a wide screen, over it on a narrow one. It is
+the app's window in embed mode (`/app?embed=1`, with no rail or tab bar).
+The dock remembers whether it is open and which window it showed. It lists the
 workstreams, and each one's window (`#/coordinator/<id>`) has a header:
 each project's role and decider, Shadow, the channel, chat and quiet
 hours. It then has four tabs:

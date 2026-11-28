@@ -3,7 +3,7 @@ import { runNotice, runPipeline } from "./api";
 import { buildCommands, isPaletteShortcut, type Command } from "./commands";
 import { useBoardData, useHashRoute, useMediaQuery } from "./hooks";
 import { partitionLanes } from "./lanes";
-import { SCREENS } from "./routes";
+import { isEmbedded, SCREENS } from "./routes";
 import { LivePanel } from "./components/LivePanel";
 import { MiniPlayer } from "./components/MiniPlayer";
 import { Rail, TabBar, TopBar } from "./components/Nav";
@@ -36,6 +36,9 @@ export function App() {
   const [uiMode] = useState(readUiMode);
   const data = useBoardData();
   const desktop = useMediaQuery(DESKTOP_QUERY);
+  // Docked beside the board (/app?embed=1): the screen only, no rail, tab
+  // bar or live panel (docs/SDD-coordinator.md §4.14).
+  const embedded = isEmbedded(typeof window === "undefined" ? "" : window.location.search);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [now, setNow] = useState(() => Date.now());
@@ -113,14 +116,14 @@ export function App() {
     <AgentsContext.Provider value={agents}>
       <ProjectsContext.Provider value={projects}>
       <PlayerContext.Provider value={player.api}>
-        <div className={`shell ${desktop ? "is-desktop" : "is-phone"}${hasPlayer ? " has-player" : ""}`}>
-          {desktop ? <Rail current={route.screen} onOpenPalette={openPalette} /> : <TopBar title={title} onOpenPalette={openPalette} />}
+        <div className={`shell ${embedded ? "is-embedded" : desktop ? "is-desktop" : "is-phone"}${hasPlayer ? " has-player" : ""}`}>
+          {embedded ? null : desktop ? <Rail current={route.screen} onOpenPalette={openPalette} /> : <TopBar title={title} onOpenPalette={openPalette} />}
           <main className="content" id="main" data-screen={route.screen}>
             {screen}
           </main>
-          {desktop && <LivePanel lanes={lanes} connection={data.connection} reload={data.reload} player={<MiniPlayer variant="panel" />} />}
-          {!desktop && <MiniPlayer variant="bar" />}
-          {!desktop && <TabBar current={route.screen} />}
+          {!embedded && desktop && <LivePanel lanes={lanes} connection={data.connection} reload={data.reload} player={<MiniPlayer variant="panel" />} />}
+          {!embedded && !desktop && <MiniPlayer variant="bar" />}
+          {!embedded && !desktop && <TabBar current={route.screen} />}
           <p className="notice" role="status" aria-live="polite">
             {notice}
           </p>
