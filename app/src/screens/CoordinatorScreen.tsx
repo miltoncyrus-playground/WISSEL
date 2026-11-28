@@ -50,11 +50,14 @@ export interface WindowActions {
   onRole: (projectId: string, role: string) => void;
   onDuty: (duty: string, owner: "external" | "wissel") => void;
   onShadow: (on: boolean) => void;
+  /** Quick actions (§4.14): the digest now, restart when idle, cancel it. */
+  onStatus: () => void;
+  onRestart: (cancel: boolean) => void;
 }
 
 /** The window, for one workstream's data. Pure: everything it does goes
  *  through `actions`. */
-export function WorkstreamWindow({ data, tab, projectName, actions }: { data: WindowData; tab: WindowTab; projectName: (id: string) => string; actions: WindowActions }) {
+export function WorkstreamWindow({ data, tab, projectName, actions, status }: { data: WindowData; tab: WindowTab; projectName: (id: string) => string; actions: WindowActions; status?: string }) {
   const { ws } = data;
   const [draft, setDraft] = useState("");
   return (
@@ -116,6 +119,22 @@ export function WorkstreamWindow({ data, tab, projectName, actions }: { data: Wi
                 </li>
               ))}
             </ol>
+            <div className="ws-quick" role="group" aria-label="Quick actions">
+              <button type="button" onClick={actions.onStatus}>
+                Status now
+              </button>
+              <button type="button" onClick={() => actions.onRestart(false)}>
+                Restart when idle
+              </button>
+              <button type="button" onClick={() => actions.onRestart(true)}>
+                Cancel restart
+              </button>
+            </div>
+            {status ? (
+              <pre className="ws-status" aria-label="Status">
+                {status}
+              </pre>
+            ) : null}
             <form
               className="ws-input"
               onSubmit={(ev) => {
@@ -220,6 +239,7 @@ export function CoordinatorScreen({ workstreamId }: { workstreamId?: string }) {
   const [tab, setTab] = useState<WindowTab>("conversation");
   const [error, setError] = useState<string | undefined>();
   const [confirm, setConfirm] = useState<{ message: string; send: () => Promise<WriteResult> } | undefined>();
+  const [status, setStatus] = useState<string | undefined>();
 
   const load = useCallback(() => {
     if (!workstreamId) {
@@ -249,7 +269,19 @@ export function CoordinatorScreen({ workstreamId }: { workstreamId?: string }) {
         data={data}
         tab={tab}
         projectName={projectName}
+        status={status}
         actions={{
+          onStatus: () =>
+            void fetch(`/workstreams/${w}/digest`)
+              .then((r) => r.json() as Promise<{ text?: string }>)
+              .then((d) => setStatus(d.text ?? ""), (e: unknown) => setError(String(e))),
+          onRestart: (cancel) =>
+            void fetch("/admin/restart-when-idle", { method: cancel ? "DELETE" : "POST" })
+              .then(async (r) => {
+                const body = (await r.json().catch(() => ({}))) as { error?: string; pending?: boolean; running?: number };
+                if (!r.ok) setError(body.error ?? `HTTP ${r.status}`);
+                else setStatus(body.pending ? `A restart is pending; ${body.running ?? 0} card(s) still running.` : "No restart is pending.");
+              }),
           onTab: setTab,
           onFlip: (id) => void write(() => post(`/decisions/${encodeURIComponent(id)}/flip`)),
           onDone: (id) => void write(() => post(`/owner-tasks/${encodeURIComponent(id)}/done`)),
