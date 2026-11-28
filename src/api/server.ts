@@ -25,6 +25,7 @@ import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle
 import { HostGuard, readHost, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { MERGE_FORWARD_LABEL, mergeForward } from "../services/merge-forward.ts";
+import { docCommentReader, readOwnerComments, type CommentReader } from "../services/owner-comments.ts";
 import { holdCard, planHoldMinutes, planStartsAt, plannedCards, releaseCard } from "../services/plan-hold.ts";
 import { buildDigest, DigestRuns, dueDigests } from "../services/digests.ts";
 import { LessonDecisions, lessonsForFiles, parseLessons, proposals, ruleText } from "../services/lessons.ts";
@@ -182,6 +183,9 @@ export interface CreateAppOptions {
    *  channel, and the runner its scribe uses; tests pass fakes. */
   channelAdapter?: ChannelAdapter;
   channelRunner?: CommandRunner;
+  /** The owner review doc's comment reader (tests); else the claude-docs
+   *  read-only scribe. */
+  commentReader?: CommentReader;
   /** The host guard (docs/SDD-coordinator.md §4.12). Unset: one is made
    *  when WISSEL_HOST_GUARD=1, reading the host every 30 s. A test's own
    *  is refreshed by the test. */
@@ -712,6 +716,44 @@ export function createApp(
     mkdirSync(cwd, { recursive: true });
     return { adapter: opts.channelAdapter ?? docScribeAdapter(opts.channelRunner ?? runViaBun, { cwd, ...(harness?.env ? { env: harness.env } : {}) }), target: ws.channel.target };
   };
+  /** The owner review doc's reader (§4.4), for a claude-docs reviewDoc. */
+  const commentReaderFor = (workstreamId: string): CommentReader | undefined => {
+    const ws = workstreams?.get(workstreamId);
+    if (ws?.reviewDoc?.adapter !== "claude-docs") return undefined;
+    if (opts.commentReader) return opts.commentReader;
+    const harness = harnesses.all().find((h) => h.enabled && h.tool === "claude-cli");
+    const cwd = join(homedir(), ".wissel", "scratch", "comment-reader");
+    mkdirSync(cwd, { recursive: true });
+    return docCommentReader(opts.channelRunner ?? runViaBun, { cwd, ...(harness?.env ? { env: harness.env } : {}) });
+  };
+  const readOwnerCommentsFor = async (workstreamId: string, force: boolean) => {
+    const ws = workstreams?.get(workstreamId);
+    const reader = commentReaderFor(workstreamId);
+    if (!ws || !reader || !dutyStore) return { status: "failed" as const, error: "this workstream has no claude-docs reviewDoc" };
+    return readOwnerComments(
+      {
+        reader,
+        getSetting: (k) => dutyStore.setting(k),
+        setSetting: (k, v) => dutyStore.setSetting(k, v),
+        startDecision: (context) => startDecisionCard("read-owner-comments", ws.id, ws.projects[0]?.projectId, context),
+      },
+      ws,
+      force,
+    );
+  };
+  // Once a day per workstream with a review doc (checked hourly); off
+  // with WISSEL_OWNER_COMMENTS=0.
+  if (process.env.WISSEL_OWNER_COMMENTS !== "0") {
+    setInterval(() => {
+      for (const ws of workstreams?.list() ?? []) {
+        if (!ws.reviewDoc) continue;
+        void readOwnerCommentsFor(ws.id, false).then(
+          (r) => r.status !== "not-due" && console.log(`owner comments: ${ws.name}: ${r.status}${"error" in r ? ` (${r.error})` : ""}`),
+          (e) => console.error(`owner comments: ${ws.name}: ${(e as Error).message}`),
+        );
+      }
+    }, 60 * 60 * 1000).unref?.();
+  }
   /** Starts a decision card: the router sends it to the decider agent. */
   const startDecisionCard = async (kind: ImplementedKind, workstreamId: string, projectId: string | undefined, context: string, subjectId?: string) => {
     const project = projectId ? (await projects.list()).find((x) => x.id === projectId) : undefined;
@@ -1593,6 +1635,12 @@ export function createApp(
         }
         // The channel outbox, and posting it now (§4.9).
         if (seg.length === 3 && seg[2] === "channel" && req.method === "GET") return json(channelOutbox?.list(ws.id) ?? []);
+        // Reads the owner review doc now (§4.4): new comments start one
+        // read-owner-comments decision.
+        if (seg.length === 4 && seg[2] === "owner-comments" && seg[3] === "read" && req.method === "POST") {
+          const r = await readOwnerCommentsFor(ws.id, true);
+          return json(r, r.status === "failed" ? 409 : r.status === "started" ? 201 : 200);
+        }
         if (seg.length === 4 && seg[2] === "channel" && seg[3] === "flush" && req.method === "POST" && channelOutbox) {
           const posted = await flushChannel(channelOutbox, channelAdapterFor, ws.id);
           return json({ posted, outbox: channelOutbox.list(ws.id) });

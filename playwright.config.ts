@@ -178,6 +178,7 @@ export default defineConfig({
       // channel posting (a claude-docs scribe is a real claude run).
       WISSEL_PR_WATCH: "0",
       WISSEL_CHANNEL_INTERVAL_MS: "0",
+      WISSEL_OWNER_COMMENTS: "0",
       WISSEL_EXECUTE_WRITE_TIER: "0",
       WISSEL_MEMORY_CURATION: "0",
       WISSEL_AUTO_ARCHIVE: "0",
