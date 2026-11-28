@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DEFAULT_BIND, isLoopback, OPEN_BIND_TASK_TITLE, resolveBind } from "../src/core/bind.ts";
 import { SqliteBoard } from "../src/services/board.ts";
 import { raiseOpenBindTask } from "../src/services/open-bind-task.ts";
+import { OwnerTaskStore } from "../src/services/owner-tasks.ts";
 
 describe("isLoopback", () => {
   test.each(["127.0.0.1", "127.1.2.3", "localhost", "LOCALHOST", "::1", "[::1]"])("%s is loopback", (h) => {
@@ -50,25 +51,33 @@ describe("resolveBind", () => {
 });
 
 describe("raiseOpenBindTask", () => {
-  test("lands in review, never inbox, and is not stacked on restart", async () => {
+  test("an owner task with why and steps, not stacked on restart", async () => {
     const board = new SqliteBoard(":memory:");
-    const first = await raiseOpenBindTask(board, "0.0.0.0", 8787);
+    const store = new OwnerTaskStore(board.db, board);
+    const first = await raiseOpenBindTask(store, board, "0.0.0.0", 8787);
     expect(first.created).toBe(true);
-    expect(first.task.status).toBe("review");
     expect(first.task.title).toBe(OPEN_BIND_TASK_TITLE);
-    expect(first.task.body).toContain("0.0.0.0");
+    expect(first.task.why).toContain("WISSEL_BIND=0.0.0.0");
+    expect(first.task.steps[0]).toContain("WISSEL_AUTH=tokens");
+    const card = (await board.get(first.task.cardId))!;
+    expect(card.labels).toContain("owner");
+    expect(card.status).not.toBe("inbox");
 
-    const second = await raiseOpenBindTask(board, "0.0.0.0", 8787);
+    const second = await raiseOpenBindTask(store, board, "0.0.0.0", 8787);
     expect(second.created).toBe(false);
     expect(second.task.id).toBe(first.task.id);
-    expect((await board.list()).filter((t) => t.title === OPEN_BIND_TASK_TITLE)).toHaveLength(1);
+    expect(store.list().filter((t) => t.title === OPEN_BIND_TASK_TITLE)).toHaveLength(1);
   });
 
-  test("a done one does not suppress a new one", async () => {
+  test("a dismissed one comes back on the next start; an old-style review card is closed", async () => {
     const board = new SqliteBoard(":memory:");
-    const first = await raiseOpenBindTask(board, "0.0.0.0", 8787);
-    await board.move(first.task.id, "done");
-    const again = await raiseOpenBindTask(board, "0.0.0.0", 8787);
+    const store = new OwnerTaskStore(board.db, board);
+    const legacy = await board.create({ title: OPEN_BIND_TASK_TITLE, body: "old", labels: ["owner", "security"] });
+    await board.move(legacy.id, "review");
+    const first = await raiseOpenBindTask(store, board, "0.0.0.0", 8787);
+    expect((await board.get(legacy.id))!.status).toBe("done");
+    await store.dismiss(first.task.id);
+    const again = await raiseOpenBindTask(store, board, "0.0.0.0", 8787);
     expect(again.created).toBe(true);
     expect(again.task.id).not.toBe(first.task.id);
   });
