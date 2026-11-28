@@ -27,7 +27,7 @@ const data: WindowData = {
   gateLog: [{ id: "g1", action: { kind: "channel.post", message: "claim" }, verdict: "allow", rule: "shadow", mode: "shadow", at: "x" }],
   shadow: true,
 };
-const noop: WindowActions = { onTab: () => {}, onFlip: () => {}, onDone: () => {}, onSend: () => {}, onRole: () => {}, onDuty: () => {}, onShadow: () => {} };
+const noop: WindowActions = { onTab: () => {}, onFlip: () => {}, onDone: () => {}, onSend: () => {}, onRole: () => {}, onDuty: () => {}, onShadow: () => {}, onStatus: () => {}, onRestart: () => {} };
 const render = (tab: WindowTab) => renderToStaticMarkup(<WorkstreamWindow data={data} tab={tab} projectName={() => "shop"} actions={noop} />);
 
 describe("routes", () => {
@@ -58,6 +58,15 @@ describe("the window", () => {
     expect(html).toContain("You: Pause tonight");
     expect(html).toContain("PR #9: ready");
     expect(html).toContain("Message the coordinator");
+    expect(html).toContain('aria-label="Quick actions"');
+    expect(html).toContain("Status now");
+    expect(html).toContain("Restart when idle");
+  });
+
+  test("the status line shows what Status now returned", () => {
+    const html = renderToStaticMarkup(<WorkstreamWindow data={data} tab="conversation" projectName={() => "shop"} actions={noop} status={"Digest for Checkout\nCards: 2 live"} />);
+    expect(html).toContain('aria-label="Status"');
+    expect(html).toContain("Digest for Checkout");
   });
 
   test("Decisions has Flip; Log shows the channel and the gate; Settings has roles, duties and Shadow", () => {

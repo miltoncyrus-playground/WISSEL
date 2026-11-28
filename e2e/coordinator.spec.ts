@@ -48,6 +48,10 @@ test.describe("Coordinator window", () => {
     await ownerTask.getByRole("button", { name: "Done" }).click();
     await expect(window.locator(".ws-owner-task", { hasText: task.title })).toHaveCount(0);
 
+    // Quick action: Status now shows the digest, from Wissel's own data.
+    await window.getByRole("button", { name: "Status now" }).click();
+    await expect(window.getByLabel("Status")).toContainText(`Digest for ${ws.name}`);
+
     // Decisions: Flip takes the alternative.
     await window.getByRole("tab", { name: "Decisions" }).click();
     await expect(window.locator(".ws-decision-text")).toHaveText("Use UTC");
