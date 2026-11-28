@@ -10,6 +10,23 @@ import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 const README = readFileSync(join(ROOT, "README.md"), "utf8");
+// The README is a short summary; the detail lives in docs/guide/, one
+// page per area. The checks below run over the whole set.
+const GUIDE_DIR = join(ROOT, "docs", "guide");
+const GUIDE = readdirSync(GUIDE_DIR).filter((f) => f.endsWith(".md")).sort();
+const DOCS = [README, ...GUIDE.map((f) => readFileSync(join(GUIDE_DIR, f), "utf8"))].join("\n");
+
+/** Relative markdown links in `text` (written in `fromDir`) whose file
+ *  doesn't exist. */
+function brokenLinks(text: string, fromDir: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(/\]\(([^)#\s]+)(#[^)]*)?\)/g)) {
+    const target = m[1]!;
+    if (/^[a-z]+:/.test(target)) continue;
+    if (!existsSync(join(fromDir, target))) out.push(target);
+  }
+  return out;
+}
 
 function scriptsOf(packageJsonPath: string): Set<string> {
   return new Set(Object.keys(JSON.parse(readFileSync(packageJsonPath, "utf8")).scripts ?? {}));
@@ -86,23 +103,33 @@ describe("README.md", () => {
   });
 
   test("every `bun run <name>` is a real package.json script", () => {
-    expect(unknownScripts(README, ROOT_SCRIPTS, EDITOR_SCRIPTS)).toEqual([]);
+    expect(unknownScripts(DOCS, ROOT_SCRIPTS, EDITOR_SCRIPTS)).toEqual([]);
   });
 
   test("every WISSEL_* name appears in src/", () => {
-    expect(unknownEnvVars(README, SRC)).toEqual([]);
+    expect(unknownEnvVars(DOCS, SRC)).toEqual([]);
   });
 
   test("every WISSEL_* var src/ reads from process.env is documented", () => {
-    expect(undocumentedEnvVars(README, SRC)).toEqual([]);
+    expect(undocumentedEnvVars(DOCS, SRC)).toEqual([]);
   });
 
   test("every docs/*.md path exists", () => {
-    expect(missingDocs(README, ROOT)).toEqual([]);
+    expect(missingDocs(DOCS, ROOT)).toEqual([]);
   });
 
   test("has no em dashes", () => {
-    expect(README).not.toContain("—");
+    expect(DOCS).not.toContain("—");
+  });
+
+  test("stays short, and links every guide page", () => {
+    expect(README.split("\n").length).toBeLessThan(150);
+    for (const f of GUIDE) expect(README).toContain(`(docs/guide/${f})`);
+  });
+
+  test("every relative link in the README and the guide resolves", () => {
+    expect(brokenLinks(README, ROOT)).toEqual([]);
+    for (const f of GUIDE) expect([f, brokenLinks(readFileSync(join(GUIDE_DIR, f), "utf8"), GUIDE_DIR)]).toEqual([f, []]);
   });
 });
 
@@ -122,6 +149,10 @@ describe("README checks catch drift", () => {
 
   test("an env var read in src/ but missing from the README fails", () => {
     expect(undocumentedEnvVars("only WISSEL_PORT", SRC)).toContain("WISSEL_DB_PATH");
+  });
+
+  test("a broken link fails", () => {
+    expect(brokenLinks("[a](docs/guide/nope.md) [b](README.md) [c](https://x.y)", ROOT)).toEqual(["docs/guide/nope.md"]);
   });
 
   test("a missing doc fails", () => {
