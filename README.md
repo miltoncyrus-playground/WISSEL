@@ -483,6 +483,12 @@ with a ` ```decision ` block that fits its kind's schema. The decider
 only proposes; the answer is one gated action, so the role decides what
 happens. The kinds:
 - **`plan-batch`:** proposes cards, each started as its own gated card.
+  Plans start unless held: each card waits `WISSEL_PLAN_HOLD_MINUTES`
+  (default 10; 0 starts at once) before it runs. The coordinator window
+  lists them with Hold. Hold (`POST /tasks/:id/hold`) keeps a card that
+  hasn't started from starting; Release (`POST /tasks/:id/release`) lets
+  it start on the next sweep. `GET /workstreams/:id/plans` lists the
+  workstream's cards that haven't started.
 - **`decide-default`:** a default with its alternative and lean, kept
   as a Decision you can flip (`GET /workstreams/:id/decisions`, `POST
   /decisions/:id/flip`).
@@ -613,9 +619,10 @@ desktop through the rail's Coordinator link (§4.14). It lists the
 workstreams, and each one's window (`#/coordinator/<id>`) has a header:
 each project's role and decider, Shadow, the channel, chat and quiet
 hours. It then has four tabs:
-- **Conversation:** what reached the inbox, your messages (Send), and
-  open owner tasks with their steps as tick-boxes and a Done that runs
-  the task's check.
+- **Conversation:** planned cards that haven't started, each with Hold
+  or Release; what reached the inbox; your messages (Send); and open
+  owner tasks with their steps as tick-boxes and a Done that runs the
+  task's check.
 - **Decisions:** each decision with Flip.
 - **Log:** the channel outbox and the gate's decisions.
 - **Settings:** each project's role, each duty's owner, and Shadow. A

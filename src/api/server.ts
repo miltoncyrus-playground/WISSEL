@@ -25,6 +25,7 @@ import { detectSupervisor, RestartWhenIdle } from "../services/restart-when-idle
 import { HostGuard, readHost, thresholdsFromEnv } from "../services/host-guard.ts";
 import { PR_WATCH_INTERVAL_MS, PrWatcher } from "../services/pr-watcher.ts";
 import { MERGE_FORWARD_LABEL, mergeForward } from "../services/merge-forward.ts";
+import { holdCard, planHoldMinutes, planStartsAt, plannedCards, releaseCard } from "../services/plan-hold.ts";
 import { buildDigest, DigestRuns, dueDigests } from "../services/digests.ts";
 import { LessonDecisions, lessonsForFiles, parseLessons, proposals, ruleText } from "../services/lessons.ts";
 import { importItems, parseItems, type ImportBody, type ImportReport } from "../services/import.ts";
@@ -868,8 +869,11 @@ export function createApp(
               if (out.kind === "plan-batch") {
                 const project = a.projectId ? (await projects.list()).find((x) => x.id === a.projectId) : undefined;
                 const results: string[] = [];
+                // Plans start unless held (§4.14): each card waits a few
+                // minutes, shown in the coordinator window with Hold.
+                const startsAt = planStartsAt(new Date(), planHoldMinutes());
                 for (const c of out.cards) {
-                  const r = await executor!.execute({ kind: "card.start", workstreamId: a.workstreamId, ...(a.projectId ? { projectId: a.projectId } : {}), payload: { card: { title: c.title, body: c.body, labels: [], ...(project ? { repo: project.path } : {}), ...(c.key ? { key: c.key } : {}), ...(c.files ? { files: c.files } : {}), ...(c.waitsFor ? { waitsFor: c.waitsFor } : {}) } } });
+                  const r = await executor!.execute({ kind: "card.start", workstreamId: a.workstreamId, ...(a.projectId ? { projectId: a.projectId } : {}), payload: { card: { title: c.title, body: c.body, labels: [], ...(project ? { repo: project.path } : {}), ...(c.key ? { key: c.key } : {}), ...(c.files ? { files: c.files } : {}), ...(c.waitsFor ? { waitsFor: c.waitsFor } : {}), ...(c.tier ? { review: { tier: c.tier } } : {}), ...(startsAt ? { notBefore: startsAt } : {}) } } });
                   results.push(`${c.key ?? c.title}: ${r.status}`);
                 }
                 return `planned ${out.cards.length} card(s): ${results.join("; ")}`;
@@ -1551,6 +1555,9 @@ export function createApp(
         }
         // Decisions (§4.4, §5): the log, and starting a decision card.
         if (seg.length === 3 && seg[2] === "decisions" && req.method === "GET") return json(decisions?.list(ws.id) ?? []);
+        // The workstream's cards that haven't started (§4.14): what Hold
+        // and Release act on.
+        if (seg.length === 3 && seg[2] === "plans" && req.method === "GET") return json(plannedCards(await board.list(), ws.id, new Date()));
         if (seg.length === 4 && seg[2] === "decisions" && seg[3] === "start" && req.method === "POST") {
           const body = ((await req.json().catch(() => undefined)) ?? {}) as { kind?: unknown; projectId?: unknown; context?: unknown; subjectId?: unknown };
           if (typeof body.kind !== "string" || !(IMPLEMENTED_KINDS as readonly string[]).includes(body.kind)) return json({ error: `kind must be one of: ${IMPLEMENTED_KINDS.join(", ")}` }, 400);
@@ -2555,6 +2562,15 @@ export function createApp(
           if (!task) return notFound();
           const { notBefore } = (await req.json().catch(() => ({}))) as { notBefore?: unknown };
           return outcome(await setTaskNotBefore(board as Board, task, notBefore, new Date()));
+        }
+
+        // Hold and Release (docs/SDD-coordinator.md §4.14): a card that
+        // hasn't started is kept from starting, or let go to start now.
+        if (parts.length === 3 && (parts[2] === "hold" || parts[2] === "release") && req.method === "POST") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          const r = parts[2] === "hold" ? await holdCard(board as Board, task, new Date()) : await releaseCard(board as Board, task);
+          return r.ok ? json(r.card) : json({ error: r.error }, r.status);
         }
 
         // Records or clears (null) the pull request a card's work was

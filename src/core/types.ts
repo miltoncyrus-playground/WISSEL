@@ -847,7 +847,10 @@ export type HarnessTool = "claude-cli" | "anthropic-api" | "codex-cli";
 export type StartCondition =
   | { kind: "card-done"; cardId: string }
   | { kind: "pr-merged"; repo: string; number: number }
-  | { kind: "path-on-main"; repo: string; path: string };
+  | { kind: "path-on-main"; repo: string; path: string }
+  /** Held from the coordinator window (docs/SDD-coordinator.md §4.14):
+   *  never met. Releasing the card removes it. */
+  | { kind: "held"; at?: string };
 
 /** TaskCard.pr. */
 export interface TaskPullRequest {

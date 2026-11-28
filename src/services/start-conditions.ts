@@ -47,7 +47,10 @@ export async function startConditionsError(v: unknown, cardExists: (id: string) 
       if (typeof o.repo !== "string" || !o.repo.startsWith("/")) return "path-on-main.repo must be a project's checkout path";
       const e = relPathError(o.path);
       if (e) return `path-on-main.path ${e}`;
-    } else return `unknown waitsFor kind ${JSON.stringify(k)}; expected card-done, pr-merged or path-on-main`;
+    } else if (k === "held") {
+      if (Object.keys(o).some((f) => !["kind", "at"].includes(f))) return "held takes only at";
+      if (o.at !== undefined && (typeof o.at !== "string" || Number.isNaN(Date.parse(o.at)))) return "held.at must be a date and time";
+    } else return `unknown waitsFor kind ${JSON.stringify(k)}; expected card-done, pr-merged, path-on-main or held`;
   }
   return undefined;
 }
@@ -66,6 +69,7 @@ export function cardFilesError(v: unknown): string | undefined {
 export function describeCondition(c: StartCondition): string {
   if (c.kind === "card-done") return `card ${c.cardId.slice(0, 8)} done`;
   if (c.kind === "pr-merged") return `${c.repo}#${c.number} merged`;
+  if (c.kind === "held") return "released (it is held)";
   return `${c.path} on the main branch of ${c.repo}`;
 }
 
@@ -93,12 +97,13 @@ export class StartConditionChecker {
         if (liveTip(byId.get(c.cardId))?.status !== "done") return c;
         continue;
       }
+      if (c.kind === "held") return c;
       if (!(await this.outside(c))) return c;
     }
     return undefined;
   }
 
-  private async outside(c: Exclude<StartCondition, { kind: "card-done" }>): Promise<boolean> {
+  private async outside(c: Exclude<StartCondition, { kind: "card-done" } | { kind: "held" }>): Promise<boolean> {
     const key = JSON.stringify(c);
     const now = (this.deps.now ?? Date.now)();
     const hit = this.cache.get(key);
