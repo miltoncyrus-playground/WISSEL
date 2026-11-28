@@ -130,6 +130,8 @@ import { authMode, IdentityStore } from "../services/identity.ts";
 import { callerOf, principalOf, withIdentityRoutes, withSignIn } from "./sign-in.ts";
 import { wasPermitted, withPermissions } from "./permission-door.ts";
 import { GrantStore } from "../services/permissions.ts";
+import { APPROVAL_REFUSAL_TEXT, ApprovalStore, refusalStatus } from "../services/approvals.ts";
+import { ghCodeHost } from "../services/delivery.ts";
 import { leaverTask, stopCardsOf } from "../services/leavers.ts";
 import { raiseOpenBindTask } from "../services/open-bind-task.ts";
 import { AuthorizationLog, OWNER_PRINCIPAL_ID, withAuthorizationRecords } from "../services/authorization.ts";
@@ -517,6 +519,8 @@ export function createApp(
   // The owner-only coordinator switches (roles, duties, Shadow, flips,
   // imports, lessons): the owner, or anyone the permission check let
   // through for that route (docs/SDD-identity-and-permissions.md §4.3).
+  // Approvals bound to content (identity card 9): arming a PR first.
+  const approvals = board instanceof SqliteBoard ? new ApprovalStore(board.db) : undefined;
   const ownerOrPermitted = (req: Request) => opts.authorization?.permitted?.(req) ?? opts.authorization?.principalFor(req) === OWNER_PRINCIPAL_ID;
   const settingsFor = (repo: string) => projects.settingsFor(repo);
   // The harness a project asks its new cards to run on (docs/SDD-project-harness.md).
@@ -1736,6 +1740,34 @@ export function createApp(
         return json({ error: "use GET, POST or DELETE" }, 405);
       }
 
+      // Approvals (identity card 9): the caller's open ones, and confirm or
+      // cancel, only by the principal each was issued to.
+      if (approvals && url.pathname === "/approvals" && req.method === "GET") return json(approvals.openFor(opts.authorization?.principalFor(req) ?? OWNER_PRINCIPAL_ID));
+      if (approvals && parts[0] === "approvals" && parts.length === 3 && (parts[2] === "confirm" || parts[2] === "cancel") && req.method === "POST") {
+        const by = opts.authorization?.principalFor(req) ?? OWNER_PRINCIPAL_ID;
+        const id = decodeURIComponent(parts[1]!);
+        if (parts[2] === "cancel") {
+          const r = approvals.cancel(id, by);
+          return r.ok ? json(r.approval) : json({ error: APPROVAL_REFUSAL_TEXT[r.reason] }, refusalStatus(r.reason));
+        }
+        const a = approvals.get(id);
+        if (!a) return json({ error: APPROVAL_REFUSAL_TEXT["not-found"] }, 404);
+        if (a.actionKind !== "pr.arm") return json({ error: `no action for approvals of kind ${a.actionKind}` }, 409);
+        const m = /^card:([^#]+)#(\d+)$/.exec(a.targetRef);
+        const task = m ? await board.get(m[1]!) : undefined;
+        if (!task?.pr || !task.repo || task.pr.number !== Number(m![2])) return json({ error: "the card or its PR is gone" }, 409);
+        // What it covers now: the PR's current head, if it is still the
+        // reviewed one; anything else is a moved head.
+        const reviewed = task.pr.reviewedHead ?? task.pr.head;
+        const current = task.pr.watch?.checks.headSha === reviewed ? reviewed : `moved:${task.pr.watch?.checks.headSha ?? "unknown"}`;
+        const r = approvals.confirm(id, by, current);
+        if (!r.ok) return json({ error: r.reason === "changed" ? `the PR's head moved since it was reviewed (${reviewed.slice(0, 12)}), so this approval no longer applies` : APPROVAL_REFUSAL_TEXT[r.reason] }, refusalStatus(r.reason));
+        const host = mergeContext.codeHost ?? ghCodeHost(mergeContext.runner);
+        if (!host.arm) return json({ error: "this code host can't arm auto-merge" }, 409);
+        const armed = await host.arm(task.repo, task.pr.number, a.contentHash);
+        return armed.ok ? json({ approval: r.approval, armed: true }) : json({ error: armed.error, approval: r.approval }, 502);
+      }
+
       if (opts.authorization && url.pathname === "/me" && req.method === "GET") {
         const p = opts.authorization.log.principal(opts.authorization.principalFor(req));
         const tokenName = callerOf(req)?.tokenName;
@@ -1977,7 +2009,7 @@ export function createApp(
         const body = (await req.json().catch(() => null)) as { conversationId?: unknown; text?: unknown } | null;
         if (!body || typeof body !== "object") return json({ error: "body must be JSON: {conversationId?, text}" }, 400);
         try {
-          return json(await concierge.ask(body));
+          return json(await concierge.ask(body, opts.authorization?.principalFor(req)));
         } catch (e) {
           if (e instanceof AskError) return json({ error: e.message }, e.status);
           throw e;
@@ -1993,7 +2025,7 @@ export function createApp(
         const body = (await req.json().catch(() => null)) as { conversationId?: unknown } | null;
         if (!body || typeof body !== "object") return json({ error: "body must be JSON: {conversationId}" }, 400);
         try {
-          return json(parts[3] === "confirm" ? await concierge.confirm(parts[2]!, body) : await concierge.cancel(parts[2]!, body));
+          return json(parts[3] === "confirm" ? await concierge.confirm(parts[2]!, body, opts.authorization?.principalFor(req)) : await concierge.cancel(parts[2]!, body));
         } catch (e) {
           if (e instanceof AskError) return json({ error: e.message }, e.status);
           throw e;
@@ -2688,6 +2720,21 @@ export function createApp(
             if (!r.ok) return json({ error: r.error }, r.status);
           }
           return json(await board.get(task.id));
+        }
+
+        // Arming auto-merge takes an approval bound to the reviewed head
+        // (docs/SDD-identity-and-permissions.md §4.5): this issues it to
+        // the caller, who confirms it with POST /approvals/:id/confirm.
+        if (parts.length === 3 && parts[2] === "arm" && req.method === "POST") {
+          const task = await board.get(parts[1]!);
+          if (!task) return notFound();
+          if (!approvals) return json({ error: "approvals need the board database" }, 409);
+          if (!task.pr || !task.repo) return json({ error: "this card has no pull request" }, 409);
+          if (!task.pr.watch) return json({ error: "the PR watcher hasn't looked at this PR yet" }, 409);
+          if (task.pr.watch.armBlockedBy) return json({ error: `this PR can't be armed: ${task.pr.watch.armBlockedBy}` }, 409);
+          const reviewed = task.pr.reviewedHead ?? task.pr.head;
+          const a = approvals.issue({ principalId: opts.authorization?.principalFor(req) ?? OWNER_PRINCIPAL_ID, actionKind: "pr.arm", targetRef: `card:${task.id}#${task.pr.number}`, contentHash: reviewed, line: `Arm auto-merge on PR #${task.pr.number} of "${task.title}" at ${reviewed.slice(0, 12)}` });
+          return json(a, 201);
         }
 
         // Hold and Release (docs/SDD-coordinator.md §4.14): a card that

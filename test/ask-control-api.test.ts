@@ -215,14 +215,14 @@ describe("Tier B waits for the Confirm tap", () => {
     expect(chat.messages[1]!.pending![0]!.state).toBe("open");
   });
 
-  test("at Confirm the action is rechecked on the board as it is now", async () => {
+  test("a Confirm of a card that changed since it was proposed is refused, and nothing runs (identity card 9)", async () => {
     const s = await setup([block("Tap Confirm.", [{ type: "delete_task", card: "Flaky" }])]);
     const flaky = await s.make("Flaky");
     const body = await s.ask("delete flaky");
     await s.board.move(flaky.id, "running");
-    const res = await s.post<PendingBody>(`/ask/actions/${body.assistant.pending![0]!.id}/confirm`, { conversationId: body.conversation.id });
-    expect(res.status).toBe(200);
-    expect(controls(res.body.message)).toMatchObject([{ type: "delete_task", ok: false, error: "it is running; stop it first", confirmedBy: "confirm" }]);
+    const res = await s.post<{ error: string }>(`/ask/actions/${body.assistant.pending![0]!.id}/confirm`, { conversationId: body.conversation.id });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("what this would act on changed since you were asked; ask again");
     expect(await s.board.get(flaky.id)).toBeDefined();
   });
 

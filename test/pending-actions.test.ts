@@ -76,6 +76,6 @@ describe("SqlitePendingActionStore", () => {
   });
 
   test("every refusal has a plain sentence", () => {
-    expect(Object.keys(REFUSAL_TEXT).sort()).toEqual(["expired", "not-found", "used", "wrong-conversation"]);
+    expect(Object.keys(REFUSAL_TEXT).sort()).toEqual(["changed", "expired", "not-found", "used", "wrong-conversation", "wrong-principal"]);
   });
 });

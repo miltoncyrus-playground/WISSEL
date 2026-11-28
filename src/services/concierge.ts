@@ -32,7 +32,7 @@ import {
   type DroppedAction,
 } from "./concierge-actions.ts";
 import { executeControl, pendingLines, type ControlDeps } from "./concierge-control.ts";
-import { pendingView, REFUSAL_TEXT, type SqlitePendingActionStore } from "./pending-actions.ts";
+import { contentHashOf, pendingView, REFUSAL_TEXT, type SqlitePendingActionStore } from "./pending-actions.ts";
 import { readModelsCache } from "../core/model-refresh-scheduler.ts";
 import { listSchedules } from "./board-actions.ts";
 import { needsYouFor } from "./needs-you.ts";
@@ -100,7 +100,7 @@ export interface AskResult {
 export class AskError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409,
+    readonly status: 400 | 403 | 404 | 409,
   ) {
     super(message);
   }
@@ -230,14 +230,14 @@ export function createConcierge(deps: ConciergeDeps) {
 
   /** Runs control actions and stores one Undo for what can be undone.
    *  The Undo is a pending action of kind "undo" on `messageId`. */
-  async function runControls(actions: ControlAction[], conversationId: string, messageId: string, confirmedBy: ControlExecuted["confirmedBy"]): Promise<ControlExecuted[]> {
+  async function runControls(actions: ControlAction[], conversationId: string, messageId: string, confirmedBy: ControlExecuted["confirmedBy"], by?: string): Promise<ControlExecuted[]> {
     const executed: ControlExecuted[] = [];
     for (const action of actions) {
       const run = await executeControl(action, await freshContext(), deps.controls!, confirmedBy);
       if (run.inverse.length && confirmedBy !== "undo") {
         const ctx = await freshContext();
         const undo = deps.pending!.create(
-          { conversationId, messageId, kind: "undo", actions: run.inverse, lines: run.inverse.flatMap((a) => pendingLines(a, ctx)) },
+          { conversationId, messageId, kind: "undo", actions: run.inverse, lines: run.inverse.flatMap((a) => pendingLines(a, ctx)), ...(by ? { principalId: by } : {}), contentHash: await contentHashOf(run.inverse, (id) => deps.board.get(id)) },
           now(),
         );
         for (const e of run.executed) if (e.ok) e.undoId = undo.id;
@@ -367,7 +367,9 @@ export function createConcierge(deps: ConciergeDeps) {
   return {
     events,
 
-    async ask(input: { conversationId?: unknown; text?: unknown }): Promise<AskResult> {
+    /** `by` is the principal asking (identity card 9): a Confirm it gets
+     *  can be taken only by them. */
+    async ask(input: { conversationId?: unknown; text?: unknown }, by?: string): Promise<AskResult> {
       if (typeof input.text !== "string" || input.text.trim() === "") throw new AskError("text is required", 400);
       const text = input.text.trim();
       if (text.length > MAX_MESSAGE_LENGTH) throw new AskError(`text is longer than ${MAX_MESSAGE_LENGTH} characters`, 400);
@@ -414,10 +416,10 @@ export function createConcierge(deps: ConciergeDeps) {
               // Two-phase (§3.7): nothing happens until Milton taps
               // Confirm. The model can't: it has no confirm action and
               // never sees a pending id.
-              const p = deps.pending!.create({ conversationId: conversation.id, messageId: assistantId, kind: "confirm", actions: [action], lines: pendingLines(action, ctx) }, now());
+              const p = deps.pending!.create({ conversationId: conversation.id, messageId: assistantId, kind: "confirm", actions: [action], lines: pendingLines(action, ctx), ...(by ? { principalId: by } : {}), contentHash: await contentHashOf([action], (id) => deps.board.get(id)) }, now());
               waiting.push({ id: p.id, lines: p.lines });
             } else {
-              executed.push(...(await runControls([action], conversation.id, assistantId, "tier-a")));
+              executed.push(...(await runControls([action], conversation.id, assistantId, "tier-a", by)));
             }
           }
         }
@@ -455,8 +457,8 @@ export function createConcierge(deps: ConciergeDeps) {
      *  pending action (once, in time, in its own chat, or a 404/409),
      *  rechecks it on the board as it is now, runs it, and appends what
      *  ran to its message. */
-    async confirm(pendingId: string, input: { conversationId?: unknown }): Promise<PendingResult> {
-      return resolvePending(pendingId, input, "confirmed");
+    async confirm(pendingId: string, input: { conversationId?: unknown }, by?: string): Promise<PendingResult> {
+      return resolvePending(pendingId, input, "confirmed", by);
     },
 
     /** POST /ask/actions/:id/cancel: closes it; nothing runs. */
@@ -472,18 +474,22 @@ export function createConcierge(deps: ConciergeDeps) {
     },
   };
 
-  async function resolvePending(pendingId: string, input: { conversationId?: unknown }, resolution: "confirmed" | "cancelled"): Promise<PendingResult> {
+  async function resolvePending(pendingId: string, input: { conversationId?: unknown }, resolution: "confirmed" | "cancelled", by?: string): Promise<PendingResult> {
     if (!deps.pending || !deps.controls) throw new AskError("board controls are not set up on this server", 400);
     if (typeof input.conversationId !== "string" || input.conversationId === "") throw new AskError("conversationId is required", 400);
     const conversationId = input.conversationId;
-    const used = resolution === "confirmed" ? deps.pending.take(pendingId, conversationId, now()) : deps.pending.cancel(pendingId, conversationId, now());
-    if (!used.ok) throw new AskError(REFUSAL_TEXT[used.reason], used.reason === "not-found" ? 404 : 409);
+    // The cards it acts on, as they are now: a Confirm of something that
+    // changed since it was proposed is refused (card 9).
+    const proposed = deps.pending.get(pendingId);
+    const contentHash = resolution === "confirmed" && proposed?.contentHash ? await contentHashOf(proposed.actions, (id) => deps.board.get(id)) : undefined;
+    const used = resolution === "confirmed" ? deps.pending.take(pendingId, conversationId, now(), { ...(by !== undefined ? { by } : {}), ...(contentHash ? { contentHash } : {}) }) : deps.pending.cancel(pendingId, conversationId, now());
+    if (!used.ok) throw new AskError(REFUSAL_TEXT[used.reason], used.reason === "not-found" ? 404 : used.reason === "wrong-principal" ? 403 : 409);
     const p = used.pending;
 
     let message = deps.conversations.message(p.messageId);
     if (!message) throw new AskError(`message not found: ${p.messageId}`, 404);
     if (resolution === "confirmed") {
-      const executed = await runControls(p.actions, conversationId, p.messageId, p.kind === "undo" ? "undo" : "confirm");
+      const executed = await runControls(p.actions, conversationId, p.messageId, p.kind === "undo" ? "undo" : "confirm", by ?? p.principalId);
       deps.pending.finish(p.id, executed);
       message = deps.conversations.appendActions(p.messageId, executed, now().toISOString());
       await audit(conversationId, p.messageId, executed);
