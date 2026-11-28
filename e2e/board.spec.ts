@@ -814,8 +814,13 @@ test.describe("Board view", () => {
     await expect(drawer.locator("#tdActionError")).toBeHidden();
 
     const after = await (await request.get("/tasks")).json();
-    expect(after.length).toBe(before.length); // no follow-up task created
+    // No follow-up card: an approval would replace the card with an
+    // "Approved MCP call" one. Not counted as the whole board's length:
+    // other spec files add cards to the shared server meanwhile.
+    const approved = (list: Array<{ title: string }>) => list.filter((t) => t.title.startsWith("Approved MCP call:")).length;
+    expect(approved(after)).toBe(approved(before));
     const original = after.find((t: { id: string }) => t.id === pending.id);
+    expect(original.supersededBy).toBeUndefined();
     expect(original.status).toBe("failed");
   });
 
@@ -1280,7 +1285,11 @@ test.describe("Board view", () => {
     // Empty lanes keep their width: all five lanes are the same width, so
     // the lone Done card doesn't stretch across the board (Milton,
     // 2026-10-07).
-    const widths = await page.locator("#kanbanBody .kcol").evaluateAll((cols) => cols.map((c) => c.getBoundingClientRect().width));
+    // Under a loaded run the lanes can still be laid out when first read
+    // (width 0); wait until they have a real width.
+    const lanes = page.locator("#kanbanBody .kcol");
+    await expect.poll(async () => Math.min(...(await lanes.evaluateAll((cols) => cols.map((c) => c.getBoundingClientRect().width))))).toBeGreaterThan(50);
+    const widths = await lanes.evaluateAll((cols) => cols.map((c) => c.getBoundingClientRect().width));
     expect(widths.length).toBe(5);
     for (const w of widths) expect(Math.abs(w - widths[0]!)).toBeLessThan(1);
     // Polled: under a loaded run the board can still be redrawing the
@@ -1430,14 +1439,20 @@ test.describe("Swimlanes view", () => {
     await page.goto("/board");
     await page.getByRole("button", { name: "By feature", exact: true }).click();
 
-    const laneHeads = page.locator("#swimlanesBody .swimlane-head");
-    const idleIndex = await laneHeads.filter({ hasText: idleTitle }).evaluate((el) =>
-      Array.prototype.indexOf.call(el.closest("#swimlanesBody")!.querySelectorAll(".swimlane-head"), el),
-    );
-    const activeIndex = await laneHeads.filter({ hasText: activeTitle }).evaluate((el) =>
-      Array.prototype.indexOf.call(el.closest("#swimlanesBody")!.querySelectorAll(".swimlane-head"), el),
-    );
-    expect(activeIndex).toBeLessThan(idleIndex);
+    // Both positions read in one pass, and polled: under a loaded run
+    // the lanes can redraw between two separate reads.
+    const order = () =>
+      page.locator("#swimlanesBody").evaluate(
+        (body, [idle, active]) => {
+          const heads = Array.from(body.querySelectorAll(".swimlane-head")).map((h) => h.textContent ?? "");
+          return { idle: heads.findIndex((t) => t.includes(idle!)), active: heads.findIndex((t) => t.includes(active!)) };
+        },
+        [idleTitle, activeTitle],
+      );
+    await expect.poll(async () => {
+      const o = await order();
+      return o.active >= 0 && o.idle >= 0 && o.active < o.idle;
+    }).toBe(true);
   });
 });
 
@@ -1586,11 +1601,12 @@ test.describe("Shell and navigation", () => {
       // since it sits above the lanes (docs/SDD-ui-cleanup.md §3.2).
       const first = page.locator("#boardPanel .kcard").first();
       await expect(first).toBeVisible();
-      const box = await first.boundingBox();
+      // Polled: under a loaded run the board can still be redrawing the
+      // card when first read, and a detached card has no box.
+      await expect.poll(async () => (await first.boundingBox())?.y ?? Infinity).toBeLessThanOrEqual(170);
       // Logged so the measured value shows up in the run output, not
       // just pass/fail.
-      console.log(`T1: first board card top = ${box!.y}px (goal ≤ 170)`);
-      expect(box!.y).toBeLessThanOrEqual(170);
+      console.log(`T1: first board card top = ${(await first.boundingBox())?.y}px (goal ≤ 170)`);
       await page.screenshot({ path: "test-results/ui-a1/board-1440x900.png" });
     });
 

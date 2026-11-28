@@ -104,7 +104,9 @@ for (const vp of VIEWPORTS) {
       // Tab into the composer, type, Enter: no mouse.
       await page.keyboard.press("Tab");
       let reached = false;
-      for (let i = 0; i < 40 && !reached; i++) {
+      // Generous: at desktop width the Live panel lists every running
+      // card, and other spec files fill the shared board with them.
+      for (let i = 0; i < 400 && !reached; i++) {
         reached = await page.evaluate(() => document.activeElement?.id === "ask-input");
         if (!reached) await page.keyboard.press("Tab");
       }

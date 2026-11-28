@@ -605,9 +605,10 @@ test.describe("at 1440x900", () => {
     await page.goto("/board");
     const first = page.locator("#boardPanel .kcard").first();
     await expect(first).toBeVisible();
-    const top = (await first.boundingBox())!.y;
-    console.log(`T1 with A3: first board card top = ${top}px (goal ≤ 170)`);
-    expect(top).toBeLessThanOrEqual(170);
+    // Polled: under a loaded run the board can still be laying out (or
+    // redrawing the card) when first read.
+    await expect.poll(async () => (await first.boundingBox())?.y ?? Infinity).toBeLessThanOrEqual(170);
+    console.log(`T1 with A3: first board card top = ${(await first.boundingBox())?.y}px (goal ≤ 170)`);
 
     await openNewDrawer(page);
     // Slid fully in: flush with the viewport's right edge (clientWidth
