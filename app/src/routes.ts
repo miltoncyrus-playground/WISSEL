@@ -2,7 +2,7 @@
 // `#/board`, `#/board/<task id>`, `#/listen`, `#/you`. No router
 // dependency; App listens to `hashchange` and calls parseRoute.
 
-export type ScreenId = "feed" | "ask" | "board" | "listen" | "you";
+export type ScreenId = "feed" | "ask" | "board" | "listen" | "you" | "coordinator";
 
 export interface Screen {
   id: ScreenId;
@@ -27,6 +27,10 @@ export interface Route {
   screen: ScreenId;
   /** `#/board/<id>`: a card opened from the Board tab or the palette. */
   taskId?: string;
+  /** `#/coordinator/<id>`: one workstream's coordinator window
+   *  (docs/SDD-coordinator.md §4.14). Not a tab: reached from the rail,
+   *  You and the palette. */
+  workstreamId?: string;
   /** False when the hash named nothing we know and we fell back. */
   known: boolean;
 }
@@ -39,6 +43,18 @@ export function parseRoute(hash: string): Route {
   const path = hash.replace(/^#/, "").replace(/^\/+|\/+$/g, "");
   if (!path) return { screen: DEFAULT_SCREEN, known: true };
   const [head, ...rest] = path.split("/");
+  if (head === "coordinator") {
+    if (rest.length === 0) return { screen: "coordinator", known: true };
+    if (rest.length === 1) {
+      try {
+        const workstreamId = decodeURIComponent(rest[0]!);
+        if (workstreamId) return { screen: "coordinator", workstreamId, known: true };
+      } catch {
+        // Bad percent-encoding: the list instead.
+      }
+    }
+    return { screen: "coordinator", known: false };
+  }
   if (!head || !isScreen(head)) return { screen: DEFAULT_SCREEN, known: false };
   if (rest.length === 0) return { screen: head, known: true };
   if (head === "board" && rest.length === 1) {
@@ -52,6 +68,7 @@ export function parseRoute(hash: string): Route {
   return { screen: head, known: false };
 }
 
-export function routeHash(route: { screen: ScreenId; taskId?: string }): string {
+export function routeHash(route: { screen: ScreenId; taskId?: string; workstreamId?: string }): string {
+  if (route.workstreamId) return `#/${route.screen}/${encodeURIComponent(route.workstreamId)}`;
   return route.taskId ? `#/${route.screen}/${encodeURIComponent(route.taskId)}` : `#/${route.screen}`;
 }
